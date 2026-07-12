@@ -1,0 +1,263 @@
+package handler
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"syslog-gui/model"
+
+	"github.com/gin-gonic/gin"
+)
+
+func IngestBatch(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		body, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Could not read body"})
+			return
+		}
+
+		var entries []model.IngestEntry
+		if err := json.Unmarshal(body, &entries); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON: " + err.Error()})
+			return
+		}
+
+		if len(entries) == 0 {
+			c.JSON(http.StatusOK, gin.H{"ingested": 0})
+			return
+		}
+
+		tx, err := db.Begin()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not begin transaction"})
+			return
+		}
+		defer tx.Rollback()
+
+		query := `INSERT INTO syslog_logs (timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message)
+		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+		stmt, err := tx.Prepare(query)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not prepare statement"})
+			return
+		}
+		defer stmt.Close()
+
+		ingested := 0
+		for _, entry := range entries {
+			ts, err := parseTimestamp(entry.Timestamp)
+			if err != nil {
+				log.Printf("Invalid timestamp: %s, using now", entry.Timestamp)
+				ts = time.Now()
+			}
+
+			appName := nullStr(entry.AppName)
+			processID := nullStr(entry.ProcessID)
+			msgID := nullStr(entry.MsgID)
+			facility := nullStr(entry.Facility)
+			rawMsg := nullStr(entry.RawMessage)
+
+			_, err = stmt.Exec(ts, entry.Hostname, appName, processID, msgID,
+				entry.Severity, facility, entry.Message, rawMsg)
+			if err != nil {
+				log.Printf("Insert error: %v", err)
+				continue
+			}
+			ingested++
+		}
+
+		if err := tx.Commit(); err != nil {
+			log.Printf("Commit error: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Transaction commit failed"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"ingested": ingested})
+	}
+}
+
+func GetLogs(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		limit := c.DefaultQuery("limit", "50")
+		offset := c.DefaultQuery("offset", "0")
+		hostname := c.Query("hostname")
+		severity := c.Query("severity")
+		appName := c.Query("app_name")
+		search := c.Query("search")
+		from := c.Query("from")
+		to := c.Query("to")
+		sort := c.DefaultQuery("sort", "timestamp_desc")
+
+		limitInt, _ := strconv.Atoi(limit)
+		offsetInt, _ := strconv.Atoi(offset)
+
+		if limitInt > 1000 {
+			limitInt = 1000
+		}
+
+		whereClauses := []string{}
+		args := []interface{}{}
+		argIdx := 1
+
+		if hostname != "" {
+			whereClauses = append(whereClauses, fmt.Sprintf("hostname ILIKE $%d", argIdx))
+			args = append(args, "%"+hostname+"%")
+			argIdx++
+		}
+
+		if severity != "" {
+			whereClauses = append(whereClauses, fmt.Sprintf("severity = $%d", argIdx))
+			args = append(args, severity)
+			argIdx++
+		}
+
+		if appName != "" {
+			whereClauses = append(whereClauses, fmt.Sprintf("app_name ILIKE $%d", argIdx))
+			args = append(args, "%"+appName+"%")
+			argIdx++
+		}
+
+		if search != "" {
+			whereClauses = append(whereClauses, fmt.Sprintf("(message ILIKE $%d OR raw_message ILIKE $%d)", argIdx, argIdx))
+			args = append(args, "%"+search+"%")
+			argIdx++
+		}
+
+		if from != "" {
+			whereClauses = append(whereClauses, fmt.Sprintf("timestamp >= $%d", argIdx))
+			args = append(args, from)
+			argIdx++
+		}
+
+		if to != "" {
+			whereClauses = append(whereClauses, fmt.Sprintf("timestamp <= $%d", argIdx))
+			args = append(args, to)
+			argIdx++
+		}
+
+		whereSQL := ""
+		if len(whereClauses) > 0 {
+			whereSQL = "WHERE " + strings.Join(whereClauses, " AND ")
+		}
+
+		orderClause := "timestamp DESC"
+		switch sort {
+		case "timestamp_asc":
+			orderClause = "timestamp ASC"
+		case "severity":
+			orderClause = "severity ASC, timestamp DESC"
+		case "hostname":
+			orderClause = "hostname ASC, timestamp DESC"
+		}
+
+		// Count total
+		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL)
+		var total int64
+		if err := db.QueryRow(countQuery, args...).Scan(&total); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Count query failed"})
+			return
+		}
+
+		// Fetch logs
+		logsQuery := fmt.Sprintf(
+			"SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, created_at "+
+				"FROM syslog_logs %s ORDER BY %s LIMIT $%d OFFSET $%d",
+			whereSQL, orderClause, argIdx, argIdx+1,
+		)
+		args = append(args, limitInt, offsetInt)
+
+		rows, err := db.Query(logsQuery, args...)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Query failed: " + err.Error()})
+			return
+		}
+		defer rows.Close()
+
+		var logs []model.SyslogLog
+		for rows.Next() {
+			var l model.SyslogLog
+			err := rows.Scan(
+				&l.ID, &l.Timestamp, &l.Hostname, &l.AppName,
+				&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
+				&l.Message, &l.RawMessage, &l.CreatedAt,
+			)
+			if err != nil {
+				log.Printf("Scan error: %v", err)
+				continue
+			}
+			logs = append(logs, l)
+		}
+
+		if logs == nil {
+			logs = []model.SyslogLog{}
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"logs":   logs,
+			"total":  total,
+			"limit":  limitInt,
+			"offset": offsetInt,
+		})
+	}
+}
+
+func GetDevices(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		rows, err := db.Query("SELECT DISTINCT hostname FROM syslog_logs ORDER BY hostname")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Query failed"})
+			return
+		}
+		defer rows.Close()
+
+		var devices []string
+		for rows.Next() {
+			var d string
+			if err := rows.Scan(&d); err == nil {
+				devices = append(devices, d)
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{"devices": devices})
+	}
+}
+
+func parseTimestamp(s string) (time.Time, error) {
+	formats := []string{
+		time.RFC3339,
+		time.RFC3339Nano,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"Jan 2 15:04:05",
+		time.UnixDate,
+	}
+
+	for _, format := range formats {
+		t, err := time.Parse(format, s)
+		if err == nil {
+			return t, nil
+		}
+	}
+
+	// Try unix timestamp
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return time.Unix(int64(f), 0), nil
+	}
+
+	return time.Now(), fmt.Errorf("unparseable timestamp: %s", s)
+}
+
+func nullStr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}

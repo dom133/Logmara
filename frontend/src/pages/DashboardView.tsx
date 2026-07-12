@@ -1,0 +1,221 @@
+import { useEffect, useState, useCallback } from 'react'
+import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, Select, Row, Col, Statistic, Descriptions } from 'antd'
+import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons'
+import { useNavigate, useParams } from 'react-router-dom'
+import { getDashboard, getDashboardData, togglePinDashboard, Dashboard, DashboardDataResponse, LogEntry } from '../services/api'
+
+const { Title } = Typography
+
+export default function DashboardViewPage() {
+  const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
+  const [dashboard, setDashboard] = useState<Dashboard | null>(null)
+  const [logs, setLogs] = useState<LogEntry[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [tableLoading, setTableLoading] = useState(false)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+  const [searchOverride, setSearchOverride] = useState('')
+
+  const dashboardId = parseInt(id || '0')
+
+  const loadDashboard = async () => {
+    setLoading(true)
+    try {
+      const d = await getDashboard(dashboardId)
+      setDashboard(d)
+    } catch (e) {
+      navigate('/')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadLogs = useCallback(async () => {
+    setTableLoading(true)
+    try {
+      const data = await getDashboardData(dashboardId, pageSize, (page - 1) * pageSize)
+      setLogs(data.logs)
+      setTotal(data.total)
+    } catch (e) {
+      // error handled by API
+    } finally {
+      setTableLoading(false)
+    }
+  }, [dashboardId, page, pageSize])
+
+  useEffect(() => {
+    loadDashboard()
+  }, [dashboardId])
+
+  useEffect(() => {
+    if (dashboard) {
+      loadLogs()
+    }
+  }, [dashboard, page, pageSize, loadLogs])
+
+  const handleTogglePin = async () => {
+    if (!dashboard) return
+    try {
+      const res = await togglePinDashboard(dashboardId)
+      setDashboard({ ...dashboard, pinned: res.pinned })
+    } catch (e) {
+      // error handled by API
+    }
+  }
+
+  const fields = dashboard?.config?.fields || []
+  const devices = dashboard?.config?.devices || []
+
+  const columns: any[] = [
+    {
+      title: 'Time',
+      dataIndex: 'timestamp',
+      key: 'timestamp',
+      width: 180,
+      render: (v: string) => new Date(v).toLocaleString(),
+      sorter: (a: LogEntry, b: LogEntry) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+      defaultSortOrder: 'descend',
+    },
+    {
+      title: 'Device',
+      dataIndex: 'hostname',
+      key: 'hostname',
+      width: 150,
+      render: (v: string) => <Tag color="blue">{v}</Tag>,
+    },
+    {
+      title: 'Severity',
+      dataIndex: 'severity',
+      key: 'severity',
+      width: 100,
+      render: (v: string) => {
+        const colors: Record<string, string> = {
+          emerg: 'red', alert: 'orange', crit: 'volcano', err: 'gold',
+          warning: 'lime', notice: 'blue', info: 'green', debug: 'default',
+        }
+        return <Tag color={colors[v] || 'default'}>{v.toUpperCase()}</Tag>
+      },
+    },
+    {
+      title: 'Message',
+      dataIndex: 'message',
+      key: 'message',
+      ellipsis: true,
+      render: (v: string) => <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 12 }}>{v}</pre>,
+    },
+  ]
+
+  if (fields.length > 0) {
+    for (const field of fields) {
+      columns.push({
+        title: field,
+        key: `pf_${field}`,
+        width: 120,
+        render: (_: any, r: LogEntry) => {
+          const val = r.parsed_fields?.[field]
+          return val ? <Tag color="geekblue">{val}</Tag> : <Tag>-</Tag>
+        },
+      })
+    }
+  }
+
+  if (loading) {
+    return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />
+  }
+
+  if (!dashboard) {
+    return <div>Dashboard not found</div>
+  }
+
+  return (
+    <>
+      <Breadcrumb style={{ marginBottom: 16 }}>
+        <Breadcrumb.Item><a onClick={() => navigate('/dashboards')}>Dashboards</a></Breadcrumb.Item>
+        <Breadcrumb.Item>{dashboard.name}</Breadcrumb.Item>
+      </Breadcrumb>
+
+      <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
+        <Space>
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/dashboards')}>Back</Button>
+          <Title level={3} style={{ margin: 0 }}>{dashboard.name}</Title>
+          <Button
+            icon={dashboard.pinned ? <PushpinFilled /> : <PushpinOutlined />}
+            onClick={handleTogglePin}
+            style={{ color: dashboard.pinned ? '#faad14' : undefined }}
+          />
+        </Space>
+        <Space>
+          <Input
+            placeholder="Search override..."
+            value={searchOverride}
+            onChange={e => setSearchOverride(e.target.value)}
+            onPressEnter={loadLogs}
+            style={{ width: 200 }}
+            prefix={<FilterOutlined />}
+          />
+          <Button icon={<ReloadOutlined />} onClick={loadLogs} loading={tableLoading}>Refresh</Button>
+        </Space>
+      </Space>
+
+      {dashboard.description && (
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>{dashboard.description}</Typography.Paragraph>
+      )}
+
+      <Row gutter={16} style={{ marginBottom: 16 }}>
+        <Col span={6}>
+          <Card>
+            <Statistic title="Matching Logs" value={total} />
+          </Card>
+        </Col>
+        <Col span={6}>
+          <Card>
+            <Statistic title="Devices" value={devices.length || 'All'} />
+          </Card>
+        </Col>
+        <Col span={6}>
+          <Card>
+            <Statistic title="Fields" value={fields.length || 'Default'} />
+          </Card>
+        </Col>
+        <Col span={6}>
+          <Card>
+            <Statistic title="Updated" value={new Date(dashboard.updated_at).toLocaleString()} />
+          </Card>
+        </Col>
+      </Row>
+
+      {(devices.length > 0 || fields.length > 0) && (
+        <Descriptions bordered column={3} size="small" style={{ marginBottom: 16 }}>
+          <Descriptions.Item label="Devices" span={1}>
+            {devices.length ? devices.map(d => <Tag key={d}>{d}</Tag>) : <Tag>All</Tag>}
+          </Descriptions.Item>
+          <Descriptions.Item label="Active Fields" span={1}>
+            {fields.length ? fields.map(f => <Tag key={f} color="green">{f}</Tag>) : <Tag>Default</Tag>}
+          </Descriptions.Item>
+          <Descriptions.Item label="Severity Filter" span={1}>
+            <Tag>{dashboard.config.filters.severity || 'All'}</Tag>
+          </Descriptions.Item>
+        </Descriptions>
+      )}
+
+      <Table
+        dataSource={logs}
+        columns={columns}
+        rowKey="id"
+        loading={tableLoading}
+        size="small"
+        scroll={{ x: 1200 }}
+        pagination={{
+          current: page,
+          pageSize: pageSize,
+          total: total,
+          showSizeChanger: true,
+          showTotal: (t) => `${t} total`,
+          onChange: (p, ps) => { setPage(p); setPageSize(ps) },
+        }}
+      />
+    </>
+  )
+}
