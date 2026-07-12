@@ -6,17 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"os"
-	"regexp"
-	"strings"
 	"time"
 
 	"syslog-gui/model"
 	"syslog-gui/parser"
 )
-
-var syslogRe = regexp.MustCompile(`^<[0-9]+>\s+\S+\s+(\S+)`)
 
 func Start(db *sql.DB, filePath string, engine *parser.Engine) {
 	log.Printf("File tailer started, watching: %s", filePath)
@@ -72,9 +67,6 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine) {
 
 			if entry.Hostname == "" {
 				continue
-			}
-
-			if extractHostnameFromRaw(&entry) {
 			}
 
 			appName := entry.AppName
@@ -169,21 +161,6 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 	}
 
 	return nil
-}
-
-func extractHostnameFromRaw(entry *model.IngestEntry) bool {
-	if entry.RawMessage == "" {
-		return false
-	}
-	ip := net.ParseIP(entry.Hostname)
-	if ip != nil {
-		matches := syslogRe.FindStringSubmatch(entry.RawMessage)
-		if len(matches) > 1 && matches[1] != entry.Hostname && !strings.Contains(matches[1], ".") {
-			entry.Hostname = matches[1]
-			return true
-		}
-	}
-	return false
 }
 
 func parseTimestamp(s string) (time.Time, error) {

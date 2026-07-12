@@ -14,11 +14,6 @@ type LoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
-type RegisterRequest struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required,min=6"`
-}
-
 func Login(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req LoginRequest
@@ -29,9 +24,9 @@ func Login(db *sql.DB) gin.HandlerFunc {
 
 		var user auth.User
 		err := db.QueryRow(
-			"SELECT id, username, is_admin, created_at FROM users WHERE username = $1",
+			"SELECT id, username, role, is_admin, is_active, created_at FROM users WHERE username = $1",
 			req.Username,
-		).Scan(&user.ID, &user.Username, &user.IsAdmin, &user.CreatedAt)
+		).Scan(&user.ID, &user.Username, &user.Role, &user.IsAdmin, &user.IsActive, &user.CreatedAt)
 
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
@@ -39,6 +34,11 @@ func Login(db *sql.DB) gin.HandlerFunc {
 		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+			return
+		}
+
+		if !user.IsActive {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Account disabled"})
 			return
 		}
 
@@ -60,55 +60,9 @@ func Login(db *sql.DB) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"token":  token,
-			"user":   user,
+			"token":   token,
+			"user":    user,
 			"message": "Login successful",
-		})
-	}
-}
-
-func Register(db *sql.DB) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var req RegisterRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-			return
-		}
-
-		var count int
-		db.QueryRow("SELECT COUNT(*) FROM users WHERE username = $1", req.Username).Scan(&count)
-		if count > 0 {
-			c.JSON(http.StatusConflict, gin.H{"error": "Username already exists"})
-			return
-		}
-
-		hash, err := auth.HashPassword(req.Password)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not hash password"})
-			return
-		}
-
-		result, err := db.Exec(
-			"INSERT INTO users (username, password_hash, is_admin) VALUES ($1, $2, $3)",
-			req.Username, hash, false,
-		)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not create user"})
-			return
-		}
-
-		id, _ := result.LastInsertId()
-		user := auth.User{
-			ID:       id,
-			Username: req.Username,
-			IsAdmin:  false,
-		}
-
-		token, _ := auth.GenerateToken(user)
-
-		c.JSON(http.StatusCreated, gin.H{
-			"token": token,
-			"user":  user,
 		})
 	}
 }

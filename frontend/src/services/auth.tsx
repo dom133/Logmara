@@ -4,15 +4,17 @@ import { api } from './api'
 interface User {
   id: number
   username: string
+  role: string
   is_admin: boolean
+  is_active: boolean
 }
 
 interface AuthContextType {
   token: string | null
   user: User | null
   login: (username: string, password: string) => Promise<boolean>
-  register: (username: string, password: string) => Promise<boolean>
   logout: () => void
+  isAdmin: boolean
 }
 
 const AuthContext = createContext<AuthContextType>({} as AuthContextType)
@@ -49,18 +51,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  const register = async (username: string, password: string) => {
-    try {
-      const res = await api.post('/auth/register', { username, password })
-      setToken(res.data.token)
-      localStorage.setItem('token', res.data.token)
-      setUser(res.data.user)
-      return true
-    } catch {
-      return false
-    }
-  }
-
   const logout = () => {
     setToken(null)
     setUser(null)
@@ -69,7 +59,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ token, user, login, register, logout }}>
+    <AuthContext.Provider value={{ token, user, login, logout, isAdmin: user?.role === 'admin' }}>
       {children}
     </AuthContext.Provider>
   )

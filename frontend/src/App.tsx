@@ -7,6 +7,7 @@ import LogsViewer from './pages/LogsViewer'
 import ParsersPage from './pages/Parsers'
 import DashboardsPage from './pages/Dashboards'
 import DashboardViewPage from './pages/DashboardView'
+import Admin from './pages/Admin'
 import { AuthProvider, useAuth } from './services/auth'
 import { getDashboards, Dashboard as DashboardType } from './services/api'
 
@@ -20,7 +21,7 @@ const navItems = [
 ]
 
 function AppLayout({ children }: { children: React.ReactNode }) {
-  const { user, logout } = useAuth()
+  const { user, logout, isAdmin } = useAuth()
   const { token } = theme.useToken()
   const location = useLocation()
   const [pinnedDashboards, setPinnedDashboards] = useState<DashboardType[]>([])
@@ -96,6 +97,26 @@ function AppLayout({ children }: { children: React.ReactNode }) {
               ))}
             </>
           )}
+          {isAdmin && (
+            <RouterLink
+              to="/admin"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '12px 16px',
+                textDecoration: 'none',
+                color: location.pathname === '/admin' ? '#1890ff' : token.colorText,
+                background: location.pathname === '/admin' ? '#e6f7ff' : 'transparent',
+                borderRadius: 4,
+                margin: '2px 8px',
+                fontSize: 14,
+              }}
+            >
+              <span>🔐</span>
+              Admin
+            </RouterLink>
+          )}
         </nav>
         <div style={{ position: 'absolute', bottom: 16, left: 16, right: 16 }}>
           <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
@@ -143,6 +164,7 @@ export default function App() {
           <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />
           <Route path="/dashboards" element={<PrivateRoute><DashboardsPage /></PrivateRoute>} />
           <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
+          <Route path="/admin" element={<PrivateRoute><Admin /></PrivateRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>

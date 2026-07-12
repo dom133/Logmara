@@ -32,10 +32,8 @@ func main() {
 
 	auth.InitAdmin(database)
 
-	// Initialize parser engine
 	engine := parser.NewEngine(database)
 
-	// Start file tailer for rsyslog JSON lines
 	logFilePath := os.Getenv("LOG_FILE_PATH")
 	if logFilePath == "" {
 		logFilePath = "/data/logs.jsonl"
@@ -56,7 +54,6 @@ func main() {
 	})
 
 	r.POST("/api/auth/login", handler.Login(database))
-	r.POST("/api/auth/register", handler.Register(database))
 	r.POST("/api/ingest/batch", handler.IngestBatch(database))
 
 	authGroup := r.Group("/api")
@@ -73,21 +70,39 @@ func main() {
 		authGroup.GET("/auth/me", handler.GetMe())
 		authGroup.POST("/auth/change-password", handler.ChangePassword(database))
 
-		authGroup.GET("/parsers", handler.ListParsers(engine))
-		authGroup.POST("/parsers", handler.CreateParser(engine))
-		authGroup.PUT("/parsers/:id", handler.UpdateParser(engine))
-		authGroup.DELETE("/parsers/:id", handler.DeleteParser(engine))
-		authGroup.POST("/parsers/test", handler.TestParser(engine))
-		authGroup.POST("/parsers/reparse", handler.ReparseUnparsed(engine))
-		authGroup.GET("/parsers/fields", handler.ListParsedFields(engine))
+		editorGroup := authGroup.Group("")
+		editorGroup.Use(auth.RoleRequired("admin", "editor"))
+		{
+			editorGroup.GET("/parsers", handler.ListParsers(engine))
+			editorGroup.POST("/parsers", handler.CreateParser(engine))
+			editorGroup.PUT("/parsers/:id", handler.UpdateParser(engine))
+			editorGroup.DELETE("/parsers/:id", handler.DeleteParser(engine))
+			editorGroup.POST("/parsers/test", handler.TestParser(engine))
+			editorGroup.POST("/parsers/reparse", handler.ReparseUnparsed(engine))
+			editorGroup.GET("/parsers/fields", handler.ListParsedFields(engine))
 
-		authGroup.GET("/dashboards", handler.ListDashboards(database))
-		authGroup.POST("/dashboards", handler.CreateDashboard(database))
-		authGroup.GET("/dashboards/:id", handler.GetDashboard(database))
-		authGroup.PUT("/dashboards/:id", handler.UpdateDashboard(database))
-		authGroup.DELETE("/dashboards/:id", handler.DeleteDashboard(database))
-		authGroup.GET("/dashboards/:id/data", handler.GetDashboardData(database))
-		authGroup.PATCH("/dashboards/:id/pin", handler.TogglePinDashboard(database))
+			editorGroup.GET("/dashboards", handler.ListDashboards(database))
+			editorGroup.POST("/dashboards", handler.CreateDashboard(database))
+			editorGroup.GET("/dashboards/:id", handler.GetDashboard(database))
+			editorGroup.PUT("/dashboards/:id", handler.UpdateDashboard(database))
+			editorGroup.DELETE("/dashboards/:id", handler.DeleteDashboard(database))
+			editorGroup.GET("/dashboards/:id/data", handler.GetDashboardData(database))
+			editorGroup.PATCH("/dashboards/:id/pin", handler.TogglePinDashboard(database))
+		}
+
+		adminGroup := authGroup.Group("/admin")
+		adminGroup.Use(auth.AdminRequired())
+		{
+			adminGroup.GET("/users", handler.ListUsers(database))
+			adminGroup.POST("/users", handler.CreateUser(database))
+			adminGroup.PUT("/users/:id", handler.UpdateUser(database))
+			adminGroup.DELETE("/users/:id", handler.DeleteUser(database))
+			adminGroup.PUT("/users/:id/reset-password", handler.ResetPassword(database))
+			adminGroup.GET("/settings", handler.GetSettings(database))
+			adminGroup.PUT("/settings", handler.UpdateSettings(database))
+			adminGroup.POST("/settings/cleanup", handler.CleanupLogs(database))
+			adminGroup.DELETE("/logs", handler.PurgeAllLogs(database))
+		}
 	}
 
 	port := os.Getenv("PORT")

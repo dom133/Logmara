@@ -2,9 +2,11 @@ package auth
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,15 +26,18 @@ func init() {
 }
 
 type User struct {
-	ID          int64  `json:"id"`
-	Username    string `json:"username"`
-	IsAdmin     bool   `json:"is_admin"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID        int64     `json:"id"`
+	Username  string    `json:"username"`
+	Role      string    `json:"role"`
+	IsAdmin   bool      `json:"is_admin"`
+	IsActive  bool      `json:"is_active"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Claims struct {
 	UserID   int64  `json:"user_id"`
 	Username string `json:"username"`
+	Role     string `json:"role"`
 	IsAdmin  bool   `json:"is_admin"`
 	jwt.RegisteredClaims
 }
@@ -48,12 +53,17 @@ func CheckPasswordHash(password, hash string) bool {
 }
 
 func GenerateToken(user User) (string, error) {
+	expiryHours := 24
+	if h := os.Getenv("JWT_EXPIRY_HOURS"); h != "" {
+		fmt.Sscanf(h, "%d", &expiryHours)
+	}
 	claims := Claims{
 		UserID:   user.ID,
 		Username: user.Username,
+		Role:     user.Role,
 		IsAdmin:  user.IsAdmin,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(expiryHours) * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}
@@ -91,7 +101,37 @@ func JWTRequired() gin.HandlerFunc {
 
 		c.Set("user_id", claims.UserID)
 		c.Set("username", claims.Username)
+		c.Set("role", claims.Role)
 		c.Set("is_admin", claims.IsAdmin)
+		c.Next()
+	}
+}
+
+func AdminRequired() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		isAdmin, exists := c.Get("is_admin")
+		if !exists || !isAdmin.(bool) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func RoleRequired(roles ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role, exists := c.Get("role")
+		if !exists {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions"})
+			c.Abort()
+			return
+		}
+		if !slices.Contains(roles, role.(string)) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions"})
+			c.Abort()
+			return
+		}
 		c.Next()
 	}
 }
@@ -104,11 +144,13 @@ func GetUserFromContext(c *gin.Context) *User {
 
 	userID, _ := c.Get("user_id")
 	isAdmin, _ := c.Get("is_admin")
+	role, _ := c.Get("role")
 
 	return &User{
 		ID:       userID.(int64),
 		Username: username.(string),
 		IsAdmin:  isAdmin.(bool),
+		Role:     role.(string),
 	}
 }
 
@@ -140,8 +182,8 @@ func InitAdmin(db *sql.DB) {
 		return
 	}
 
-	_, err = db.Exec("INSERT INTO users (username, password_hash, is_admin) VALUES ($1, $2, $3)",
-		username, hash, true)
+	_, err = db.Exec("INSERT INTO users (username, password_hash, is_admin, role, is_active) VALUES ($1, $2, $3, $4, $5)",
+		username, hash, true, "admin", true)
 	if err != nil {
 		log.Printf("Warning: could not create admin user: %v", err)
 		return

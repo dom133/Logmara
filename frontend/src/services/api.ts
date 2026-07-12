@@ -262,3 +262,58 @@ export async function togglePinDashboard(id: number) {
 	const res = await api.patch(`/dashboards/${id}/pin`)
 	return res.data as { pinned: boolean }
 }
+
+// --- User / Admin types ---
+export interface User {
+	id: number
+	username: string
+	role: string
+	is_admin: boolean
+	is_active: boolean
+	created_at: string
+}
+
+export async function getUsers() {
+	const res = await api.get('/admin/users')
+	return res.data as User[]
+}
+
+export async function createUser(data: { username: string; password: string; role: string }) {
+	const res = await api.post('/admin/users', data)
+	return res.data as User
+}
+
+export async function updateUser(id: number, data: { role?: string; is_active?: boolean }) {
+	const res = await api.put(`/admin/users/${id}`, data)
+	return res.data as User
+}
+
+export async function deleteUser(id: number) {
+	const res = await api.delete(`/admin/users/${id}`)
+	return res.data
+}
+
+export async function resetPassword(id: number, password: string) {
+	const res = await api.put(`/admin/users/${id}/reset-password`, { password })
+	return res.data
+}
+
+export async function getSettings() {
+	const res = await api.get('/admin/settings')
+	return res.data as Record<string, string>
+}
+
+export async function updateSettings(settings: Record<string, string>) {
+	const res = await api.put('/admin/settings', settings)
+	return res.data
+}
+
+export async function cleanupLogs() {
+	const res = await api.post('/admin/settings/cleanup')
+	return res.data
+}
+
+export async function purgeAllLogs() {
+	const res = await api.delete('/admin/logs')
+	return res.data
+}

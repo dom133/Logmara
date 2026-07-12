@@ -104,6 +104,14 @@ func Migrate(db *sql.DB) error {
 			updated_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='dashboards' AND column_name='pinned') THEN ALTER TABLE dashboards ADD COLUMN pinned BOOLEAN DEFAULT FALSE; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='role') THEN ALTER TABLE users ADD COLUMN role VARCHAR(50) DEFAULT 'viewer'; END IF; END $$`,
+		`UPDATE users SET role = 'admin' WHERE is_admin = TRUE AND role = 'viewer'`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='is_active') THEN ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE; END IF; END $$`,
+		`CREATE TABLE IF NOT EXISTS app_settings (
+			key VARCHAR(100) PRIMARY KEY,
+			value TEXT NOT NULL,
+			description TEXT
+		)`,
 	}
 
 	for _, stmt := range statements {
@@ -114,6 +122,10 @@ func Migrate(db *sql.DB) error {
 
 	if err := seedParsers(db); err != nil {
 		log.Printf("Warning: seeding parsers failed: %v", err)
+	}
+
+	if err := seedSettings(db); err != nil {
+		log.Printf("Warning: seeding settings failed: %v", err)
 	}
 
 	log.Println("Database migration completed")
@@ -366,4 +378,155 @@ func nullStrPtr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+func seedSettings(db *sql.DB) error {
+	settings := map[string]string{
+		"retention_days": "30",
+		"default_role":   "viewer",
+		"jwt_expiry":     "24",
+	}
+
+	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
+		ON CONFLICT (key) DO NOTHING`
+
+	for k, v := range settings {
+		var desc string
+		switch k {
+		case "retention_days":
+			desc = "Days to keep logs before auto-deletion"
+		case "default_role":
+			desc = "Default role for new users"
+		case "jwt_expiry":
+			desc = "JWT token expiry in hours"
+		}
+		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
+			return fmt.Errorf("seed setting %s: %w", k, err)
+		}
+	}
+
+	return nil
+}
+
+// GetSetting retrieves a setting value, falling back to defaultValue if not found
+func GetSetting(db *sql.DB, key, defaultValue string) string {
+	var val string
+	err := db.QueryRow("SELECT value FROM app_settings WHERE key = $1", key).Scan(&val)
+	if err != nil {
+		return defaultValue
+	}
+	return val
+}
+
+// UpdateSetting updates a setting value
+func UpdateSetting(db *sql.DB, key, value string) error {
+	_, err := db.Exec(`UPDATE app_settings SET value = $1 WHERE key = $2
+		ON CONFLICT (key) DO UPDATE SET value = $1`, value, key)
+	return err
+}
+
+// GetAllSettings retrieves all settings as a map
+func GetAllSettings(db *sql.DB) (map[string]string, error) {
+	rows, err := db.Query("SELECT key, value FROM app_settings ORDER BY key")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	settings := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		settings[k] = v
+	}
+	return settings, rows.Err()
+}
+
+// CleanupOldLogs deletes logs older than retentionDays
+func CleanupOldLogs(db *sql.DB, retentionDays int) (int64, error) {
+	result, err := db.Exec("DELETE FROM syslog_logs WHERE timestamp < NOW() - INTERVAL $1", fmt.Sprintf("%d days", retentionDays))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+type User struct {
+	ID        int64     `json:"id"`
+	Username  string    `json:"username"`
+	Role      string    `json:"role"`
+	IsAdmin   bool      `json:"is_admin"`
+	IsActive  bool      `json:"is_active"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func GetAllUsers(db *sql.DB) ([]User, error) {
+	rows, err := db.Query("SELECT id, username, role, is_admin, is_active, created_at FROM users ORDER BY created_at DESC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []User
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.IsAdmin, &u.IsActive, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+func CreateUser(db *sql.DB, username, passwordHash string, isAdmin bool, role string) (*User, error) {
+	var id int64
+	var createdAt time.Time
+	err := db.QueryRow(
+		"INSERT INTO users (username, password_hash, is_admin, role, is_active) VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at",
+		username, passwordHash, isAdmin, role, true,
+	).Scan(&id, &createdAt)
+	if err != nil {
+		return nil, err
+	}
+	return &User{ID: id, Username: username, Role: role, IsAdmin: isAdmin, IsActive: true, CreatedAt: createdAt}, nil
+}
+
+func UpdateUser(db *sql.DB, id int64, role *string, isActive *bool) (*User, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	if role != nil {
+		isAdmin := *role == "admin"
+		if _, err := tx.Exec("UPDATE users SET role = $1, is_admin = $2 WHERE id = $3", *role, isAdmin, id); err != nil {
+			return nil, err
+		}
+	}
+	if isActive != nil {
+		if _, err := tx.Exec("UPDATE users SET is_active = $1 WHERE id = $2", *isActive, id); err != nil {
+			return nil, err
+		}
+	}
+
+	var u User
+	if err := tx.QueryRow("SELECT id, username, role, is_admin, is_active, created_at FROM users WHERE id = $1", id).
+		Scan(&u.ID, &u.Username, &u.Role, &u.IsAdmin, &u.IsActive, &u.CreatedAt); err != nil {
+		return nil, err
+	}
+
+	return &u, tx.Commit()
+}
+
+func DeleteUser(db *sql.DB, id int64) error {
+	_, err := db.Exec("DELETE FROM users WHERE id = $1 AND id != (SELECT id FROM users WHERE role = 'admin' LIMIT 1)", id)
+	return err
+}
+
+func ResetUserPassword(db *sql.DB, id int64, passwordHash string) error {
+	_, err := db.Exec("UPDATE users SET password_hash = $1 WHERE id = $2", passwordHash, id)
+	return err
 }
