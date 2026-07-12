@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, Switch, message, Popconfirm, Tooltip, Typography, Divider, Descriptions } from 'antd'
-import { PlusOutlined, PlayCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons'
+import { PlusOutlined, PlayCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, RestOutlined } from '@ant-design/icons'
 import { getParsers, createParser, updateParser, deleteParser, testParser, reparseUnparsed, getParsedFields, Parser, ParsedField } from '../services/api'
+import { useColumnWidths } from '../hooks/useColumnWidths'
 
 const { Title, Text } = Typography
 
@@ -20,6 +21,19 @@ export default function ParsersPage() {
   const [testLoading, setTestLoading] = useState(false)
   const [sampleLog, setSampleLog] = useState('')
   const [pattern, setPattern] = useState('')
+
+  const { enhanceColumns, hasChanges, reset } = useColumnWidths(
+    'col_widths_parsers',
+    [
+      { key: 'name', width: 180 },
+      { key: 'device_type', width: 120 },
+      { key: 'match', width: 180 },
+      { key: 'regex', width: 250 },
+      { key: 'fields', width: 180 },
+      { key: 'enabled', width: 100 },
+      { key: 'actions', width: 140 },
+    ],
+  )
 
   const loadData = async () => {
     setLoading(true)
@@ -186,6 +200,7 @@ export default function ParsersPage() {
       <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
         <Title level={3}>Parser Engine</Title>
         <Space>
+          {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
           <Button icon={<ReloadOutlined />} onClick={handleReparse}>Reparse Unparsed</Button>
           <Button icon={<PlayCircleOutlined />} onClick={() => setTestModalOpen(true)}>Test Regex</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Parser</Button>
@@ -207,7 +222,7 @@ export default function ParsersPage() {
 
       <Table
         dataSource={parsers}
-        columns={columns}
+        columns={enhanceColumns(columns)}
         rowKey="id"
         loading={loading}
         size="small"

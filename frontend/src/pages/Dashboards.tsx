@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, message, Popconfirm, Typography, List } from 'antd'
-import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons'
+import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PushpinOutlined, PushpinFilled, RestOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, Dashboard, DashboardConfig } from '../services/api'
 import { getDevices } from '../services/api'
+import { useColumnWidths } from '../hooks/useColumnWidths'
 
 const { Title } = Typography
 
@@ -15,6 +16,17 @@ export default function DashboardsPage() {
   const [form] = Form.useForm()
   const [devices, setDevices] = useState<string[]>([])
   const navigate = useNavigate()
+
+  const { enhanceColumns, hasChanges, reset } = useColumnWidths(
+    'col_widths_dashboards',
+    [
+      { key: 'name', width: 250 },
+      { key: 'devices', width: 200 },
+      { key: 'fields', width: 200 },
+      { key: 'created_at', width: 160 },
+      { key: 'actions', width: 250 },
+    ],
+  )
 
   const loadData = async () => {
     setLoading(true)
@@ -162,7 +174,10 @@ export default function DashboardsPage() {
     <>
       <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
         <Title level={3}>Custom Dashboards</Title>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Dashboard</Button>
+        <Space>
+          {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Dashboard</Button>
+        </Space>
       </Space>
 
       {dashboards.length === 0 && !loading && (
@@ -175,7 +190,7 @@ export default function DashboardsPage() {
 
       <Table
         dataSource={dashboards}
-        columns={columns}
+        columns={enhanceColumns(columns)}
         rowKey="id"
         loading={loading}
         size="small"

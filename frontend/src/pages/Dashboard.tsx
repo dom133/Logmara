@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Row, Col, Card, Statistic, Table, Tag, Spin, Typography, Space } from 'antd'
+import { Row, Col, Card, Statistic, Table, Tag, Spin, Typography, Space, Button } from 'antd'
+import { RestOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import { getDashboardStats, getTimeline, getSeverityStats } from '../services/api'
 import { DashboardStats, TimelinePoint } from '../services/api'
+import { useColumnWidths } from '../hooks/useColumnWidths'
 
 const { Title } = Typography
 
@@ -82,14 +84,24 @@ export default function Dashboard() {
     return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />
   }
 
+  const { enhanceColumns: enhanceDevices, hasChanges: devChanged, reset: resetDevices } = useColumnWidths(
+    'col_widths_dashboard_devs',
+    [{ key: 'hostname', width: 160 }, { key: 'count', width: 100 }],
+  )
+
+  const { enhanceColumns: enhanceErrors, hasChanges: errChanged, reset: resetErrors } = useColumnWidths(
+    'col_widths_dashboard_errs',
+    [{ key: 'message', width: 300 }, { key: 'hostname', width: 160 }, { key: 'count', width: 80 }],
+  )
+
   const topDevicesColumns = [
-    { title: 'Hostname', dataIndex: 'hostname', key: 'hostname', render: (v: string) => <Tag color="blue">{v}</Tag> },
-    { title: 'Logs', dataIndex: 'count', key: 'count', sorter: (a: any, b: any) => a.count - b.count },
+    { title: 'Source IP', dataIndex: 'hostname', key: 'hostname', width: 160, render: (v: string) => <Tag color="blue">{v}</Tag> },
+    { title: 'Logs', dataIndex: 'count', key: 'count', width: 100, sorter: (a: any, b: any) => a.count - b.count },
   ]
 
   const topErrorsColumns = [
-    { title: 'Message', dataIndex: 'message', key: 'message', ellipsis: true },
-    { title: 'Source', dataIndex: 'hostname', key: 'hostname', render: (v: string) => <Tag>{v}</Tag> },
+    { title: 'Message', dataIndex: 'message', key: 'message', width: 300, ellipsis: true },
+    { title: 'Source', dataIndex: 'hostname', key: 'hostname', width: 160, render: (v: string) => <Tag>{v}</Tag> },
     { title: 'Count', dataIndex: 'count', key: 'count', width: 80 },
   ]
 
@@ -134,10 +146,13 @@ export default function Dashboard() {
 
       <Row gutter={16}>
         <Col span={12}>
-          <Card title="Top Devices">
+          <Card
+            title="Top Devices"
+            extra={devChanged ? <Button size="small" icon={<RestOutlined />} onClick={resetDevices}>Reset</Button> : undefined}
+          >
             <Table
               dataSource={stats?.top_devices || []}
-              columns={topDevicesColumns}
+              columns={enhanceDevices(topDevicesColumns)}
               rowKey="hostname"
               pagination={false}
               size="small"
@@ -145,10 +160,13 @@ export default function Dashboard() {
           </Card>
         </Col>
         <Col span={12}>
-          <Card title="Top Errors">
+          <Card
+            title="Top Errors"
+            extra={errChanged ? <Button size="small" icon={<RestOutlined />} onClick={resetErrors}>Reset</Button> : undefined}
+          >
             <Table
               dataSource={stats?.top_errors || []}
-              columns={topErrorsColumns}
+              columns={enhanceErrors(topErrorsColumns)}
               rowKey={(r, i) => (i ?? 0).toString()}
               pagination={false}
               size="small"

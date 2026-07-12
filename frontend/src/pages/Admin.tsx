@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined } from '@ant-design/icons'
+import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined } from '@ant-design/icons'
 import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, User } from '../services/api'
+import { useColumnWidths } from '../hooks/useColumnWidths'
 
 const { Option } = Select
 
@@ -15,6 +16,17 @@ export default function Admin() {
 
   const [settings, setSettings] = useState<Record<string, string>>({})
   const [settingsForm] = Form.useForm()
+
+  const { enhanceColumns, hasChanges, reset } = useColumnWidths(
+    'col_widths_admin',
+    [
+      { key: 'username', width: 150 },
+      { key: 'role', width: 100 },
+      { key: 'is_active', width: 100 },
+      { key: 'created_at', width: 200 },
+      { key: 'actions', width: 200 },
+    ],
+  )
 
   const loadUsers = async () => {
     setLoading(true)
@@ -189,14 +201,17 @@ export default function Admin() {
               <Card
                 title="User Management"
                 extra={
-                  <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalVisible(true)}>
-                    Add User
-                  </Button>
+                  <Space>
+                    {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
+                    <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalVisible(true)}>
+                      Add User
+                    </Button>
+                  </Space>
                 }
               >
                 <Table
                   rowKey="id"
-                  columns={userColumns}
+                  columns={enhanceColumns(userColumns)}
                   dataSource={users}
                   loading={loading}
                 />

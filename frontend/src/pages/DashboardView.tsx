@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, Select, Row, Col, Statistic, Descriptions } from 'antd'
-import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons'
+import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import { getDashboard, getDashboardData, togglePinDashboard, Dashboard, DashboardDataResponse, LogEntry } from '../services/api'
+import { useColumnWidths } from '../hooks/useColumnWidths'
 
 const { Title } = Typography
 
@@ -19,6 +20,16 @@ export default function DashboardViewPage() {
   const [searchOverride, setSearchOverride] = useState('')
 
   const dashboardId = parseInt(id || '0')
+
+  const { enhanceColumns, hasChanges, reset } = useColumnWidths(
+    `col_widths_dashboardview_${dashboardId}`,
+    [
+      { key: 'timestamp', width: 180 },
+      { key: 'hostname', width: 150 },
+      { key: 'severity', width: 100 },
+      { key: 'message', width: 300 },
+    ],
+  )
 
   const loadDashboard = async () => {
     setLoading(true)
@@ -156,6 +167,7 @@ export default function DashboardViewPage() {
             prefix={<FilterOutlined />}
           />
           <Button icon={<ReloadOutlined />} onClick={loadLogs} loading={tableLoading}>Refresh</Button>
+          {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
         </Space>
       </Space>
 
@@ -202,7 +214,7 @@ export default function DashboardViewPage() {
 
       <Table
         dataSource={logs}
-        columns={columns}
+        columns={enhanceColumns(columns)}
         rowKey="id"
         loading={tableLoading}
         size="small"

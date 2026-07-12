@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Table, Input, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message } from 'antd'
+import { RestOutlined } from '@ant-design/icons'
 import { getLogs, getDevices, exportCSV, exportHTML } from '../services/api'
 import { LogEntry } from '../services/api'
 import dayjs from 'dayjs'
+import { useColumnWidths } from '../hooks/useColumnWidths'
 
 const { Title, Text } = Typography
 const { RangePicker } = DatePicker
@@ -28,6 +30,17 @@ export default function LogsViewer() {
     sort: 'timestamp_desc',
   })
   const [pagination, setPagination] = useState({ current: 1, pageSize: 50 })
+
+  const { enhanceColumns, hasChanges, reset } = useColumnWidths(
+    'col_widths_logs',
+    [
+      { key: 'timestamp', width: 180 },
+      { key: 'severity', width: 90 },
+      { key: 'hostname', width: 160 },
+      { key: 'app_name', width: 120 },
+      { key: 'message', width: 300 },
+    ],
+  )
 
   useEffect(() => {
     loadDevices()
@@ -152,6 +165,7 @@ export default function LogsViewer() {
       <Space style={{ marginBottom: 16 }} align="center">
         <Title level={3} style={{ margin: 0 }}>Logs</Title>
         <Text type="secondary">({total.toLocaleString()} total)</Text>
+        {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
       </Space>
 
       <Card style={{ marginBottom: 16 }} size="small">
@@ -205,7 +219,7 @@ export default function LogsViewer() {
       </Card>
 
       <Table
-        columns={columns}
+        columns={enhanceColumns(columns)}
         dataSource={logs}
         rowKey="id"
         loading={loading}
