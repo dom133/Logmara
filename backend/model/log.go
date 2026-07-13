@@ -1,9 +1,12 @@
 package model
 
 import (
+	"database/sql"
 	"encoding/json"
 	"time"
 )
+
+type SeverityCounts map[string]int64
 
 type SyslogLog struct {
 	ID           int64             `json:"id"`
