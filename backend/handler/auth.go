@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
 	"syslog-gui/auth"
@@ -147,7 +146,7 @@ func ChangePassword(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, _ := c.Get("claims")
 		userClaims := claims.(*jwt.MapClaims)
-		username := userClaims["username"].(string)
+		username := (*userClaims)["username"].(string)
 
 		var req ChangePasswordRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
