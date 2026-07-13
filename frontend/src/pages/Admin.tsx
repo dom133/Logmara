@@ -46,7 +46,7 @@ export default function Admin() {
     try {
       const data = await getSettings()
       setSettings(data)
-      const formValues = { ...data }
+      const formValues: Record<string, any> = { ...data }
       formValues['ldap_enabled'] = data['ldap_enabled'] === 'true'
       formValues['ldap_use_tls'] = data['ldap_use_tls'] === 'true'
       settingsForm.setFieldsValue(formValues)
