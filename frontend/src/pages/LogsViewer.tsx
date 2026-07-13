@@ -184,11 +184,11 @@ export default function LogsViewer() {
       dataIndex: 'hostname',
       key: 'hostname',
       width: 160,
-      render: (v: string, _record: LogEntry, index: number) => {
+      render: (v: string | null | undefined, _record: LogEntry, index: number) => {
         const rowSpans = getRowSpans(logs)
         return {
           props: { rowSpan: rowSpans.get(index) },
-          children: <Tag color="blue">{v}</Tag>,
+          children: v ? <Tag color="blue">{v}</Tag> : '-',
         }
       },
     },
