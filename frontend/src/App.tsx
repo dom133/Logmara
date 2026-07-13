@@ -176,7 +176,15 @@ function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <ThemeContext.Provider value={{ themeMode, toggleTheme }}>
-      <ConfigProvider theme={{ algorithm: themeMode === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm }}>
+      <ConfigProvider theme={{
+        algorithm: themeMode === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm,
+        token: { colorError: '#ff4d4f' },
+      }}>
+        <style>{`
+          .ant-message-error .anticon { color: #ff4d4f !important; }
+          .ant-message-error .ant-message-notice-content { border-color: #ff4d4f !important; background: #fff2f0 !important; }
+          .ant-message-error { color: #ff4d4f !important; }
+        `}</style>
         {children}
       </ConfigProvider>
     </ThemeContext.Provider>

@@ -62,7 +62,7 @@ func Login(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		token, err := auth.GenerateToken(user.Username, user.Role)
+		token, err := auth.GenerateToken(user.ID, user.Username, user.Role)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
@@ -114,7 +114,7 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		token, err := auth.GenerateToken(user.Username, user.Role)
+		token, err := auth.GenerateToken(user.ID, user.Username, user.Role)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
