@@ -101,7 +101,7 @@ export interface DeviceStats {
   hostname: string
   total_logs: number
   last_seen: string
-  severity_map: Record<string, number>
+  severity_count: Record<string, number>
   matched_parsers: string[]
   has_parsed: boolean
 }

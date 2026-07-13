@@ -46,7 +46,10 @@ export default function Admin() {
     try {
       const data = await getSettings()
       setSettings(data)
-      settingsForm.setFieldsValue(data)
+      const formValues = { ...data }
+      formValues['ldap_enabled'] = data['ldap_enabled'] === 'true'
+      formValues['ldap_use_tls'] = data['ldap_use_tls'] === 'true'
+      settingsForm.setFieldsValue(formValues)
       setLdapEnabled(data['ldap_enabled'] === 'true')
     } catch (e: any) {
       message.error('Failed to load settings')
@@ -371,17 +374,21 @@ export default function Admin() {
                       title: 'Hostname',
                       dataIndex: 'hostname',
                       key: 'hostname',
-                      render: (hostname: string) => (
-                        <a onClick={() => window.location.href = `/logs?hostname=${encodeURIComponent(hostname)}`}>
-                          {hostname}
-                        </a>
-                      ),
+                      render: (hostname: string, record: DeviceStats) => {
+                        const name = hostname || record.hostname || '-';
+                        return (
+                          <a onClick={() => window.location.href = `/logs?hostname=${encodeURIComponent(name)}`}>
+                            {name}
+                          </a>
+                        );
+                      },
                     },
                     {
                       title: 'Total Logs',
                       dataIndex: 'total_logs',
                       key: 'total_logs',
                       sorter: (a: DeviceStats, b: DeviceStats) => a.total_logs - b.total_logs,
+                      render: (v: number) => typeof v === 'number' ? v : 0,
                     },
                     {
                       title: 'Last Seen',
@@ -391,17 +398,38 @@ export default function Admin() {
                       sorter: (a: DeviceStats, b: DeviceStats) => new Date(a.last_seen).getTime() - new Date(b.last_seen).getTime(),
                     },
                     {
+                      title: 'Severity',
+                      dataIndex: 'severity_count',
+                      key: 'severity_count',
+                      render: (sc: Record<string, number>) => {
+                        if (!sc || typeof sc !== 'object') return '-';
+                        const entries = Object.entries(sc);
+                        if (entries.length === 0) return '-';
+                        return (
+                          <Space wrap>
+                            {entries.map(([severity, count]) => (
+                              <Tag key={severity} color={severity}>
+                                {severity}: {count}
+                              </Tag>
+                            ))}
+                          </Space>
+                        );
+                      },
+                    },
+                    {
                       title: 'Matched Parsers',
                       dataIndex: 'matched_parsers',
                       key: 'matched_parsers',
-                      render: (parsers: string[]) => (
-                        <Space wrap>
-                          {(parsers || []).map((p) => (
-                            <Tag key={p} color="blue">{p}</Tag>
-                          ))}
-                          {(!parsers || parsers.length === 0) && <span>-</span>}
-                        </Space>
-                      ),
+                      render: (parsers: string[]) => {
+                        if (!Array.isArray(parsers) || parsers.length === 0) return <span>-</span>;
+                        return (
+                          <Space wrap>
+                            {parsers.map((p) => (
+                              <Tag key={p} color="blue">{p}</Tag>
+                            ))}
+                          </Space>
+                        );
+                      },
                     },
                     {
                       title: 'Parsed',
