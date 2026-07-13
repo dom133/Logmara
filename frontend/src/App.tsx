@@ -148,7 +148,13 @@ function AppLayout({ children }: { children: React.ReactNode }) {
   )
 }
 
-function InitCheck({ children }: { children: React.ReactNode }) {
+function PrivateRoute({ children }: { children: React.ReactNode }) {
+  const { token } = useAuth()
+  if (!token) return <Navigate to="/login" replace />
+  return <AppLayout>{children}</AppLayout>
+}
+
+export default function App() {
   const [initialized, setInitialized] = useState<boolean | null>(null)
 
   useEffect(() => {
@@ -163,33 +169,27 @@ function InitCheck({ children }: { children: React.ReactNode }) {
     )
   }
 
-  if (!initialized) {
-    return <Navigate to="/setup" replace />
-  }
-
-  return children
-}
-
-function PrivateRoute({ children }: { children: React.ReactNode }) {
-  const { token } = useAuth()
-  if (!token) return <Navigate to="/login" replace />
-  return <AppLayout>{children}</AppLayout>
-}
-
-export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
         <Routes>
-          <Route path="/setup" element={<SetupWizard />} />
-          <Route path="/login" element={<InitCheck><Login /></InitCheck>} />
-          <Route path="/" element={<InitCheck><PrivateRoute><Dashboard /></PrivateRoute></InitCheck>} />
-          <Route path="/logs" element={<InitCheck><PrivateRoute><LogsViewer /></PrivateRoute></InitCheck>} />
-          <Route path="/parsers" element={<InitCheck><PrivateRoute><ParsersPage /></PrivateRoute></InitCheck>} />
-          <Route path="/dashboards" element={<InitCheck><PrivateRoute><DashboardsPage /></PrivateRoute></InitCheck>} />
-          <Route path="/dashboards/:id" element={<InitCheck><PrivateRoute><DashboardViewPage /></PrivateRoute></InitCheck>} />
-          <Route path="/admin" element={<InitCheck><PrivateRoute><Admin /></PrivateRoute></InitCheck>} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          {!initialized ? (
+            <>
+              <Route path="/setup" element={<SetupWizard />} />
+              <Route path="*" element={<Navigate to="/setup" replace />} />
+            </>
+          ) : (
+            <>
+              <Route path="/login" element={<Login />} />
+              <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
+              <Route path="/logs" element={<PrivateRoute><LogsViewer /></PrivateRoute>} />
+              <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />
+              <Route path="/dashboards" element={<PrivateRoute><DashboardsPage /></PrivateRoute>} />
+              <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
+              <Route path="/admin" element={<PrivateRoute><Admin /></PrivateRoute>} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </>
+          )}
         </Routes>
       </AuthProvider>
     </BrowserRouter>

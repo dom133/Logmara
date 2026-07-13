@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Layout, Card, Form, Input, Button, message, Typography, Steps, Space, Divider } from 'antd'
-import { checkInitialized, generateKeys, initialize, getDbConfig, InitRequest } from '../services/api'
+import { generateKeys, initialize, getDbConfig, InitRequest } from '../services/api'
 
 const { Title, Text } = Typography
 const { Step } = Steps
@@ -10,7 +10,6 @@ export default function SetupWizard() {
   const [form] = Form.useForm()
   const [current, setCurrent] = useState(0)
   const [loading, setLoading] = useState(false)
-  const [checking, setChecking] = useState(true)
   const [collectedData, setCollectedData] = useState({
     username: '',
     email: '',
@@ -26,33 +25,25 @@ export default function SetupWizard() {
   const navigate = useNavigate()
 
   useEffect(() => {
-    checkInitialized().then(async (initRes) => {
-      if (initRes.initialized) {
-        navigate('/login')
-        return
+    getDbConfig().then((dbConfig) => {
+      if (dbConfig.host || dbConfig.name || dbConfig.user) {
+        form.setFieldsValue({
+          db_host: dbConfig.host,
+          db_port: dbConfig.port,
+          db_name: dbConfig.name,
+          db_user: dbConfig.user,
+          db_password: dbConfig.password,
+        })
+        setCollectedData(prev => ({
+          ...prev,
+          db_host: dbConfig.host || '',
+          db_port: dbConfig.port || 0,
+          db_name: dbConfig.name || '',
+          db_user: dbConfig.user || '',
+          db_password: dbConfig.password || '',
+        }))
       }
-      try {
-        const dbConfig = await getDbConfig()
-        if (dbConfig.host || dbConfig.name || dbConfig.user) {
-          form.setFieldsValue({
-            db_host: dbConfig.host,
-            db_port: dbConfig.port,
-            db_name: dbConfig.name,
-            db_user: dbConfig.user,
-            db_password: dbConfig.password,
-          })
-          setCollectedData(prev => ({
-            ...prev,
-            db_host: dbConfig.host || '',
-            db_port: dbConfig.port || 0,
-            db_name: dbConfig.name || '',
-            db_user: dbConfig.user || '',
-            db_password: dbConfig.password || '',
-          }))
-        }
-      } catch { /* ignore db config errors */ }
-      setChecking(false)
-    })
+    }).catch(() => { /* ignore db config errors */ })
   }, [])
 
   const steps = [
@@ -144,14 +135,6 @@ export default function SetupWizard() {
     if (current > 0) {
       setCurrent(current - 1)
     }
-  }
-
-  if (checking) {
-    return (
-      <Layout style={{ minHeight: '100vh', background: '#f0f2f5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <Text>Loading...</Text>
-      </Layout>
-    )
   }
 
   const renderStepContent = () => {
