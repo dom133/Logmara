@@ -133,7 +133,7 @@ export async function getTimeline(interval = '1h', from?: string, to?: string) {
 
 export async function getDevices() {
   const res = await api.get('/devices')
-  return (res.data?.devices || []) as string[]
+  return ((res.data?.devices || []) as DeviceStats[]).map(d => d.hostname)
 }
 
 export async function getDeviceStats() {
