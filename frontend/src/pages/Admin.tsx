@@ -259,6 +259,43 @@ export default function Admin() {
               </Card>
             ),
           },
+          {
+            key: 'ldap',
+            label: 'LDAP',
+            children: (
+              <Card title="LDAP Authentication">
+                <Form form={settingsForm} layout="vertical" onFinish={handleSaveSettings}>
+                  <Form.Item label="Enable LDAP" name="ldap_enabled" valuePropName="checked">
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item label="Server" name="ldap_server">
+                    <Input placeholder="ldap.example.com" />
+                  </Form.Item>
+                  <Form.Item label="Port" name="ldap_port">
+                    <InputNumber min={1} max={65535} style={{ width: 200 }} />
+                  </Form.Item>
+                  <Form.Item label="Use TLS" name="ldap_use_tls" valuePropName="checked">
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item label="Base DN" name="ldap_base_dn">
+                    <Input placeholder="dc=example,dc=com" />
+                  </Form.Item>
+                  <Form.Item label="Bind DN" name="ldap_bind_dn">
+                    <Input placeholder="cn=admin,dc=example,dc=com" />
+                  </Form.Item>
+                  <Form.Item label="Bind Password" name="ldap_bind_password">
+                    <Input.Password />
+                  </Form.Item>
+                  <Form.Item label="User Filter" name="ldap_user_filter">
+                    <Input placeholder="(uid=%s)" />
+                  </Form.Item>
+                  <Button type="primary" htmlType="submit">
+                    Save LDAP Settings
+                  </Button>
+                </Form>
+              </Card>
+            ),
+          },
         ]}
       />
 

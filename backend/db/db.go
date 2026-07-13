@@ -382,10 +382,18 @@ func nullStrPtr(s string) *string {
 
 func seedSettings(db *sql.DB) error {
 	settings := map[string]string{
-		"retention_days": "30",
-		"default_role":   "viewer",
-		"jwt_expiry":     "24",
-		"is_initialized": "false",
+		"retention_days":   "30",
+		"default_role":     "viewer",
+		"jwt_expiry":       "24",
+		"is_initialized":   "false",
+		"ldap_enabled":     "false",
+		"ldap_server":      "",
+		"ldap_port":        "389",
+		"ldap_use_tls":     "false",
+		"ldap_base_dn":     "",
+		"ldap_bind_dn":     "",
+		"ldap_bind_password": "",
+		"ldap_user_filter": "(uid=%s)",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -402,6 +410,22 @@ func seedSettings(db *sql.DB) error {
 			desc = "JWT token expiry in hours"
 		case "is_initialized":
 			desc = "Application initialization flag"
+		case "ldap_enabled":
+			desc = "Enable LDAP authentication"
+		case "ldap_server":
+			desc = "LDAP server hostname"
+		case "ldap_port":
+			desc = "LDAP server port"
+		case "ldap_use_tls":
+			desc = "Use TLS for LDAP connection"
+		case "ldap_base_dn":
+			desc = "LDAP base DN for searches"
+		case "ldap_bind_dn":
+			desc = "LDAP bind DN for service account"
+		case "ldap_bind_password":
+			desc = "LDAP bind password for service account"
+		case "ldap_user_filter":
+			desc = "LDAP user search filter (%s = username)"
 		}
 		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
 			return fmt.Errorf("seed setting %s: %w", k, err)
