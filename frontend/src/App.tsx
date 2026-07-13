@@ -158,7 +158,13 @@ export default function App() {
   const [initialized, setInitialized] = useState<boolean | null>(null)
 
   useEffect(() => {
-    checkInitialized().then((res) => setInitialized(res.initialized))
+    const check = async () => {
+      const res = await checkInitialized()
+      setInitialized(res.initialized)
+    }
+    check()
+    const interval = setInterval(check, 2000)
+    return () => clearInterval(interval)
   }, [])
 
   if (initialized === null) {
