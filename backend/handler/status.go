@@ -57,7 +57,7 @@ func GetDbConfig() gin.HandlerFunc {
 
 		name := strings.TrimPrefix(u.Path, "/")
 		user := u.User.Username()
-		password, _ := u.Password()
+		password, _ := u.User.Password()
 
 		c.JSON(http.StatusOK, gin.H{
 			"host":     host,
