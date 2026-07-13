@@ -3,10 +3,9 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN git config --global http.sslVerify false
 COPY backend/ .
-ENV GOPROXY=direct GOSUMDB=off GOFLAGS=-insecure GIT_SSL_NO_VERIFY=true GIT_HTTP_SSL_NO_VERIFY=true CURL_CA_BUNDLE="" GIT_SSL_CAINFO=""
-RUN go env -w GONOSUMCHECK=* GONOSUMDB=*
-RUN go mod download -insecure 2>/dev/null || GOPROXY=off go mod download 2>/dev/null || go mod download
-RUN go get ./... 2>/dev/null || GOPROXY=off go get ./...
+ENV GOPROXY=direct GOSUMDB=off GOFLAGS=-insecure GONOSUMCHECK=* GONOSUMDB=* GIT_SSL_NO_VERIFY=true GIT_HTTP_SSL_NO_VERIFY=true CURL_CA_BUNDLE="" GIT_SSL_CAINFO=""
+RUN go mod download
+RUN go get ./...
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/server .
 
 FROM debian:bookworm-slim
