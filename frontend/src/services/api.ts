@@ -48,6 +48,8 @@ export interface DeviceStats {
   total_logs: number
   last_seen: string
   severity_map: Record<string, number>
+  matched_parsers: string[]
+  has_parsed: boolean
 }
 
 export async function getLogs(params: {

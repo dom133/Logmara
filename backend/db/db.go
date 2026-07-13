@@ -339,6 +339,59 @@ func seedParsers(db *sql.DB) error {
 				{Name: "mac_address", Label: "MAC Address", Type: "string"},
 			},
 		},
+		{
+			Name:        "SSHD Auth",
+			Description: "Matches successful SSH authentication",
+			DeviceType:  "linux",
+			MatchType:   "app_name",
+			MatchValue:  "sshd",
+			Regex:       `Accepted\s+(\w+)\s+for\s+(\S+)\s+from\s+(\d+\.\d+\.\d+\.\d+)\s+port\s+(\d+)`,
+			Fields: []fieldSeed{
+				{Name: "auth_method", Label: "Auth Method", Type: "string"},
+				{Name: "username", Label: "Username", Type: "string"},
+				{Name: "src_ip", Label: "Source IP", Type: "string"},
+				{Name: "src_port", Label: "Source Port", Type: "string"},
+			},
+		},
+		{
+			Name:        "SSHD Failed Auth",
+			Description: "Matches failed SSH authentication attempts",
+			DeviceType:  "linux",
+			MatchType:   "app_name",
+			MatchValue:  "sshd",
+			Regex:       `Failed\s+(\w+)\s+for\s+(invalid user\s+)?(\S+)\s+from\s+(\d+\.\d+\.\d+\.\d+)\s+port\s+(\d+)`,
+			Fields: []fieldSeed{
+				{Name: "auth_type", Label: "Auth Type", Type: "string"},
+				{Name: "username", Label: "Username", Type: "string"},
+				{Name: "src_ip", Label: "Source IP", Type: "string"},
+				{Name: "src_port", Label: "Source Port", Type: "string"},
+			},
+		},
+		{
+			Name:        "Systemd Service",
+			Description: "Matches systemd service start/stop events",
+			DeviceType:  "linux",
+			MatchType:   "app_name",
+			MatchValue:  "systemd",
+			Regex:       `(Started|Stopped)\s+(.+?)\s+—`,
+			Fields: []fieldSeed{
+				{Name: "action", Label: "Action", Type: "string"},
+				{Name: "service", Label: "Service Name", Type: "string"},
+			},
+		},
+		{
+			Name:        "Kernel Network",
+			Description: "Matches kernel network interface events",
+			DeviceType:  "linux",
+			MatchType:   "app_name",
+			MatchValue:  "kernel",
+			Regex:       `(\S+):\s+link\s+beacon\s+(\S+)\s+speed\s+(\d+)\s+Mbps`,
+			Fields: []fieldSeed{
+				{Name: "interface", Label: "Interface", Type: "string"},
+				{Name: "status", Label: "Status", Type: "string"},
+				{Name: "speed", Label: "Speed Mbps", Type: "string"},
+			},
+		},
 	}
 
 	tx, err := db.Begin()

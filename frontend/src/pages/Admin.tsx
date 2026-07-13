@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm } from 'antd'
 import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined } from '@ant-design/icons'
-import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, User } from '../services/api'
+import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, User, DeviceStats } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 
 const { Option } = Select
@@ -16,6 +16,7 @@ export default function Admin() {
 
   const [settings, setSettings] = useState<Record<string, string>>({})
   const [settingsForm] = Form.useForm()
+  const [devices, setDevices] = useState<DeviceStats[]>([])
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_admin',
@@ -49,9 +50,19 @@ export default function Admin() {
     }
   }
 
+  const loadDevices = async () => {
+    try {
+      const data = await getDeviceStats()
+      setDevices(data)
+    } catch (e: any) {
+      message.error('Failed to load devices')
+    }
+  }
+
   useEffect(() => {
     loadUsers()
     loadSettings()
+    loadDevices()
   }, [])
 
   const handleCreate = async () => {
@@ -293,6 +304,74 @@ export default function Admin() {
                     Save LDAP Settings
                   </Button>
                 </Form>
+              </Card>
+            ),
+          },
+          {
+            key: 'devices',
+            label: 'Devices',
+            children: (
+              <Card
+                title="Device Statistics"
+                extra={
+                  <Button icon={<ReloadOutlined />} onClick={loadDevices}>
+                    Refresh
+                  </Button>
+                }
+              >
+                <Table
+                  rowKey="hostname"
+                  dataSource={devices}
+                  pagination={false}
+                  columns={[
+                    {
+                      title: 'Hostname',
+                      dataIndex: 'hostname',
+                      key: 'hostname',
+                      render: (hostname: string) => (
+                        <a onClick={() => window.location.href = `/logs?hostname=${encodeURIComponent(hostname)}`}>
+                          {hostname}
+                        </a>
+                      ),
+                    },
+                    {
+                      title: 'Total Logs',
+                      dataIndex: 'total_logs',
+                      key: 'total_logs',
+                      sorter: (a: DeviceStats, b: DeviceStats) => a.total_logs - b.total_logs,
+                    },
+                    {
+                      title: 'Last Seen',
+                      dataIndex: 'last_seen',
+                      key: 'last_seen',
+                      render: (date: string) => date ? new Date(date).toLocaleString() : '-',
+                      sorter: (a: DeviceStats, b: DeviceStats) => new Date(a.last_seen).getTime() - new Date(b.last_seen).getTime(),
+                    },
+                    {
+                      title: 'Matched Parsers',
+                      dataIndex: 'matched_parsers',
+                      key: 'matched_parsers',
+                      render: (parsers: string[]) => (
+                        <Space wrap>
+                          {parsers.map((p) => (
+                            <Tag key={p} color="blue">{p}</Tag>
+                          ))}
+                          {parsers.length === 0 && <span>-</span>}
+                        </Space>
+                      ),
+                    },
+                    {
+                      title: 'Parsed',
+                      dataIndex: 'has_parsed',
+                      key: 'has_parsed',
+                      render: (parsed: boolean) => (
+                        <Tag color={parsed ? 'green' : 'orange'}>
+                          {parsed ? 'Yes' : 'No'}
+                        </Tag>
+                      ),
+                    },
+                  ]}
+                />
               </Card>
             ),
           },

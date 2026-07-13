@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -211,19 +212,57 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 
 func GetDevices(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		rows, err := db.Query("SELECT DISTINCT hostname FROM syslog_logs ORDER BY hostname")
+		rows, err := db.Query(`SELECT hostname, COUNT(*) as total_logs, MAX(timestamp) as last_seen,
+			SUM(CASE WHEN severity = 'emergency' THEN 1 ELSE 0 END) as emergency,
+			SUM(CASE WHEN severity = 'alert' THEN 1 ELSE 0 END) as alert,
+			SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) as critical,
+			SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END) as error,
+			SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) as warning,
+			SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END) as notice,
+			SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END) as info,
+			SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug
+			FROM syslog_logs GROUP BY hostname ORDER BY hostname`)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Query failed"})
 			return
 		}
 		defer rows.Close()
 
-		var devices []string
+		parsers, _ := model.GetAllParsers(db)
+
+		var devices []model.DeviceStats
 		for rows.Next() {
-			var d string
-			if err := rows.Scan(&d); err == nil {
-				devices = append(devices, d)
+			var ds model.DeviceStats
+			var total int64
+			var emergency, alert, critical, errCount, warning, notice, info, debug int64
+			if err := rows.Scan(&ds.Hostname, &total, &ds.LastSeen, &emergency, &alert, &critical, &errCount, &warning, &notice, &info, &debug); err != nil {
+				continue
 			}
+			ds.TotalLogs = total
+			ds.SeverityCount = model.SeverityCounts{Emergency: emergency, Alert: alert, Critical: critical, Error: errCount, Warning: warning, Notice: notice, Info: info, Debug: debug}
+
+			appRows, _ := db.Query("SELECT DISTINCT app_name FROM syslog_logs WHERE hostname = $1", ds.Hostname)
+			if appRows != nil {
+				defer appRows.Close()
+				matched := make(map[string]bool)
+				for appRows.Next() {
+					var appName string
+					if err := appRows.Scan(&appName); err != nil {
+						continue
+					}
+					for _, p := range parsers {
+						if p.Enabled && p.MatchType == "app_name" && matchGlob(p.MatchValue, appName) {
+							matched[p.Name] = true
+						}
+					}
+				}
+				for name := range matched {
+					ds.MatchedParsers = append(ds.MatchedParsers, name)
+				}
+				ds.HasParsed = len(ds.MatchedParsers) > 0
+			}
+
+			devices = append(devices, ds)
 		}
 
 		c.JSON(http.StatusOK, gin.H{"devices": devices})
@@ -253,6 +292,14 @@ func parseTimestamp(s string) (time.Time, error) {
 	}
 
 	return time.Now(), fmt.Errorf("unparseable timestamp: %s", s)
+}
+
+func matchGlob(pattern, value string) bool {
+	if pattern == "" || pattern == "*" {
+		return true
+	}
+	matched, _ := filepath.Match(pattern, value)
+	return matched
 }
 
 func nullStr(s string) *string {
