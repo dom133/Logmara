@@ -67,7 +67,7 @@ export async function getLogs(params: {
 
 export async function getDashboardStats(): Promise<DashboardStats> {
   const res = await api.get('/stats/dashboard')
-  return res.data
+  return (res.data || {}) as DashboardStats
 }
 
 export async function getTimeline(interval = '1h', from?: string, to?: string) {
