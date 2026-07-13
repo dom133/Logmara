@@ -82,10 +82,25 @@ type SeverityStats struct {
 type DeviceStats struct {
 	Hostname       string         `json:"hostname"`
 	TotalLogs      int64          `json:"total_logs"`
-	LastSeen       sql.NullTime   `json:"last_seen"`
+	LastSeen       sql.NullTime   `json:"-"`
 	SeverityCount  SeverityCounts `json:"severity_count"`
 	MatchedParsers []string       `json:"matched_parsers"`
 	HasParsed      bool           `json:"has_parsed"`
+}
+
+func (d DeviceStats) MarshalJSON() ([]byte, error) {
+	type Alias DeviceStats
+	lastSeen := ""
+	if d.LastSeen.Valid {
+		lastSeen = d.LastSeen.Time.Format(time.RFC3339)
+	}
+	return json.Marshal(&struct {
+		LastSeen string `json:"last_seen"`
+		Alias
+	}{
+		LastSeen: lastSeen,
+		Alias:    (Alias)(d),
+	})
 }
 
 func ParseIngestEntry(raw []byte) (*IngestEntry, error) {
