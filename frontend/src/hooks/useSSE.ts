@@ -44,8 +44,11 @@ export function useSSE({ onNewLogs, filters = {}, enabled = true }: UseSSEOption
   const abortRef = useRef<AbortController | null>(null)
   const onNewLogsRef = useRef(onNewLogs)
   const filtersRef = useRef(filters)
+  const enabledRef = useRef(enabled)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   onNewLogsRef.current = onNewLogs
   filtersRef.current = filters
+  enabledRef.current = enabled
 
   const connect = useCallback(() => {
     if (abortRef.current) {
@@ -79,6 +82,7 @@ export function useSSE({ onNewLogs, filters = {}, enabled = true }: UseSSEOption
       .then(async (response) => {
         if (!response.ok) {
           setConnected(false)
+          scheduleReconnect()
           return
         }
 
@@ -86,6 +90,7 @@ export function useSSE({ onNewLogs, filters = {}, enabled = true }: UseSSEOption
         const reader = response.body?.getReader()
         if (!reader) {
           setConnected(false)
+          scheduleReconnect()
           return
         }
 
@@ -124,21 +129,38 @@ export function useSSE({ onNewLogs, filters = {}, enabled = true }: UseSSEOption
           }
         } finally {
           setConnected(false)
-          reader.releaseLock()
+          try {
+            reader.releaseLock()
+          } catch { /* ignore */ }
+          scheduleReconnect()
         }
       })
       .catch((e: any) => {
         if (e.name !== 'AbortError') {
           setConnected(false)
+          scheduleReconnect()
         }
       })
   }, [])
+
+  const scheduleReconnect = useCallback(() => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => {
+      if (enabledRef.current && !abortRef.current?.signal.aborted) {
+        connect()
+      }
+    }, 3000)
+  }, [connect])
 
   useEffect(() => {
     if (!enabled) {
       if (abortRef.current) {
         abortRef.current.abort()
         abortRef.current = null
+      }
+      if (timerRef.current) {
+        clearTimeout(timerRef.current)
+        timerRef.current = null
       }
       setConnected(false)
       return
@@ -151,9 +173,13 @@ export function useSSE({ onNewLogs, filters = {}, enabled = true }: UseSSEOption
         abortRef.current.abort()
         abortRef.current = null
       }
+      if (timerRef.current) {
+        clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
       setConnected(false)
     }
-  }, [enabled])
+  }, [enabled, connect])
 
   return { connected, reconnect: connect }
 }
