@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"syslog-gui/model"
+	"syslog-gui/parser"
 
 	"github.com/gin-gonic/gin"
 )
@@ -210,7 +211,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func GetDevices(db *sql.DB) gin.HandlerFunc {
+func GetDevices(db *sql.DB, engine *parser.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rows, err := db.Query(`SELECT hostname, COUNT(*) as total_logs, MAX(timestamp) as last_seen,
 			SUM(CASE WHEN severity = 'emergency' THEN 1 ELSE 0 END) as emergency,
@@ -228,7 +229,7 @@ func GetDevices(db *sql.DB) gin.HandlerFunc {
 		}
 		defer rows.Close()
 
-		parsers, _ := model.GetAllParsers(db)
+		parsers, _ := engine.GetAllParsers()
 
 		var devices []model.DeviceStats
 		for rows.Next() {
@@ -239,7 +240,7 @@ func GetDevices(db *sql.DB) gin.HandlerFunc {
 				continue
 			}
 			ds.TotalLogs = total
-			ds.SeverityCount = model.SeverityCounts{Emergency: emergency, Alert: alert, Critical: critical, Error: errCount, Warning: warning, Notice: notice, Info: info, Debug: debug}
+			ds.SeverityCount = model.SeverityCounts{"emergency": emergency, "alert": alert, "critical": critical, "error": errCount, "warning": warning, "notice": notice, "info": info, "debug": debug}
 
 			appRows, _ := db.Query("SELECT DISTINCT app_name FROM syslog_logs WHERE hostname = $1", ds.Hostname)
 			if appRows != nil {

@@ -96,7 +96,7 @@ func GetDeviceStats(db *sql.DB) gin.HandlerFunc {
 				continue
 			}
 
-			d.SeverityMap = make(map[string]int64)
+			d.SeverityCount = make(model.SeverityCounts)
 			sevRows, _ := db.Query(
 				"SELECT severity, COUNT(*) FROM syslog_logs WHERE hostname = $1 GROUP BY severity",
 				d.Hostname,
@@ -106,7 +106,7 @@ func GetDeviceStats(db *sql.DB) gin.HandlerFunc {
 					var sev string
 					var cnt int64
 					if sevRows.Scan(&sev, &cnt) == nil {
-						d.SeverityMap[sev] = cnt
+						d.SeverityCount[sev] = cnt
 					}
 				}
 				sevRows.Close()

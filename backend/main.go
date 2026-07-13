@@ -68,7 +68,7 @@ func main() {
 		authGroup.GET("/stats/devices", handler.GetDeviceStats(database))
 		authGroup.GET("/stats/severity", handler.GetSeverityStats(database))
 		authGroup.GET("/stats/timeline", handler.GetTimelineStats(database))
-		authGroup.GET("/devices", handler.GetDevices(database))
+		authGroup.GET("/devices", handler.GetDevices(database, engine))
 		authGroup.GET("/export/csv", handler.ExportCSV(database))
 		authGroup.GET("/export/html", handler.ExportHTML(database))
 		authGroup.GET("/auth/me", handler.GetMe())
