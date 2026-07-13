@@ -135,3 +135,32 @@ func dialLDAP(cfg *Config) (*ldap.Conn, error) {
 
 	return l, nil
 }
+
+func TestConnection(server string, port int, useTLS bool, baseDN, bindDN, bindPassword string) error {
+	if server == "" {
+		return fmt.Errorf("server is required")
+	}
+
+	cfg := &Config{
+		Server:       server,
+		Port:         port,
+		UseTLS:       useTLS,
+		BaseDN:       baseDN,
+		BindDN:       bindDN,
+		BindPassword: bindPassword,
+	}
+
+	l, err := dialLDAP(cfg)
+	if err != nil {
+		return fmt.Errorf("connection failed: %w", err)
+	}
+	defer l.Close()
+
+	if bindDN != "" && bindPassword != "" {
+		if err := l.Bind(bindDN, bindPassword); err != nil {
+			return fmt.Errorf("bind failed: %w", err)
+		}
+	}
+
+	return nil
+}

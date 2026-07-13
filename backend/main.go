@@ -106,6 +106,7 @@ func main() {
 			adminGroup.PUT("/settings", handler.UpdateSettings(database))
 			adminGroup.POST("/settings/cleanup", handler.CleanupLogs(database))
 			adminGroup.DELETE("/logs", handler.PurgeAllLogs(database))
+			adminGroup.POST("/ldap/test", handler.TestLDAP(database))
 		}
 	}
 

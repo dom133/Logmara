@@ -330,6 +330,18 @@ export async function purgeAllLogs() {
 	return res.data
 }
 
+export async function testLDAPConnection(data: {
+	server: string
+	port: number
+	use_tls: boolean
+	base_dn: string
+	bind_dn: string
+	bind_password: string
+}) {
+	const res = await api.post('/admin/ldap/test', data)
+	return res.data
+}
+
 // --- Init / Setup ---
 export async function checkInitialized() {
 	const res = await api.get('/status/initialized')
