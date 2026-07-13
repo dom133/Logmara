@@ -4,11 +4,13 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	_ "github.com/lib/pq"
 
 	"syslog-gui/db/parsers"
+	"syslog-gui/util"
 )
 
 func Connect(dsn string) (*sql.DB, error) {
@@ -113,6 +115,23 @@ func Migrate(db *sql.DB) error {
 			key VARCHAR(100) PRIMARY KEY,
 			value TEXT NOT NULL,
 			description TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS refresh_tokens (
+			id SERIAL PRIMARY KEY,
+			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+			token VARCHAR(255) UNIQUE NOT NULL,
+			expires_at TIMESTAMPTZ NOT NULL,
+			used BOOLEAN DEFAULT FALSE,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS audit_log (
+			id SERIAL PRIMARY KEY,
+			user_id INTEGER,
+			username VARCHAR(100),
+			action VARCHAR(100) NOT NULL,
+			ip VARCHAR(100),
+			details TEXT,
+			created_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
 	}
 
@@ -229,18 +248,22 @@ func nullStrPtr(s string) *string {
 
 func seedSettings(db *sql.DB) error {
 	settings := map[string]string{
-		"retention_days":   "30",
-		"default_role":     "viewer",
-		"jwt_expiry":       "24",
-		"is_initialized":   "false",
-		"ldap_enabled":     "false",
-		"ldap_server":      "",
-		"ldap_port":        "389",
-		"ldap_use_tls":     "false",
-		"ldap_base_dn":     "",
-		"ldap_bind_dn":     "",
-		"ldap_bind_password": "",
-		"ldap_user_filter": "(uid=%s)",
+		"retention_days":         "30",
+		"default_role":           "viewer",
+		"jwt_expiry":             "24",
+		"is_initialized":         "false",
+		"ldap_enabled":           "false",
+		"ldap_server":            "",
+		"ldap_port":              "389",
+		"ldap_use_tls":           "false",
+		"ldap_verify_cert":       "true",
+		"ldap_ca_cert":           "",
+		"ldap_base_dn":           "",
+		"ldap_bind_dn":           "",
+		"ldap_bind_password":     "",
+		"ldap_user_filter":       "(uid=%s)",
+		"encryption_key":         "",
+		"cors_origins":           "",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -273,6 +296,14 @@ func seedSettings(db *sql.DB) error {
 			desc = "LDAP bind password for service account"
 		case "ldap_user_filter":
 			desc = "LDAP user search filter (%s = username)"
+		case "ldap_verify_cert":
+			desc = "Verify LDAP server TLS certificate"
+		case "ldap_ca_cert":
+			desc = "Custom CA certificate for LDAP TLS (PEM format)"
+		case "encryption_key":
+			desc = "AES-256 encryption key for sensitive data"
+		case "cors_origins":
+			desc = "Allowed CORS origins (comma-separated)"
 		}
 		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
 			return fmt.Errorf("seed setting %s: %w", k, err)
@@ -289,14 +320,47 @@ func GetSetting(db *sql.DB, key, defaultValue string) string {
 	if err != nil {
 		return defaultValue
 	}
+	if key == "ldap_bind_password" && val != "" {
+		encKey := os.Getenv("ENCRYPTION_KEY")
+		if encKey == "" {
+			encKey = getSettingRaw(db, "encryption_key")
+		}
+		if encKey != "" {
+			decrypted, err := util.Decrypt(encKey, val)
+			if err == nil {
+				return decrypted
+			}
+		}
+	}
 	return val
 }
 
-// UpdateSetting updates a setting value
+// UpdateSetting updates a setting value, encrypting sensitive fields
 func UpdateSetting(db *sql.DB, key, value string) error {
+	if key == "ldap_bind_password" && value != "" {
+		encKey := os.Getenv("ENCRYPTION_KEY")
+		if encKey == "" {
+			encKey = getSettingRaw(db, "encryption_key")
+		}
+		if encKey != "" {
+			encrypted, err := util.Encrypt(encKey, value)
+			if err == nil {
+				value = encrypted
+			}
+		}
+	}
 	_, err := db.Exec(`UPDATE app_settings SET value = $1 WHERE key = $2
 		ON CONFLICT (key) DO UPDATE SET value = $1`, value, key)
 	return err
+}
+
+func getSettingRaw(db *sql.DB, key string) string {
+	var val string
+	err := db.QueryRow("SELECT value FROM app_settings WHERE key = $1", key).Scan(&val)
+	if err != nil {
+		return ""
+	}
+	return val
 }
 
 // GetAllSettings retrieves all settings as a map
@@ -328,12 +392,23 @@ func CleanupOldLogs(db *sql.DB, retentionDays int) (int64, error) {
 }
 
 type User struct {
-	ID        int64     `json:"id"`
-	Username  string    `json:"username"`
-	Role      string    `json:"role"`
-	IsAdmin   bool      `json:"is_admin"`
-	IsActive  bool      `json:"is_active"`
-	CreatedAt time.Time `json:"created_at"`
+	ID           int64     `json:"id"`
+	Username     string    `json:"username"`
+	PasswordHash string    `json:"-"`
+	Role         string    `json:"role"`
+	IsAdmin      bool      `json:"is_admin"`
+	IsActive     bool      `json:"is_active"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type AuditLog struct {
+	ID        int64      `json:"id"`
+	UserID    *int64     `json:"user_id"`
+	Username  string     `json:"username"`
+	Action    string     `json:"action"`
+	IP        *string    `json:"ip"`
+	Details   *string    `json:"details"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 func GetAllUsers(db *sql.DB) ([]User, error) {

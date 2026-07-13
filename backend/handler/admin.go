@@ -15,7 +15,7 @@ import (
 
 type CreateUserRequest struct {
 	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required,min=4"`
+	Password string `json:"password" binding:"required,min=8"`
 	Role     string `json:"role" binding:"required"`
 }
 
@@ -25,7 +25,7 @@ type UpdateUserRequest struct {
 }
 
 type ResetPasswordRequest struct {
-	Password string `json:"password" binding:"required,min=4"`
+	Password string `json:"password" binding:"required,min=8"`
 }
 
 func ListUsers(database *sql.DB) gin.HandlerFunc {
@@ -169,6 +169,11 @@ func GetSettings(database *sql.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		for _, k := range []string{"jwt_secret", "encryption_key", "ldap_bind_password"} {
+			if v, ok := settings[k]; ok && v != "" {
+				settings[k] = "****"
+			}
+		}
 		c.JSON(http.StatusOK, settings)
 	}
 }
@@ -258,5 +263,37 @@ func TestLDAP(database *sql.DB) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Successfully connected to %s:%d", req.Server, req.Port)})
+	}
+}
+
+func GetAuditLog(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		limit := 100
+		if l := c.Query("limit"); l != "" {
+			if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 1000 {
+				limit = n
+			}
+		}
+
+		rows, err := database.Query(
+			"SELECT id, user_id, username, action, ip, details, created_at FROM audit_log ORDER BY created_at DESC LIMIT $1",
+			limit,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		defer rows.Close()
+
+		var logs []db.AuditLog
+		for rows.Next() {
+			var a db.AuditLog
+			if err := rows.Scan(&a.ID, &a.UserID, &a.Username, &a.Action, &a.IP, &a.Details, &a.CreatedAt); err != nil {
+				continue
+			}
+			logs = append(logs, a)
+		}
+
+		c.JSON(http.StatusOK, logs)
 	}
 }

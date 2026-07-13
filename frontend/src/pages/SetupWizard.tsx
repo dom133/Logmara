@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Layout, Card, Form, Input, Button, message, Typography, Steps, Space, Divider } from 'antd'
+import { Layout, Card, Form, Input, Button, message, Typography, Steps, Space, Divider, Switch, Checkbox } from 'antd'
 import { generateKeys, initialize, getDbConfig, InitRequest } from '../services/api'
 
 const { Title, Text } = Typography
@@ -21,6 +21,16 @@ export default function SetupWizard() {
     db_password: '',
     jwt_secret: '',
     encryption_key: '',
+    cors_origins: '',
+    ldap_enabled: false,
+    ldap_server: '',
+    ldap_port: 636,
+    ldap_use_tls: true,
+    ldap_verify_cert: true,
+    ldap_ca_cert: '',
+    ldap_base_dn: '',
+    ldap_bind_dn: '',
+    ldap_bind_password: '',
   })
   const navigate = useNavigate()
 
@@ -50,6 +60,7 @@ export default function SetupWizard() {
     { title: 'Admin Account', description: 'Create administrator account' },
     { title: 'Database', description: 'Database connection settings' },
     { title: 'Security Keys', description: 'JWT & encryption keys' },
+    { title: 'Optional Settings', description: 'LDAP & CORS configuration' },
     { title: 'Review & Submit', description: 'Confirm and initialize' },
   ]
 
@@ -85,6 +96,17 @@ export default function SetupWizard() {
       },
       jwt_secret: collectedData.jwt_secret,
       encryption_key: collectedData.encryption_key,
+      cors_origins: collectedData.cors_origins || undefined,
+      ldap: collectedData.ldap_enabled ? {
+        server: collectedData.ldap_server,
+        port: collectedData.ldap_port || 636,
+        use_tls: collectedData.ldap_use_tls,
+        verify_cert: collectedData.ldap_verify_cert,
+        ca_cert: collectedData.ldap_ca_cert,
+        base_dn: collectedData.ldap_base_dn,
+        bind_dn: collectedData.ldap_bind_dn,
+        bind_password: collectedData.ldap_bind_password,
+      } : undefined,
     }
 
     setLoading(true)
@@ -126,6 +148,14 @@ export default function SetupWizard() {
         message.error('Please fill in all required fields')
       }
     } else if (current === 3) {
+      const values = form.getFieldsValue([
+        'cors_origins', 'ldap_enabled', 'ldap_server', 'ldap_port',
+        'ldap_use_tls', 'ldap_verify_cert', 'ldap_ca_cert',
+        'ldap_base_dn', 'ldap_bind_dn', 'ldap_bind_password',
+      ])
+      setCollectedData(prev => ({ ...prev, ...values }))
+      setCurrent(current + 1)
+    } else if (current === 4) {
       handleSubmit()
     }
   }
@@ -218,6 +248,42 @@ export default function SetupWizard() {
         )
       case 3:
         return (
+          <>
+            <Form.Item name="cors_origins" label="CORS Origins" tooltip="Comma-separated allowed origins (e.g., http://localhost:3000)">
+              <Input size="large" placeholder="http://localhost:3000,https://yourdomain.com" />
+            </Form.Item>
+            <Divider />
+            <Form.Item name="ldap_enabled" label="Enable LDAP Authentication" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item name="ldap_server" label="LDAP Server">
+              <Input size="large" placeholder="ldap.example.com" />
+            </Form.Item>
+            <Form.Item name="ldap_port" label="Port">
+              <Input type="number" size="large" placeholder="636" />
+            </Form.Item>
+            <Form.Item name="ldap_use_tls" label="Use TLS" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item name="ldap_verify_cert" label="Verify Certificate" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item name="ldap_ca_cert" label="CA Certificate (PEM)">
+              <Input.TextArea rows={2} placeholder="-----BEGIN CERTIFICATE-----..." />
+            </Form.Item>
+            <Form.Item name="ldap_base_dn" label="Base DN">
+              <Input size="large" placeholder="dc=example,dc=com" />
+            </Form.Item>
+            <Form.Item name="ldap_bind_dn" label="Bind DN">
+              <Input size="large" placeholder="cn=admin,dc=example,dc=com" />
+            </Form.Item>
+            <Form.Item name="ldap_bind_password" label="Bind Password">
+              <Input.Password size="large" placeholder="LDAP bind password" />
+            </Form.Item>
+          </>
+        )
+      case 4:
+        return (
           <Card size="small" style={{ marginBottom: 16 }}>
             <Title level={5}>Admin Account</Title>
             <Text><strong>Username:</strong> {collectedData.username}</Text><br />
@@ -235,6 +301,21 @@ export default function SetupWizard() {
             <Title level={5}>Security</Title>
             <Text><strong>JWT Secret:</strong> {collectedData.jwt_secret?.substring(0, 12)}...</Text><br />
             <Text><strong>Encryption Key:</strong> {collectedData.encryption_key?.substring(0, 12)}...</Text>
+            <br />
+            {collectedData.cors_origins && (
+              <>
+                <Title level={5}>CORS</Title>
+                <Text><strong>Origins:</strong> {collectedData.cors_origins}</Text>
+                <br />
+              </>
+            )}
+            {collectedData.ldap_enabled && (
+              <>
+                <Title level={5}>LDAP</Title>
+                <Text><strong>Server:</strong> {collectedData.ldap_server}:{collectedData.ldap_port}</Text><br />
+                <Text><strong>Base DN:</strong> {collectedData.ldap_base_dn}</Text>
+              </>
+            )}
           </Card>
         )
       default:
@@ -257,7 +338,7 @@ export default function SetupWizard() {
 
           <Space style={{ width: '100%', justifyContent: 'space-between' }}>
             <Button disabled={current === 0} onClick={prev} size="large">
-              {current === 3 ? 'Back' : 'Previous'}
+              {current === 4 ? 'Back' : 'Previous'}
             </Button>
             <Button
               type="primary"
@@ -265,7 +346,7 @@ export default function SetupWizard() {
               loading={loading}
               onClick={next}
             >
-              {current === 3 ? 'Initialize' : current === 2 ? 'Review' : 'Next'}
+              {current === 4 ? 'Initialize' : current === 3 ? 'Review' : 'Next'}
             </Button>
           </Space>
         </Form>
