@@ -1,9 +1,10 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, Select, Row, Col, Statistic, Descriptions } from 'antd'
 import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import { getDashboard, getDashboardData, togglePinDashboard, Dashboard, DashboardDataResponse, LogEntry } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
+import SeverityTag from '../components/SeverityTag'
 
 const { Title } = Typography
 
@@ -18,6 +19,7 @@ export default function DashboardViewPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [searchOverride, setSearchOverride] = useState('')
+  const searchRef = useRef<Input>(null)
 
   const dashboardId = parseInt(id || '0')
 
@@ -46,7 +48,7 @@ export default function DashboardViewPage() {
   const loadLogs = useCallback(async () => {
     setTableLoading(true)
     try {
-      const data = await getDashboardData(dashboardId, pageSize, (page - 1) * pageSize)
+      const data = await getDashboardData(dashboardId, pageSize, (page - 1) * pageSize, searchOverride)
       setLogs(data.logs)
       setTotal(data.total)
     } catch (e) {
@@ -54,7 +56,7 @@ export default function DashboardViewPage() {
     } finally {
       setTableLoading(false)
     }
-  }, [dashboardId, page, pageSize])
+  }, [dashboardId, page, pageSize, searchOverride])
 
   useEffect(() => {
     loadDashboard()
@@ -65,6 +67,17 @@ export default function DashboardViewPage() {
       loadLogs()
     }
   }, [dashboard, page, pageSize, loadLogs])
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault()
+        searchRef.current?.focus()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   const handleTogglePin = async () => {
     if (!dashboard) return
@@ -101,13 +114,7 @@ export default function DashboardViewPage() {
       dataIndex: 'severity',
       key: 'severity',
       width: 100,
-      render: (v: string) => {
-        const colors: Record<string, string> = {
-          emerg: 'red', alert: 'orange', crit: 'volcano', err: 'gold',
-          warning: 'lime', notice: 'blue', info: 'green', debug: 'default',
-        }
-        return <Tag color={colors[v] || 'default'}>{v.toUpperCase()}</Tag>
-      },
+      render: (v: string) => <SeverityTag severity={v} />,
     },
     {
       title: 'Message',
@@ -159,7 +166,8 @@ export default function DashboardViewPage() {
         </Space>
         <Space>
           <Input
-            placeholder="Search override..."
+            ref={searchRef}
+            placeholder="Search override... (Ctrl+K)"
             value={searchOverride}
             onChange={e => setSearchOverride(e.target.value)}
             onPressEnter={loadLogs}

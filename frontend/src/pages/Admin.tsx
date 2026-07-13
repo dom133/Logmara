@@ -152,8 +152,12 @@ export default function Admin() {
 
   const handleSaveSettings = async () => {
     const values = settingsForm.getFieldsValue()
+    const strValues: Record<string, string> = {}
+    for (const [k, v] of Object.entries(values)) {
+      strValues[k] = v === undefined || v === null ? '' : String(v)
+    }
     try {
-      await updateSettings(values)
+      await updateSettings(strValues)
       message.success('Settings saved')
       loadSettings()
     } catch (e: any) {

@@ -1,18 +1,16 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Table, Input, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message } from 'antd'
-import { RestOutlined } from '@ant-design/icons'
-import { getLogs, getDevices, exportCSV, exportHTML } from '../services/api'
-import { LogEntry } from '../services/api'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Table, Input, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Dropdown, Modal, Descriptions } from 'antd'
+import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined, SignalOutlined } from '@ant-design/icons'
+import { getLogs, getDevices, exportCSV, exportHTML, LogEntry } from '../services/api'
 import dayjs from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
+import { useSSE } from '../hooks/useSSE'
+import SeverityTag from '../components/SeverityTag'
+import EmptyState from '../components/EmptyState'
+import { DATE_PRESETS } from '../constants'
 
 const { Title, Text } = Typography
 const { RangePicker } = DatePicker
-
-const severityColors: Record<string, string> = {
-  emerg: '#f5222d', alert: '#ff4d4f', crit: '#ff7a45', err: '#faad14',
-  warning: '#fadb14', notice: '#1890ff', info: '#52c41a', debug: '#bfbfbf',
-}
 
 const severities = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug']
 
@@ -30,6 +28,14 @@ export default function LogsViewer() {
     sort: 'timestamp_desc',
   })
   const [pagination, setPagination] = useState({ current: 1, pageSize: 50 })
+  const [visibleColumns, setVisibleColumns] = useState<string[]>(['timestamp', 'severity', 'hostname', 'app_name', 'message'])
+  const searchRef = useRef<Input>(null)
+  const [detailModalOpen, setDetailModalOpen] = useState(false)
+  const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null)
+  const [groupByDevice, setGroupByDevice] = useState(false)
+  const [streaming, setStreaming] = useState(false)
+  const logsRef = useRef(logs)
+  logsRef.current = logs
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_logs',
@@ -45,6 +51,39 @@ export default function LogsViewer() {
   useEffect(() => {
     loadDevices()
   }, [])
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault()
+        searchRef.current?.focus()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
+  const handleNewLogs = useCallback((newLogs: LogEntry[]) => {
+    setLogs(prev => {
+      const ids = new Set(prev.map(l => l.id))
+      const unique = newLogs.filter(l => !ids.has(l.id))
+      if (unique.length === 0) return prev
+      const combined = [...unique, ...prev]
+      return combined.slice(0, pagination.pageSize * 3)
+    })
+  }, [pagination.pageSize])
+
+  const { connected } = useSSE({
+    onNewLogs: handleNewLogs,
+    filters: {
+      hostname: filters.hostname || undefined,
+      severity: filters.severity || undefined,
+      search: filters.search || undefined,
+      from: filters.from || undefined,
+      to: filters.to || undefined,
+    },
+    enabled: streaming,
+  })
 
   useEffect(() => {
     loadLogs(0)
@@ -102,6 +141,25 @@ export default function LogsViewer() {
     message.success(`Exporting ${format.toUpperCase()}...`)
   }
 
+  const handleRowClick = (record: LogEntry) => {
+    setSelectedLog(record)
+    setDetailModalOpen(true)
+  }
+
+  const getRowSpans = (records: LogEntry[]) => {
+    if (!groupByDevice) return new Map()
+    const spans = new Map<number, number>()
+    let i = 0
+    while (i < records.length) {
+      let j = i + 1
+      while (j < records.length && records[j].hostname === records[i].hostname) j++
+      const span = j - i
+      for (let k = i; k < j; k++) spans.set(k, k === i ? span : 0)
+      i = j
+    }
+    return spans
+  }
+
   const columns = [
     {
       title: 'Time',
@@ -117,7 +175,7 @@ export default function LogsViewer() {
       dataIndex: 'severity',
       key: 'severity',
       width: 90,
-      render: (v: string) => <Tag color={severityColors[v] || 'default'}>{v.toUpperCase()}</Tag>,
+      render: (v: string) => <SeverityTag severity={v} />,
       filters: severities.map(s => ({ text: s.toUpperCase(), value: s })),
       onFilter: (v: any, record: LogEntry) => record.severity === String(v),
     },
@@ -126,7 +184,13 @@ export default function LogsViewer() {
       dataIndex: 'hostname',
       key: 'hostname',
       width: 160,
-      render: (v: string) => <Tag color="blue">{v}</Tag>,
+      render: (v: string, _record: LogEntry, index: number) => {
+        const rowSpans = getRowSpans(logs)
+        return {
+          props: { rowSpan: rowSpans.get(index) },
+          children: <Tag color="blue">{v}</Tag>,
+        }
+      },
     },
     {
       title: 'App',
@@ -166,12 +230,51 @@ export default function LogsViewer() {
         <Title level={3} style={{ margin: 0 }}>Logs</Title>
         <Text type="secondary">({total.toLocaleString()} total)</Text>
         {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
+        <Dropdown
+          menu={{
+            items: [
+              { key: 'timestamp', label: 'Time', checked: visibleColumns.includes('timestamp') },
+              { key: 'severity', label: 'Severity', checked: visibleColumns.includes('severity') },
+              { key: 'hostname', label: 'Device', checked: visibleColumns.includes('hostname') },
+              { key: 'app_name', label: 'App', checked: visibleColumns.includes('app_name') },
+              { key: 'message', label: 'Message', checked: visibleColumns.includes('message') },
+            ],
+            selectable: true,
+            selectedKeys: visibleColumns,
+            onSelect: (key: string) => {
+              setVisibleColumns(prev =>
+                prev.includes(key) ? prev.filter(c => c !== key) : [...prev, key],
+              )
+            },
+          }}
+          placement="bottomRight"
+        >
+          <Button size="small" icon={<ColumnHeightOutlined />}>Columns</Button>
+        </Dropdown>
+        <Button
+          size="small"
+          icon={groupByDevice ? <ClusterOutlined /> : <UnorderedListOutlined />}
+          onClick={() => setGroupByDevice(!groupByDevice)}
+          style={{ color: groupByDevice ? '#1890ff' : undefined }}
+        >
+          Group by Device
+        </Button>
+        <Button
+          size="small"
+          icon={<SignalOutlined />}
+          type={streaming ? 'primary' : 'default'}
+          onClick={() => setStreaming(!streaming)}
+          style={{ color: streaming && connected ? '#52c41a' : undefined }}
+        >
+          {streaming ? (connected ? 'Live ●' : 'Connecting...') : 'Live'}
+        </Button>
       </Space>
 
       <Card style={{ marginBottom: 16 }} size="small">
         <Space wrap>
           <Input
-            placeholder="Search messages..."
+            ref={searchRef}
+            placeholder="Search messages... (Ctrl+K)"
             style={{ width: 280 }}
             allowClear
             onChange={e => handleSearch(e.target.value)}
@@ -193,6 +296,18 @@ export default function LogsViewer() {
             value={filters.severity || undefined}
             onChange={v => setFilters(f => ({ ...f, severity: v || '' }))}
           />
+          <Select
+            placeholder="Date Preset"
+            style={{ width: 150 }}
+            allowClear
+            options={DATE_PRESETS}
+            onChange={v => {
+              const now = dayjs()
+              const to = now.format()
+              const from = now.subtract(parseInt(v), v.endsWith('h') ? 'hour' : 'day').format()
+              setFilters(f => ({ ...f, from, to }))
+            }}
+          />
           <RangePicker
             style={{ width: 300 }}
             onChange={handleDateRange}
@@ -210,30 +325,78 @@ export default function LogsViewer() {
             ]}
           />
           <Popconfirm title="Export as CSV?" onConfirm={() => handleExport('csv')}>
-            <Button icon="📄">CSV</Button>
+            <Button>CSV</Button>
           </Popconfirm>
           <Popconfirm title="Export as HTML?" onConfirm={() => handleExport('html')}>
-            <Button icon="📑">HTML</Button>
+            <Button>HTML</Button>
           </Popconfirm>
         </Space>
       </Card>
 
-      <Table
-        columns={enhanceColumns(columns)}
-        dataSource={logs}
-        rowKey="id"
-        loading={loading}
-        scroll={{ x: 1200 }}
-        pagination={{
-          ...pagination,
-          total,
-          showSizeChanger: true,
-          showQuickJumper: true,
-          pageSizeOptions: ['25', '50', '100', '200'],
-        }}
-        onChange={handleTableChange}
-        size="small"
-      />
+      {!loading && logs.length === 0 ? (
+        <EmptyState
+          description="No logs found. Try adjusting your filters."
+          actionLabel="Clear Filters"
+          actionClick={() => {
+            setFilters({ hostname: '', severity: '', search: '', from: '', to: '', sort: 'timestamp_desc' })
+            setPagination({ current: 1, pageSize: 50 })
+          }}
+        />
+      ) : (
+        <>
+          {loading && logs.length === 0 && (
+            <Skeleton active paragraph={{ rows: 10 }} />
+          )}
+          <Table
+            columns={enhanceColumns(columns.filter(c => visibleColumns.includes(c.key)))}
+            dataSource={logs}
+            rowKey="id"
+            loading={loading}
+            scroll={{ x: 1200 }}
+            pagination={{
+              ...pagination,
+              total,
+              showSizeChanger: true,
+              showQuickJumper: true,
+              pageSizeOptions: ['25', '50', '100', '200'],
+            }}
+            onChange={handleTableChange}
+            size="small"
+            onRow={(record) => ({
+              onClick: () => handleRowClick(record),
+              style: { cursor: 'pointer' },
+            })}
+          />
+          <Modal
+            title="Log Details"
+            open={detailModalOpen}
+            onCancel={() => setDetailModalOpen(false)}
+            footer={null}
+            width={700}
+          >
+            {selectedLog && (
+              <Descriptions bordered column={1} size="small">
+                <Descriptions.Item label="Timestamp">{new Date(selectedLog.timestamp).toLocaleString()}</Descriptions.Item>
+                <Descriptions.Item label="Severity"><SeverityTag severity={selectedLog.severity} /></Descriptions.Item>
+                <Descriptions.Item label="Device"><Tag color="blue">{selectedLog.hostname}</Tag></Descriptions.Item>
+                {selectedLog.app_name && <Descriptions.Item label="App">{selectedLog.app_name}</Descriptions.Item>}
+                <Descriptions.Item label="Message">
+                  <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'Consolas, Monaco, monospace', fontSize: 12, lineHeight: 1.4 }}>
+                    {selectedLog.raw_message || selectedLog.message}
+                  </pre>
+                </Descriptions.Item>
+                {selectedLog.raw_message && selectedLog.raw_message !== selectedLog.message && (
+                  <Descriptions.Item label="Raw Message">
+                    <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'Consolas, Monaco, monospace', fontSize: 12, lineHeight: 1.4 }}>
+                      {selectedLog.raw_message}
+                    </pre>
+                  </Descriptions.Item>
+                )}
+              </Descriptions>
+            )}
+          </Modal>
+        </>
+      )}
     </>
   )
 }

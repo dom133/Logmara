@@ -12,13 +12,13 @@ export default function Login() {
 
   const handleLogin = async (values: { username: string; password: string }) => {
     setLoading(true)
-    const ok = await login(values.username, values.password)
+    const result = await login(values.username, values.password)
     setLoading(false)
-    if (ok) {
+    if (result.ok) {
       message.success('Logged in successfully')
       navigate('/')
     } else {
-      message.error('Invalid credentials')
+      message.error(result.error || 'Invalid credentials')
     }
   }
 

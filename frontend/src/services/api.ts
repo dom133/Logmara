@@ -28,7 +28,7 @@ api.interceptors.response.use(
   response => response,
   async error => {
     const originalRequest = error.config
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    if (error.response?.status === 401 && !originalRequest._retry && originalRequest.url !== '/auth/login') {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           retryQueue.push({ resolve, reject })
@@ -317,8 +317,8 @@ export async function deleteDashboard(id: number) {
   return res.data
 }
 
-export async function getDashboardData(id: number, limit = 100, offset = 0) {
-	const res = await api.get(`/dashboards/${id}/data`, { params: { limit, offset } })
+export async function getDashboardData(id: number, limit = 100, offset = 0, search = '') {
+	const res = await api.get(`/dashboards/${id}/data`, { params: { limit, offset, search: search || undefined } })
 	const d = res.data || {}
 	return { logs: d.logs || [], total: d.total || 0, fields: d.fields || [], devices: d.devices || [] } as DashboardDataResponse
 }
