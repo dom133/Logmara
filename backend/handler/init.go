@@ -20,12 +20,12 @@ type InitRequest struct {
 		Password string `json:"password" binding:"required,min=8"`
 	} `json:"admin" binding:"required"`
 	Database struct {
-		Host     string `json:"host"`
-		Port     int    `json:"port"`
-		Name     string `json:"name"`
-		User     string `json:"user"`
-		Password string `json:"password"`
-	} `json:"database"`
+		Host     string `json:"host" binding:"required"`
+		Port     int    `json:"port" binding:"required"`
+		Name     string `json:"name" binding:"required"`
+		User     string `json:"user" binding:"required"`
+		Password string `json:"password" binding:"required"`
+	} `json:"database" binding:"required"`
 	JWTSecret      string `json:"jwt_secret" binding:"required,min=16"`
 	EncryptionKey  string `json:"encryption_key" binding:"required,min=16"`
 }

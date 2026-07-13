@@ -53,7 +53,7 @@ export default function SetupWizard() {
 
   const steps = [
     { title: 'Admin Account', description: 'Create administrator account' },
-    { title: 'Database', description: 'Database connection (optional)' },
+    { title: 'Database', description: 'Database connection settings' },
     { title: 'Security Keys', description: 'JWT & encryption keys' },
     { title: 'Review & Submit', description: 'Confirm and initialize' },
   ]
@@ -114,9 +114,14 @@ export default function SetupWizard() {
         message.error('Please fill in all required fields')
       }
     } else if (current === 1) {
-      const values = form.getFieldsValue(['db_host', 'db_port', 'db_name', 'db_user', 'db_password'])
-      setCollectedData(prev => ({ ...prev, ...values, db_port: values.db_port || 0 }))
-      setCurrent(current + 1)
+      try {
+        await form.validateFields(['db_host', 'db_port', 'db_name', 'db_user', 'db_password'])
+        const values = form.getFieldsValue(['db_host', 'db_port', 'db_name', 'db_user', 'db_password'])
+        setCollectedData(prev => ({ ...prev, ...values, db_port: values.db_port || 0 }))
+        setCurrent(current + 1)
+      } catch {
+        message.error('Please fill in all required fields')
+      }
     } else if (current === 2) {
       try {
         await form.validateFields(['jwt_secret', 'encryption_key'])
@@ -182,23 +187,20 @@ export default function SetupWizard() {
       case 1:
         return (
           <>
-            <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
-              Database settings are optional. Leave empty to use defaults.
-            </Text>
-            <Form.Item name="db_host" label="Host">
-              <Input size="large" placeholder="postgres (default)" />
+            <Form.Item name="db_host" label="Host" rules={[{ required: true, message: 'Host is required' }]}>
+              <Input size="large" placeholder="postgres" />
             </Form.Item>
-            <Form.Item name="db_port" label="Port">
-              <Input type="number" size="large" placeholder="5432 (default)" />
+            <Form.Item name="db_port" label="Port" rules={[{ required: true, message: 'Port is required' }]}>
+              <Input type="number" size="large" placeholder="5432" />
             </Form.Item>
-            <Form.Item name="db_name" label="Database Name">
-              <Input size="large" placeholder="syslog_db (default)" />
+            <Form.Item name="db_name" label="Database Name" rules={[{ required: true, message: 'Database name is required' }]}>
+              <Input size="large" placeholder="syslog_db" />
             </Form.Item>
-            <Form.Item name="db_user" label="User">
-              <Input size="large" placeholder="syslog (default)" />
+            <Form.Item name="db_user" label="User" rules={[{ required: true, message: 'User is required' }]}>
+              <Input size="large" placeholder="syslog" />
             </Form.Item>
-            <Form.Item name="db_password" label="Password">
-              <Input.Password size="large" placeholder="syslogpass (default)" />
+            <Form.Item name="db_password" label="Password" rules={[{ required: true, message: 'Password is required' }]}>
+              <Input.Password size="large" placeholder="syslogpass" />
             </Form.Item>
           </>
         )
