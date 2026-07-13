@@ -252,7 +252,7 @@ func GetDevices(db *sql.DB, engine *parser.Engine) gin.HandlerFunc {
 						continue
 					}
 					for _, p := range parsers {
-						if p.Enabled && p.MatchType == "app_name" && matchGlob(p.MatchValue, appName) {
+						if p.Enabled && p.MatchType == "app_name" && p.MatchValue != nil && matchGlob(*p.MatchValue, appName) {
 							matched[p.Name] = true
 						}
 					}
