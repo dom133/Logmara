@@ -135,12 +135,6 @@ func Migrate(db *sql.DB) error {
 }
 
 func seedParsers(db *sql.DB) error {
-	count := 0
-	db.QueryRow("SELECT count(*) FROM parsers WHERE is_builtin").Scan(&count)
-	if count > 0 {
-		return nil
-	}
-
 	allParsers := append([]parsers.ParserSeed{}, parsers.MikroTikParsers...)
 	allParsers = append(allParsers, parsers.UbiquitiParsers...)
 	allParsers = append(allParsers, parsers.CiscoParsers...)
@@ -148,6 +142,27 @@ func seedParsers(db *sql.DB) error {
 	allParsers = append(allParsers, parsers.PfSenseParsers...)
 	allParsers = append(allParsers, parsers.LinuxParsers...)
 	allParsers = append(allParsers, parsers.GenericParsers...)
+
+	rows, err := db.Query("SELECT id, name FROM parsers WHERE is_builtin")
+	if err != nil {
+		return fmt.Errorf("query builtin parsers: %w", err)
+	}
+	dbByName := make(map[string]int64)
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			rows.Close()
+			return err
+		}
+		dbByName[name] = id
+	}
+	rows.Close()
+
+	codeNames := make(map[string]bool)
+	for _, p := range allParsers {
+		codeNames[p.Name] = true
+	}
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -157,6 +172,9 @@ func seedParsers(db *sql.DB) error {
 
 	insertParser := `INSERT INTO parsers (name, description, device_type, match_type, match_value, regex, enabled, is_builtin)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`
+	updateParser := `UPDATE parsers SET description=$2, device_type=$3, match_type=$4, match_value=$5, regex=$6, enabled=$7
+		WHERE id=$1`
+	deleteFields := `DELETE FROM parsed_fields_registry WHERE parser_id=$1`
 	insertField := `INSERT INTO parsed_fields_registry (parser_id, field_name, field_label, field_type)
 		VALUES ($1, $2, $3, $4)`
 
@@ -165,15 +183,36 @@ func seedParsers(db *sql.DB) error {
 		desc := nullStrPtr(p.Description)
 		matchVal := nullStrPtr(p.MatchValue)
 
-		err := tx.QueryRow(insertParser, p.Name, desc, p.DeviceType, p.MatchType, matchVal, p.Regex, true, true).
-			Scan(&parserID)
-		if err != nil {
-			return fmt.Errorf("seed parser %s: %w", p.Name, err)
+		existingID, exists := dbByName[p.Name]
+		if exists {
+			parserID = existingID
+			if _, err := tx.Exec(updateParser, parserID, desc, p.DeviceType, p.MatchType, matchVal, p.Regex, true); err != nil {
+				return fmt.Errorf("update parser %s: %w", p.Name, err)
+			}
+			if _, err := tx.Exec(deleteFields, parserID); err != nil {
+				return fmt.Errorf("clear fields for parser %s: %w", p.Name, err)
+			}
+		} else {
+			if err := tx.QueryRow(insertParser, p.Name, desc, p.DeviceType, p.MatchType, matchVal, p.Regex, true, true).
+				Scan(&parserID); err != nil {
+				return fmt.Errorf("seed parser %s: %w", p.Name, err)
+			}
 		}
 
 		for _, f := range p.Fields {
 			if _, err := tx.Exec(insertField, parserID, f.Name, f.Label, f.Type); err != nil {
 				return fmt.Errorf("seed field %s for parser %s: %w", f.Name, p.Name, err)
+			}
+		}
+	}
+
+	for name, id := range dbByName {
+		if !codeNames[name] {
+			if _, err := tx.Exec("DELETE FROM parsed_fields_registry WHERE parser_id=$1", id); err != nil {
+				return fmt.Errorf("clear orphan fields: %w", err)
+			}
+			if _, err := tx.Exec("DELETE FROM parsers WHERE id=$1", id); err != nil {
+				return fmt.Errorf("remove orphan parser %s: %w", name, err)
 			}
 		}
 	}
