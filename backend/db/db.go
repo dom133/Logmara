@@ -385,6 +385,7 @@ func seedSettings(db *sql.DB) error {
 		"retention_days": "30",
 		"default_role":   "viewer",
 		"jwt_expiry":     "24",
+		"is_initialized": "false",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -399,6 +400,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "Default role for new users"
 		case "jwt_expiry":
 			desc = "JWT token expiry in hours"
+		case "is_initialized":
+			desc = "Application initialization flag"
 		}
 		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
 			return fmt.Errorf("seed setting %s: %w", k, err)

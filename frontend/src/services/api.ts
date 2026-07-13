@@ -327,3 +327,36 @@ export async function purgeAllLogs() {
 	const res = await api.delete('/admin/logs')
 	return res.data
 }
+
+// --- Init / Setup ---
+export async function checkInitialized() {
+	const res = await api.get('/status/initialized')
+	return res.data as { initialized: boolean }
+}
+
+export async function generateKeys() {
+	const res = await api.get('/init/generate-keys')
+	return res.data as { jwt_secret: string; encryption_key: string }
+}
+
+export interface InitRequest {
+	admin: {
+		username: string
+		email: string
+		password: string
+	}
+	database: {
+		host: string
+		port: number
+		name: string
+		user: string
+		password: string
+	}
+	jwt_secret: string
+	encryption_key: string
+}
+
+export async function initialize(data: InitRequest) {
+	const res = await api.post('/init', data)
+	return res.data
+}

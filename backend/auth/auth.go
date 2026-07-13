@@ -155,39 +155,5 @@ func GetUserFromContext(c *gin.Context) *User {
 }
 
 func InitAdmin(db *sql.DB) {
-	var count int
-	err := db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
-	if err != nil {
-		log.Printf("Warning: could not check users table: %v", err)
-		return
-	}
-
-	if count > 0 {
-		return
-	}
-
-	username := os.Getenv("ADMIN_USERNAME")
-	if username == "" {
-		username = "admin"
-	}
-
-	password := os.Getenv("ADMIN_PASSWORD")
-	if password == "" {
-		password = "admin123"
-	}
-
-	hash, err := HashPassword(password)
-	if err != nil {
-		log.Printf("Warning: could not hash admin password: %v", err)
-		return
-	}
-
-	_, err = db.Exec("INSERT INTO users (username, password_hash, is_admin, role, is_active) VALUES ($1, $2, $3, $4, $5)",
-		username, hash, true, "admin", true)
-	if err != nil {
-		log.Printf("Warning: could not create admin user: %v", err)
-		return
-	}
-
-	log.Printf("Created admin user: %s", username)
+	log.Println("Skipping default admin creation - use setup wizard")
 }
