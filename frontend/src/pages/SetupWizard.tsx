@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Layout, Card, Form, Input, Button, message, Typography, Steps, Space, Divider } from 'antd'
 import { checkInitialized, generateKeys, initialize, getDbConfig, InitRequest } from '../services/api'
@@ -25,31 +25,35 @@ export default function SetupWizard() {
   })
   const navigate = useNavigate()
 
-  useState(() => {
-    Promise.all([checkInitialized(), getDbConfig()]).then(([initRes, dbConfig]) => {
+  useEffect(() => {
+    checkInitialized().then(async (initRes) => {
       if (initRes.initialized) {
         navigate('/login')
+        return
       }
-      if (dbConfig.host || dbConfig.name || dbConfig.user) {
-        form.setFieldsValue({
-          db_host: dbConfig.host,
-          db_port: dbConfig.port,
-          db_name: dbConfig.name,
-          db_user: dbConfig.user,
-          db_password: dbConfig.password,
-        })
-        setCollectedData(prev => ({
-          ...prev,
-          db_host: dbConfig.host || '',
-          db_port: dbConfig.port || 0,
-          db_name: dbConfig.name || '',
-          db_user: dbConfig.user || '',
-          db_password: dbConfig.password || '',
-        }))
-      }
+      try {
+        const dbConfig = await getDbConfig()
+        if (dbConfig.host || dbConfig.name || dbConfig.user) {
+          form.setFieldsValue({
+            db_host: dbConfig.host,
+            db_port: dbConfig.port,
+            db_name: dbConfig.name,
+            db_user: dbConfig.user,
+            db_password: dbConfig.password,
+          })
+          setCollectedData(prev => ({
+            ...prev,
+            db_host: dbConfig.host || '',
+            db_port: dbConfig.port || 0,
+            db_name: dbConfig.name || '',
+            db_user: dbConfig.user || '',
+            db_password: dbConfig.password || '',
+          }))
+        }
+      } catch { /* ignore db config errors */ }
       setChecking(false)
     })
-  })
+  }, [])
 
   const steps = [
     { title: 'Admin Account', description: 'Create administrator account' },
