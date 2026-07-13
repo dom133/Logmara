@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, Select, Row, Col, Statistic, Descriptions } from 'antd'
+import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions } from 'antd'
 import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import { getDashboard, getDashboardData, togglePinDashboard, Dashboard, DashboardDataResponse, LogEntry } from '../services/api'
@@ -19,7 +19,7 @@ export default function DashboardViewPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [searchOverride, setSearchOverride] = useState('')
-  const searchRef = useRef<HTMLInputElement>(null)
+  const searchRef = useRef<InputRef>(null)
 
   const dashboardId = parseInt(id || '0')
 
