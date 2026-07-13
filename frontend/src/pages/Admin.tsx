@@ -353,10 +353,10 @@ export default function Admin() {
                       key: 'matched_parsers',
                       render: (parsers: string[]) => (
                         <Space wrap>
-                          {parsers.map((p) => (
+                          {(parsers || []).map((p) => (
                             <Tag key={p} color="blue">{p}</Tag>
                           ))}
-                          {parsers.length === 0 && <span>-</span>}
+                          {(!parsers || parsers.length === 0) && <span>-</span>}
                         </Space>
                       ),
                     },
