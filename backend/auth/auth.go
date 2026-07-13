@@ -23,7 +23,7 @@ func Init(database *sql.DB) {
 	}
 	if secret == "" {
 		secret = generateRandomKey()
-		db.SetSetting(database, "jwt_secret", secret)
+		db.UpdateSetting(database, "jwt_secret", secret)
 	}
 	jwtSecret = []byte(secret)
 }
