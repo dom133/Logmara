@@ -58,6 +58,7 @@ func main() {
 	r.GET("/api/status/initialized", handler.CheckInitialized(database))
 	r.POST("/api/init", handler.Initialize(database))
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
+	r.GET("/api/init/db-config", handler.GetDbConfig())
 
 	authGroup := r.Group("/api")
 	authGroup.Use(auth.JWTRequired())

@@ -360,3 +360,16 @@ export async function initialize(data: InitRequest) {
 	const res = await api.post('/init', data)
 	return res.data
 }
+
+export interface DbConfig {
+	host: string
+	port: number
+	name: string
+	user: string
+	password: string
+}
+
+export async function getDbConfig() {
+	const res = await api.get('/init/db-config')
+	return res.data as DbConfig
+}

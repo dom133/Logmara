@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Layout, Card, Form, Input, Button, message, Typography, Steps, Space, Divider } from 'antd'
-import { checkInitialized, generateKeys, initialize, InitRequest } from '../services/api'
+import { checkInitialized, generateKeys, initialize, getDbConfig, InitRequest } from '../services/api'
 
 const { Title, Text } = Typography
 const { Step } = Steps
@@ -26,9 +26,26 @@ export default function SetupWizard() {
   const navigate = useNavigate()
 
   useState(() => {
-    checkInitialized().then((res) => {
-      if (res.initialized) {
+    Promise.all([checkInitialized(), getDbConfig()]).then(([initRes, dbConfig]) => {
+      if (initRes.initialized) {
         navigate('/login')
+      }
+      if (dbConfig.host || dbConfig.name || dbConfig.user) {
+        form.setFieldsValue({
+          db_host: dbConfig.host,
+          db_port: dbConfig.port,
+          db_name: dbConfig.name,
+          db_user: dbConfig.user,
+          db_password: dbConfig.password,
+        })
+        setCollectedData(prev => ({
+          ...prev,
+          db_host: dbConfig.host || '',
+          db_port: dbConfig.port || 0,
+          db_name: dbConfig.name || '',
+          db_user: dbConfig.user || '',
+          db_password: dbConfig.password || '',
+        }))
       }
       setChecking(false)
     })
