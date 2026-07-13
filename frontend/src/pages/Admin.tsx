@@ -311,7 +311,7 @@ export default function Admin() {
               <Card title="LDAP Authentication">
                 <Form form={settingsForm} layout="vertical" onFinish={handleSaveSettings}>
                   <Form.Item label="Enable LDAP" name="ldap_enabled" valuePropName="checked">
-                    <Switch onChange={(v) => setLdapEnabled(v)} />
+                    <Switch checked={ldapEnabled} onChange={(v) => { setLdapEnabled(v); settingsForm.setFieldValue('ldap_enabled', v); }} />
                   </Form.Item>
                   <Form.Item label="Server" name="ldap_server">
                     <Input placeholder="ldap.example.com" disabled={!ldapEnabled} />

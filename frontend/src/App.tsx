@@ -30,12 +30,13 @@ function useIsMobile() {
   return isMobile
 }
 
-function NavContent({ location, user, logout, isAdmin, pinnedDashboards, onClose }: {
+function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collapsed, onClose }: {
   location: ReturnType<typeof useLocation>
   user: { username?: string } | undefined
   logout: () => void
   isAdmin: boolean
   pinnedDashboards: DashboardType[]
+  collapsed?: boolean
   onClose?: () => void
 }) {
   const { token } = theme.useToken()
@@ -61,14 +62,16 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, onClose
             }}
           >
             <span style={{ fontSize: 18 }}>{item.icon}</span>
-            {item.label}
+            {!collapsed && item.label}
           </RouterLink>
         ))}
         {pinnedDashboards.length > 0 && (
           <>
+            {!collapsed && (
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: '#999', textTransform: 'uppercase', letterSpacing: 1 }}>
               Pinned
             </div>
+          )}
             {pinnedDashboards.map(d => (
               <RouterLink
                 key={`pin-${d.id}`}
@@ -88,7 +91,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, onClose
                 }}
               >
                 <span style={{ fontSize: 18 }}><PushpinOutlined /></span>
-                {d.name}
+                {!collapsed && d.name}
               </RouterLink>
             ))}
           </>
@@ -111,14 +114,16 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, onClose
             }}
           >
             <span style={{ fontSize: 18 }}><SafetyOutlined /></span>
-            Admin
+            {!collapsed && 'Admin'}
           </RouterLink>
         )}
       </nav>
       <div style={{ position: 'absolute', bottom: 16, left: 16, right: 16 }}>
-        <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
-          {user?.username}
-        </div>
+        {!collapsed && (
+          <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+            {user?.username}
+          </div>
+        )}
         <button
           onClick={() => { logout(); onClose?.() }}
           style={{
@@ -223,7 +228,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           style={{ background: token.colorBgContainer }}
           theme={themeMode === 'dark' ? 'dark' : 'light'}
         >
-          <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} />
+          <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} collapsed={collapsed} />
         </Sider>
       )}
       {isMobile && (
@@ -292,8 +297,6 @@ export default function App() {
       setInitialized(res.initialized)
     }
     check()
-    const interval = setInterval(check, 2000)
-    return () => clearInterval(interval)
   }, [])
 
   if (initialized === null) {
