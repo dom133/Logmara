@@ -1,7 +1,16 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
-COPY frontend/package.json frontend/.npmrc ./
-RUN npm install --no-audit --no-fund
+
+ARG NODE_ENV=production
+ENV NODE_ENV=${NODE_ENV}
+
+RUN chown -R node:node /app && chmod -R 755 /app
+USER node
+
+COPY frontend/package.json frontend/package-lock.json* frontend/.npmrc ./
+RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+RUN npm cache clean --force
+
 COPY frontend/ .
 RUN npm run build
 
