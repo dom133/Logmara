@@ -11,6 +11,18 @@ export default function SetupWizard() {
   const [current, setCurrent] = useState(0)
   const [loading, setLoading] = useState(false)
   const [checking, setChecking] = useState(true)
+  const [collectedData, setCollectedData] = useState({
+    username: '',
+    email: '',
+    password: '',
+    db_host: '',
+    db_port: 0,
+    db_name: '',
+    db_user: '',
+    db_password: '',
+    jwt_secret: '',
+    encryption_key: '',
+  })
   const navigate = useNavigate()
 
   useState(() => {
@@ -37,6 +49,7 @@ export default function SetupWizard() {
         jwt_secret: keys.jwt_secret,
         encryption_key: keys.encryption_key,
       })
+      setCollectedData(prev => ({ ...prev, jwt_secret: keys.jwt_secret, encryption_key: keys.encryption_key }))
       message.success('Keys generated')
     } catch (e) {
       message.error('Failed to generate keys')
@@ -45,22 +58,21 @@ export default function SetupWizard() {
   }
 
   const handleSubmit = async () => {
-    const values = form.getFieldsValue()
     const data: InitRequest = {
       admin: {
-        username: values.username,
-        email: values.email,
-        password: values.password,
+        username: collectedData.username,
+        email: collectedData.email,
+        password: collectedData.password,
       },
       database: {
-        host: values.db_host || '',
-        port: values.db_port || 0,
-        name: values.db_name || '',
-        user: values.db_user || '',
-        password: values.db_password || '',
+        host: collectedData.db_host || '',
+        port: collectedData.db_port || 0,
+        name: collectedData.db_name || '',
+        user: collectedData.db_user || '',
+        password: collectedData.db_password || '',
       },
-      jwt_secret: values.jwt_secret,
-      encryption_key: values.encryption_key,
+      jwt_secret: collectedData.jwt_secret,
+      encryption_key: collectedData.encryption_key,
     }
 
     setLoading(true)
@@ -75,19 +87,30 @@ export default function SetupWizard() {
   }
 
   const next = async () => {
-    if (current === 2) {
-      handleSubmit()
-      return
-    }
     if (current === 0) {
       try {
         await form.validateFields(['username', 'email', 'password', 'confirm'])
+        const values = form.getFieldsValue(['username', 'email', 'password'])
+        setCollectedData(prev => ({ ...prev, ...values }))
         setCurrent(current + 1)
       } catch {
         message.error('Please fill in all required fields')
       }
-    } else {
+    } else if (current === 1) {
+      const values = form.getFieldsValue(['db_host', 'db_port', 'db_name', 'db_user', 'db_password'])
+      setCollectedData(prev => ({ ...prev, ...values, db_port: values.db_port || 0 }))
       setCurrent(current + 1)
+    } else if (current === 2) {
+      try {
+        await form.validateFields(['jwt_secret', 'encryption_key'])
+        const values = form.getFieldsValue(['jwt_secret', 'encryption_key'])
+        setCollectedData(prev => ({ ...prev, ...values }))
+        setCurrent(current + 1)
+      } catch {
+        message.error('Please fill in all required fields')
+      }
+    } else if (current === 3) {
+      handleSubmit()
     }
   }
 
@@ -189,25 +212,24 @@ export default function SetupWizard() {
           </>
         )
       case 3:
-        const v = form.getFieldsValue()
         return (
           <Card size="small" style={{ marginBottom: 16 }}>
             <Title level={5}>Admin Account</Title>
-            <Text><strong>Username:</strong> {v.username}</Text><br />
-            <Text><strong>Email:</strong> {v.email}</Text><br /><br />
-            {(v.db_host || v.db_port || v.db_name || v.db_user || v.db_password) && (
+            <Text><strong>Username:</strong> {collectedData.username}</Text><br />
+            <Text><strong>Email:</strong> {collectedData.email}</Text><br /><br />
+            {(collectedData.db_host || collectedData.db_port || collectedData.db_name || collectedData.db_user || collectedData.db_password) && (
               <>
                 <Title level={5}>Database</Title>
-                {v.db_host && <Text><strong>Host:</strong> {v.db_host}</Text>}
-                {v.db_port && <Text> <strong>Port:</strong> {v.db_port}</Text>}
-                {v.db_name && <Text><br /><strong>Name:</strong> {v.db_name}</Text>}
-                {v.db_user && <Text> <strong>User:</strong> {v.db_user}</Text>}
+                {collectedData.db_host && <Text><strong>Host:</strong> {collectedData.db_host}</Text>}
+                {collectedData.db_port && <Text> <strong>Port:</strong> {collectedData.db_port}</Text>}
+                {collectedData.db_name && <Text><br /><strong>Name:</strong> {collectedData.db_name}</Text>}
+                {collectedData.db_user && <Text> <strong>User:</strong> {collectedData.db_user}</Text>}
                 <br />
               </>
             )}
             <Title level={5}>Security</Title>
-            <Text><strong>JWT Secret:</strong> {v.jwt_secret?.substring(0, 12)}...</Text><br />
-            <Text><strong>Encryption Key:</strong> {v.encryption_key?.substring(0, 12)}...</Text>
+            <Text><strong>JWT Secret:</strong> {collectedData.jwt_secret?.substring(0, 12)}...</Text><br />
+            <Text><strong>Encryption Key:</strong> {collectedData.encryption_key?.substring(0, 12)}...</Text>
           </Card>
         )
       default:
