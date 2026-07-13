@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Table, Input, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Dropdown, Modal, Descriptions } from 'antd'
-import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined, SignalOutlined } from '@ant-design/icons'
+import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { getLogs, getDevices, exportCSV, exportHTML, LogEntry } from '../services/api'
 import dayjs from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
@@ -29,7 +29,7 @@ export default function LogsViewer() {
   })
   const [pagination, setPagination] = useState({ current: 1, pageSize: 50 })
   const [visibleColumns, setVisibleColumns] = useState<string[]>(['timestamp', 'severity', 'hostname', 'app_name', 'message'])
-  const searchRef = useRef<Input>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
   const [detailModalOpen, setDetailModalOpen] = useState(false)
   const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null)
   const [groupByDevice, setGroupByDevice] = useState(false)
@@ -233,17 +233,17 @@ export default function LogsViewer() {
         <Dropdown
           menu={{
             items: [
-              { key: 'timestamp', label: 'Time', checked: visibleColumns.includes('timestamp') },
-              { key: 'severity', label: 'Severity', checked: visibleColumns.includes('severity') },
-              { key: 'hostname', label: 'Device', checked: visibleColumns.includes('hostname') },
-              { key: 'app_name', label: 'App', checked: visibleColumns.includes('app_name') },
-              { key: 'message', label: 'Message', checked: visibleColumns.includes('message') },
+              { key: 'timestamp', label: 'Time' },
+              { key: 'severity', label: 'Severity' },
+              { key: 'hostname', label: 'Device' },
+              { key: 'app_name', label: 'App' },
+              { key: 'message', label: 'Message' },
             ],
             selectable: true,
             selectedKeys: visibleColumns,
-            onSelect: (key: string) => {
+            onSelect: (_key, info) => {
               setVisibleColumns(prev =>
-                prev.includes(key) ? prev.filter(c => c !== key) : [...prev, key],
+                prev.includes(info.key) ? prev.filter(c => c !== info.key) : [...prev, info.key],
               )
             },
           }}
@@ -261,7 +261,7 @@ export default function LogsViewer() {
         </Button>
         <Button
           size="small"
-          icon={<SignalOutlined />}
+          icon={<ThunderboltOutlined />}
           type={streaming ? 'primary' : 'default'}
           onClick={() => setStreaming(!streaming)}
           style={{ color: streaming && connected ? '#52c41a' : undefined }}

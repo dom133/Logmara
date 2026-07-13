@@ -223,7 +223,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           style={{ background: token.colorBgContainer }}
           theme={themeMode === 'dark' ? 'dark' : 'light'}
         >
-          <NavContent location={location} user={user} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} />
+          <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} />
         </Sider>
       )}
       {isMobile && (
@@ -236,7 +236,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           styles={{ body: { padding: 0 } }}
         >
           <div style={{ background: token.colorBgContainer, height: '100%' }}>
-            <NavContent location={location} user={user} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} onClose={() => setDrawerVisible(false)} />
+            <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} onClose={() => setDrawerVisible(false)} />
           </div>
         </Drawer>
       )}

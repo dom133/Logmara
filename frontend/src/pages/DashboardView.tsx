@@ -19,7 +19,7 @@ export default function DashboardViewPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [searchOverride, setSearchOverride] = useState('')
-  const searchRef = useRef<Input>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
 
   const dashboardId = parseInt(id || '0')
 
