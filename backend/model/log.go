@@ -77,9 +77,9 @@ func (e *IngestEntry) UnmarshalJSON(data []byte) error {
 	if e.Timestamp == "" {
 		e.Timestamp = raw.TimeReported
 	}
-	e.Hostname = raw.Hostname
+	e.Hostname = raw.FromHostIP
 	if e.Hostname == "" {
-		e.Hostname = raw.FromHostIP
+		e.Hostname = raw.Hostname
 	}
 	e.Severity = raw.Severity
 	if e.Severity == "" {
