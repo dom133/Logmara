@@ -61,9 +61,14 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine) {
 			}
 
 			var entry model.IngestEntry
-if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			log.Printf("Tailer: invalid JSON: %v", err)
-			continue
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			log.Printf("Tailer: invalid JSON: %v, line: %.200s", err, line)
+			entry = model.IngestEntry{
+				Timestamp: time.Now().Format(time.RFC3339),
+				Hostname:  "unknown",
+				Severity:  "error",
+				Message:   fmt.Sprintf("[MALFORMED JSON] %s", line),
+			}
 		}
 
 			if entry.Hostname == "" {

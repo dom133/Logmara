@@ -38,6 +38,64 @@ type IngestEntry struct {
 	MatchedParsers []string `json:"-"`
 }
 
+// UnmarshalJSON handles both old format and RSYSLOG_EF-JSON
+func (e *IngestEntry) UnmarshalJSON(data []byte) error {
+	type RawEntry struct {
+		Timestamp    string `json:"timestamp"`
+		Hostname     string `json:"hostname"`
+		AppName      string `json:"app_name"`
+		ProcessID    string `json:"process_id"`
+		MsgID        string `json:"msg_id"`
+		Severity     string `json:"severity"`
+		Facility     string `json:"facility"`
+		Message      string `json:"message"`
+		RawMessage   string `json:"raw_message"`
+		AtTimestamp  string `json:"@timestamp"`
+		SeverityText string `json:"severity_text"`
+		FacilityText string `json:"facility_text"`
+		Program      string `json:"program"`
+		Pid          string `json:"pid"`
+		SyslogTag    string `json:"syslog_tag"`
+	}
+
+	var raw RawEntry
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	e.Timestamp = raw.Timestamp
+	if e.Timestamp == "" {
+		e.Timestamp = raw.AtTimestamp
+	}
+	e.Hostname = raw.Hostname
+	e.Severity = raw.Severity
+	if e.Severity == "" {
+		e.Severity = raw.SeverityText
+	}
+	e.Facility = raw.Facility
+	if e.Facility == "" {
+		e.Facility = raw.FacilityText
+	}
+	e.AppName = raw.AppName
+	if e.AppName == "" {
+		e.AppName = raw.Program
+	}
+	e.ProcessID = raw.ProcessID
+	if e.ProcessID == "" {
+		e.ProcessID = raw.Pid
+	}
+	e.Message = raw.Message
+	e.RawMessage = raw.RawMessage
+	if e.RawMessage == "" {
+		e.RawMessage = raw.Message
+	}
+	if e.MsgID == "" && raw.SyslogTag != "" {
+		e.MsgID = raw.SyslogTag
+	}
+
+	return nil
+}
+
 type LogQueryParams struct {
 	Offset   int    `form:"offset"`
 	Limit    int    `form:"limit"`
