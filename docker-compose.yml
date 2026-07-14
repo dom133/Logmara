@@ -24,6 +24,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.rsyslog
+    environment:
+      - TZ=Europe/Warsaw
     volumes:
       - log_data:/data
       - log_spool:/spool
