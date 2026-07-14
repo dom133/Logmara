@@ -38,20 +38,24 @@ func ListDashboards(db *sql.DB) gin.HandlerFunc {
 			rows, err = db.Query(`
 				SELECT d.id, d.name, d.description, d.owner_id, u.username,
 					COALESCE(up.dashboard_id IS NOT NULL, FALSE),
-					d.is_public, d.config, d.created_at, d.updated_at
+					d.is_public, d.config, d.created_at, d.updated_at,
+					d.updated_by, ub.username
 				FROM dashboards d
 				JOIN users u ON d.owner_id = u.id
 				LEFT JOIN user_dashboard_pins up ON d.id = up.dashboard_id AND up.user_id = $1
+				LEFT JOIN users ub ON d.updated_by = ub.id
 				ORDER BY up.dashboard_id IS NOT NULL DESC, d.created_at DESC
 			`, userID)
 		} else {
 			rows, err = db.Query(`
 				SELECT d.id, d.name, d.description, d.owner_id, u.username,
 					COALESCE(up.dashboard_id IS NOT NULL, FALSE),
-					d.is_public, d.config, d.created_at, d.updated_at
+					d.is_public, d.config, d.created_at, d.updated_at,
+					d.updated_by, ub.username
 				FROM dashboards d
 				JOIN users u ON d.owner_id = u.id
 				LEFT JOIN user_dashboard_pins up ON d.id = up.dashboard_id AND up.user_id = $1
+				LEFT JOIN users ub ON d.updated_by = ub.id
 				WHERE d.owner_id = $1 OR d.is_public = TRUE
 				ORDER BY up.dashboard_id IS NOT NULL DESC, d.created_at DESC
 			`, userID)
@@ -65,10 +69,19 @@ func ListDashboards(db *sql.DB) gin.HandlerFunc {
 		var dashboards []model.Dashboard
 		for rows.Next() {
 			var d model.Dashboard
+			var updatedBy sql.NullInt64
+			var updatedByUsername sql.NullString
 			err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.OwnerID,
-				&d.OwnerUsername, &d.Pinned, &d.IsPublic, &d.Config, &d.CreatedAt, &d.UpdatedAt)
+				&d.OwnerUsername, &d.Pinned, &d.IsPublic, &d.Config, &d.CreatedAt, &d.UpdatedAt,
+				&updatedBy, &updatedByUsername)
 			if err != nil {
 				continue
+			}
+			if updatedBy.Valid {
+				d.UpdatedByUserID = updatedBy.Int64
+			}
+			if updatedByUsername.Valid {
+				d.UpdatedByUsername = updatedByUsername.String
 			}
 			dashboards = append(dashboards, d)
 		}
@@ -103,9 +116,9 @@ func CreateDashboard(db *sql.DB) gin.HandlerFunc {
 
 		var id int64
 		err := db.QueryRow(`
-			INSERT INTO dashboards (name, description, owner_id, config)
-			VALUES ($1, $2, $3, $4) RETURNING id
-		`, req.Name, req.Description, userID, req.Config).Scan(&id)
+			INSERT INTO dashboards (name, description, owner_id, config, updated_by)
+			VALUES ($1, $2, $3, $4, $5) RETURNING id
+		`, req.Name, req.Description, userID, req.Config, userID).Scan(&id)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -127,17 +140,28 @@ func GetDashboard(db *sql.DB) gin.HandlerFunc {
 
 		var d model.Dashboard
 		var pinned sql.NullBool
+		var updatedBy sql.NullInt64
+		var updatedByUsername sql.NullString
 		err = db.QueryRow(`
 			SELECT d.id, d.name, d.description, d.owner_id, u.username,
 				up.dashboard_id IS NOT NULL,
-				d.is_public, d.config, d.created_at, d.updated_at
+				d.is_public, d.config, d.created_at, d.updated_at,
+				d.updated_by, ub.username
 			FROM dashboards d
 			JOIN users u ON d.owner_id = u.id
 			LEFT JOIN user_dashboard_pins up ON d.id = up.dashboard_id AND up.user_id = $2
+			LEFT JOIN users ub ON d.updated_by = ub.id
 			WHERE d.id = $1 AND (d.owner_id = $2 OR d.is_public = TRUE)
 		`, id, userID).Scan(&d.ID, &d.Name, &d.Description, &d.OwnerID,
-			&d.OwnerUsername, &pinned, &d.IsPublic, &d.Config, &d.CreatedAt, &d.UpdatedAt)
+			&d.OwnerUsername, &pinned, &d.IsPublic, &d.Config, &d.CreatedAt, &d.UpdatedAt,
+			&updatedBy, &updatedByUsername)
 		d.Pinned = pinned.Valid && pinned.Bool
+		if updatedBy.Valid {
+			d.UpdatedByUserID = updatedBy.Int64
+		}
+		if updatedByUsername.Valid {
+			d.UpdatedByUsername = updatedByUsername.String
+		}
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
 			return
@@ -206,6 +230,9 @@ func UpdateDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		setClauses = append(setClauses, "updated_at = NOW()")
+		setClauses = append(setClauses, "updated_by = $"+strconv.Itoa(argIdx))
+		args = append(args, userID)
+		argIdx++
 		args = append(args, id)
 
 		query := "UPDATE dashboards SET " + joinStrings(setClauses, ", ") + " WHERE id = $" + strconv.Itoa(argIdx)

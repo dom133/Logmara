@@ -30,16 +30,18 @@ type ParsedField struct {
 }
 
 type Dashboard struct {
-	ID             int64            `json:"id"`
-	Name           string           `json:"name"`
-	Description    *string          `json:"description,omitempty"`
-	OwnerID        int64            `json:"owner_id"`
-	OwnerUsername  string           `json:"owner_username"`
-	Pinned         bool             `json:"pinned"`
-	IsPublic       bool             `json:"is_public"`
-	Config         json.RawMessage  `json:"config"`
-	CreatedAt      time.Time        `json:"created_at"`
-	UpdatedAt      time.Time        `json:"updated_at"`
+	ID                 int64            `json:"id"`
+	Name               string           `json:"name"`
+	Description        *string          `json:"description,omitempty"`
+	OwnerID            int64            `json:"owner_id"`
+	OwnerUsername      string           `json:"owner_username"`
+	Pinned             bool             `json:"pinned"`
+	IsPublic           bool             `json:"is_public"`
+	Config             json.RawMessage  `json:"config"`
+	CreatedAt          time.Time        `json:"created_at"`
+	UpdatedAt          time.Time        `json:"updated_at"`
+	UpdatedByUserID    int64            `json:"updated_by_user_id"`
+	UpdatedByUsername  string           `json:"updated_by_username"`
 }
 
 type DashboardConfig struct {

@@ -224,6 +224,8 @@ export interface Dashboard {
 	config: DashboardConfig
 	created_at: string
 	updated_at: string
+	updated_by_user_id: number
+	updated_by_username: string
 }
 
 export interface DashboardDataResponse {

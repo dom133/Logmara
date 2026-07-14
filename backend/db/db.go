@@ -146,6 +146,8 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='email') THEN ALTER TABLE users ADD COLUMN email VARCHAR(255) DEFAULT ''; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='last_login_at') THEN ALTER TABLE users ADD COLUMN last_login_at TIMESTAMPTZ; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='auth_type') THEN ALTER TABLE users ADD COLUMN auth_type VARCHAR(20) DEFAULT 'local'; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='dashboards' AND column_name='updated_by') THEN ALTER TABLE dashboards ADD COLUMN updated_by INTEGER REFERENCES users(id); END IF; END $$`,
+		`UPDATE dashboards SET updated_by = owner_id WHERE updated_by IS NULL`,
 	}
 
 	for _, stmt := range statements {

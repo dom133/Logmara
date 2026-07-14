@@ -29,6 +29,7 @@ export default function DashboardsPage() {
       { key: 'devices', width: 200 },
       { key: 'fields', width: 200 },
       { key: 'created_at', width: 160 },
+      { key: 'last_modified', width: 180 },
       { key: 'actions', width: 250 },
     ],
   )
@@ -177,6 +178,16 @@ export default function DashboardsPage() {
       dataIndex: 'created_at',
       key: 'created_at',
       render: (v: string) => new Date(v).toLocaleDateString(),
+    },
+    {
+      title: 'Last Modified',
+      key: 'last_modified',
+      render: (_: any, r: Dashboard) => {
+        if (!r.updated_at) return '-'
+        const date = new Date(r.updated_at).toLocaleDateString()
+        const by = r.updated_by_username || r.owner_username
+        return `${date} by ${by}`
+      },
     },
     {
       title: 'Actions',
