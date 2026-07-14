@@ -9,31 +9,33 @@ import (
 type SeverityCounts map[string]int64
 
 type SyslogLog struct {
-	ID           int64             `json:"id"`
-	Timestamp    time.Time         `json:"timestamp"`
-	Hostname     string            `json:"hostname"`
-	AppName      *string           `json:"app_name,omitempty"`
-	ProcessID    *string           `json:"process_id,omitempty"`
-	MsgID        *string           `json:"msg_id,omitempty"`
-	Severity     string            `json:"severity"`
-	Facility     *string           `json:"facility,omitempty"`
-	Message      string            `json:"message"`
-	RawMessage   *string           `json:"raw_message,omitempty"`
-	ParsedFields map[string]string `json:"parsed_fields,omitempty"`
-	CreatedAt    time.Time         `json:"created_at"`
+	ID              int64             `json:"id"`
+	Timestamp       time.Time         `json:"timestamp"`
+	Hostname        string            `json:"hostname"`
+	AppName         *string           `json:"app_name,omitempty"`
+	ProcessID       *string           `json:"process_id,omitempty"`
+	MsgID           *string           `json:"msg_id,omitempty"`
+	Severity        string            `json:"severity"`
+	Facility        *string           `json:"facility,omitempty"`
+	Message         string            `json:"message"`
+	RawMessage      *string           `json:"raw_message,omitempty"`
+	ParsedFields    map[string]string `json:"parsed_fields,omitempty"`
+	MatchedParsers  []string          `json:"matched_parsers,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
 }
 
 type IngestEntry struct {
-	Timestamp    string  `json:"timestamp"`
-	Hostname     string  `json:"hostname"`
-	AppName      string  `json:"app_name"`
-	ProcessID    string  `json:"process_id"`
-	MsgID        string  `json:"msg_id"`
-	Severity     string  `json:"severity"`
-	Facility     string  `json:"facility"`
-	Message      string  `json:"message"`
-	RawMessage   string  `json:"raw_message"`
-	ParsedFields []byte  `json:"-"`
+	Timestamp      string   `json:"timestamp"`
+	Hostname       string   `json:"hostname"`
+	AppName        string   `json:"app_name"`
+	ProcessID      string   `json:"process_id"`
+	MsgID          string   `json:"msg_id"`
+	Severity       string   `json:"severity"`
+	Facility       string   `json:"facility"`
+	Message        string   `json:"message"`
+	RawMessage     string   `json:"raw_message"`
+	ParsedFields   []byte   `json:"-"`
+	MatchedParsers []string `json:"-"`
 }
 
 type LogQueryParams struct {

@@ -70,12 +70,13 @@ if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			}
 
 			appName := entry.AppName
-			parsed := engine.Parse(entry.Hostname, appName, entry.Message)
-			if parsed != nil {
-				jsonData, err := json.Marshal(parsed)
+			result := engine.Parse(entry.Hostname, appName, entry.Message)
+			if result != nil {
+				jsonData, err := json.Marshal(result.Fields)
 				if err == nil {
 					entry.ParsedFields = jsonData
 				}
+				entry.MatchedParsers = result.Parsers
 			}
 
 			entries = append(entries, entry)
@@ -118,8 +119,8 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 	}
 	defer tx.Rollback()
 
-	query := `INSERT INTO syslog_logs (timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields)
-		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+	query := `INSERT INTO syslog_logs (timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers)
+		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 	stmt, err := tx.Prepare(query)
 	if err != nil {
 		return fmt.Errorf("prepare: %w", err)
@@ -144,7 +145,7 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 		}
 
 		_, err = stmt.Exec(ts, entry.Hostname, appName, processID, msgID,
-			entry.Severity, facility, entry.Message, rawMsg, parsedFields)
+			entry.Severity, facility, entry.Message, rawMsg, parsedFields, entry.MatchedParsers)
 		if err != nil {
 			log.Printf("Tailer: insert error: %v", err)
 			continue

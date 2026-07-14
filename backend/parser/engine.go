@@ -200,7 +200,12 @@ func (e *Engine) Extract(parser *model.Parser, message string) map[string]string
 	return result
 }
 
-func (e *Engine) Parse(hostname, appName, message string) map[string]string {
+type ParseResult struct {
+	Fields    map[string]string
+	Parsers   []string
+}
+
+func (e *Engine) Parse(hostname, appName, message string) *ParseResult {
 	matched := e.Match(hostname, appName, message)
 	if len(matched) == 0 {
 		log.Printf("Parser: no match for hostname=%s app=%s msg=%.80s", hostname, appName, message)
@@ -208,7 +213,9 @@ func (e *Engine) Parse(hostname, appName, message string) map[string]string {
 	}
 
 	merged := make(map[string]string)
+	var parserNames []string
 	for _, p := range matched {
+		parserNames = append(parserNames, p.Name)
 		fields := e.Extract(&p, message)
 		if fields != nil {
 			for k, v := range fields {
@@ -219,8 +226,8 @@ func (e *Engine) Parse(hostname, appName, message string) map[string]string {
 		}
 	}
 
-	log.Printf("Parser: matched %d parsers for hostname=%s app=%s -> %v", len(matched), hostname, appName, merged)
-	return merged
+	log.Printf("Parser: matched %d parsers for hostname=%s app=%s -> %v (%v)", len(matched), hostname, appName, merged, parserNames)
+	return &ParseResult{Fields: merged, Parsers: parserNames}
 }
 
 func (e *Engine) GetAllParsers() ([]model.Parser, error) {
@@ -343,7 +350,7 @@ func (e *Engine) ReparseUnparsed(hostname, from, to string, limit int) (*model.R
 	processed := 0
 	updated := 0
 
-	updateStmt := `UPDATE syslog_logs SET parsed_fields = $1 WHERE id = $2`
+	updateStmt := `UPDATE syslog_logs SET parsed_fields = $1, matched_parsers = $2 WHERE id = $3`
 
 	for rows.Next() {
 		var id int64
@@ -360,17 +367,17 @@ func (e *Engine) ReparseUnparsed(hostname, from, to string, limit int) (*model.R
 			appName = *appPtr
 		}
 
-		parsed := e.Parse(h, appName, message)
-		if parsed == nil {
+		result := e.Parse(h, appName, message)
+		if result == nil {
 			continue
 		}
 
-		jsonData, err := json.Marshal(parsed)
+		jsonData, err := json.Marshal(result.Fields)
 		if err != nil {
 			continue
 		}
 
-		_, err = e.db.Exec(updateStmt, jsonData, id)
+		_, err = e.db.Exec(updateStmt, jsonData, result.Parsers, id)
 		if err != nil {
 			log.Printf("Parser: reparse update error: %v", err)
 			continue

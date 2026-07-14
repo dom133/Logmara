@@ -200,6 +200,13 @@ export default function DashboardViewPage() {
       }
     }
 
+    if (detailLog.matched_parsers && detailLog.matched_parsers.length > 0) {
+      items.push({
+        label: 'Matched Parsers',
+        content: detailLog.matched_parsers.map(p => <Tag key={p} color="purple">{p}</Tag>),
+      })
+    }
+
     items.push({
       label: 'Full Message',
       content: (

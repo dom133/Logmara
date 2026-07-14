@@ -79,6 +79,7 @@ export interface LogEntry {
   message: string
   raw_message?: string
   parsed_fields?: Record<string, string>
+  matched_parsers?: string[]
   created_at: string
 }
 

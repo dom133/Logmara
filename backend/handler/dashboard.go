@@ -238,7 +238,7 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			limitInt = 100
 		}
 
-		query := "SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, created_at FROM syslog_logs WHERE 1=1"
+		query := "SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at FROM syslog_logs WHERE 1=1"
 		args := []interface{}{}
 		argIdx := 1
 
@@ -313,7 +313,7 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			var rawParsed json.RawMessage
 			err := rows.Scan(&l.ID, &l.Timestamp, &l.Hostname, &l.AppName,
 				&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
-				&l.Message, &l.RawMessage, &rawParsed, &l.CreatedAt)
+				&l.Message, &l.RawMessage, &rawParsed, &l.MatchedParsers, &l.CreatedAt)
 			if err != nil {
 				continue
 			}
