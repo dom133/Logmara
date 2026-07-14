@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, Switch, message, Popconfirm, Tooltip, Typography, Divider, Descriptions } from 'antd'
-import { PlusOutlined, PlayCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, RestOutlined, CloneOutlined } from '@ant-design/icons'
+import { PlusOutlined, PlayCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, RestOutlined, CopyOutlined } from '@ant-design/icons'
 import { getParsers, createParser, updateParser, deleteParser, cloneParser, testParser, reparseUnparsed, getParsedFields, Parser, ParsedField } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 
@@ -198,7 +198,7 @@ export default function ParsersPage() {
             <Button size="small" icon={<EditOutlined />} disabled={r.is_builtin} onClick={() => openEdit(r)} />
           </Tooltip>
           <Tooltip title="Clone">
-            <Button size="small" icon={<CloneOutlined />} onClick={() => handleClone(r.id)} />
+            <Button size="small" icon={<CopyOutlined />} onClick={() => handleClone(r.id)} />
           </Tooltip>
           <Popconfirm title="Delete parser?" onConfirm={() => handleDelete(r.id)} disabled={r.is_builtin}>
             <Button size="small" danger icon={<DeleteOutlined />} disabled={r.is_builtin} />
