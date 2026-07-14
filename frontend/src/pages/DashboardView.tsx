@@ -346,7 +346,7 @@ export default function DashboardViewPage() {
       >
         {detailLog && (
           <Descriptions column={2} size="small" bordered>
-            {renderDetailContent().map((item, i) => (
+            {(renderDetailContent() ?? []).map((item, i) => (
               <Descriptions.Item key={i} label={item.label} span={item.span || 1}>
                 {item.content}
               </Descriptions.Item>
