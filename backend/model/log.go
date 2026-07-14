@@ -41,21 +41,28 @@ type IngestEntry struct {
 // UnmarshalJSON handles both old format and RSYSLOG_EF-JSON
 func (e *IngestEntry) UnmarshalJSON(data []byte) error {
 	type RawEntry struct {
-		Timestamp    string `json:"timestamp"`
-		Hostname     string `json:"hostname"`
-		AppName      string `json:"app_name"`
-		ProcessID    string `json:"process_id"`
-		MsgID        string `json:"msg_id"`
-		Severity     string `json:"severity"`
-		Facility     string `json:"facility"`
-		Message      string `json:"message"`
-		RawMessage   string `json:"raw_message"`
-		AtTimestamp  string `json:"@timestamp"`
-		SeverityText string `json:"severity_text"`
-		FacilityText string `json:"facility_text"`
-		Program      string `json:"program"`
-		Pid          string `json:"pid"`
-		SyslogTag    string `json:"syslog_tag"`
+		Timestamp        string `json:"timestamp"`
+		TimeReported     string `json:"timereported"`
+		Hostname         string `json:"hostname"`
+		FromHostIP       string `json:"fromhost-ip"`
+		AppName          string `json:"app_name"`
+		ProgramName      string `json:"programname"`
+		ProcessID        string `json:"process_id"`
+		ProcID           string `json:"procid"`
+		Pid              string `json:"pid"`
+		MsgID            string `json:"msg_id"`
+		Severity         string `json:"severity"`
+		SeverityText     string `json:"severity_text"`
+		SyslogSevText    string `json:"syslogseverity-text"`
+		Facility         string `json:"facility"`
+		FacilityText     string `json:"facility_text"`
+		SyslogFacText    string `json:"syslogfacility-text"`
+		Message          string `json:"message"`
+		Msg              string `json:"msg"`
+		RawMessage       string `json:"raw_message"`
+		AtTimestamp      string `json:"@timestamp"`
+		Program          string `json:"program"`
+		SyslogTag        string `json:"syslog_tag"`
 	}
 
 	var raw RawEntry
@@ -67,27 +74,48 @@ func (e *IngestEntry) UnmarshalJSON(data []byte) error {
 	if e.Timestamp == "" {
 		e.Timestamp = raw.AtTimestamp
 	}
+	if e.Timestamp == "" {
+		e.Timestamp = raw.TimeReported
+	}
 	e.Hostname = raw.Hostname
+	if e.Hostname == "" {
+		e.Hostname = raw.FromHostIP
+	}
 	e.Severity = raw.Severity
 	if e.Severity == "" {
 		e.Severity = raw.SeverityText
+	}
+	if e.Severity == "" {
+		e.Severity = raw.SyslogSevText
 	}
 	e.Facility = raw.Facility
 	if e.Facility == "" {
 		e.Facility = raw.FacilityText
 	}
+	if e.Facility == "" {
+		e.Facility = raw.SyslogFacText
+	}
 	e.AppName = raw.AppName
 	if e.AppName == "" {
 		e.AppName = raw.Program
+	}
+	if e.AppName == "" {
+		e.AppName = raw.ProgramName
 	}
 	e.ProcessID = raw.ProcessID
 	if e.ProcessID == "" {
 		e.ProcessID = raw.Pid
 	}
+	if e.ProcessID == "" {
+		e.ProcessID = raw.ProcID
+	}
 	e.Message = raw.Message
+	if e.Message == "" {
+		e.Message = raw.Msg
+	}
 	e.RawMessage = raw.RawMessage
 	if e.RawMessage == "" {
-		e.RawMessage = raw.Message
+		e.RawMessage = e.Message
 	}
 	if e.MsgID == "" && raw.SyslogTag != "" {
 		e.MsgID = raw.SyslogTag
