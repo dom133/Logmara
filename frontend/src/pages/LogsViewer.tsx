@@ -376,7 +376,7 @@ export default function LogsViewer() {
             open={detailModalOpen}
             onCancel={() => setDetailModalOpen(false)}
             footer={null}
-            width={[700, '90%']}
+            width={{ sm: '90%', md: 700 }}
           >
             {selectedLog && (
               <Descriptions bordered column={1} size="small">

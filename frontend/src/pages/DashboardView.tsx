@@ -372,7 +372,7 @@ export default function DashboardViewPage() {
         footer={[
           <Button key="close" onClick={() => setDetailLog(null)}>Close</Button>
         ]}
-        width={[720, '90%']}
+        width={{ sm: '90%', md: 720 }}
       >
         {detailLog && (
           <Descriptions column={2} size="small" bordered>
