@@ -35,7 +35,7 @@ var LinuxParsers = []ParserSeed{
 		DeviceType:  "linux",
 		MatchType:   "app_name",
 		MatchValue:  "systemd",
-		Regex:       `(Started|Stopped)\s+(.+?)\s+—`,
+		Regex:       `(Starting|Started|Stopping|Stopped|Finished|Deactivating|Deactivated|Activating|Activated|Collected)\s+(.+?)(?:\s+[-—].+)?`,
 		Fields: []FieldSeed{
 			{Name: "action", Label: "Action", Type: "string"},
 			{Name: "service", Label: "Service Name", Type: "string"},

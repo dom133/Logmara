@@ -203,6 +203,7 @@ func (e *Engine) Extract(parser *model.Parser, message string) map[string]string
 func (e *Engine) Parse(hostname, appName, message string) map[string]string {
 	matched := e.Match(hostname, appName, message)
 	if len(matched) == 0 {
+		log.Printf("Parser: no match for hostname=%s app=%s msg=%.80s", hostname, appName, message)
 		return nil
 	}
 
@@ -218,6 +219,7 @@ func (e *Engine) Parse(hostname, appName, message string) map[string]string {
 		}
 	}
 
+	log.Printf("Parser: matched %d parsers for hostname=%s app=%s -> %v", len(matched), hostname, appName, merged)
 	return merged
 }
 
