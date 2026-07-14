@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, message, Popconfirm, Typography, List } from 'antd'
 import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PushpinOutlined, PushpinFilled, RestOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
-import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, Dashboard, DashboardConfig } from '../services/api'
-import { getDevices } from '../services/api'
+import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, Dashboard, DashboardConfig, ParsedField } from '../services/api'
+import { getDevices, getParsedFields } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 
 const { Title } = Typography
@@ -15,6 +15,7 @@ export default function DashboardsPage() {
   const [editing, setEditing] = useState<Dashboard | null>(null)
   const [form] = Form.useForm()
   const [devices, setDevices] = useState<string[]>([])
+  const [parsedFields, setParsedFields] = useState<ParsedField[]>([])
   const navigate = useNavigate()
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
@@ -31,13 +32,19 @@ export default function DashboardsPage() {
   const loadData = async () => {
     setLoading(true)
     try {
-      const [d, dv] = await Promise.all([getDashboards(), getDevices()])
+      const [d, dv, pf] = await Promise.all([getDashboards(), getDevices(), getParsedFields()])
       setDashboards(d)
       setDevices(dv)
+      setParsedFields(pf)
     } finally {
       setLoading(false)
     }
   }
+
+  const fieldOptions = Array.from(new Map(parsedFields.map(f => [f.field_name, f])).values()).map(f => ({
+    label: f.field_label || f.field_name,
+    value: f.field_name,
+  }))
 
   useEffect(() => {
     loadData()
@@ -228,24 +235,7 @@ export default function DashboardsPage() {
                 mode="multiple"
                 placeholder="Select fields from parsed data (leave empty for default)"
                 style={{ width: '100%' }}
-                options={[
-                  { label: 'action', value: 'action' },
-                  { label: 'src_ip', value: 'src_ip' },
-                  { label: 'dst_ip', value: 'dst_ip' },
-                  { label: 'user', value: 'user' },
-                  { label: 'port', value: 'port' },
-                  { label: 'protocol', value: 'protocol' },
-                  { label: 'bytes', value: 'bytes' },
-                  { label: 'status', value: 'status' },
-                  { label: 'reason', value: 'reason' },
-                  { label: 'rule', value: 'rule' },
-                  { label: 'interface', value: 'interface' },
-                  { label: 'mac_address', value: 'mac_address' },
-                  { label: 'duration', value: 'duration' },
-                  { label: 'cpu_usage', value: 'cpu_usage' },
-                  { label: 'memory_usage', value: 'memory_usage' },
-                  { label: 'temperature', value: 'temperature' },
-                ]}
+                options={fieldOptions}
               />
             </Form.Item>
           </Form.Item>

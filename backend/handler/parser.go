@@ -250,26 +250,13 @@ func CloneParser(engine *parser.Engine) gin.HandlerFunc {
 			return
 		}
 
-		rows, err := tx.Query("SELECT field_name, field_label, field_type FROM parsed_fields_registry WHERE parser_id = $1", id)
+		_, err = tx.Exec(`
+			INSERT INTO parsed_fields_registry (parser_id, field_name, field_label, field_type)
+			SELECT $1, field_name, field_label, field_type FROM parsed_fields_registry WHERE parser_id = $2
+		`, newID, id)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var fieldName, fieldLabel, fieldType string
-			if err := rows.Scan(&fieldName, &fieldLabel, &fieldType); err != nil {
-				continue
-			}
-			_, err := tx.Exec(`
-				INSERT INTO parsed_fields_registry (parser_id, field_name, field_label, field_type)
-				VALUES ($1, $2, $3, $4)
-			`, newID, fieldName, fieldLabel, fieldType)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
 		}
 
 		if err := tx.Commit(); err != nil {
