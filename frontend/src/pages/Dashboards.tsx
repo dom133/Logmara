@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, message, Popconfirm, Typography, List } from 'antd'
 import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
@@ -21,6 +21,7 @@ export default function DashboardsPage() {
   const [devices, setDevices] = useState<string[]>([])
   const [parsedFields, setParsedFields] = useState<ParsedField[]>([])
   const navigate = useNavigate()
+  const prevDevices = useRef<string[]>([])
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_dashboards',
@@ -132,6 +133,7 @@ export default function DashboardsPage() {
         filters: { severity: '', from: '', to: '', search: '' },
       },
     })
+    prevDevices.current = []
     loadAllFields()
     setModalOpen(true)
   }
@@ -144,6 +146,7 @@ export default function DashboardsPage() {
       config: d.config,
     })
     const devs = d.config?.devices || []
+    prevDevices.current = devs
     loadFieldsForDevices(devs)
     setModalOpen(true)
   }
@@ -309,10 +312,12 @@ export default function DashboardsPage() {
         onOk={() => { form.validateFields().then(values => editing ? handleUpdate(values) : handleCreate(values)) }}
         width={700}
       >
-        <Form form={form} layout="vertical" onValuesChange={(changed) => {
-      if (changed.config?.devices !== undefined) {
-        const devs = changed.config.devices || []
-        loadFieldsForDevices(devs)
+        <Form form={form} layout="vertical" onValuesChange={async (changed, allValues) => {
+      const newDevices = allValues.config?.devices || []
+      if (JSON.stringify(newDevices) !== JSON.stringify(prevDevices.current)) {
+        prevDevices.current = newDevices
+        form.setFieldValue(['config', 'fields'], [])
+        await loadFieldsForDevices(newDevices)
       }
     }}>
           <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Name is required' }]}>
