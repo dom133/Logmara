@@ -262,16 +262,16 @@ func GetDevices(db *sql.DB, engine *parser.Engine) gin.HandlerFunc {
 						continue
 					}
 					for _, p := range parsers {
-						if !p.Enabled || p.MatchValue == nil {
+						if !p.Enabled {
 							continue
 						}
 						switch p.MatchType {
 						case "app_name":
-							if matchGlob(*p.MatchValue, appName) {
+							if p.MatchValue != nil && matchGlob(*p.MatchValue, appName) {
 								matched[p.Name] = true
 							}
 						case "hostname":
-							if matchGlob(*p.MatchValue, ds.Hostname) {
+							if p.MatchValue != nil && matchGlob(*p.MatchValue, ds.Hostname) {
 								matched[p.Name] = true
 							}
 						case "all":
