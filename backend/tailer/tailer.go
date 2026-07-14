@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/lib/pq"
 	"syslog-gui/model"
 	"syslog-gui/parser"
 )
@@ -145,7 +146,7 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 		}
 
 		_, err = stmt.Exec(ts, entry.Hostname, appName, processID, msgID,
-			entry.Severity, facility, entry.Message, rawMsg, parsedFields, entry.MatchedParsers)
+			entry.Severity, facility, entry.Message, rawMsg, parsedFields, pq.StringArray(entry.MatchedParsers))
 		if err != nil {
 			log.Printf("Tailer: insert error: %v", err)
 			continue

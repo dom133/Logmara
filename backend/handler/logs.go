@@ -72,7 +72,7 @@ query := `INSERT INTO syslog_logs (timestamp, hostname, app_name, process_id, ms
 			if result == nil {
 				parsedJSON := []byte("null")
 				_, err = stmt.Exec(ts, entry.Hostname, appName, processID, msgID,
-					entry.Severity, facility, entry.Message, rawMsg, parsedJSON, nil)
+					entry.Severity, facility, entry.Message, rawMsg, parsedJSON, pq.StringArray(nil))
 				if err != nil {
 					log.Printf("Insert error: %v", err)
 				}
@@ -85,7 +85,7 @@ query := `INSERT INTO syslog_logs (timestamp, hostname, app_name, process_id, ms
 			}
 
 			_, err = stmt.Exec(ts, entry.Hostname, appName, processID, msgID,
-				entry.Severity, facility, entry.Message, rawMsg, parsedJSON, result.Parsers)
+				entry.Severity, facility, entry.Message, rawMsg, parsedJSON, pq.StringArray(result.Parsers))
 			if err != nil {
 				log.Printf("Insert error: %v", err)
 				continue
