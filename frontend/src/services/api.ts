@@ -137,7 +137,7 @@ export async function getDevices() {
 }
 
 export async function getDeviceStats() {
-  const res = await api.get('/stats/devices')
+  const res = await api.get('/devices')
   return (res.data?.devices || []) as DeviceStats[]
 }
 
