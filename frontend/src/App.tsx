@@ -249,7 +249,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           placement="left"
           onClose={() => setDrawerVisible(false)}
           open={drawerVisible}
-          width={{ sm: '90%', md: 280 }}
+          width="85%"
           styles={{ body: { padding: 0 } }}
         >
           <div style={{ background: token.colorBgContainer, height: '100%' }}>
