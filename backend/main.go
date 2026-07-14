@@ -92,7 +92,7 @@ func main() {
 	r.POST("/api/auth/login", rateLimitMiddleware(loginLimiter), handler.Login(database))
 	r.POST("/api/auth/refresh", handler.Refresh(database))
 	r.POST("/api/auth/logout", handler.Logout(database))
-	r.POST("/api/ingest/batch", handler.IngestBatch(database))
+	r.POST("/api/ingest/batch", handler.IngestBatch(database, engine))
 	r.GET("/api/status/initialized", handler.CheckInitialized(database))
 	r.POST("/api/init", handler.Initialize(database))
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())

@@ -18,7 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func IngestBatch(db *sql.DB) gin.HandlerFunc {
+func IngestBatch(db *sql.DB, engine *parser.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		body, err := io.ReadAll(c.Request.Body)
 		if err != nil {
@@ -44,8 +44,8 @@ func IngestBatch(db *sql.DB) gin.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		query := `INSERT INTO syslog_logs (timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message)
-		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+query := `INSERT INTO syslog_logs (timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields)
+	          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 		stmt, err := tx.Prepare(query)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not prepare statement"})
@@ -67,8 +67,14 @@ func IngestBatch(db *sql.DB) gin.HandlerFunc {
 			facility := nullStr(entry.Facility)
 			rawMsg := nullStr(entry.RawMessage)
 
+			parsedFields := engine.Parse(entry.Hostname, entry.AppName, entry.Message)
+			parsedJSON, marshalErr := json.Marshal(parsedFields)
+			if marshalErr != nil {
+				parsedJSON = []byte("null")
+			}
+
 			_, err = stmt.Exec(ts, entry.Hostname, appName, processID, msgID,
-				entry.Severity, facility, entry.Message, rawMsg)
+				entry.Severity, facility, entry.Message, rawMsg, parsedJSON)
 			if err != nil {
 				log.Printf("Insert error: %v", err)
 				continue
@@ -170,7 +176,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 
 		// Fetch logs
 		logsQuery := fmt.Sprintf(
-			"SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, created_at "+
+			"SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, created_at "+
 				"FROM syslog_logs %s ORDER BY %s LIMIT $%d OFFSET $%d",
 			whereSQL, orderClause, argIdx, argIdx+1,
 		)
@@ -189,7 +195,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 			err := rows.Scan(
 				&l.ID, &l.Timestamp, &l.Hostname, &l.AppName,
 				&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
-				&l.Message, &l.RawMessage, &l.CreatedAt,
+				&l.Message, &l.RawMessage, &l.ParsedFields, &l.CreatedAt,
 			)
 			if err != nil {
 				log.Printf("Scan error: %v", err)
@@ -252,7 +258,19 @@ func GetDevices(db *sql.DB, engine *parser.Engine) gin.HandlerFunc {
 						continue
 					}
 					for _, p := range parsers {
-						if p.Enabled && p.MatchType == "app_name" && p.MatchValue != nil && matchGlob(*p.MatchValue, appName) {
+						if !p.Enabled || p.MatchValue == nil {
+							continue
+						}
+						switch p.MatchType {
+						case "app_name":
+							if matchGlob(*p.MatchValue, appName) {
+								matched[p.Name] = true
+							}
+						case "hostname":
+							if matchGlob(*p.MatchValue, ds.Hostname) {
+								matched[p.Name] = true
+							}
+						case "all":
 							matched[p.Name] = true
 						}
 					}

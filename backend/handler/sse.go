@@ -2,6 +2,7 @@ package handler
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -80,7 +81,7 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 			case <-ticker.C:
 				whereSQL, args := buildWhere()
 				query := fmt.Sprintf(
-					"SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, created_at "+
+					"SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, created_at "+
 						"FROM syslog_logs %s ORDER BY timestamp ASC LIMIT 100",
 					whereSQL,
 				)
@@ -93,12 +94,16 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 				var logs []model.SyslogLog
 				for rows.Next() {
 					var l model.SyslogLog
+					var rawParsed json.RawMessage
 					if err := rows.Scan(
 						&l.ID, &l.Timestamp, &l.Hostname, &l.AppName,
 						&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
-						&l.Message, &l.RawMessage, &l.CreatedAt,
+						&l.Message, &l.RawMessage, &rawParsed, &l.CreatedAt,
 					); err != nil {
 						continue
+					}
+					if len(rawParsed) > 0 {
+						json.Unmarshal(rawParsed, &l.ParsedFields)
 					}
 					logs = append(logs, l)
 				}
@@ -112,8 +117,9 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 				if err != nil {
 					continue
 				}
+				encoded := base64.StdEncoding.EncodeToString(data)
 
-				fmt.Fprintf(c.Writer, "event: log\ndata: %s\n\n", string(data))
+				fmt.Fprintf(c.Writer, "event: log\ndata: %s\n\n", encoded)
 				flusher.Flush()
 
 				since = logs[len(logs)-1].Timestamp.Format(time.RFC3339)

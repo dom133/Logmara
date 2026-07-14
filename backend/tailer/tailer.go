@@ -60,10 +60,10 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine) {
 			}
 
 			var entry model.IngestEntry
-			if err := json.Unmarshal([]byte(line), &entry); err != nil {
-				log.Printf("Tailer: invalid JSON: %v", err)
-				continue
-			}
+if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			log.Printf("Tailer: invalid JSON: %v", err)
+			continue
+		}
 
 			if entry.Hostname == "" {
 				continue

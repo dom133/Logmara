@@ -110,18 +110,19 @@ export function useSSE({ onNewLogs, filters = {}, enabled = true }: UseSSEOption
             buffer = buffer.slice(lastDoubleNewline + 2)
             const events = parseSSE(complete)
 
-            for (const evt of events) {
-              if (evt.event === 'log' && evt.data) {
-                try {
-                  const logs = JSON.parse(evt.data) as LogEntry[]
-                  if (Array.isArray(logs) && logs.length > 0) {
-                    onNewLogsRef.current(logs)
-                  }
-                } catch {
-                  // ignore parse errors
-                }
-              }
-            }
+for (const evt of events) {
+               if (evt.event === 'log' && evt.data) {
+                 try {
+                   const decoded = atob(evt.data)
+                   const logs = JSON.parse(decoded) as LogEntry[]
+                   if (Array.isArray(logs) && logs.length > 0) {
+                     onNewLogsRef.current(logs)
+                   }
+                 } catch {
+                   // ignore parse errors
+                 }
+               }
+             }
           }
         } catch (e: any) {
           if (e.name !== 'AbortError') {
