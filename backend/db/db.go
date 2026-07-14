@@ -373,8 +373,8 @@ func UpdateSetting(db *sql.DB, key, value string) error {
 			}
 		}
 	}
-	_, err := db.Exec(`UPDATE app_settings SET value = $1 WHERE key = $2
-		ON CONFLICT (key) DO UPDATE SET value = $1`, value, key)
+	_, err := db.Exec(`INSERT INTO app_settings (key, value) VALUES ($1, $2)
+		ON CONFLICT (key) DO UPDATE SET value = $2`, key, value)
 	return err
 }
 

@@ -53,6 +53,9 @@ export default function Admin() {
       formValues['ldap_enabled'] = data['ldap_enabled'] === 'true'
       formValues['ldap_use_tls'] = data['ldap_use_tls'] === 'true'
       formValues['ldap_auto_provision'] = data['ldap_auto_provision'] === 'true'
+      if (data['ldap_port']) formValues['ldap_port'] = parseInt(data['ldap_port'], 10)
+      if (data['retention_days']) formValues['retention_days'] = parseInt(data['retention_days'], 10)
+      if (data['jwt_expiry']) formValues['jwt_expiry'] = parseInt(data['jwt_expiry'], 10)
       settingsForm.setFieldsValue(formValues)
       setLdapEnabled(data['ldap_enabled'] === 'true')
     } catch (e: any) {
@@ -73,8 +76,8 @@ export default function Admin() {
     try {
       await testLDAPConnection({
         server: values.ldap_server,
-        port: values.ldap_port || 389,
-        use_tls: values.ldap_use_tls,
+        port: Number(values.ldap_port) || 389,
+        use_tls: getLdapBool('ldap_use_tls'),
         base_dn: values.ldap_base_dn,
         bind_dn: values.ldap_bind_dn,
         bind_password: values.ldap_bind_password,
@@ -170,6 +173,11 @@ export default function Admin() {
     } catch (e: any) {
       message.error(e.response?.data?.error || 'Failed to save settings')
     }
+  }
+
+  const getLdapBool = (key: string) => {
+    const v = settingsForm.getFieldValue(key)
+    return v === true || v === 'true' || v === 1
   }
 
   const handleCleanup = async () => {
