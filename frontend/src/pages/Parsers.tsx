@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, Switch, message, Popconfirm, Tooltip, Typography, Divider, Descriptions } from 'antd'
-import { PlusOutlined, PlayCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, RestOutlined } from '@ant-design/icons'
-import { getParsers, createParser, updateParser, deleteParser, testParser, reparseUnparsed, getParsedFields, Parser, ParsedField } from '../services/api'
+import { PlusOutlined, PlayCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, RestOutlined, CloneOutlined } from '@ant-design/icons'
+import { getParsers, createParser, updateParser, deleteParser, cloneParser, testParser, reparseUnparsed, getParsedFields, Parser, ParsedField } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 
 const { Title, Text } = Typography
 
 const deviceTypes = ['all', 'mikrotik', 'ubiquiti', 'cisco', 'palo_alto', 'pfsense', 'linux', 'generic']
-const matchTypes = ['hostname', 'app_name', 'message']
+const matchTypes = ['hostname', 'app_name', 'message', 'all']
 
 export default function ParsersPage() {
   const [parsers, setParsers] = useState<Parser[]>([])
@@ -31,7 +31,7 @@ export default function ParsersPage() {
       { key: 'regex', width: 250 },
       { key: 'fields', width: 180 },
       { key: 'enabled', width: 100 },
-      { key: 'actions', width: 140 },
+      { key: 'actions', width: 180 },
     ],
   )
 
@@ -83,6 +83,16 @@ export default function ParsersPage() {
       loadData()
     } catch (e: any) {
       message.error(e.response?.data?.error || 'Failed to delete parser')
+    }
+  }
+
+  const handleClone = async (id: number) => {
+    try {
+      await cloneParser(id)
+      message.success('Parser cloned')
+      loadData()
+    } catch (e: any) {
+      message.error(e.response?.data?.error || 'Failed to clone parser')
     }
   }
 
@@ -186,6 +196,9 @@ export default function ParsersPage() {
         <Space>
           <Tooltip title="Edit">
             <Button size="small" icon={<EditOutlined />} disabled={r.is_builtin} onClick={() => openEdit(r)} />
+          </Tooltip>
+          <Tooltip title="Clone">
+            <Button size="small" icon={<CloneOutlined />} onClick={() => handleClone(r.id)} />
           </Tooltip>
           <Popconfirm title="Delete parser?" onConfirm={() => handleDelete(r.id)} disabled={r.is_builtin}>
             <Button size="small" danger icon={<DeleteOutlined />} disabled={r.is_builtin} />

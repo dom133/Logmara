@@ -42,8 +42,8 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 			idx := 2
 
 			if hostname != "" {
-				clauses = append(clauses, fmt.Sprintf("hostname ILIKE $%d", idx))
-				args = append(args, "%"+hostname+"%")
+				clauses = append(clauses, fmt.Sprintf("hostname = $%d", idx))
+				args = append(args, hostname)
 				idx++
 			}
 			if severity != "" {

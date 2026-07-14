@@ -120,6 +120,7 @@ func main() {
 			editorGroup.POST("/parsers", handler.CreateParser(engine))
 			editorGroup.PUT("/parsers/:id", handler.UpdateParser(engine))
 			editorGroup.DELETE("/parsers/:id", handler.DeleteParser(engine))
+			editorGroup.POST("/parsers/:id/clone", handler.CloneParser(engine))
 			editorGroup.POST("/parsers/test", handler.TestParser(engine))
 			editorGroup.POST("/parsers/reparse", handler.ReparseUnparsed(engine))
 			editorGroup.GET("/parsers/fields", handler.ListParsedFields(engine))

@@ -145,7 +145,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collaps
   return (
     <>
       <div style={{ padding: '20px 16px', fontSize: 20, fontWeight: 700, color: '#1890ff', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <DashboardOutlined style={{ fontSize: 24 }} /> SysLog GUI
+        <DashboardOutlined style={{ fontSize: 24 }} /> {!collapsed && 'SysLog GUI'}
       </div>
       {renderLinks()}
     </>

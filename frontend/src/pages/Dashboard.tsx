@@ -139,6 +139,7 @@ export default function Dashboard() {
               rowKey="hostname"
               pagination={false}
               size="small"
+              scroll={{ x: 'max-content' }}
             />
           </Card>
         </Col>
@@ -153,6 +154,7 @@ export default function Dashboard() {
               rowKey={(r, i) => (i ?? 0).toString()}
               pagination={false}
               size="small"
+              scroll={{ x: 'max-content' }}
             />
           </Card>
         </Col>

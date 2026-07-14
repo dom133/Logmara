@@ -268,6 +268,11 @@ export async function deleteParser(id: number) {
   return res.data
 }
 
+export async function cloneParser(id: number) {
+  const res = await api.post(`/parsers/${id}/clone`)
+  return res.data
+}
+
 export async function testParser(pattern: string, sampleLog: string): Promise<ParserTestResponse> {
   const res = await api.post('/parsers/test', { pattern, sample_log: sampleLog })
   return res.data as ParserTestResponse

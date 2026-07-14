@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Table, Input, InputRef, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Dropdown, Modal, Descriptions } from 'antd'
 import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { getLogs, getDevices, exportCSV, exportHTML, LogEntry } from '../services/api'
@@ -15,12 +16,14 @@ const { RangePicker } = DatePicker
 const severities = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug']
 
 export default function LogsViewer() {
+  const [searchParams] = useSearchParams()
+  const urlHostname = searchParams.get('hostname') || ''
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [devices, setDevices] = useState<string[]>([])
   const [filters, setFilters] = useState({
-    hostname: '',
+    hostname: urlHostname,
     severity: '',
     search: '',
     from: '',
