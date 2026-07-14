@@ -288,8 +288,12 @@ export async function reparseUnparsed(hostname?: string, from?: string, to?: str
   return res.data
 }
 
-export async function getParsedFields() {
-  const res = await api.get('/parsers/fields')
+export async function getParsedFields(hostnames?: string[]) {
+  const params: Record<string, string> = {}
+  if (hostnames && hostnames.length > 0) {
+    params.hostnames = hostnames.join(',')
+  }
+  const res = await api.get('/parsers/fields', { params })
   return (res.data || []) as ParsedField[]
 }
 

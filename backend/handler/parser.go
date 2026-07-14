@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"syslog-gui/model"
 	"syslog-gui/parser"
@@ -310,6 +311,20 @@ func ReparseUnparsed(engine *parser.Engine) gin.HandlerFunc {
 
 func ListParsedFields(engine *parser.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		hostnamesRaw := c.Query("hostnames")
+		if hostnamesRaw != "" {
+			hostnames := strings.Split(hostnamesRaw, ",")
+			for i, h := range hostnames {
+				hostnames[i] = strings.TrimSpace(h)
+			}
+			fields, err := engine.GetParsedFieldsForHostnames(hostnames)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, fields)
+			return
+		}
 		fields, err := engine.GetParsedFieldRegistry()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

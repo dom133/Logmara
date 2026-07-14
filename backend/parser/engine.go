@@ -293,6 +293,124 @@ func (e *Engine) GetParsedFieldRegistry() ([]model.ParsedField, error) {
 	return fields, nil
 }
 
+func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.ParsedField, error) {
+	if len(hostnames) == 0 {
+		return e.GetParsedFieldRegistry()
+	}
+
+	rows, err := e.db.Query(`
+		SELECT id, name, description, device_type, match_type, match_value, regex, enabled, is_builtin, created_at, updated_at
+		FROM parsers
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var parsers []model.Parser
+	for rows.Next() {
+		var p model.Parser
+		err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.DeviceType,
+			&p.MatchType, &p.MatchValue, &p.Regex, &p.Enabled, &p.IsBuiltin, &p.CreatedAt, &p.UpdatedAt)
+		if err != nil {
+			continue
+		}
+		parsers = append(parsers, p)
+	}
+
+	parserIDs := make(map[int64]bool)
+
+	for _, hostname := range hostnames {
+		appRows, err := e.db.Query(`SELECT DISTINCT app_name FROM syslog_logs WHERE hostname = $1`, hostname)
+		if err != nil {
+			continue
+		}
+
+		var appNames []string
+		hasLogs := false
+		for appRows.Next() {
+			var appName sql.NullString
+			if err := appRows.Scan(&appName); err != nil {
+				continue
+			}
+			if appName.Valid {
+				appNames = append(appNames, appName.String)
+				hasLogs = true
+			}
+		}
+		appRows.Close()
+
+		if !hasLogs {
+			continue
+		}
+
+		for _, p := range parsers {
+			switch p.MatchType {
+			case "all":
+				parserIDs[p.ID] = true
+			case "hostname":
+				if p.MatchValue != nil && *p.MatchValue != "" && matchGlob(*p.MatchValue, hostname) {
+					parserIDs[p.ID] = true
+				}
+			case "app_name":
+				if p.MatchValue != nil && *p.MatchValue != "" {
+					for _, appName := range appNames {
+						if matchGlob(*p.MatchValue, appName) {
+							parserIDs[p.ID] = true
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if len(parserIDs) == 0 {
+		return []model.ParsedField{}, nil
+	}
+
+	ids := make([]int64, 0, len(parserIDs))
+	for id := range parserIDs {
+		ids = append(ids, id)
+	}
+
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`
+		SELECT f.id, f.parser_id, f.field_name, f.field_label, f.field_type, p.name as parser_name
+		FROM parsed_fields_registry f
+		JOIN parsers p ON f.parser_id = p.id
+		WHERE f.parser_id IN (%s)
+		ORDER BY p.device_type, f.field_name
+	`, strings.Join(placeholders, ", "))
+
+	rows, err = e.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var fields []model.ParsedField
+	seen := make(map[string]bool)
+	for rows.Next() {
+		var f model.ParsedField
+		if err := rows.Scan(&f.ID, &f.ParserID, &f.Name, &f.Label, &f.Type, &f.ParserName); err != nil {
+			continue
+		}
+		if !seen[f.Name] {
+			seen[f.Name] = true
+			fields = append(fields, f)
+		}
+	}
+
+	return fields, nil
+}
+
 func (e *Engine) TestParser(pattern string, sampleLog string) (*model.ParserTestResponse, error) {
 	re, err := regexp.Compile(pattern)
 	if err != nil {

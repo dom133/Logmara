@@ -34,13 +34,23 @@ export default function DashboardsPage() {
     ],
   )
 
+  const loadAllFields = async () => {
+    const pf = await getParsedFields()
+    setParsedFields(pf)
+  }
+
+  const loadFieldsForDevices = async (devices: string[]) => {
+    const pf = await getParsedFields(devices.length > 0 ? devices : undefined)
+    setParsedFields(pf)
+  }
+
   const loadData = async () => {
     setLoading(true)
     try {
-      const [d, dv, pf] = await Promise.all([getDashboards(), getDevices(), getParsedFields()])
+      const [d, dv] = await Promise.all([getDashboards(), getDevices()])
       setDashboards(d)
       setDevices(dv)
-      setParsedFields(pf)
+      await loadAllFields()
     } finally {
       setLoading(false)
     }
@@ -122,6 +132,7 @@ export default function DashboardsPage() {
         filters: { severity: '', from: '', to: '', search: '' },
       },
     })
+    loadAllFields()
     setModalOpen(true)
   }
 
@@ -132,6 +143,8 @@ export default function DashboardsPage() {
       description: d.description,
       config: d.config,
     })
+    const devs = d.config?.devices || []
+    loadFieldsForDevices(devs)
     setModalOpen(true)
   }
 
@@ -296,7 +309,12 @@ export default function DashboardsPage() {
         onOk={() => { form.validateFields().then(values => editing ? handleUpdate(values) : handleCreate(values)) }}
         width={700}
       >
-        <Form form={form} layout="vertical">
+        <Form form={form} layout="vertical" onValuesChange={(changed) => {
+      if (changed.config?.devices !== undefined) {
+        const devs = changed.config.devices || []
+        loadFieldsForDevices(devs)
+      }
+    }}>
           <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Name is required' }]}>
             <Input placeholder="e.g. Firewall Monitoring" />
           </Form.Item>
