@@ -347,9 +347,9 @@ export interface User {
 	username: string
 	email: string
 	role: string
+	auth_type: string
 	is_admin: boolean
 	is_active: boolean
-	is_ldap: boolean
 	created_at: string
 	last_login_at: string | null
 }

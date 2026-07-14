@@ -69,7 +69,7 @@ func Initialize(database *sql.DB) gin.HandlerFunc {
 		}
 
 		_, err = tx.Exec(
-			"INSERT INTO users (username, password_hash, email, is_admin, role, is_active) VALUES ($1, $2, $3, $4, $5, $6)",
+			"INSERT INTO users (username, password_hash, email, is_admin, role, is_active, auth_type) VALUES ($1, $2, $3, $4, $5, $6, 'local')",
 			req.Admin.Username, hash, req.Admin.Email, true, "admin", true,
 		)
 		if err != nil {

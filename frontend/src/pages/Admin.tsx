@@ -211,6 +211,12 @@ export default function Admin() {
       render: (email: string) => email || '-',
     },
     {
+      title: 'Type',
+      dataIndex: 'auth_type',
+      key: 'auth_type',
+      render: (t: string) => <Tag color={t === 'ldap' ? 'orange' : 'default'}>{t === 'ldap' ? 'LDAP' : 'Local'}</Tag>,
+    },
+    {
       title: 'Role',
       dataIndex: 'role',
       key: 'role',

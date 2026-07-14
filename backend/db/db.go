@@ -145,6 +145,7 @@ func Migrate(db *sql.DB) error {
 		)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='email') THEN ALTER TABLE users ADD COLUMN email VARCHAR(255) DEFAULT ''; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='last_login_at') THEN ALTER TABLE users ADD COLUMN last_login_at TIMESTAMPTZ; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='auth_type') THEN ALTER TABLE users ADD COLUMN auth_type VARCHAR(20) DEFAULT 'local'; END IF; END $$`,
 	}
 
 	for _, stmt := range statements {
@@ -421,6 +422,7 @@ type User struct {
 	Email        string     `json:"email"`
 	PasswordHash string     `json:"-"`
 	Role         string     `json:"role"`
+	AuthType     string     `json:"auth_type"`
 	IsAdmin      bool       `json:"is_admin"`
 	IsActive     bool       `json:"is_active"`
 	CreatedAt    time.Time  `json:"created_at"`
@@ -438,7 +440,7 @@ type AuditLog struct {
 }
 
 func GetAllUsers(db *sql.DB) ([]User, error) {
-	rows, err := db.Query("SELECT id, username, email, role, is_admin, is_active, created_at, last_login_at FROM users ORDER BY created_at DESC")
+	rows, err := db.Query("SELECT id, username, email, role, auth_type, is_admin, is_active, created_at, last_login_at FROM users ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -447,7 +449,7 @@ func GetAllUsers(db *sql.DB) ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.AuthType, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -459,7 +461,7 @@ func CreateUser(db *sql.DB, username, passwordHash, email string, isAdmin bool, 
 	var id int64
 	var createdAt time.Time
 	err := db.QueryRow(
-		"INSERT INTO users (username, password_hash, email, is_admin, role, is_active) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at",
+		"INSERT INTO users (username, password_hash, email, is_admin, role, is_active, auth_type) VALUES ($1, $2, $3, $4, $5, $6, 'local') RETURNING id, created_at",
 		username, passwordHash, email, isAdmin, role, true,
 	).Scan(&id, &createdAt)
 	if err != nil {
@@ -510,13 +512,13 @@ func CreateLDAPUser(db *sql.DB, username, email, role string) (*User, error) {
 	var id int64
 	var createdAt time.Time
 	err := db.QueryRow(
-		"INSERT INTO users (username, password_hash, email, is_admin, role, is_active) VALUES ($1, '', $2, $3, $4, $5) RETURNING id, created_at",
+		"INSERT INTO users (username, password_hash, email, is_admin, role, is_active, auth_type) VALUES ($1, '', $2, $3, $4, $5, 'ldap') RETURNING id, created_at",
 		username, email, role == "admin", role, true,
 	).Scan(&id, &createdAt)
 	if err != nil {
 		return nil, err
 	}
-	return &User{ID: id, Username: username, Email: email, Role: role, IsAdmin: role == "admin", IsActive: true, CreatedAt: createdAt}, nil
+	return &User{ID: id, Username: username, Email: email, Role: role, AuthType: "ldap", IsAdmin: role == "admin", IsActive: true, CreatedAt: createdAt}, nil
 }
 
 func UpdateLastLogin(db *sql.DB, username string) error {
