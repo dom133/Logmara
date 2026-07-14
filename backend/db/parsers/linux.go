@@ -35,10 +35,22 @@ var LinuxParsers = []ParserSeed{
 		DeviceType:  "linux",
 		MatchType:   "app_name",
 		MatchValue:  "systemd",
-		Regex:       `(Starting|Started|Stopping|Stopped|Finished|Deactivating|Deactivated|Activating|Activated|Collected)\s+([\w.-]+)`,
+		Regex:       `(Starting|Started|Stopping|Stopped|Finished|Collected)\s+([\w.-]+\.service)`,
 		Fields: []FieldSeed{
 			{Name: "action", Label: "Action", Type: "string"},
 			{Name: "service", Label: "Service Name", Type: "string"},
+		},
+	},
+	{
+		Name:        "Systemd Service Status",
+		Description: "Matches systemd service status messages (service: action)",
+		DeviceType:  "linux",
+		MatchType:   "app_name",
+		MatchValue:  "systemd",
+		Regex:       `([\w.-]+\.service)\s*:\s*(Deactivating|Deactivated|Activating|Activated)`,
+		Fields: []FieldSeed{
+			{Name: "service", Label: "Service Name", Type: "string"},
+			{Name: "action", Label: "Action", Type: "string"},
 		},
 	},
 	{
