@@ -3,6 +3,7 @@ package handler
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -137,12 +138,17 @@ func GetDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		userID := c.GetInt64("user_id")
+		isAdmin := getUserRole(c) == "admin"
 
 		var d model.Dashboard
 		var pinned sql.NullBool
 		var updatedBy sql.NullInt64
 		var updatedByUsername sql.NullString
-		err = db.QueryRow(`
+		whereClause := "d.id = $1 AND (d.owner_id = $2 OR d.is_public = TRUE)"
+		if isAdmin {
+			whereClause = "d.id = $1"
+		}
+		err = db.QueryRow(fmt.Sprintf(`
 			SELECT d.id, d.name, d.description, d.owner_id, u.username,
 				up.dashboard_id IS NOT NULL,
 				d.is_public, d.config, d.created_at, d.updated_at,
@@ -151,8 +157,8 @@ func GetDashboard(db *sql.DB) gin.HandlerFunc {
 			JOIN users u ON d.owner_id = u.id
 			LEFT JOIN user_dashboard_pins up ON d.id = up.dashboard_id AND up.user_id = $2
 			LEFT JOIN users ub ON d.updated_by = ub.id
-			WHERE d.id = $1 AND (d.owner_id = $2 OR d.is_public = TRUE)
-		`, id, userID).Scan(&d.ID, &d.Name, &d.Description, &d.OwnerID,
+			WHERE %s
+		`, whereClause), id, userID).Scan(&d.ID, &d.Name, &d.Description, &d.OwnerID,
 			&d.OwnerUsername, &pinned, &d.IsPublic, &d.Config, &d.CreatedAt, &d.UpdatedAt,
 			&updatedBy, &updatedByUsername)
 		d.Pinned = pinned.Valid && pinned.Bool
@@ -288,9 +294,14 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 		}
 
 		userID := c.GetInt64("user_id")
+		isAdmin := getUserRole(c) == "admin"
 
 		var configRaw json.RawMessage
-		err = db.QueryRow("SELECT config FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE)", id, userID).
+		query := "SELECT config FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE)"
+		if isAdmin {
+			query = "SELECT config FROM dashboards WHERE id = $1"
+		}
+		err = db.QueryRow(query, id, userID).
 			Scan(&configRaw)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
@@ -312,7 +323,7 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			limitInt = 100
 		}
 
-		query := "SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at FROM syslog_logs WHERE 1=1"
+		query = "SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at FROM syslog_logs WHERE 1=1"
 		args := []interface{}{}
 		argIdx := 1
 
@@ -462,9 +473,14 @@ func TogglePinDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		userID := c.GetInt64("user_id")
+		isAdmin := getUserRole(c) == "admin"
 
 		exists := false
-		err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE))", id, userID).Scan(&exists)
+		query := "SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE))"
+		if isAdmin {
+			query = "SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1)"
+		}
+		err = db.QueryRow(query, id, userID).Scan(&exists)
 		if err != nil || !exists {
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
 			return
