@@ -169,13 +169,7 @@ func Migrate(db *sql.DB) error {
 }
 
 func seedParsers(db *sql.DB) error {
-	allParsers := append([]parsers.ParserSeed{}, parsers.MikroTikParsers...)
-	allParsers = append(allParsers, parsers.UbiquitiParsers...)
-	allParsers = append(allParsers, parsers.CiscoParsers...)
-	allParsers = append(allParsers, parsers.PaloAltoParsers...)
-	allParsers = append(allParsers, parsers.PfSenseParsers...)
-	allParsers = append(allParsers, parsers.LinuxParsers...)
-	allParsers = append(allParsers, parsers.GenericParsers...)
+	allParsers := parsers.AllParsers
 
 	rows, err := db.Query("SELECT id, name FROM parsers WHERE is_builtin")
 	if err != nil {

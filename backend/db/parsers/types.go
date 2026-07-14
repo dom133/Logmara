@@ -1,5 +1,7 @@
 package parsers
 
+var AllParsers []ParserSeed
+
 type FieldSeed struct {
 	Name  string
 	Label string

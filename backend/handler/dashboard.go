@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,13 +19,17 @@ import (
 func getUserRole(c *gin.Context) string {
 	claims, exists := c.Get("claims")
 	if !exists {
+		log.Println("[getUserRole] claims not found in context")
 		return ""
 	}
 	if mc, ok := claims.(*jwt.MapClaims); ok {
 		if r, ok := (*mc)["role"].(string); ok {
+			log.Printf("[getUserRole] role=%q, claims=%v", r, *mc)
 			return r
 		}
+		log.Printf("[getUserRole] role assert failed, claims=%v, type=%T", *mc, (*mc)["role"])
 	}
+	log.Printf("[getUserRole] mc assert failed, type=%T, val=%v", claims, claims)
 	return ""
 }
 
@@ -295,15 +300,18 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 
 		userID := c.GetInt64("user_id")
 		isAdmin := getUserRole(c) == "admin"
+		log.Printf("[GetDashboardData] id=%d, userID=%d, isAdmin=%v", id, userID, isAdmin)
 
 		var configRaw json.RawMessage
 		query := "SELECT config FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE)"
 		if isAdmin {
 			query = "SELECT config FROM dashboards WHERE id = $1"
 		}
+		log.Printf("[GetDashboardData] query=%s", query)
 		err = db.QueryRow(query, id, userID).
 			Scan(&configRaw)
 		if err != nil {
+			log.Printf("[GetDashboardData] query error: %v", err)
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
 			return
 		}
@@ -474,13 +482,16 @@ func TogglePinDashboard(db *sql.DB) gin.HandlerFunc {
 
 		userID := c.GetInt64("user_id")
 		isAdmin := getUserRole(c) == "admin"
+		log.Printf("[TogglePinDashboard] id=%d, userID=%d, isAdmin=%v", id, userID, isAdmin)
 
 		exists := false
 		query := "SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE))"
 		if isAdmin {
 			query = "SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1)"
 		}
+		log.Printf("[TogglePinDashboard] query=%s", query)
 		err = db.QueryRow(query, id, userID).Scan(&exists)
+		log.Printf("[TogglePinDashboard] exists=%v, err=%v", exists, err)
 		if err != nil || !exists {
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
 			return
