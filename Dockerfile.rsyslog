@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim
+FROM debian:testing-slim
 RUN apt-get update && apt-get install -y --no-install-recommends rsyslog curl && rm -rf /var/lib/apt/lists/*
 COPY rsyslog/syslog.conf /etc/rsyslog.d/syslog.conf
 EXPOSE 514 514/udp
