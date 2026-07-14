@@ -237,6 +237,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           collapsedWidth={80}
           collapsed={collapsed}
           onCollapse={setCollapsed}
+          responsive
           style={{ background: token.colorBgContainer }}
           theme={themeMode === 'dark' ? 'dark' : 'light'}
         >
@@ -249,7 +250,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           placement="left"
           onClose={() => setDrawerVisible(false)}
           open={drawerVisible}
-          width={260}
+          width={[280, '85%']}
           styles={{ body: { padding: 0 } }}
         >
           <div style={{ background: token.colorBgContainer, height: '100%' }}>
@@ -258,7 +259,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
         </Drawer>
       )}
       <Layout>
-        <Header style={{ background: token.colorBgContainer, padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Header style={{ background: token.colorBgContainer, padding: '0 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             {isMobile && (
               <Button

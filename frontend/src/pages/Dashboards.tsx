@@ -268,6 +268,7 @@ export default function DashboardsPage() {
                 rowKey="id"
                 loading={loading}
                 size="small"
+                scroll={{ x: 'max-content' }}
               />
             </div>
           )
@@ -286,6 +287,7 @@ export default function DashboardsPage() {
                   rowKey="id"
                   loading={loading}
                   size="small"
+                  scroll={{ x: 'max-content' }}
                 />
               </div>
             )}
@@ -298,6 +300,7 @@ export default function DashboardsPage() {
                   rowKey="id"
                   loading={loading}
                   size="small"
+                  scroll={{ x: 'max-content' }}
                 />
               </div>
             )}
@@ -310,7 +313,7 @@ export default function DashboardsPage() {
         open={modalOpen}
         onCancel={() => { setModalOpen(false); setEditing(null) }}
         onOk={() => { form.validateFields().then(values => editing ? handleUpdate(values) : handleCreate(values)) }}
-        width={700}
+        width={[700, '90%']}
       >
         <Form form={form} layout="vertical" onValuesChange={async (changed, allValues) => {
       const newDevices = allValues.config?.devices || []

@@ -115,12 +115,12 @@ export default function Dashboard() {
       </Row>
 
       <Row gutter={16} style={{ marginBottom: 24 }}>
-        <Col span={14}>
+        <Col xs={24} lg={14}>
           <Card title="Logs Timeline (Last 24h)">
             <ReactECharts option={timelineOption} style={{ height: 300 }} />
           </Card>
         </Col>
-        <Col span={10}>
+        <Col xs={24} lg={10}>
           <Card title="Severity Distribution">
             <ReactECharts option={severityOption} style={{ height: 300 }} />
           </Card>
@@ -154,6 +154,7 @@ export default function Dashboard() {
               rowKey={(r, i) => (i ?? 0).toString()}
               pagination={false}
               size="small"
+              scroll={{ x: 'max-content' }}
             />
           </Card>
         </Col>
