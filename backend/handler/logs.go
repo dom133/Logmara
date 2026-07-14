@@ -192,14 +192,18 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 		var logs []model.SyslogLog
 		for rows.Next() {
 			var l model.SyslogLog
+			var rawParsed json.RawMessage
 			err := rows.Scan(
 				&l.ID, &l.Timestamp, &l.Hostname, &l.AppName,
 				&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
-				&l.Message, &l.RawMessage, &l.ParsedFields, &l.CreatedAt,
+				&l.Message, &l.RawMessage, &rawParsed, &l.CreatedAt,
 			)
 			if err != nil {
 				log.Printf("Scan error: %v", err)
 				continue
+			}
+			if len(rawParsed) > 0 {
+				json.Unmarshal(rawParsed, &l.ParsedFields)
 			}
 			logs = append(logs, l)
 		}
