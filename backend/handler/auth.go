@@ -154,7 +154,9 @@ func GetMe() gin.HandlerFunc {
 		username := (*mapClaims)["username"].(string)
 		role := (*mapClaims)["role"].(string)
 
+		userID := int((*mapClaims)["user_id"].(float64))
 		c.JSON(http.StatusOK, gin.H{
+			"id":       userID,
 			"username": username,
 			"role":     role,
 		})

@@ -218,6 +218,9 @@ function AppLayout({ children }: { children: React.ReactNode }) {
       } catch { /* ignore */ }
     }
     load()
+    const handler = () => load()
+    window.addEventListener('dashboards-pinned-changed', handler)
+    return () => window.removeEventListener('dashboards-pinned-changed', handler)
   }, [user])
 
   useEffect(() => {

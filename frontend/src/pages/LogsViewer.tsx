@@ -396,11 +396,11 @@ export default function LogsViewer() {
                     </pre>
                   </Descriptions.Item>
                 )}
-                {selectedLog.matched_parsers && selectedLog.matched_parsers.length > 0 && (
-                  <Descriptions.Item label="Matched Parsers">
-                    {selectedLog.matched_parsers.map(p => <Tag key={p} color="purple">{p}</Tag>)}
-                  </Descriptions.Item>
-                )}
+                <Descriptions.Item label="Matched Parsers">
+                  {selectedLog.matched_parsers && selectedLog.matched_parsers.length > 0
+                    ? selectedLog.matched_parsers.map(p => <Tag key={p} color="purple">{p}</Tag>)
+                    : 'None'}
+                </Descriptions.Item>
               </Descriptions>
             )}
           </Modal>

@@ -97,6 +97,7 @@ export default function DashboardViewPage() {
     try {
       const res = await togglePinDashboard(dashboardId)
       setDashboard({ ...dashboard, pinned: res.pinned })
+      window.dispatchEvent(new CustomEvent('dashboards-pinned-changed'))
     } catch (e) {
       // error handled by API
     }
@@ -214,12 +215,12 @@ export default function DashboardViewPage() {
       }
     }
 
-    if (detailLog.matched_parsers && detailLog.matched_parsers.length > 0) {
-      items.push({
-        label: 'Matched Parsers',
-        content: detailLog.matched_parsers.map(p => <Tag key={p} color="purple">{p}</Tag>),
-      })
-    }
+    items.push({
+      label: 'Matched Parsers',
+      content: detailLog.matched_parsers && detailLog.matched_parsers.length > 0
+        ? detailLog.matched_parsers.map(p => <Tag key={p} color="purple">{p}</Tag>)
+        : 'None',
+    })
 
     items.push({
       label: 'Full Message',

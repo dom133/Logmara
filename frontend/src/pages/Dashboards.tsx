@@ -94,6 +94,7 @@ export default function DashboardsPage() {
       const res = await togglePinDashboard(id)
       message.success(res.pinned ? 'Dashboard pinned' : 'Dashboard unpinned')
       loadData()
+      window.dispatchEvent(new CustomEvent('dashboards-pinned-changed'))
     } catch (e: any) {
       message.error(e.response?.data?.error || 'Failed to toggle pin')
     }
