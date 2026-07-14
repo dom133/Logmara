@@ -218,7 +218,9 @@ export interface Dashboard {
 	name: string
 	description: string | null
 	owner_id: number
+	owner_username: string
 	pinned: boolean
+	is_public: boolean
 	config: DashboardConfig
 	created_at: string
 	updated_at: string
@@ -332,6 +334,11 @@ export async function getDashboardData(id: number, limit = 100, offset = 0, sear
 export async function togglePinDashboard(id: number) {
 	const res = await api.patch(`/dashboards/${id}/pin`)
 	return res.data as { pinned: boolean }
+}
+
+export async function togglePublicDashboard(id: number) {
+	const res = await api.patch(`/dashboards/${id}/public`)
+	return res.data as { is_public: boolean }
 }
 
 // --- User / Admin types ---

@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form } from 'antd'
-import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined } from '@ant-design/icons'
+import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form, message } from 'antd'
+import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
-import { getDashboard, getDashboardData, togglePinDashboard, Dashboard, DashboardDataResponse, LogEntry } from '../services/api'
+import { getDashboard, getDashboardData, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardDataResponse, LogEntry } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import { SEVERITY_LABELS } from '../constants'
+import { useAuth } from '../services/auth'
 
 const { Title, Text } = Typography
 const { RangePicker } = DatePicker
@@ -26,6 +27,8 @@ export default function DashboardViewPage() {
   const [severityFilter, setSeverityFilter] = useState('')
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
   const [detailLog, setDetailLog] = useState<LogEntry | null>(null)
+  const { user } = useAuth()
+  const isOwner = dashboard?.owner_id === user?.id
   const searchRef = useRef<InputRef>(null)
 
   const dashboardId = parseInt(id || '0')
@@ -94,6 +97,17 @@ export default function DashboardViewPage() {
     try {
       const res = await togglePinDashboard(dashboardId)
       setDashboard({ ...dashboard, pinned: res.pinned })
+    } catch (e) {
+      // error handled by API
+    }
+  }
+
+  const handleTogglePublic = async () => {
+    if (!dashboard) return
+    try {
+      const res = await togglePublicDashboard(dashboardId)
+      setDashboard({ ...dashboard, is_public: res.is_public })
+      message.success(res.is_public ? 'Dashboard is now public' : 'Dashboard is now private')
     } catch (e) {
       // error handled by API
     }
@@ -250,6 +264,14 @@ export default function DashboardViewPage() {
             onClick={handleTogglePin}
             style={{ color: dashboard.pinned ? '#faad14' : undefined }}
           />
+          {isOwner && <Button
+            icon={<GlobalOutlined />}
+            onClick={handleTogglePublic}
+            type={dashboard.is_public ? 'primary' : 'default'}
+          >
+            {dashboard.is_public ? 'Public' : 'Private'}
+          </Button>}
+          {!isOwner && dashboard.owner_username && <Tag color="blue">by {dashboard.owner_username}</Tag>}
         </Space>
         <Space>
           <Input

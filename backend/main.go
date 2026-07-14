@@ -134,6 +134,7 @@ authGroup := r.Group("/api")
       editorGroup.PUT("/dashboards/:id", handler.UpdateDashboard(database))
       editorGroup.DELETE("/dashboards/:id", handler.DeleteDashboard(database))
       editorGroup.PATCH("/dashboards/:id/pin", handler.TogglePinDashboard(database))
+      editorGroup.PATCH("/dashboards/:id/public", handler.TogglePublicDashboard(database))
     }
 
     adminGroup := authGroup.Group("/admin")

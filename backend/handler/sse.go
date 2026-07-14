@@ -12,6 +12,7 @@ import (
 	"syslog-gui/model"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lib/pq"
 )
 
 func StreamLogs(db *sql.DB) gin.HandlerFunc {
@@ -95,13 +96,15 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 				for rows.Next() {
 					var l model.SyslogLog
 					var rawParsed json.RawMessage
+					var parsers pq.StringArray
 					if err := rows.Scan(
 						&l.ID, &l.Timestamp, &l.Hostname, &l.AppName,
 						&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
-						&l.Message, &l.RawMessage, &rawParsed, &l.MatchedParsers, &l.CreatedAt,
+						&l.Message, &l.RawMessage, &rawParsed, &parsers, &l.CreatedAt,
 					); err != nil {
 						continue
 					}
+					l.MatchedParsers = parsers
 					if len(rawParsed) > 0 {
 						json.Unmarshal(rawParsed, &l.ParsedFields)
 					}

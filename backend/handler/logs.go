@@ -16,6 +16,7 @@ import (
 	"syslog-gui/parser"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lib/pq"
 )
 
 func IngestBatch(db *sql.DB, engine *parser.Engine) gin.HandlerFunc {
@@ -203,15 +204,17 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 		for rows.Next() {
 			var l model.SyslogLog
 			var rawParsed json.RawMessage
+			var parsers pq.StringArray
 			err := rows.Scan(
 				&l.ID, &l.Timestamp, &l.Hostname, &l.AppName,
 				&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
-				&l.Message, &l.RawMessage, &rawParsed, &l.MatchedParsers, &l.CreatedAt,
+				&l.Message, &l.RawMessage, &rawParsed, &parsers, &l.CreatedAt,
 			)
 			if err != nil {
 				log.Printf("Scan error: %v", err)
 				continue
 			}
+			l.MatchedParsers = parsers
 			if len(rawParsed) > 0 {
 				json.Unmarshal(rawParsed, &l.ParsedFields)
 			}

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, message, Popconfirm, Typography, List } from 'antd'
-import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PushpinOutlined, PushpinFilled, RestOutlined } from '@ant-design/icons'
+import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
-import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, Dashboard, DashboardConfig, ParsedField } from '../services/api'
+import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardConfig, ParsedField } from '../services/api'
 import { getDevices, getParsedFields } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import { useAuth } from '../services/auth'
@@ -99,6 +99,16 @@ export default function DashboardsPage() {
     }
   }
 
+  const handleTogglePublic = async (id: number) => {
+    try {
+      const res = await togglePublicDashboard(id)
+      message.success(res.is_public ? 'Dashboard is now public' : 'Dashboard is now private')
+      loadData()
+    } catch (e: any) {
+      message.error(e.response?.data?.error || 'Failed to toggle visibility')
+    }
+  }
+
   const openCreate = () => {
     setEditing(null)
     form.resetFields()
@@ -131,6 +141,7 @@ export default function DashboardsPage() {
         <Space>
           <Tag color="cyan">{v}</Tag>
           {r.pinned && <Tag color="gold">📌 Pinned</Tag>}
+          {r.is_public && <Tag color="green">Public</Tag>}
           {r.description && <Tag>{r.description}</Tag>}
         </Space>
       ),
@@ -154,6 +165,12 @@ export default function DashboardsPage() {
       },
     },
     {
+      title: 'Owner',
+      dataIndex: 'owner_username',
+      key: 'owner_username',
+      render: (v: string) => v || '-',
+    },
+    {
       title: 'Created',
       dataIndex: 'created_at',
       key: 'created_at',
@@ -162,21 +179,32 @@ export default function DashboardsPage() {
     {
       title: 'Actions',
       key: 'actions',
-      render: (_: any, r: Dashboard) => (
-        <Space>
-          <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/dashboards/${r.id}`)}>View</Button>
-          {canEdit && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>Edit</Button>}
-          {canEdit && <Button
-            size="small"
-            icon={r.pinned ? <PushpinFilled /> : <PushpinOutlined />}
-            onClick={() => handleTogglePin(r.id)}
-            style={{ color: r.pinned ? '#faad14' : undefined }}
-          />}
-          {canEdit && <Popconfirm title="Delete dashboard?" onConfirm={() => handleDelete(r.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>}
-        </Space>
-      ),
+      render: (_: any, r: Dashboard) => {
+        const isOwner = r.owner_id === user?.id
+        return (
+          <Space>
+            <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/dashboards/${r.id}`)}>View</Button>
+            {isOwner && canEdit && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>Edit</Button>}
+            {isOwner && <Button
+              size="small"
+              icon={r.pinned ? <PushpinFilled /> : <PushpinOutlined />}
+              onClick={() => handleTogglePin(r.id)}
+              style={{ color: r.pinned ? '#faad14' : undefined }}
+            />}
+            {isOwner && <Button
+              size="small"
+              icon={<GlobalOutlined />}
+              onClick={() => handleTogglePublic(r.id)}
+              type={r.is_public ? 'primary' : 'default'}
+            >
+              {r.is_public ? 'Public' : 'Private'}
+            </Button>}
+            {isOwner && canEdit && <Popconfirm title="Delete dashboard?" onConfirm={() => handleDelete(r.id)}>
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Popconfirm>}
+          </Space>
+        )
+      },
     },
   ]
 
@@ -198,13 +226,39 @@ export default function DashboardsPage() {
         </Card>
       )}
 
-      <Table
-        dataSource={dashboards}
-        columns={enhanceColumns(columns)}
-        rowKey="id"
-        loading={loading}
-        size="small"
-      />
+      {(() => {
+        const myDashboards = dashboards.filter(d => d.owner_id === user?.id)
+        const publicDashboards = dashboards.filter(d => d.owner_id !== user?.id)
+        if (myDashboards.length === 0 && publicDashboards.length === 0) return null
+        return (
+          <>
+            {myDashboards.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <Title level={5}>My Dashboards</Title>
+                <Table
+                  dataSource={myDashboards}
+                  columns={enhanceColumns(columns)}
+                  rowKey="id"
+                  loading={loading}
+                  size="small"
+                />
+              </div>
+            )}
+            {publicDashboards.length > 0 && (
+              <div>
+                <Title level={5}>Public Dashboards</Title>
+                <Table
+                  dataSource={publicDashboards}
+                  columns={enhanceColumns(columns)}
+                  rowKey="id"
+                  loading={loading}
+                  size="small"
+                />
+              </div>
+            )}
+          </>
+        )
+      })()}
 
       <Modal
         title={editing ? 'Edit Dashboard' : 'New Dashboard'}

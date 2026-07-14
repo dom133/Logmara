@@ -8,6 +8,7 @@ import LogsViewer from './pages/LogsViewer'
 import ParsersPage from './pages/Parsers'
 import DashboardsPage from './pages/Dashboards'
 import DashboardViewPage from './pages/DashboardView'
+
 import Admin from './pages/Admin'
 import SetupWizard from './pages/SetupWizard'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -328,6 +329,7 @@ export default function App() {
           ) : (
             <>
               <Route path="/login" element={<Login />} />
+              
               <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
               <Route path="/logs" element={<PrivateRoute><LogsViewer /></PrivateRoute>} />
               <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />

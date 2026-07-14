@@ -10,6 +10,7 @@ import (
 	"syslog-gui/model"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lib/pq"
 )
 
 func ListDashboards(db *sql.DB) gin.HandlerFunc {
@@ -17,8 +18,11 @@ func ListDashboards(db *sql.DB) gin.HandlerFunc {
 		userID := c.GetInt64("user_id")
 
 		rows, err := db.Query(`
-			SELECT id, name, description, owner_id, pinned, config, created_at, updated_at
-			FROM dashboards WHERE owner_id = $1 ORDER BY pinned DESC, created_at DESC
+			SELECT d.id, d.name, d.description, d.owner_id, u.username, d.pinned, d.is_public, d.config, d.created_at, d.updated_at
+			FROM dashboards d
+			JOIN users u ON d.owner_id = u.id
+			WHERE d.owner_id = $1 OR d.is_public = TRUE
+			ORDER BY d.pinned DESC, d.created_at DESC
 		`, userID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -30,7 +34,7 @@ func ListDashboards(db *sql.DB) gin.HandlerFunc {
 		for rows.Next() {
 			var d model.Dashboard
 			err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.OwnerID,
-				&d.Pinned, &d.Config, &d.CreatedAt, &d.UpdatedAt)
+				&d.OwnerUsername, &d.Pinned, &d.IsPublic, &d.Config, &d.CreatedAt, &d.UpdatedAt)
 			if err != nil {
 				continue
 			}
@@ -92,10 +96,12 @@ func GetDashboard(db *sql.DB) gin.HandlerFunc {
 
 		var d model.Dashboard
 		err = db.QueryRow(`
-			SELECT id, name, description, owner_id, pinned, config, created_at, updated_at
-			FROM dashboards WHERE id = $1 AND owner_id = $2
+			SELECT d.id, d.name, d.description, d.owner_id, u.username, d.pinned, d.is_public, d.config, d.created_at, d.updated_at
+			FROM dashboards d
+			JOIN users u ON d.owner_id = u.id
+			WHERE d.id = $1 AND (d.owner_id = $2 OR d.is_public = TRUE)
 		`, id, userID).Scan(&d.ID, &d.Name, &d.Description, &d.OwnerID,
-			&d.Pinned, &d.Config, &d.CreatedAt, &d.UpdatedAt)
+			&d.OwnerUsername, &d.Pinned, &d.IsPublic, &d.Config, &d.CreatedAt, &d.UpdatedAt)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
 			return
@@ -216,7 +222,7 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 		userID := c.GetInt64("user_id")
 
 		var configRaw json.RawMessage
-		err = db.QueryRow("SELECT config FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID).
+		err = db.QueryRow("SELECT config FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE)", id, userID).
 			Scan(&configRaw)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
@@ -311,12 +317,14 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 		for rows.Next() {
 			var l model.SyslogLog
 			var rawParsed json.RawMessage
+			var parsers pq.StringArray
 			err := rows.Scan(&l.ID, &l.Timestamp, &l.Hostname, &l.AppName,
 				&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
-				&l.Message, &l.RawMessage, &rawParsed, &l.MatchedParsers, &l.CreatedAt)
+				&l.Message, &l.RawMessage, &rawParsed, &parsers, &l.CreatedAt)
 			if err != nil {
 				continue
 			}
+			l.MatchedParsers = parsers
 
 			if len(rawParsed) > 0 {
 				json.Unmarshal(rawParsed, &l.ParsedFields)
@@ -405,3 +413,33 @@ func TogglePinDashboard(db *sql.DB) gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{"pinned": newPinned})
 	}
 }
+
+func TogglePublicDashboard(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+			return
+		}
+
+		userID := c.GetInt64("user_id")
+
+		var isPublic bool
+		err = db.QueryRow("SELECT is_public FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID).Scan(&isPublic)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
+			return
+		}
+
+		newPublic := !isPublic
+		_, err = db.Exec("UPDATE dashboards SET is_public = $1, updated_at = NOW() WHERE id = $2 AND owner_id = $3",
+			newPublic, id, userID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"is_public": newPublic})
+	}
+}
+
