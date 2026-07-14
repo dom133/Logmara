@@ -12,6 +12,7 @@ type SyslogLog struct {
 	ID              int64             `json:"id"`
 	Timestamp       time.Time         `json:"timestamp"`
 	Hostname        string            `json:"hostname"`
+	FromHostIP      *string           `json:"fromhost_ip,omitempty"`
 	AppName         *string           `json:"app_name,omitempty"`
 	ProcessID       *string           `json:"process_id,omitempty"`
 	MsgID           *string           `json:"msg_id,omitempty"`
@@ -27,6 +28,7 @@ type SyslogLog struct {
 type IngestEntry struct {
 	Timestamp      string   `json:"timestamp"`
 	Hostname       string   `json:"hostname"`
+	FromHostIP     string   `json:"fromhost_ip"`
 	AppName        string   `json:"app_name"`
 	ProcessID      string   `json:"process_id"`
 	MsgID          string   `json:"msg_id"`
@@ -77,6 +79,7 @@ func (e *IngestEntry) UnmarshalJSON(data []byte) error {
 	if e.Timestamp == "" {
 		e.Timestamp = raw.TimeReported
 	}
+	e.FromHostIP = raw.FromHostIP
 	e.Hostname = raw.Hostname
 	if e.Hostname == "" {
 		e.Hostname = raw.FromHostIP

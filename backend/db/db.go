@@ -40,6 +40,7 @@ func Migrate(db *sql.DB) error {
 			id BIGSERIAL PRIMARY KEY,
 			timestamp TIMESTAMPTZ NOT NULL,
 			hostname VARCHAR(255) NOT NULL,
+			fromhost_ip VARCHAR(255),
 			app_name VARCHAR(255),
 			process_id VARCHAR(50),
 			msg_id VARCHAR(50),
@@ -57,6 +58,7 @@ func Migrate(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_syslog_composite ON syslog_logs (timestamp DESC, severity, hostname)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='parsed_fields') THEN ALTER TABLE syslog_logs ADD COLUMN parsed_fields JSONB DEFAULT '{}'; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='matched_parsers') THEN ALTER TABLE syslog_logs ADD COLUMN matched_parsers TEXT[] DEFAULT '{}'; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='fromhost_ip') THEN ALTER TABLE syslog_logs ADD COLUMN fromhost_ip VARCHAR(255); END IF; END $$`,
 		`DROP INDEX IF EXISTS idx_syslog_parsed_fields`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_parsed_fields ON syslog_logs USING GIN (parsed_fields)`,
 		`CREATE TABLE IF NOT EXISTS users (
