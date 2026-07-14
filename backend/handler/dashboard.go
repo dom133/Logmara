@@ -10,23 +10,52 @@ import (
 	"syslog-gui/model"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/lib/pq"
 )
+
+func getUserRole(c *gin.Context) string {
+	claims, exists := c.Get("claims")
+	if !exists {
+		return ""
+	}
+	if mc, ok := claims.(*jwt.MapClaims); ok {
+		if r, ok := (*mc)["role"].(string); ok {
+			return r
+		}
+	}
+	return ""
+}
 
 func ListDashboards(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetInt64("user_id")
+		isAdmin := getUserRole(c) == "admin"
 
-		rows, err := db.Query(`
-			SELECT d.id, d.name, d.description, d.owner_id, u.username,
-				COALESCE(up.dashboard_id IS NOT NULL, FALSE),
-				d.is_public, d.config, d.created_at, d.updated_at
-			FROM dashboards d
-			JOIN users u ON d.owner_id = u.id
-			LEFT JOIN user_dashboard_pins up ON d.id = up.dashboard_id AND up.user_id = $1
-			WHERE d.owner_id = $1 OR d.is_public = TRUE
-			ORDER BY up.dashboard_id IS NOT NULL DESC, d.created_at DESC
-		`, userID)
+		var rows *sql.Rows
+		var err error
+		if isAdmin {
+			rows, err = db.Query(`
+				SELECT d.id, d.name, d.description, d.owner_id, u.username,
+					COALESCE(up.dashboard_id IS NOT NULL, FALSE),
+					d.is_public, d.config, d.created_at, d.updated_at
+				FROM dashboards d
+				JOIN users u ON d.owner_id = u.id
+				LEFT JOIN user_dashboard_pins up ON d.id = up.dashboard_id AND up.user_id = $1
+				ORDER BY up.dashboard_id IS NOT NULL DESC, d.created_at DESC
+			`, userID)
+		} else {
+			rows, err = db.Query(`
+				SELECT d.id, d.name, d.description, d.owner_id, u.username,
+					COALESCE(up.dashboard_id IS NOT NULL, FALSE),
+					d.is_public, d.config, d.created_at, d.updated_at
+				FROM dashboards d
+				JOIN users u ON d.owner_id = u.id
+				LEFT JOIN user_dashboard_pins up ON d.id = up.dashboard_id AND up.user_id = $1
+				WHERE d.owner_id = $1 OR d.is_public = TRUE
+				ORDER BY up.dashboard_id IS NOT NULL DESC, d.created_at DESC
+			`, userID)
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -127,6 +156,7 @@ func UpdateDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		userID := c.GetInt64("user_id")
+		isAdmin := getUserRole(c) == "admin"
 
 		var req struct {
 			Name        *string         `json:"name"`
@@ -140,7 +170,11 @@ func UpdateDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		exists := false
-		db.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1 AND owner_id = $2)", id, userID).Scan(&exists)
+		if isAdmin {
+			db.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1)", id).Scan(&exists)
+		} else {
+			db.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1 AND owner_id = $2)", id, userID).Scan(&exists)
+		}
 		if !exists {
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
 			return
@@ -195,8 +229,14 @@ func DeleteDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		userID := c.GetInt64("user_id")
+		isAdmin := getUserRole(c) == "admin"
 
-		result, err := db.Exec("DELETE FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID)
+		var result sql.Result
+		if isAdmin {
+			result, err = db.Exec("DELETE FROM dashboards WHERE id = $1", id)
+		} else {
+			result, err = db.Exec("DELETE FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID)
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -429,17 +469,25 @@ func TogglePublicDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		userID := c.GetInt64("user_id")
+		isAdmin := getUserRole(c) == "admin"
 
 		var isPublic bool
-		err = db.QueryRow("SELECT is_public FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID).Scan(&isPublic)
+		if isAdmin {
+			err = db.QueryRow("SELECT is_public FROM dashboards WHERE id = $1", id).Scan(&isPublic)
+		} else {
+			err = db.QueryRow("SELECT is_public FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID).Scan(&isPublic)
+		}
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
 			return
 		}
 
 		newPublic := !isPublic
-		_, err = db.Exec("UPDATE dashboards SET is_public = $1, updated_at = NOW() WHERE id = $2 AND owner_id = $3",
-			newPublic, id, userID)
+		if isAdmin {
+			_, err = db.Exec("UPDATE dashboards SET is_public = $1, updated_at = NOW() WHERE id = $2", newPublic, id)
+		} else {
+			_, err = db.Exec("UPDATE dashboards SET is_public = $1, updated_at = NOW() WHERE id = $2 AND owner_id = $3", newPublic, id, userID)
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return

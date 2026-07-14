@@ -12,6 +12,7 @@ const { Title } = Typography
 export default function DashboardsPage() {
   const { user } = useAuth()
   const canEdit = user?.role === 'admin' || user?.role === 'editor'
+  const isAdmin = user?.role === 'admin'
   const [dashboards, setDashboards] = useState<Dashboard[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
@@ -182,17 +183,18 @@ export default function DashboardsPage() {
       key: 'actions',
       render: (_: any, r: Dashboard) => {
         const isOwner = r.owner_id === user?.id
+        const canManage = isOwner && canEdit || isAdmin
         return (
           <Space>
             <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/dashboards/${r.id}`)}>View</Button>
-            {isOwner && canEdit && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>Edit</Button>}
+            {canManage && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>Edit</Button>}
             <Button
               size="small"
               icon={r.pinned ? <PushpinFilled /> : <PushpinOutlined />}
               onClick={() => handleTogglePin(r.id)}
               style={{ color: r.pinned ? '#faad14' : undefined }}
             />
-            {isOwner && <Button
+            {(isOwner || isAdmin) && <Button
               size="small"
               icon={<GlobalOutlined />}
               onClick={() => handleTogglePublic(r.id)}
@@ -200,7 +202,7 @@ export default function DashboardsPage() {
             >
               {r.is_public ? 'Public' : 'Private'}
             </Button>}
-            {isOwner && canEdit && <Popconfirm title="Delete dashboard?" onConfirm={() => handleDelete(r.id)}>
+            {canManage && <Popconfirm title="Delete dashboard?" onConfirm={() => handleDelete(r.id)}>
               <Button size="small" danger icon={<DeleteOutlined />} />
             </Popconfirm>}
           </Space>
@@ -228,6 +230,21 @@ export default function DashboardsPage() {
       )}
 
       {(() => {
+        if (dashboards.length === 0) return null
+        if (isAdmin) {
+          return (
+            <div>
+              <Title level={5}>All Dashboards</Title>
+              <Table
+                dataSource={dashboards}
+                columns={enhanceColumns(columns)}
+                rowKey="id"
+                loading={loading}
+                size="small"
+              />
+            </div>
+          )
+        }
         const myDashboards = dashboards.filter(d => d.owner_id === user?.id)
         const publicDashboards = dashboards.filter(d => d.owner_id !== user?.id)
         if (myDashboards.length === 0 && publicDashboards.length === 0) return null
