@@ -35,7 +35,7 @@ var LinuxParsers = []ParserSeed{
 		DeviceType:  "linux",
 		MatchType:   "app_name",
 		MatchValue:  "systemd",
-		Regex:       `(Starting|Started|Stopping|Stopped|Finished|Deactivating|Deactivated|Activating|Activated|Collected)\s+(.+?)(?:\s+[-—].+)?`,
+		Regex:       `(Starting|Started|Stopping|Stopped|Finished|Deactivating|Deactivated|Activating|Activated|Collected)\s+([\w.-]+)`,
 		Fields: []FieldSeed{
 			{Name: "action", Label: "Action", Type: "string"},
 			{Name: "service", Label: "Service Name", Type: "string"},
@@ -75,10 +75,8 @@ var LinuxParsers = []ParserSeed{
 		DeviceType:  "linux",
 		MatchType:   "app_name",
 		MatchValue:  "CRON",
-		Regex:       `\[(\S+)\]\s+(\S+)(?:\s+\((\S+)\))?\s+(\S+)`,
+		Regex:       `\((\w+)\)\s+CMD\s+\((.+)\)`,
 		Fields: []FieldSeed{
-			{Name: "job_id", Label: "Job ID", Type: "string"},
-			{Name: "action", Label: "Action", Type: "string"},
 			{Name: "user", Label: "User", Type: "string"},
 			{Name: "command", Label: "Command", Type: "string"},
 		},
