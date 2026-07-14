@@ -1,3 +1,4 @@
-FROM rsyslog
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends rsyslog && rm -rf /var/lib/apt/lists/*
 COPY rsyslog/syslog.conf /etc/rsyslog.d/syslog.conf
 CMD ["rsyslogd", "-n"]
