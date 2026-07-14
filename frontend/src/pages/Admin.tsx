@@ -3,6 +3,7 @@ import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, me
 import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined } from '@ant-design/icons'
 import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, User, DeviceStats } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
+import SeverityTag from '../components/SeverityTag'
 
 const { Option } = Select
 
@@ -403,13 +404,13 @@ export default function Admin() {
                       key: 'severity_count',
                       render: (sc: Record<string, number>) => {
                         if (!sc || typeof sc !== 'object') return '-';
-                        const entries = Object.entries(sc);
+                        const entries = Object.entries(sc).filter(([, count]) => count > 0);
                         if (entries.length === 0) return '-';
                         return (
                           <Space wrap>
                             {entries.map(([severity, count]) => (
-                              <Tag key={severity} color={severity}>
-                                {severity}: {count}
+                              <Tag key={severity}>
+                                <SeverityTag severity={severity} /> {count}
                               </Tag>
                             ))}
                           </Space>

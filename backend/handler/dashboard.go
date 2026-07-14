@@ -252,21 +252,33 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			query += " AND hostname IN (" + strings.Join(placeholders, ", ") + ")"
 		}
 
-		if cfg.Filters.Severity != "" {
+		severityFilter := c.DefaultQuery("severity", "")
+		if severityFilter == "" {
+			severityFilter = cfg.Filters.Severity
+		}
+		if severityFilter != "" {
 			query += " AND severity = $" + strconv.Itoa(argIdx)
-			args = append(args, cfg.Filters.Severity)
+			args = append(args, severityFilter)
 			argIdx++
 		}
 
-		if cfg.Filters.From != "" {
+		fromFilter := c.DefaultQuery("from", "")
+		if fromFilter == "" {
+			fromFilter = cfg.Filters.From
+		}
+		if fromFilter != "" {
 			query += " AND timestamp >= $" + strconv.Itoa(argIdx)
-			args = append(args, cfg.Filters.From)
+			args = append(args, fromFilter)
 			argIdx++
 		}
 
-		if cfg.Filters.To != "" {
+		toFilter := c.DefaultQuery("to", "")
+		if toFilter == "" {
+			toFilter = cfg.Filters.To
+		}
+		if toFilter != "" {
 			query += " AND timestamp <= $" + strconv.Itoa(argIdx)
-			args = append(args, cfg.Filters.To)
+			args = append(args, toFilter)
 			argIdx++
 		}
 

@@ -322,8 +322,8 @@ export async function deleteDashboard(id: number) {
   return res.data
 }
 
-export async function getDashboardData(id: number, limit = 100, offset = 0, search = '') {
-	const res = await api.get(`/dashboards/${id}/data`, { params: { limit, offset, search: search || undefined } })
+export async function getDashboardData(id: number, limit = 100, offset = 0, search = '', severity = '', from = '', to = '') {
+	const res = await api.get(`/dashboards/${id}/data`, { params: { limit, offset, search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined } })
 	const d = res.data || {}
 	return { logs: d.logs || [], total: d.total || 0, fields: d.fields || [], devices: d.devices || [] } as DashboardDataResponse
 }
