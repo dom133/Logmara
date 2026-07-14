@@ -10,16 +10,20 @@ import (
 )
 
 type Config struct {
-	Server       string
-	Port         int
-	BaseDN       string
-	BindDN       string
-	BindPassword string
-	UseTLS       bool
-	VerifyCert   bool
-	CaCert       string
-	UserFilter   string
-	Enabled      bool
+	Server         string
+	Port           int
+	BaseDN         string
+	BindDN         string
+	BindPassword   string
+	UseTLS         bool
+	VerifyCert     bool
+	CaCert         string
+	UserFilter     string
+	Enabled        bool
+	UsernameAttr   string
+	EmailAttr      string
+	DefaultRole    string
+	AutoProvision  bool
 }
 
 func LoadConfig(getSetting func(string, string) string) *Config {
@@ -56,38 +60,55 @@ func LoadConfig(getSetting func(string, string) string) *Config {
 	}
 
 	userFilter := getSetting("ldap_user_filter", "(uid=%s)")
+	usernameAttr := getSetting("ldap_username_attr", "uid")
+	emailAttr := getSetting("ldap_email_attr", "mail")
+	defaultRole := getSetting("ldap_default_role", "viewer")
+	autoProvision := getSetting("ldap_auto_provision", "true") == "true"
 
 	return &Config{
-		Server:       server,
-		Port:         port,
-		BaseDN:       getSetting("ldap_base_dn", ""),
-		BindDN:       getSetting("ldap_bind_dn", ""),
-		BindPassword: bindPassword,
-		UseTLS:       useTLS,
-		VerifyCert:   verifyCert,
-		CaCert:       caCert,
-		UserFilter:   userFilter,
-		Enabled:      true,
+		Server:         server,
+		Port:           port,
+		BaseDN:         getSetting("ldap_base_dn", ""),
+		BindDN:         getSetting("ldap_bind_dn", ""),
+		BindPassword:   bindPassword,
+		UseTLS:         useTLS,
+		VerifyCert:     verifyCert,
+		CaCert:         caCert,
+		UserFilter:     userFilter,
+		Enabled:        true,
+		UsernameAttr:   usernameAttr,
+		EmailAttr:      emailAttr,
+		DefaultRole:    defaultRole,
+		AutoProvision:  autoProvision,
 	}
 }
 
-func Authenticate(cfg *Config, username, password string) bool {
+func Authenticate(cfg *Config, username, password string) (map[string]string, error) {
 	if !cfg.Enabled || cfg.Server == "" {
-		return false
+		return nil, nil
 	}
 
 	l, err := dialLDAP(cfg)
 	if err != nil {
 		log.Printf("LDAP dial error: %v", err)
-		return false
+		return nil, err
 	}
 	defer l.Close()
+
+	usernameAttr := cfg.UsernameAttr
+	if usernameAttr == "" {
+		usernameAttr = "uid"
+	}
+	emailAttr := cfg.EmailAttr
+	if emailAttr == "" {
+		emailAttr = "mail"
+	}
 
 	if cfg.BindDN != "" && cfg.BindPassword != "" {
 		err = l.Bind(cfg.BindDN, cfg.BindPassword)
 		if err != nil {
 			log.Printf("LDAP bind error: %v", err)
-			return false
+			return nil, err
 		}
 
 		filter := fmt.Sprintf(cfg.UserFilter, username)
@@ -95,32 +116,47 @@ func Authenticate(cfg *Config, username, password string) bool {
 			cfg.BaseDN,
 			ldaplib.ScopeWholeSubtree, ldaplib.NeverDerefAliases, 0, 0, false,
 			filter,
-			[]string{"dn"},
+			[]string{"dn", usernameAttr, emailAttr},
 			nil,
 		)
 
 		sr, err := l.Search(searchReq)
 		if err != nil {
 			log.Printf("LDAP search error: %v", err)
-			return false
+			return nil, err
 		}
 
 		if len(sr.Entries) == 0 {
-			return false
+			return nil, nil
 		}
 
 		userDN := sr.Entries[0].DN
+		entry := sr.Entries[0]
 		err = l.Bind(userDN, password)
+		if err != nil {
+			log.Printf("LDAP auth error: %v", err)
+			return nil, err
+		}
+
+		attrs := make(map[string]string)
+		for _, attr := range entry.Attributes {
+			if attr.Name == usernameAttr && len(attr.Values) > 0 {
+				attrs["username"] = attr.Values[0]
+			}
+			if attr.Name == emailAttr && len(attr.Values) > 0 {
+				attrs["email"] = attr.Values[0]
+			}
+		}
+
+		return attrs, nil
 	} else {
 		err = l.Bind(username, password)
+		if err != nil {
+			log.Printf("LDAP auth error: %v", err)
+			return nil, err
+		}
+		return map[string]string{"username": username}, nil
 	}
-
-	if err != nil {
-		log.Printf("LDAP auth error: %v", err)
-		return false
-	}
-
-	return true
 }
 
 func dialLDAP(cfg *Config) (*ldaplib.Conn, error) {

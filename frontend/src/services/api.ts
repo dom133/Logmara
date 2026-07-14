@@ -345,11 +345,13 @@ export async function togglePublicDashboard(id: number) {
 export interface User {
 	id: number
 	username: string
+	email: string
 	role: string
 	is_admin: boolean
 	is_active: boolean
 	is_ldap: boolean
 	created_at: string
+	last_login_at: string | null
 }
 
 export async function getUsers() {
@@ -357,7 +359,7 @@ export async function getUsers() {
 	return (res.data || []) as User[]
 }
 
-export async function createUser(data: { username: string; password: string; role: string }) {
+export async function createUser(data: { username: string; email: string; password: string; role: string }) {
 	const res = await api.post('/admin/users', data)
 	return res.data as User
 }

@@ -8,6 +8,7 @@ import (
 
 	"syslog-gui/auth"
 	"syslog-gui/db"
+	"syslog-gui/ldap"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -42,25 +43,65 @@ func Login(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		var user db.User
-		err := database.QueryRow(
-			"SELECT id, username, password_hash, role, is_admin, is_active, created_at FROM users WHERE username = $1",
-			req.Username,
-		).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Role, &user.IsAdmin, &user.IsActive, &user.CreatedAt)
+		var user *db.User
 
-		if err != nil || !user.IsActive {
+		existing, err := db.GetUserByUsername(database, req.Username)
+		if err == nil && existing.IsActive {
+			if err := bcrypt.CompareHashAndPassword([]byte(existing.PasswordHash), []byte(req.Password)); err == nil {
+				user = existing
+			}
+		}
+
+		if user == nil {
 			dummyHash := "$2b$14$AAAAAAAAAAAAAAAAAAAAAAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 			bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(req.Password))
-			logAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "invalid user or inactive")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
-			return
+
+			ldapCfg := ldap.LoadConfig(func(key, def string) string {
+				return db.GetSetting(database, key, def)
+			})
+
+			if ldapCfg.Enabled {
+				attrs, err := ldap.Authenticate(ldapCfg, req.Username, req.Password)
+				if err != nil {
+					log.Printf("LDAP auth error: %v", err)
+				} else if attrs != nil {
+					email := attrs["email"]
+					username := attrs["username"]
+					if username == "" {
+						username = req.Username
+					}
+
+					existing, err := db.GetUserByUsername(database, username)
+					if err != nil {
+						if ldapCfg.AutoProvision {
+							u, err := db.CreateLDAPUser(database, username, email, ldapCfg.DefaultRole)
+							if err != nil {
+								log.Printf("LDAP auto-provision failed: %v", err)
+								logAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "auto-provision failed")
+								c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+								return
+							}
+							user = u
+						} else {
+							logAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "user not found locally")
+							c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+							return
+						}
+					} else {
+						user = existing
+					}
+				}
+			}
+
+			if user == nil {
+				logAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "invalid user or inactive")
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+				return
+			}
 		}
 
-		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-			logAudit(database, user.ID, user.Username, "login_failed", c.ClientIP(), "wrong password")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
-			return
-		}
+		db.UpdateLastLogin(database, user.Username)
+		user.LastLoginAt = ptrTime(time.Now())
 
 		token, err := auth.GenerateToken(user.ID, user.Username, user.Role)
 		if err != nil {
@@ -78,9 +119,13 @@ func Login(database *sql.DB) gin.HandlerFunc {
 		c.JSON(http.StatusOK, LoginResponse{
 			Token:        token,
 			RefreshToken: refreshToken,
-			User:         user,
+			User:         *user,
 		})
 	}
+}
+
+func ptrTime(t time.Time) *time.Time {
+	return &t
 }
 
 func Refresh(database *sql.DB) gin.HandlerFunc {
@@ -107,9 +152,9 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 
 		var user db.User
 		if err := database.QueryRow(
-			"SELECT id, username, password_hash, role, is_admin, is_active, created_at FROM users WHERE id = $1",
+			"SELECT id, username, email, password_hash, role, is_admin, is_active, created_at, last_login_at FROM users WHERE id = $1",
 			userID,
-		).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Role, &user.IsAdmin, &user.IsActive, &user.CreatedAt); err != nil {
+		).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.Role, &user.IsAdmin, &user.IsActive, &user.CreatedAt, &user.LastLoginAt); err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
 			return
 		}

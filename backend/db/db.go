@@ -143,6 +143,8 @@ func Migrate(db *sql.DB) error {
 			details TEXT,
 			created_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='email') THEN ALTER TABLE users ADD COLUMN email VARCHAR(255) DEFAULT ''; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='last_login_at') THEN ALTER TABLE users ADD COLUMN last_login_at TIMESTAMPTZ; END IF; END $$`,
 	}
 
 	for _, stmt := range statements {
@@ -272,6 +274,10 @@ func seedSettings(db *sql.DB) error {
 		"ldap_bind_dn":           "",
 		"ldap_bind_password":     "",
 		"ldap_user_filter":       "(uid=%s)",
+		"ldap_username_attr":     "uid",
+		"ldap_email_attr":        "mail",
+		"ldap_default_role":      "viewer",
+		"ldap_auto_provision":    "true",
 		"encryption_key":         "",
 		"cors_origins":           "",
 	}
@@ -306,6 +312,14 @@ func seedSettings(db *sql.DB) error {
 			desc = "LDAP bind password for service account"
 		case "ldap_user_filter":
 			desc = "LDAP user search filter (%s = username)"
+		case "ldap_username_attr":
+			desc = "LDAP attribute mapped to username"
+		case "ldap_email_attr":
+			desc = "LDAP attribute mapped to email"
+		case "ldap_default_role":
+			desc = "Default role for auto-provisioned LDAP users"
+		case "ldap_auto_provision":
+			desc = "Auto-create local account for LDAP users"
 		case "ldap_verify_cert":
 			desc = "Verify LDAP server TLS certificate"
 		case "ldap_ca_cert":
@@ -402,13 +416,15 @@ func CleanupOldLogs(db *sql.DB, retentionDays int) (int64, error) {
 }
 
 type User struct {
-	ID           int64     `json:"id"`
-	Username     string    `json:"username"`
-	PasswordHash string    `json:"-"`
-	Role         string    `json:"role"`
-	IsAdmin      bool      `json:"is_admin"`
-	IsActive     bool      `json:"is_active"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID           int64      `json:"id"`
+	Username     string     `json:"username"`
+	Email        string     `json:"email"`
+	PasswordHash string     `json:"-"`
+	Role         string     `json:"role"`
+	IsAdmin      bool       `json:"is_admin"`
+	IsActive     bool       `json:"is_active"`
+	CreatedAt    time.Time  `json:"created_at"`
+	LastLoginAt  *time.Time `json:"last_login_at"`
 }
 
 type AuditLog struct {
@@ -422,7 +438,7 @@ type AuditLog struct {
 }
 
 func GetAllUsers(db *sql.DB) ([]User, error) {
-	rows, err := db.Query("SELECT id, username, role, is_admin, is_active, created_at FROM users ORDER BY created_at DESC")
+	rows, err := db.Query("SELECT id, username, email, role, is_admin, is_active, created_at, last_login_at FROM users ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -431,7 +447,7 @@ func GetAllUsers(db *sql.DB) ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.IsAdmin, &u.IsActive, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -439,17 +455,17 @@ func GetAllUsers(db *sql.DB) ([]User, error) {
 	return users, rows.Err()
 }
 
-func CreateUser(db *sql.DB, username, passwordHash string, isAdmin bool, role string) (*User, error) {
+func CreateUser(db *sql.DB, username, passwordHash, email string, isAdmin bool, role string) (*User, error) {
 	var id int64
 	var createdAt time.Time
 	err := db.QueryRow(
-		"INSERT INTO users (username, password_hash, is_admin, role, is_active) VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at",
-		username, passwordHash, isAdmin, role, true,
+		"INSERT INTO users (username, password_hash, email, is_admin, role, is_active) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at",
+		username, passwordHash, email, isAdmin, role, true,
 	).Scan(&id, &createdAt)
 	if err != nil {
 		return nil, err
 	}
-	return &User{ID: id, Username: username, Role: role, IsAdmin: isAdmin, IsActive: true, CreatedAt: createdAt}, nil
+	return &User{ID: id, Username: username, Email: email, Role: role, IsAdmin: isAdmin, IsActive: true, CreatedAt: createdAt}, nil
 }
 
 func UpdateUser(db *sql.DB, id int64, role *string, isActive *bool) (*User, error) {
@@ -472,8 +488,8 @@ func UpdateUser(db *sql.DB, id int64, role *string, isActive *bool) (*User, erro
 	}
 
 	var u User
-	if err := tx.QueryRow("SELECT id, username, role, is_admin, is_active, created_at FROM users WHERE id = $1", id).
-		Scan(&u.ID, &u.Username, &u.Role, &u.IsAdmin, &u.IsActive, &u.CreatedAt); err != nil {
+	if err := tx.QueryRow("SELECT id, username, email, role, is_admin, is_active, created_at, last_login_at FROM users WHERE id = $1", id).
+		Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt); err != nil {
 		return nil, err
 	}
 
@@ -488,4 +504,34 @@ func DeleteUser(db *sql.DB, id int64) error {
 func ResetUserPassword(db *sql.DB, id int64, passwordHash string) error {
 	_, err := db.Exec("UPDATE users SET password_hash = $1 WHERE id = $2", passwordHash, id)
 	return err
+}
+
+func CreateLDAPUser(db *sql.DB, username, email, role string) (*User, error) {
+	var id int64
+	var createdAt time.Time
+	err := db.QueryRow(
+		"INSERT INTO users (username, password_hash, email, is_admin, role, is_active) VALUES ($1, '', $2, $3, $4, $5) RETURNING id, created_at",
+		username, email, role == "admin", role, true,
+	).Scan(&id, &createdAt)
+	if err != nil {
+		return nil, err
+	}
+	return &User{ID: id, Username: username, Email: email, Role: role, IsAdmin: role == "admin", IsActive: true, CreatedAt: createdAt}, nil
+}
+
+func UpdateLastLogin(db *sql.DB, username string) error {
+	_, err := db.Exec("UPDATE users SET last_login_at = NOW() WHERE username = $1", username)
+	return err
+}
+
+func GetUserByUsername(db *sql.DB, username string) (*User, error) {
+	var u User
+	err := db.QueryRow(
+		"SELECT id, username, email, password_hash, role, is_admin, is_active, created_at, last_login_at FROM users WHERE username = $1",
+		username,
+	).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
 }

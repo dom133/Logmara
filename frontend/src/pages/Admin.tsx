@@ -25,8 +25,10 @@ export default function Admin() {
     'col_widths_admin',
     [
       { key: 'username', width: 150 },
+      { key: 'email', width: 250 },
       { key: 'role', width: 100 },
       { key: 'is_active', width: 100 },
+      { key: 'last_login_at', width: 200 },
       { key: 'created_at', width: 200 },
       { key: 'actions', width: 200 },
     ],
@@ -50,6 +52,7 @@ export default function Admin() {
       const formValues: Record<string, any> = { ...data }
       formValues['ldap_enabled'] = data['ldap_enabled'] === 'true'
       formValues['ldap_use_tls'] = data['ldap_use_tls'] === 'true'
+      formValues['ldap_auto_provision'] = data['ldap_auto_provision'] === 'true'
       settingsForm.setFieldsValue(formValues)
       setLdapEnabled(data['ldap_enabled'] === 'true')
     } catch (e: any) {
@@ -194,6 +197,12 @@ export default function Admin() {
       key: 'username',
     },
     {
+      title: 'Email',
+      dataIndex: 'email',
+      key: 'email',
+      render: (email: string) => email || '-',
+    },
+    {
       title: 'Role',
       dataIndex: 'role',
       key: 'role',
@@ -207,6 +216,12 @@ export default function Admin() {
       dataIndex: 'is_active',
       key: 'is_active',
       render: (active: boolean) => <Tag color={active ? 'green' : 'red'}>{active ? 'Active' : 'Disabled'}</Tag>,
+    },
+    {
+      title: 'Last Login',
+      dataIndex: 'last_login_at',
+      key: 'last_login_at',
+      render: (date: string | null) => date ? new Date(date).toLocaleString() : '-',
     },
     {
       title: 'Created',
@@ -338,6 +353,23 @@ export default function Admin() {
                   <Form.Item label="User Filter" name="ldap_user_filter">
                     <Input placeholder="(uid=%s)" disabled={!ldapEnabled} />
                   </Form.Item>
+                  <Divider orientation="left">Attribute Mapping</Divider>
+                  <Form.Item label="Username Attribute" name="ldap_username_attr">
+                    <Input placeholder="uid" disabled={!ldapEnabled} />
+                  </Form.Item>
+                  <Form.Item label="Email Attribute" name="ldap_email_attr">
+                    <Input placeholder="mail" disabled={!ldapEnabled} />
+                  </Form.Item>
+                  <Form.Item label="Auto-Provision LDAP Users" name="ldap_auto_provision" valuePropName="checked">
+                    <Switch disabled={!ldapEnabled} />
+                  </Form.Item>
+                  <Form.Item label="Default Role (auto-provisioned)" name="ldap_default_role">
+                    <Select style={{ width: 200 }} disabled={!ldapEnabled}>
+                      <Option value="viewer">Viewer</Option>
+                      <Option value="editor">Editor</Option>
+                      <Option value="admin">Admin</Option>
+                    </Select>
+                  </Form.Item>
                   <Space>
                     <Button type="primary" htmlType="submit" disabled={!ldapEnabled}>
                       Save LDAP Settings
@@ -460,6 +492,9 @@ export default function Admin() {
       >
         <Form form={form} layout="vertical">
           <Form.Item name="username" label="Username" rules={[{ required: true, message: 'Required' }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="email" label="Email" rules={[{ required: true, message: 'Required' }, { type: 'email' }]}>
             <Input />
           </Form.Item>
           <Form.Item name="password" label="Password" rules={[{ required: true, min: 8, message: 'Min 8 characters' }]}>
