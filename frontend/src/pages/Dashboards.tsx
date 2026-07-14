@@ -5,10 +5,13 @@ import { useNavigate } from 'react-router-dom'
 import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, Dashboard, DashboardConfig, ParsedField } from '../services/api'
 import { getDevices, getParsedFields } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
+import { useAuth } from '../services/auth'
 
 const { Title } = Typography
 
 export default function DashboardsPage() {
+  const { user } = useAuth()
+  const canEdit = user?.role === 'admin' || user?.role === 'editor'
   const [dashboards, setDashboards] = useState<Dashboard[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
@@ -162,16 +165,16 @@ export default function DashboardsPage() {
       render: (_: any, r: Dashboard) => (
         <Space>
           <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/dashboards/${r.id}`)}>View</Button>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>Edit</Button>
-          <Button
+          {canEdit && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>Edit</Button>}
+          {canEdit && <Button
             size="small"
             icon={r.pinned ? <PushpinFilled /> : <PushpinOutlined />}
             onClick={() => handleTogglePin(r.id)}
             style={{ color: r.pinned ? '#faad14' : undefined }}
-          />
-          <Popconfirm title="Delete dashboard?" onConfirm={() => handleDelete(r.id)}>
+          />}
+          {canEdit && <Popconfirm title="Delete dashboard?" onConfirm={() => handleDelete(r.id)}>
             <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
+          </Popconfirm>}
         </Space>
       ),
     },
@@ -183,7 +186,7 @@ export default function DashboardsPage() {
         <Title level={3}>Custom Dashboards</Title>
         <Space>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Dashboard</Button>
+          {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Dashboard</Button>}
         </Space>
       </Space>
 

@@ -30,12 +30,11 @@ function useIsMobile() {
   return isMobile
 }
 
-function NavContent({ location, user, logout, isAdmin, canEdit, pinnedDashboards, collapsed, onClose }: {
+function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collapsed, onClose }: {
   location: ReturnType<typeof useLocation>
   user: { username?: string } | undefined
   logout: () => void
   isAdmin: boolean
-  canEdit: boolean
   pinnedDashboards: DashboardType[]
   collapsed?: boolean
   onClose?: () => void
@@ -44,7 +43,7 @@ function NavContent({ location, user, logout, isAdmin, canEdit, pinnedDashboards
   const renderLinks = () => (
     <>
       <nav>
-        {(canEdit ? [...baseNavItems, ...editorNavItems] : baseNavItems).map(item => (
+        {navItems.map(item => (
           <RouterLink
             key={item.key}
             to={item.key}
@@ -192,18 +191,15 @@ function ThemeProvider({ children }: { children: React.ReactNode }) {
   )
 }
 
-const baseNavItems = [
+const navItems = [
   { key: '/', label: 'Dashboard', icon: <DashboardOutlined /> },
   { key: '/logs', label: 'Logs', icon: <FileTextOutlined /> },
-]
-
-const editorNavItems = [
   { key: '/parsers', label: 'Parsers', icon: <SettingOutlined /> },
   { key: '/dashboards', label: 'Dashboards', icon: <FundOutlined /> },
 ]
 
 function AppLayout({ children }: { children: React.ReactNode }) {
-  const { user, logout, isAdmin, canEdit } = useAuth()
+  const { user, logout, isAdmin } = useAuth()
   const { token } = theme.useToken()
   const { themeMode, toggleTheme } = useTheme()
   const location = useLocation()
@@ -213,7 +209,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
   const isMobile = useIsMobile()
 
   useEffect(() => {
-    if (!user || !canEdit) return
+    if (!user) return
     const load = async () => {
       try {
         const dashboards = await getDashboards()
@@ -221,7 +217,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
       } catch { /* ignore */ }
     }
     load()
-  }, [user, canEdit])
+  }, [user])
 
   useEffect(() => {
     if (isMobile) {
@@ -240,7 +236,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           style={{ background: token.colorBgContainer }}
           theme={themeMode === 'dark' ? 'dark' : 'light'}
         >
-          <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} canEdit={canEdit} pinnedDashboards={pinnedDashboards} collapsed={collapsed} />
+          <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} collapsed={collapsed} />
         </Sider>
       )}
       {isMobile && (
@@ -253,7 +249,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           styles={{ body: { padding: 0 } }}
         >
           <div style={{ background: token.colorBgContainer, height: '100%' }}>
-            <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} canEdit={canEdit} pinnedDashboards={pinnedDashboards} onClose={() => setDrawerVisible(false)} />
+            <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} onClose={() => setDrawerVisible(false)} />
           </div>
         </Drawer>
       )}
@@ -300,13 +296,6 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   return <AppLayout>{children}</AppLayout>
 }
 
-function EditorRoute({ children }: { children: React.ReactNode }) {
-  const { token, canEdit } = useAuth()
-  if (!token) return <Navigate to="/login" replace />
-  if (!canEdit) return <Navigate to="/" replace />
-  return <AppLayout>{children}</AppLayout>
-}
-
 export default function App() {
   const [initialized, setInitialized] = useState<boolean | null>(null)
 
@@ -341,9 +330,9 @@ export default function App() {
               <Route path="/login" element={<Login />} />
               <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
               <Route path="/logs" element={<PrivateRoute><LogsViewer /></PrivateRoute>} />
-              <Route path="/parsers" element={<EditorRoute><ParsersPage /></EditorRoute>} />
-              <Route path="/dashboards" element={<EditorRoute><DashboardsPage /></EditorRoute>} />
-              <Route path="/dashboards/:id" element={<EditorRoute><DashboardViewPage /></EditorRoute>} />
+              <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />
+              <Route path="/dashboards" element={<PrivateRoute><DashboardsPage /></PrivateRoute>} />
+              <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
               <Route path="/admin" element={<PrivateRoute><Admin /></PrivateRoute>} />
               <Route path="*" element={<PrivateRoute><Result status="404" title="404" subTitle="Page not found" /></PrivateRoute>} />
             </>
