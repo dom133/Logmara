@@ -18,11 +18,14 @@ func ListDashboards(db *sql.DB) gin.HandlerFunc {
 		userID := c.GetInt64("user_id")
 
 		rows, err := db.Query(`
-			SELECT d.id, d.name, d.description, d.owner_id, u.username, d.pinned, d.is_public, d.config, d.created_at, d.updated_at
+			SELECT d.id, d.name, d.description, d.owner_id, u.username,
+				COALESCE(up.dashboard_id IS NOT NULL, FALSE),
+				d.is_public, d.config, d.created_at, d.updated_at
 			FROM dashboards d
 			JOIN users u ON d.owner_id = u.id
+			LEFT JOIN user_dashboard_pins up ON d.id = up.dashboard_id AND up.user_id = $1
 			WHERE d.owner_id = $1 OR d.is_public = TRUE
-			ORDER BY d.pinned DESC, d.created_at DESC
+			ORDER BY up.dashboard_id IS NOT NULL DESC, d.created_at DESC
 		`, userID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -52,7 +55,6 @@ func CreateDashboard(db *sql.DB) gin.HandlerFunc {
 		var req struct {
 			Name        string          `json:"name"`
 			Description *string         `json:"description"`
-			Pinned      bool            `json:"pinned"`
 			Config      json.RawMessage `json:"config"`
 		}
 
@@ -72,9 +74,9 @@ func CreateDashboard(db *sql.DB) gin.HandlerFunc {
 
 		var id int64
 		err := db.QueryRow(`
-			INSERT INTO dashboards (name, description, owner_id, pinned, config)
-			VALUES ($1, $2, $3, $4, $5) RETURNING id
-		`, req.Name, req.Description, userID, req.Pinned, req.Config).Scan(&id)
+			INSERT INTO dashboards (name, description, owner_id, config)
+			VALUES ($1, $2, $3, $4) RETURNING id
+		`, req.Name, req.Description, userID, req.Config).Scan(&id)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -95,13 +97,18 @@ func GetDashboard(db *sql.DB) gin.HandlerFunc {
 		userID := c.GetInt64("user_id")
 
 		var d model.Dashboard
+		var pinned sql.NullBool
 		err = db.QueryRow(`
-			SELECT d.id, d.name, d.description, d.owner_id, u.username, d.pinned, d.is_public, d.config, d.created_at, d.updated_at
+			SELECT d.id, d.name, d.description, d.owner_id, u.username,
+				up.dashboard_id IS NOT NULL,
+				d.is_public, d.config, d.created_at, d.updated_at
 			FROM dashboards d
 			JOIN users u ON d.owner_id = u.id
+			LEFT JOIN user_dashboard_pins up ON d.id = up.dashboard_id AND up.user_id = $2
 			WHERE d.id = $1 AND (d.owner_id = $2 OR d.is_public = TRUE)
 		`, id, userID).Scan(&d.ID, &d.Name, &d.Description, &d.OwnerID,
-			&d.OwnerUsername, &d.Pinned, &d.IsPublic, &d.Config, &d.CreatedAt, &d.UpdatedAt)
+			&d.OwnerUsername, &pinned, &d.IsPublic, &d.Config, &d.CreatedAt, &d.UpdatedAt)
+		d.Pinned = pinned.Valid && pinned.Bool
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
 			return
@@ -124,7 +131,6 @@ func UpdateDashboard(db *sql.DB) gin.HandlerFunc {
 		var req struct {
 			Name        *string         `json:"name"`
 			Description *string         `json:"description"`
-			Pinned      *bool           `json:"pinned"`
 			Config      json.RawMessage `json:"config"`
 		}
 
@@ -152,11 +158,6 @@ func UpdateDashboard(db *sql.DB) gin.HandlerFunc {
 		if req.Description != nil {
 			setClauses = append(setClauses, "description = $"+strconv.Itoa(argIdx))
 			args = append(args, *req.Description)
-			argIdx++
-		}
-		if req.Pinned != nil {
-			setClauses = append(setClauses, "pinned = $"+strconv.Itoa(argIdx))
-			args = append(args, *req.Pinned)
 			argIdx++
 		}
 		if req.Config != nil {
@@ -395,22 +396,27 @@ func TogglePinDashboard(db *sql.DB) gin.HandlerFunc {
 
 		userID := c.GetInt64("user_id")
 
-		var pinned bool
-		err = db.QueryRow("SELECT pinned FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID).Scan(&pinned)
-		if err != nil {
+		exists := false
+		err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE))", id, userID).Scan(&exists)
+		if err != nil || !exists {
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
 			return
 		}
 
-		newPinned := !pinned
-		_, err = db.Exec("UPDATE dashboards SET pinned = $1, updated_at = NOW() WHERE id = $2 AND owner_id = $3",
-			newPinned, id, userID)
+		var pinned bool
+		err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM user_dashboard_pins WHERE user_id = $1 AND dashboard_id = $2)", userID, id).Scan(&pinned)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"pinned": newPinned})
+		if pinned {
+			db.Exec("DELETE FROM user_dashboard_pins WHERE user_id = $1 AND dashboard_id = $2", userID, id)
+		} else {
+			db.Exec("INSERT INTO user_dashboard_pins (user_id, dashboard_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", userID, id)
+		}
+
+		c.JSON(http.StatusOK, gin.H{"pinned": !pinned})
 	}
 }
 

@@ -186,12 +186,12 @@ export default function DashboardsPage() {
           <Space>
             <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/dashboards/${r.id}`)}>View</Button>
             {isOwner && canEdit && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>Edit</Button>}
-            {isOwner && <Button
+            <Button
               size="small"
               icon={r.pinned ? <PushpinFilled /> : <PushpinOutlined />}
               onClick={() => handleTogglePin(r.id)}
               style={{ color: r.pinned ? '#faad14' : undefined }}
-            />}
+            />
             {isOwner && <Button
               size="small"
               icon={<GlobalOutlined />}

@@ -119,6 +119,7 @@ authGroup := r.Group("/api")
     authGroup.GET("/dashboards", handler.ListDashboards(database))
     authGroup.GET("/dashboards/:id", handler.GetDashboard(database))
     authGroup.GET("/dashboards/:id/data", handler.GetDashboardData(database))
+    authGroup.PATCH("/dashboards/:id/pin", handler.TogglePinDashboard(database))
 
     editorGroup := authGroup.Group("")
     editorGroup.Use(auth.RoleRequired("admin", "editor"))
@@ -133,7 +134,6 @@ authGroup := r.Group("/api")
       editorGroup.POST("/dashboards", handler.CreateDashboard(database))
       editorGroup.PUT("/dashboards/:id", handler.UpdateDashboard(database))
       editorGroup.DELETE("/dashboards/:id", handler.DeleteDashboard(database))
-      editorGroup.PATCH("/dashboards/:id/pin", handler.TogglePinDashboard(database))
       editorGroup.PATCH("/dashboards/:id/public", handler.TogglePublicDashboard(database))
     }
 

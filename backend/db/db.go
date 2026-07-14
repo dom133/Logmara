@@ -114,6 +114,13 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='role') THEN ALTER TABLE users ADD COLUMN role VARCHAR(50) DEFAULT 'viewer'; END IF; END $$`,
 		`UPDATE users SET role = 'admin' WHERE is_admin = TRUE AND role = 'viewer'`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='is_active') THEN ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE; END IF; END $$`,
+		`CREATE TABLE IF NOT EXISTS user_dashboard_pins (
+			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+			dashboard_id INTEGER REFERENCES dashboards(id) ON DELETE CASCADE,
+			PRIMARY KEY (user_id, dashboard_id)
+		)`,
+		`INSERT INTO user_dashboard_pins (user_id, dashboard_id) SELECT owner_id, id FROM dashboards WHERE pinned = TRUE ON CONFLICT DO NOTHING`,
+		`DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='dashboards' AND column_name='pinned') THEN ALTER TABLE dashboards DROP COLUMN pinned; END IF; END $$`,
 		`CREATE TABLE IF NOT EXISTS app_settings (
 			key VARCHAR(100) PRIMARY KEY,
 			value TEXT NOT NULL,
