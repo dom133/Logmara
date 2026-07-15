@@ -310,7 +310,7 @@ export default function LogsViewer() {
             placeholder="Device"
             style={{ minWidth: 140, flex: '1 1 140px' }}
             allowClear
-            options={devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))}
+            options={[{ label: 'Unknown', value: '__unknown__' }, ...devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))]}
             value={filters.fromhost_ip || undefined}
             onChange={v => setFilters(f => ({ ...f, fromhost_ip: v || '' }))}
           />

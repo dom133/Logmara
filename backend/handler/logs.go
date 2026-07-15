@@ -139,7 +139,9 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 			argIdx++
 		}
 
-		if fromHostIP != "" {
+		if fromHostIP == "__unknown__" {
+			whereClauses = append(whereClauses, fmt.Sprintf("(fromhost_ip IS NULL OR fromhost_ip = '')"))
+		} else if fromHostIP != "" {
 			whereClauses = append(whereClauses, fmt.Sprintf("COALESCE(fromhost_ip, '') = $%d", argIdx))
 			args = append(args, fromHostIP)
 			argIdx++
