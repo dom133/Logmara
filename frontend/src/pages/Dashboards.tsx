@@ -18,7 +18,7 @@ export default function DashboardsPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Dashboard | null>(null)
   const [form] = Form.useForm()
-  const [devices, setDevices] = useState<string[]>([])
+  const [devices, setDevices] = useState<Array<{ fromhost_ip: string; label: string }>>([])
   const [parsedFields, setParsedFields] = useState<ParsedField[]>([])
   const navigate = useNavigate()
   const prevDevices = useRef<string[]>([])
@@ -336,7 +336,7 @@ export default function DashboardsPage() {
                 mode="multiple"
                 placeholder="Select devices to monitor (leave empty for all)"
                 style={{ width: '100%' }}
-                options={devices.map(d => ({ label: d, value: d }))}
+                options={devices.map(d => ({ label: d.label, value: d.fromhost_ip }))}
               />
             </Form.Item>
           </Form.Item>
