@@ -160,9 +160,10 @@ type DeviceCount struct {
 }
 
 type ErrorMessage struct {
-	Message  string `json:"message"`
-	Count    int64  `json:"count"`
-	Hostname string `json:"hostname"`
+	Message    string `json:"message"`
+	Count      int64  `json:"count"`
+	Hostname   string `json:"hostname"`
+	FromHostIP string `json:"fromhost_ip"`
 }
 
 type TimelinePoint struct {

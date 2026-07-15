@@ -55,15 +55,15 @@ func GetDashboardStats(db *sql.DB) gin.HandlerFunc {
 		}
 
 		rows, err = db.Query(
-			"SELECT substring(message from 1 for 100) as msg, hostname, COUNT(*) as cnt " +
+			"SELECT substring(message from 1 for 100) as msg, COALESCE(MIN(fromhost_ip), ''), MIN(hostname) as hostname, COUNT(*) as cnt " +
 				"FROM syslog_logs WHERE severity IN ('err', 'crit', 'alert', 'emerg') " +
-				"GROUP BY msg, hostname ORDER BY cnt DESC LIMIT 10",
+				"GROUP BY msg, fromhost_ip ORDER BY cnt DESC LIMIT 10",
 		)
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {
 				var e model.ErrorMessage
-				if rows.Scan(&e.Message, &e.Hostname, &e.Count) == nil {
+				if rows.Scan(&e.Message, &e.FromHostIP, &e.Hostname, &e.Count) == nil {
 					stats.TopErrors = append(stats.TopErrors, e)
 				}
 			}

@@ -117,7 +117,9 @@ export default function Dashboard() {
 
   const topErrorsColumns = [
     { title: 'Message', dataIndex: 'message', key: 'message', width: 140, ellipsis: true },
-    { title: 'Source', dataIndex: 'hostname', key: 'hostname', width: 120, render: (v: string, record: any) => <Tag>{resolveHostname(v, record.fromhost_ip)}</Tag> },
+    { title: 'Source', dataIndex: 'hostname', key: 'hostname', width: 120, render: (v: string, record: any) => (
+      <a onClick={() => window.location.href = `/logs?fromhost_ip=${encodeURIComponent(record.fromhost_ip)}`}><Tag color="blue">{resolveHostname(v, record.fromhost_ip)}</Tag></a>
+    )},
     { title: 'Count', dataIndex: 'count', key: 'count', width: 70 },
   ]
 
