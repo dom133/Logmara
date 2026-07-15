@@ -281,7 +281,10 @@ export default function Admin() {
                 extra={
                   <Space>
                     {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
-                    <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalVisible(true)}>
+                    <Button type="primary" icon={<PlusOutlined />} onClick={() => {
+                    form.setFieldsValue({ auth_type: settings['ldap_auto_provision'] === 'true' ? 'ldap' : 'local' })
+                    setModalVisible(true)
+                  }}>
                       Add User
                     </Button>
                   </Space>
@@ -514,22 +517,19 @@ export default function Admin() {
           <Form.Item name="email" label="Email" rules={[{ required: true, message: 'Required' }, { type: 'email' }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="auth_type" label="Auth Type" rules={[{ required: true }]} initialValue="local">
-            <Select>
-              <Option value="local">Local</Option>
-              <Option value="ldap">LDAP</Option>
-            </Select>
-          </Form.Item>
-          <Form.Item name="password" label="Password" dependencies={['auth_type']} rules={[
-            ({ getFieldValue }) => {
-              const authType = getFieldValue('auth_type');
-              return authType === 'local'
-                ? [{ required: true, min: 8, message: 'Min 8 characters' } as any]
-                : ([] as any);
-            }
-          ]}>
-            <Input.Password disabled={form.getFieldValue('auth_type') === 'ldap'} />
-          </Form.Item>
+          {settings['ldap_auto_provision'] !== 'true' && (
+            <Form.Item name="auth_type" label="Auth Type" rules={[{ required: true }]} initialValue="local">
+              <Select>
+                <Option value="local">Local</Option>
+                <Option value="ldap">LDAP</Option>
+              </Select>
+            </Form.Item>
+          )}
+          {form.getFieldValue('auth_type') !== 'ldap' && (
+            <Form.Item name="password" label="Password" required rules={[{ required: true, min: 8, message: 'Min 8 characters' }]}>
+              <Input.Password />
+            </Form.Item>
+          )}
           <Form.Item name="role" label="Role" rules={[{ required: true }]}>
             <Select>
               <Option value="viewer">Viewer</Option>
