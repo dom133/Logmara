@@ -34,7 +34,7 @@ func init() {
 			Description: "Matches Ubiquiti EdgeRouter/Dream Machine iptables-style firewall logs",
 			DeviceType:  "ubiquiti",
 			MatchType:   "message",
-			MatchValue:  "[CUSTOM",
+			MatchValue:  "DESCR=",
 			Regex:       `\[(\S+)\]\s+DESCR="([^"]+)"\s+IN=(\S*)\s+OUT=(\S*)\s+MAC=([0-9A-Fa-f:]+)\s+SRC=(\d+\.\d+\.\d+\.\d+)\s+DST=(\d+\.\d+\.\d+\.\d+)\s+LEN=(\d+)\s+PROTO=(\S+)\s+SPT=(\d+)\s+DPT=(\d+)`,
 			Fields: []FieldSeed{
 				{Name: "rule_id", Label: "Rule ID", Type: "string"},
