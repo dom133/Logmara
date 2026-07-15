@@ -95,8 +95,11 @@ export default function DashboardViewPage() {
   const { connected } = useSSE({
     onNewLogs: handleNewLogs,
     filters: {
+      fromhost_ip: dashDevices.join(',') || undefined,
       severity: severityFilter || undefined,
       search: searchOverride || undefined,
+      from: dateRange?.[0]?.toISOString() || undefined,
+      to: dateRange?.[1]?.toISOString() || undefined,
     },
     enabled: streaming,
   })
@@ -351,9 +354,10 @@ export default function DashboardViewPage() {
           <Button
             icon={<ThunderboltOutlined />}
             type={streaming ? 'primary' : 'default'}
+            style={{ color: streaming && connected ? '#52c41a' : undefined }}
             onClick={() => setStreaming(!streaming)}
           >
-            {streaming ? 'Live' : 'Offline'}
+            {streaming ? (connected ? 'Live ●' : 'Connecting...') : 'Live'}
           </Button>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
         </Space>
