@@ -235,7 +235,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func GetDevices(db *sql.DB, engine *parser.Engine) gin.HandlerFunc {
+func GetDevices(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rows, err := db.Query(`SELECT hostname, COUNT(*) as total_logs, MAX(timestamp) as last_seen,
 			SUM(CASE WHEN severity = 'emergency' THEN 1 ELSE 0 END) as emergency,
@@ -253,8 +253,6 @@ func GetDevices(db *sql.DB, engine *parser.Engine) gin.HandlerFunc {
 		}
 		defer rows.Close()
 
-		parsers, _ := engine.GetAllParsers()
-
 		var devices []model.DeviceStats
 		for rows.Next() {
 			var ds model.DeviceStats
@@ -266,35 +264,14 @@ func GetDevices(db *sql.DB, engine *parser.Engine) gin.HandlerFunc {
 			ds.TotalLogs = total
 			ds.SeverityCount = model.SeverityCounts{"emergency": emergency, "alert": alert, "critical": critical, "error": errCount, "warning": warning, "notice": notice, "info": info, "debug": debug}
 
-			appRows, _ := db.Query("SELECT DISTINCT app_name FROM syslog_logs WHERE hostname = $1", ds.Hostname)
-			if appRows != nil {
-				defer appRows.Close()
-				matched := make(map[string]bool)
-				for appRows.Next() {
-					var appName string
-					if err := appRows.Scan(&appName); err != nil {
-						continue
+			pRows, _ := db.Query("SELECT ARRAY(SELECT DISTINCT unnest(matched_parsers) FROM syslog_logs WHERE hostname = $1 AND matched_parsers IS NOT NULL AND matched_parsers != '{}')", ds.Hostname)
+			if pRows != nil {
+				defer pRows.Close()
+				if pRows.Next() {
+					var parsersArr pq.StringArray
+					if err := pRows.Scan(&parsersArr); err == nil {
+						ds.MatchedParsers = parsersArr
 					}
-					for _, p := range parsers {
-						if !p.Enabled {
-							continue
-						}
-						switch p.MatchType {
-						case "app_name":
-							if p.MatchValue != nil && matchGlob(*p.MatchValue, appName) {
-								matched[p.Name] = true
-							}
-						case "hostname":
-							if p.MatchValue != nil && matchGlob(*p.MatchValue, ds.Hostname) {
-								matched[p.Name] = true
-							}
-						case "all":
-							matched[p.Name] = true
-						}
-					}
-				}
-				for name := range matched {
-					ds.MatchedParsers = append(ds.MatchedParsers, name)
 				}
 				ds.HasParsed = len(ds.MatchedParsers) > 0
 			}
