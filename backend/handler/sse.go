@@ -36,6 +36,7 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 		search := c.Query("search")
 		from := c.Query("from")
 		to := c.Query("to")
+		requireParser := c.Query("require_parser") == "true"
 
 		ctx := c.Request.Context()
 
@@ -79,7 +80,9 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 				args = append(args, to)
 				idx++
 			}
-			clauses = append(clauses, "matched_parsers IS NOT NULL AND array_length(matched_parsers, 1) > 0")
+			if requireParser {
+				clauses = append(clauses, "matched_parsers IS NOT NULL AND array_length(matched_parsers, 1) > 0")
+			}
 
 			return "WHERE " + strings.Join(clauses, " AND "), args
 		}

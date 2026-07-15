@@ -377,6 +377,10 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			argIdx += 2
 		}
 
+		if len(cfg.Fields) > 0 {
+			query += " AND matched_parsers IS NOT NULL AND array_length(matched_parsers, 1) > 0"
+		}
+
 		query += " ORDER BY timestamp DESC LIMIT $" + strconv.Itoa(argIdx)
 		args = append(args, limitInt)
 		argIdx++
@@ -447,6 +451,10 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			countQuery += " AND (message ILIKE $" + strconv.Itoa(countIdx) + " OR hostname ILIKE $" + strconv.Itoa(countIdx+1) + ")"
 			searchPattern := "%" + cfg.Filters.Search + "%"
 			countArgs = append(countArgs, searchPattern, searchPattern)
+		}
+
+		if len(cfg.Fields) > 0 {
+			countQuery += " AND matched_parsers IS NOT NULL AND array_length(matched_parsers, 1) > 0"
 		}
 
 		var total int64

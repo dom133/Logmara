@@ -10,6 +10,7 @@ interface UseSSEOptions {
     search?: string
     from?: string
     to?: string
+    require_parser?: string
   }
   enabled?: boolean
 }
