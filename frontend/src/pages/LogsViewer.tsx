@@ -250,8 +250,8 @@ export default function LogsViewer() {
 
   return (
     <>
-      <Space style={{ marginBottom: 16 }} align="center">
-        <Title level={3} style={{ margin: 0 }}>Logs</Title>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+        <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>Logs</Title>
         <Text type="secondary">({total.toLocaleString()} total)</Text>
         {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
         <Dropdown
@@ -293,21 +293,21 @@ export default function LogsViewer() {
         >
           {streaming ? (connected ? 'Live ●' : 'Connecting...') : 'Live'}
         </Button>
-      </Space>
+      </div>
 
       <Card style={{ marginBottom: 16 }} size="small">
-        <Space wrap>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <Input
             ref={searchRef}
             placeholder="Search messages... (Ctrl+K)"
-            style={{ minWidth: 200 }}
+            style={{ minWidth: 200, flex: '1 1 200px' }}
             allowClear
             onChange={e => handleSearch(e.target.value)}
             value={filters.search}
           />
           <Select
             placeholder="Device"
-            style={{ minWidth: 140 }}
+            style={{ minWidth: 140, flex: '1 1 140px' }}
             allowClear
             options={devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))}
             value={filters.fromhost_ip || undefined}
@@ -315,7 +315,7 @@ export default function LogsViewer() {
           />
           <Select
             placeholder="Severity"
-            style={{ minWidth: 100 }}
+            style={{ minWidth: 100, flex: '1 1 100px' }}
             allowClear
             options={severities.map(s => ({ label: s.toUpperCase(), value: s }))}
             value={filters.severity || undefined}
@@ -323,7 +323,7 @@ export default function LogsViewer() {
           />
           <Select
             placeholder="Date Preset"
-            style={{ minWidth: 120 }}
+            style={{ minWidth: 120, flex: '1 1 120px' }}
             allowClear
             options={DATE_PRESETS}
             onChange={v => {
@@ -334,12 +334,12 @@ export default function LogsViewer() {
             }}
           />
           <RangePicker
-            style={{ minWidth: 240 }}
+            style={{ minWidth: 240, flex: '1 1 240px' }}
             onChange={handleDateRange}
           />
           <Select
             placeholder="Sort"
-            style={{ minWidth: 130 }}
+            style={{ minWidth: 130, flex: '1 1 130px' }}
             value={filters.sort}
             onChange={v => setFilters(f => ({ ...f, sort: v }))}
             options={[
@@ -355,7 +355,7 @@ export default function LogsViewer() {
           <Popconfirm title="Export as HTML?" onConfirm={() => handleExport('html')}>
             <Button>HTML</Button>
           </Popconfirm>
-        </Space>
+        </div>
       </Card>
 
       {!loading && logs.length === 0 ? (

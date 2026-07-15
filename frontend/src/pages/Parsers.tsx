@@ -196,7 +196,7 @@ export default function ParsersPage() {
       title: 'Actions',
       key: 'actions',
       render: (_: any, r: Parser) => (
-        <Space>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {canEdit && <Tooltip title="Edit">
             <Button size="small" icon={<EditOutlined />} disabled={r.is_builtin} onClick={() => openEdit(r)} />
           </Tooltip>}
@@ -206,35 +206,37 @@ export default function ParsersPage() {
           {canEdit && <Popconfirm title="Delete parser?" onConfirm={() => handleDelete(r.id)} disabled={r.is_builtin}>
             <Button size="small" danger icon={<DeleteOutlined />} disabled={r.is_builtin} />
           </Popconfirm>}
-        </Space>
+        </div>
       ),
     },
   ]
 
   return (
     <>
-      <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
-        <Title level={3}>Parser Engine</Title>
-        <Space>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+        <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>Parser Engine</Title>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
           {canEdit && <Button icon={<ReloadOutlined />} onClick={handleReparse}>Reparse Unparsed</Button>}
           {canEdit && <Button icon={<PlayCircleOutlined />} onClick={() => setTestModalOpen(true)}>Test Regex</Button>}
           {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Parser</Button>}
-        </Space>
-      </Space>
+        </div>
+      </div>
 
-      <Descriptions
-        bordered
-        column={4}
-        size="small"
-        style={{ marginBottom: 16 }}
-        items={[
-          { key: 'total', label: 'Total Parsers', span: 1, children: parsers.length },
-          { key: 'builtin', label: 'Built-in', span: 1, children: parsers.filter(p => p.is_builtin).length },
-          { key: 'custom', label: 'Custom', span: 1, children: parsers.filter(p => !p.is_builtin).length },
-          { key: 'fields', label: 'Field Definitions', span: 1, children: fields.length },
-        ]}
-      />
+      <Row gutter={16} style={{ marginBottom: 16 }}>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small"><Statistic title="Total Parsers" value={parsers.length} /></Card>
+        </Col>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small"><Statistic title="Built-in" value={parsers.filter(p => p.is_builtin).length} /></Card>
+        </Col>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small"><Statistic title="Custom" value={parsers.filter(p => !p.is_builtin).length} /></Card>
+        </Col>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small"><Statistic title="Field Definitions" value={fields.length} /></Card>
+        </Col>
+      </Row>
 
       <Table
         dataSource={parsers}
@@ -281,7 +283,7 @@ export default function ParsersPage() {
             {(fieldsList, { add, remove }) => (
               <>
                 {fieldsList.map((field, index) => (
-                  <Space key={field.key} style={{ marginBottom: 8 }} align="baseline">
+                  <div key={field.key} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'baseline', marginBottom: 8 }}>
                     <Form.Item name={[index, 'name']} rules={[{ required: true }]}>
                       <Input placeholder="Field name" style={{ width: 150 }} />
                     </Form.Item>
@@ -292,7 +294,7 @@ export default function ParsersPage() {
                       <Select options={['string', 'number', 'ip', 'mac', 'duration'].map(t => ({ label: t, value: t }))} style={{ width: 120 }} />
                     </Form.Item>
                     <Button type="link" danger onClick={() => remove(index)}>Remove</Button>
-                  </Space>
+                  </div>
                 ))}
                 <Button type="dashed" onClick={() => add({ name: '', label: '', type: 'string' })} block>+ Add Field</Button>
               </>

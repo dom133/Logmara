@@ -38,10 +38,10 @@ export default function Login() {
         </div>
         <Form onFinish={handleLogin} layout="vertical">
           <Form.Item name="username" label="Username" rules={[{ required: true }]}>
-            <Input size="large" placeholder="admin" />
+            <Input size="large" placeholder="Login" />
           </Form.Item>
           <Form.Item name="password" label="Password" rules={[{ required: true }]}>
-            <Input.Password size="large" placeholder="admin123" />
+            <Input.Password size="large" placeholder="Password" />
           </Form.Item>
           <Form.Item>
             <Button type="primary" htmlType="submit" loading={loading} size="large" block>

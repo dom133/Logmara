@@ -212,7 +212,7 @@ export default function DashboardsPage() {
         const isOwner = r.owner_id === user?.id
         const canManage = isOwner && canEdit || isAdmin
         return (
-          <Space>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/dashboards/${r.id}`)}>View</Button>
             {canManage && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>Edit</Button>}
             <Button
@@ -232,7 +232,7 @@ export default function DashboardsPage() {
             {canManage && <Popconfirm title="Delete dashboard?" onConfirm={() => handleDelete(r.id)}>
               <Button size="small" danger icon={<DeleteOutlined />} />
             </Popconfirm>}
-          </Space>
+          </div>
         )
       },
     },
@@ -240,13 +240,13 @@ export default function DashboardsPage() {
 
   return (
     <>
-      <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
-        <Title level={3}>Custom Dashboards</Title>
-        <Space>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+        <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>Custom Dashboards</Title>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
           {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Dashboard</Button>}
-        </Space>
-      </Space>
+        </div>
+      </div>
 
       {dashboards.length === 0 && !loading && (
         <Card style={{ marginBottom: 16 }}>

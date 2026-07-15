@@ -309,10 +309,10 @@ export default function DashboardViewPage() {
         <Breadcrumb.Item>{dashboard.name}</Breadcrumb.Item>
       </Breadcrumb>
 
-      <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
-        <Space>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/dashboards')}>Back</Button>
-          <Title level={3} style={{ margin: 0 }}>{dashboard.name}</Title>
+          <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>{dashboard.name}</Title>
           <Button
             icon={dashboard.pinned ? <PushpinFilled /> : <PushpinOutlined />}
             onClick={handleTogglePin}
@@ -326,27 +326,27 @@ export default function DashboardViewPage() {
             {dashboard.is_public ? 'Public' : 'Private'}
           </Button>}
           {!isOwner && dashboard.owner_username && <Tag color="blue">by {dashboard.owner_username}</Tag>}
-        </Space>
-        <Space wrap>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <Input
             ref={searchRef}
             placeholder="Search... (Ctrl+K)"
             value={searchOverride}
             onChange={e => setSearchOverride(e.target.value)}
             onPressEnter={() => loadLogs((page - 1) * pageSize)}
-            style={{ minWidth: 180, flex: 1 }}
+            style={{ minWidth: 180, flex: '1 1 180px' }}
             prefix={<FilterOutlined />}
           />
           <Select
             placeholder="Severity"
             allowClear
-            style={{ minWidth: 140 }}
+            style={{ minWidth: 140, flex: '1 1 140px' }}
             value={severityFilter || undefined}
             onChange={(v) => setSeverityFilter(v || '')}
             options={severities.map(s => ({ label: SEVERITY_LABELS[s] || s, value: s }))}
           />
           <RangePicker
-            style={{ minWidth: 260 }}
+            style={{ minWidth: 260, flex: '1 1 260px' }}
             showTime
             value={dateRange}
             onChange={(dates) => setDateRange(dates as [any, any] | null)}
@@ -361,8 +361,8 @@ export default function DashboardViewPage() {
             {streaming ? (connected ? 'Live ●' : 'Connecting...') : 'Live'}
           </Button>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
-        </Space>
-      </Space>
+        </div>
+      </div>
 
       {dashboard.description && (
         <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>{dashboard.description}</Typography.Paragraph>
@@ -392,17 +392,23 @@ export default function DashboardViewPage() {
       </Row>
 
       {(dashDevices.length > 0 || fields.length > 0) && (
-        <Descriptions bordered column={3} size="small" style={{ marginBottom: 16 }}>
-          <Descriptions.Item label="Devices" span={1}>
-            {dashDevices.length ? dashDevices.map(d => <Tag key={d}>{d}</Tag>) : <Tag>All</Tag>}
-          </Descriptions.Item>
-          <Descriptions.Item label="Active Fields" span={1}>
-            {fields.length ? fields.map(f => <Tag key={f} color="green">{f}</Tag>) : <Tag>Default</Tag>}
-          </Descriptions.Item>
-          <Descriptions.Item label="Severity Filter" span={1}>
-            <Tag>{dashboard.config.filters.severity || 'All'}</Tag>
-          </Descriptions.Item>
-        </Descriptions>
+        <Row gutter={16} style={{ marginBottom: 16 }}>
+          <Col xs={24} md={8}>
+            <Card size="small" title="Devices">
+              {dashDevices.length ? dashDevices.map(d => <Tag key={d}>{d}</Tag>) : <Tag>All</Tag>}
+            </Card>
+          </Col>
+          <Col xs={24} md={8}>
+            <Card size="small" title="Active Fields">
+              {fields.length ? fields.map(f => <Tag key={f} color="green">{f}</Tag>) : <Tag>Default</Tag>}
+            </Card>
+          </Col>
+          <Col xs={24} md={8}>
+            <Card size="small" title="Severity Filter">
+              <Tag>{dashboard.config.filters.severity || 'All'}</Tag>
+            </Card>
+          </Col>
+        </Row>
       )}
 
       <Table

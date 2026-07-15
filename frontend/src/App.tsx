@@ -261,7 +261,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
               {location.pathname === '/' ? 'Dashboard' : location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'SysLog GUI'}
             </span>
           </div>
-          <Space>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 13, color: token.colorTextSecondary, display: 'flex', alignItems: 'center', gap: 4 }}>
               <UserOutlined /> {user?.username}
             </span>
@@ -280,7 +280,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
             >
               Logout
             </Button>
-          </Space>
+          </div>
         </Header>
         <Content style={{ margin: 16, padding: 24, background: token.colorBgContainer, borderRadius: 8 }}>
           <ErrorBoundary>{children}</ErrorBoundary>

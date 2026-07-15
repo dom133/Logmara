@@ -332,7 +332,7 @@ export default function SetupWizard() {
         <Form form={form} layout="vertical">
           {renderStepContent()}
 
-          <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
             <Button disabled={current === 0} onClick={prev} size="large">
               {current === 4 ? 'Back' : 'Previous'}
             </Button>
@@ -344,7 +344,7 @@ export default function SetupWizard() {
             >
               {current === 4 ? 'Initialize' : current === 3 ? 'Review' : 'Next'}
             </Button>
-          </Space>
+          </div>
         </Form>
       </Card>
     </Layout>

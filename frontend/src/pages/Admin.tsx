@@ -127,6 +127,9 @@ export default function Admin() {
 
   const handleCreate = async () => {
     const values = await form.validateFields()
+    if (settings['ldap_auto_provision'] === 'true') {
+      values.auth_type = 'local'
+    }
     try {
       await createUser(values)
       message.success('User created')
@@ -268,7 +271,7 @@ export default function Admin() {
       title: 'Actions',
       key: 'actions',
       render: (_: any, record: User) => (
-        <Space>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <Button size="small" onClick={() => handleEdit(record)} icon={<EditOutlined />} />
           {record.auth_type !== 'ldap' && <Button size="small" onClick={() => handleResetPassword(record)} icon={<KeyOutlined />} />}
           <Popconfirm
@@ -279,7 +282,7 @@ export default function Admin() {
           >
             <Button size="small" danger icon={<DeleteOutlined />} />
           </Popconfirm>
-        </Space>
+        </div>
       ),
     },
   ]
@@ -300,7 +303,7 @@ export default function Admin() {
               <Card
                 title="User Management"
                 extra={
-                  <Space>
+                  <div style={{ display: 'flex', gap: 8 }}>
                     {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
                     <Button type="primary" icon={<PlusOutlined />} onClick={() => {
                     form.setFieldsValue({ auth_type: 'local' })
@@ -308,7 +311,7 @@ export default function Admin() {
                   }}>
                       Add User
                     </Button>
-                  </Space>
+                  </div>
                 }
               >
                 <Table
@@ -334,7 +337,7 @@ export default function Admin() {
                     <InputNumber min={1} max={8760} style={{ width: '100%' }} />
                   </Form.Item>
                   <Divider />
-                  <Space>
+                  <div style={{ display: 'flex', gap: 8 }}>
                     <Button type="primary" htmlType="submit">
                       Save Settings
                     </Button>
@@ -365,7 +368,7 @@ export default function Admin() {
                         </label>
                       </div>
                     </Modal>
-                  </Space>
+                  </div>
                 </Form>
               </Card>
             ),
@@ -392,10 +395,11 @@ export default function Admin() {
                   <Form.Item label="Verify TLS Certificate" name="ldap_verify_cert" valuePropName="checked">
                     <Switch disabled={!ldapEnabled} />
                   </Form.Item>
-                  <Form.Item label="Custom CA Certificate (PEM)" name="ldap_ca_cert">
-                    <Space style={{ width: '100%' }}>
-                      <Input.TextArea rows={4} placeholder="Wklej certyfikat PEM lub załaduj plik..." style={{ flex: 1 }} disabled={!ldapEnabled} />
-                      <div>
+                  <Form.Item
+                    label="Custom CA Certificate (PEM)"
+                    name="ldap_ca_cert"
+                    extra={
+                      <Space>
                         <input
                           type="file"
                           accept=".pem,.crt,.cer"
@@ -421,8 +425,10 @@ export default function Admin() {
                         <Button icon={<UploadOutlined />} disabled={!ldapEnabled} onClick={() => { document.getElementById('ca-cert-upload')?.click() }}>
                           Upload PEM
                         </Button>
-                      </div>
-                    </Space>
+                      </Space>
+                    }
+                  >
+                    <Input.TextArea rows={4} placeholder="Paste PEM certificate or upload a file..." disabled={!ldapEnabled} />
                   </Form.Item>
                   <Divider orientation="left">Connection</Divider>
                   <Form.Item label="Base DN" name="ldap_base_dn">
@@ -454,7 +460,7 @@ export default function Admin() {
                       <Option value="admin">Admin</Option>
                     </Select>
                   </Form.Item>
-                  <Space>
+                  <div style={{ display: 'flex', gap: 8 }}>
                     <Button type="primary" htmlType="submit" disabled={!ldapEnabled}>
                       Save LDAP Settings
                     </Button>
@@ -465,7 +471,7 @@ export default function Admin() {
                     >
                       Test Connection
                     </Button>
-                  </Space>
+                  </div>
                 </Form>
               </Card>
             ),
@@ -605,13 +611,19 @@ export default function Admin() {
           <Form.Item name="email" label="Email" rules={[{ required: true, message: 'Required' }, { type: 'email' }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="auth_type" label="Auth Type" rules={[{ required: true }]} initialValue="local">
+          <Form.Item name="auth_type" label="Auth Type" rules={[{ required: true }]} initialValue="local" hidden={settings['ldap_auto_provision'] === 'true'}>
             <Select>
               <Option value="local">Local</Option>
               <Option value="ldap">LDAP</Option>
             </Select>
           </Form.Item>
-          <Form.Item name="password" label="Password" dependencies={['auth_type']} hidden={form.getFieldValue('auth_type') === 'ldap'} rules={[{ required: true, min: 8, message: 'Min 8 characters' }]}>
+          <Form.Item
+            name="password"
+            label="Password"
+            dependencies={['auth_type']}
+            hidden={form.getFieldValue('auth_type') === 'ldap'}
+            rules={[{ required: form.getFieldValue('auth_type') === 'local' || settings['ldap_auto_provision'] === 'true', min: 8, message: 'Min 8 characters' }]}
+          >
             <Input.Password />
           </Form.Item>
           <Form.Item name="role" label="Role" rules={[{ required: true }]}>
