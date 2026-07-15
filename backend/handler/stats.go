@@ -39,7 +39,7 @@ func GetDashboardStats(db *sql.DB) gin.HandlerFunc {
 			}
 		}
 
-		rows, err = db.Query("SELECT COALESCE(fromhost_ip, ''), MIN(hostname) as hostname, COUNT(*) as cnt FROM syslog_logs GROUP BY COALESCE(fromhost_ip, '') ORDER BY cnt DESC LIMIT 10")
+		rows, err = db.Query("SELECT COALESCE(MIN(fromhost_ip), ''), MIN(hostname) as hostname, COUNT(*) as cnt FROM syslog_logs GROUP BY fromhost_ip ORDER BY cnt DESC LIMIT 10")
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {
@@ -80,8 +80,8 @@ func GetDashboardStats(db *sql.DB) gin.HandlerFunc {
 func GetDeviceStats(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rows, err := db.Query(
-			"SELECT COALESCE(fromhost_ip, ''), MIN(hostname) as hostname, COUNT(*) as total, MAX(timestamp) as last_seen " +
-				"FROM syslog_logs GROUP BY COALESCE(fromhost_ip, '') ORDER BY total DESC",
+			"SELECT COALESCE(MIN(fromhost_ip), ''), MIN(hostname) as hostname, COUNT(*) as total, MAX(timestamp) as last_seen " +
+				"FROM syslog_logs GROUP BY fromhost_ip ORDER BY total DESC",
 		)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Query failed"})

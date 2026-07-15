@@ -47,6 +47,7 @@ func (e *IngestEntry) UnmarshalJSON(data []byte) error {
 		TimeReported     string `json:"timereported"`
 		Hostname         string `json:"hostname"`
 		FromHostIP       string `json:"fromhost-ip"`
+		FromHostIPUnderscore string `json:"fromhost_ip"`
 		AppName          string `json:"app_name"`
 		ProgramName      string `json:"programname"`
 		ProcessID        string `json:"process_id"`
@@ -80,6 +81,9 @@ func (e *IngestEntry) UnmarshalJSON(data []byte) error {
 		e.Timestamp = raw.TimeReported
 	}
 	e.FromHostIP = raw.FromHostIP
+	if e.FromHostIP == "" {
+		e.FromHostIP = raw.FromHostIPUnderscore
+	}
 	e.Hostname = raw.Hostname
 	if e.Hostname == "" {
 		e.Hostname = raw.FromHostIP
