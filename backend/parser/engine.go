@@ -344,6 +344,19 @@ func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.Parsed
 			continue
 		}
 
+		// Collect sample messages for message-type parser matching
+		var messages []string
+		msgRows, err := e.db.Query(`SELECT message FROM syslog_logs WHERE hostname = $1 LIMIT 100`, hostname)
+		if err == nil {
+			for msgRows.Next() {
+				var msg sql.NullString
+				if err := msgRows.Scan(&msg); err == nil && msg.Valid {
+					messages = append(messages, msg.String)
+				}
+			}
+			msgRows.Close()
+		}
+
 		for _, p := range parsers {
 			switch p.MatchType {
 			case "all":
@@ -356,6 +369,15 @@ func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.Parsed
 				if p.MatchValue != nil && *p.MatchValue != "" {
 					for _, appName := range appNames {
 						if matchGlob(*p.MatchValue, appName) {
+							parserIDs[p.ID] = true
+							break
+						}
+					}
+				}
+			case "message":
+				if p.MatchValue != nil && *p.MatchValue != "" {
+					for _, msg := range messages {
+						if strings.Contains(msg, *p.MatchValue) {
 							parserIDs[p.ID] = true
 							break
 						}
