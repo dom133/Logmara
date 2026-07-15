@@ -328,7 +328,7 @@ export default function DashboardsPage() {
         await loadFieldsForDevices(newDevices)
       }
     }}>
-          <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Name is required' }]}>
+          <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Name is required' }, { max: 50, message: 'Name must be 50 characters or less' }]}>
             <Input placeholder="e.g. Firewall Monitoring" />
           </Form.Item>
           <Form.Item name="description" label="Description">

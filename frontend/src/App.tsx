@@ -13,7 +13,7 @@ import Admin from './pages/Admin'
 import SetupWizard from './pages/SetupWizard'
 import ErrorBoundary from './components/ErrorBoundary'
 import { AuthProvider, useAuth } from './services/auth'
-import { getDashboards, Dashboard as DashboardType, checkInitialized } from './services/api'
+import { getDashboards, getDashboard, Dashboard as DashboardType, checkInitialized } from './services/api'
 
 const { Sider, Content, Header } = Layout
 
@@ -193,6 +193,24 @@ function AppLayout({ children }: { children: React.ReactNode }) {
     }
   }, [isMobile])
 
+  const [dashboardTitle, setDashboardTitle] = useState<string | null>(null)
+
+  useEffect(() => {
+    const match = location.pathname.match(/^\/dashboards\/([^/]+)$/)?.[1]
+    if (match) {
+      setDashboardTitle(null)
+      const load = async () => {
+        try {
+          const d = await getDashboard(match)
+          setDashboardTitle(d.name)
+        } catch { /* ignore */ }
+      }
+      load()
+    } else {
+      setDashboardTitle(null)
+    }
+  }, [location.pathname])
+
   return (
     <Layout style={{ minHeight: '100vh', background: token.colorBgContainer }}>
       {!isMobile && (
@@ -239,7 +257,12 @@ function AppLayout({ children }: { children: React.ReactNode }) {
               />
             )}
             <span style={{ fontSize: 16, fontWeight: 500 }}>
-              {location.pathname === '/' ? 'Dashboard' : location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'SysLog GUI'}
+              {(() => {
+                if (location.pathname === '/') return 'Dashboard'
+                const match = location.pathname.match(/^\/dashboards\/([^/]+)$/)?.[1]
+                if (match && dashboardTitle) return `Dashboards / ${dashboardTitle}`
+                return location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'SysLog GUI'
+              })()}
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'nowrap', overflow: 'hidden' }}>
