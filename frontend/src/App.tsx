@@ -1,7 +1,7 @@
 import { useEffect, useState, createContext, useContext } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link as RouterLink } from 'react-router-dom'
-import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer } from 'antd'
-import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined } from '@ant-design/icons'
+import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Space } from 'antd'
+import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import LogsViewer from './pages/LogsViewer'
@@ -41,6 +41,8 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collaps
   onClose?: () => void
 }) {
   const { token } = theme.useToken()
+  const { themeMode } = useTheme()
+  const activeBg = themeMode === 'dark' ? '#2a2a2a' : '#e6f7ff'
   const renderLinks = () => (
     <>
       <nav>
@@ -56,7 +58,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collaps
               padding: '12px 16px',
               textDecoration: 'none',
               color: location.pathname === item.key ? '#1890ff' : token.colorText,
-              background: location.pathname === item.key ? '#e6f7ff' : 'transparent',
+              background: location.pathname === item.key ? activeBg : 'transparent',
               borderRadius: 4,
               margin: '2px 8px',
               fontSize: 14,
@@ -69,7 +71,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collaps
         {pinnedDashboards.length > 0 && (
           <>
             {!collapsed && (
-            <div style={{ padding: '12px 16px 4px', fontSize: 11, color: '#999', textTransform: 'uppercase', letterSpacing: 1 }}>
+            <div style={{ padding: '12px 16px 4px', fontSize: 11, color: token.colorTextTertiary, textTransform: 'uppercase', letterSpacing: 1 }}>
               Pinned
             </div>
           )}
@@ -85,7 +87,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collaps
                   padding: '12px 16px',
                   textDecoration: 'none',
                   color: location.pathname === `/dashboards/${d.id}` ? '#1890ff' : token.colorText,
-                  background: location.pathname === `/dashboards/${d.id}` ? '#e6f7ff' : 'transparent',
+                  background: location.pathname === `/dashboards/${d.id}` ? activeBg : 'transparent',
                   borderRadius: 4,
                   margin: '2px 8px',
                   fontSize: 14,
@@ -108,7 +110,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collaps
               padding: '12px 16px',
               textDecoration: 'none',
               color: location.pathname === '/admin' ? '#1890ff' : token.colorText,
-              background: location.pathname === '/admin' ? '#e6f7ff' : 'transparent',
+              background: location.pathname === '/admin' ? activeBg : 'transparent',
               borderRadius: 4,
               margin: '2px 8px',
               fontSize: 14,
@@ -119,27 +121,6 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collaps
           </RouterLink>
         )}
       </nav>
-      <div style={{ position: 'absolute', bottom: 16, left: 16, right: 16 }}>
-        {!collapsed && (
-          <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
-            {user?.username}
-          </div>
-        )}
-        <button
-          onClick={() => { logout(); onClose?.() }}
-          style={{
-            width: '100%',
-            padding: '6px 0',
-            border: '1px solid #d9d9d9',
-            borderRadius: 4,
-            background: 'white',
-            cursor: 'pointer',
-            fontSize: 12,
-          }}
-        >
-          Logout
-        </button>
-      </div>
     </>
   )
 
@@ -258,7 +239,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
         </Drawer>
       )}
       <Layout>
-        <Header style={{ background: token.colorBgContainer, padding: '0 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Header style={{ background: token.colorBgContainer, padding: '0 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             {isMobile && (
               <Button
@@ -278,13 +259,26 @@ function AppLayout({ children }: { children: React.ReactNode }) {
               {location.pathname === '/' ? 'Dashboard' : location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'SysLog GUI'}
             </span>
           </div>
-          <Button
-            type="text"
-            icon={themeMode === 'dark' ? <SunOutlined /> : <MoonOutlined />}
-            onClick={toggleTheme}
-          >
-            {themeMode === 'dark' ? 'Light' : 'Dark'}
-          </Button>
+          <Space>
+            <span style={{ fontSize: 13, color: token.colorTextSecondary, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <UserOutlined /> {user?.username}
+            </span>
+            <Button
+              type="text"
+              icon={themeMode === 'dark' ? <SunOutlined /> : <MoonOutlined />}
+              onClick={toggleTheme}
+            >
+              {themeMode === 'dark' ? 'Light' : 'Dark'}
+            </Button>
+            <Button
+              type="text"
+              danger
+              icon={<LogoutOutlined />}
+              onClick={logout}
+            >
+              Logout
+            </Button>
+          </Space>
         </Header>
         <Content style={{ margin: 16, padding: 24, background: token.colorBgContainer, borderRadius: 8 }}>
           <ErrorBoundary>{children}</ErrorBoundary>
