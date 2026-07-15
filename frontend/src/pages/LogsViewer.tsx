@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Table, Input, InputRef, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Dropdown, Modal, Descriptions } from 'antd'
 import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined, ThunderboltOutlined } from '@ant-design/icons'
-import { getLogs, getDevices, exportCSV, exportHTML, LogEntry } from '../services/api'
+import { getLogs, getDevices, exportCSV, exportHTML, LogEntry, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import dayjs from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import { useSSE } from '../hooks/useSSE'
@@ -22,7 +22,7 @@ export default function LogsViewer() {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
-  const [devices, setDevices] = useState<Array<{ fromhost_ip: string; label: string }>>([])
+  const [devices, setDevices] = useState<DeviceStats[]>([])
   const [filters, setFilters] = useState({
     hostname: urlHostname,
     fromhost_ip: urlFromHostIP,
@@ -42,6 +42,21 @@ export default function LogsViewer() {
   const logsRef = useRef(logs)
   logsRef.current = logs
 
+  const deviceMap = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const d of devices) {
+      const dn = resolveDeviceDisplayName(d)
+      if (d.fromhost_ip) m.set(d.fromhost_ip, dn)
+      if (d.hostname) m.set(d.hostname, dn)
+      if (d.old_hostname) m.set(d.old_hostname, dn)
+    }
+    return m
+  }, [devices])
+
+  const resolveHostname = (hostname: string, fromhost_ip?: string): string => {
+    return deviceMap.get(fromhost_ip || hostname || '') || hostname || '-'
+  }
+
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_logs',
     [
@@ -55,6 +70,8 @@ export default function LogsViewer() {
 
   useEffect(() => {
     loadDevices()
+    const interval = setInterval(loadDevices, 30000)
+    return () => clearInterval(interval)
   }, [])
 
   useEffect(() => {
@@ -195,7 +212,7 @@ export default function LogsViewer() {
         const rowSpans = getRowSpans(logs)
         return {
           props: { rowSpan: rowSpans.get(index) },
-          children: v ? <Tag color="blue">{v}</Tag> : '-',
+          children: v ? <Tag color="blue">{resolveHostname(v, _record.fromhost_ip)}</Tag> : '-',
         }
       },
     },
@@ -292,7 +309,7 @@ export default function LogsViewer() {
             placeholder="Device"
             style={{ minWidth: 140 }}
             allowClear
-            options={devices.map(d => ({ label: d.label, value: d.fromhost_ip }))}
+            options={devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))}
             value={filters.fromhost_ip || undefined}
             onChange={v => setFilters(f => ({ ...f, fromhost_ip: v || '' }))}
           />
@@ -386,7 +403,7 @@ export default function LogsViewer() {
               <Descriptions bordered column={1} size="small">
                 <Descriptions.Item label="Timestamp">{new Date(selectedLog.timestamp).toLocaleString()}</Descriptions.Item>
                 <Descriptions.Item label="Severity"><SeverityTag severity={selectedLog.severity} /></Descriptions.Item>
-                <Descriptions.Item label="Device"><Tag color="blue">{selectedLog.hostname}</Tag></Descriptions.Item>
+                <Descriptions.Item label="Device"><Tag color="blue">{resolveHostname(selectedLog.hostname, selectedLog.fromhost_ip)}</Tag></Descriptions.Item>
                 {selectedLog.fromhost_ip && <Descriptions.Item label="Source IP"><Tag color="green">{selectedLog.fromhost_ip}</Tag></Descriptions.Item>}
                 {selectedLog.app_name && <Descriptions.Item label="App">{selectedLog.app_name}</Descriptions.Item>}
                 <Descriptions.Item label="Message">

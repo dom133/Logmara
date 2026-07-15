@@ -1,9 +1,10 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form, message } from 'antd'
-import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
-import { getDashboard, getDashboardData, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardDataResponse, LogEntry } from '../services/api'
+import { getDashboard, getDashboardData, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardDataResponse, LogEntry, getDevices, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
+import { useSSE } from '../hooks/useSSE'
 import SeverityTag from '../components/SeverityTag'
 import { SEVERITY_LABELS } from '../constants'
 import { useAuth } from '../services/auth'
@@ -25,8 +26,14 @@ export default function DashboardViewPage() {
   const [pageSize, setPageSize] = useState(50)
   const [searchOverride, setSearchOverride] = useState('')
   const [severityFilter, setSeverityFilter] = useState('')
+  const searchOverrideRef = useRef(searchOverride)
+  const severityRef = useRef(severityFilter)
+  useEffect(() => { searchOverrideRef.current = searchOverride }, [searchOverride])
+  useEffect(() => { severityRef.current = severityFilter }, [severityFilter])
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
   const [detailLog, setDetailLog] = useState<LogEntry | null>(null)
+  const [devices, setDevices] = useState<DeviceStats[]>([])
+  const [streaming, setStreaming] = useState(false)
   const { user } = useAuth()
   const isOwner = dashboard?.owner_id === user?.id
   const searchRef = useRef<InputRef>(null)
@@ -43,6 +50,21 @@ export default function DashboardViewPage() {
     ],
   )
 
+  const deviceMap = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const d of devices) {
+      const dn = resolveDeviceDisplayName(d)
+      if (d.fromhost_ip) m.set(d.fromhost_ip, dn)
+      if (d.hostname) m.set(d.hostname, dn)
+      if (d.old_hostname) m.set(d.old_hostname, dn)
+    }
+    return m
+  }, [devices])
+
+  const resolveHostname = (hostname: string, fromhost_ip?: string): string => {
+    return deviceMap.get(fromhost_ip || hostname || '') || hostname || '-'
+  }
+
   const loadDashboard = async () => {
     setLoading(true)
     try {
@@ -55,13 +77,36 @@ export default function DashboardViewPage() {
     }
   }
 
-  const loadLogs = useCallback(async () => {
+  const loadDevices = async () => {
+    const d = await getDevices()
+    setDevices(d)
+  }
+
+  const handleNewLogs = useCallback((newLogs: LogEntry[]) => {
+    setLogs(prev => {
+      const ids = new Set(prev.map(l => l.id))
+      const unique = newLogs.filter(l => !ids.has(l.id))
+      if (unique.length === 0) return prev
+      const combined = [...unique, ...prev]
+      return combined.slice(0, pageSize * 3)
+    })
+  }, [pageSize])
+
+  const { connected } = useSSE({
+    onNewLogs: handleNewLogs,
+    filters: {
+      severity: severityFilter || undefined,
+      search: searchOverride || undefined,
+    },
+    enabled: streaming,
+  })
+
+  const loadLogs = useCallback(async (offset: number) => {
     setTableLoading(true)
-    setPage(1)
     try {
       const from = dateRange?.[0]?.toISOString() || ''
       const to = dateRange?.[1]?.toISOString() || ''
-      const data = await getDashboardData(dashboardId, pageSize, 0, searchOverride, severityFilter, from, to)
+      const data = await getDashboardData(dashboardId, pageSize, offset, searchOverrideRef.current, severityRef.current, from, to)
       setLogs(data.logs)
       setTotal(data.total)
     } catch (e) {
@@ -69,15 +114,18 @@ export default function DashboardViewPage() {
     } finally {
       setTableLoading(false)
     }
-  }, [dashboardId, pageSize, searchOverride, severityFilter, dateRange])
+  }, [dashboardId, pageSize, dateRange])
 
   useEffect(() => {
     loadDashboard()
+    loadDevices()
+    const interval = setInterval(loadDevices, 30000)
+    return () => clearInterval(interval)
   }, [dashboardId])
 
   useEffect(() => {
     if (dashboard) {
-      loadLogs()
+      loadLogs(0)
     }
   }, [dashboard, loadLogs])
 
@@ -115,7 +163,7 @@ export default function DashboardViewPage() {
   }
 
   const fields = dashboard?.config?.fields || []
-  const devices = dashboard?.config?.devices || []
+  const dashDevices = dashboard?.config?.devices || []
 
   const buildCustomColumns = (): any[] => {
     const cols: any[] = []
@@ -151,7 +199,7 @@ export default function DashboardViewPage() {
       dataIndex: 'hostname',
       key: 'hostname',
       width: 150,
-      render: (v: string) => <Tag color="blue">{v}</Tag>,
+      render: (v: string, r: LogEntry) => <Tag color="blue">{resolveHostname(v, r.fromhost_ip)}</Tag>,
       filters: Array.from(new Set(logs.map(l => l.hostname))).map(h => ({ text: h, value: h })),
       onFilter: (v: any, record: LogEntry) => record.hostname === String(v),
     },
@@ -201,7 +249,7 @@ export default function DashboardViewPage() {
     if (!detailLog) return null
     const items: { label: string; content: React.ReactNode; span?: number }[] = [
       { label: 'Timestamp', content: new Date(detailLog.timestamp).toLocaleString() },
-      { label: 'Hostname', content: <Tag color="blue">{detailLog.hostname}</Tag> },
+      { label: 'Hostname', content: <Tag color="blue">{resolveHostname(detailLog.hostname, detailLog.fromhost_ip)}</Tag> },
       { label: 'Source IP', content: detailLog.fromhost_ip ? <Tag color="green">{detailLog.fromhost_ip}</Tag> : '-' },
       { label: 'Severity', content: <SeverityTag severity={detailLog.severity} /> },
       { label: 'Facility', content: detailLog.facility ?? '-' },
@@ -281,7 +329,7 @@ export default function DashboardViewPage() {
             placeholder="Search... (Ctrl+K)"
             value={searchOverride}
             onChange={e => setSearchOverride(e.target.value)}
-            onPressEnter={loadLogs}
+            onPressEnter={() => loadLogs((page - 1) * pageSize)}
             style={{ minWidth: 180, flex: 1 }}
             prefix={<FilterOutlined />}
           />
@@ -299,7 +347,14 @@ export default function DashboardViewPage() {
             value={dateRange}
             onChange={(dates) => setDateRange(dates as [any, any] | null)}
           />
-          <Button icon={<ReloadOutlined />} onClick={loadLogs} loading={tableLoading}>Apply</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => loadLogs((page - 1) * pageSize)} loading={tableLoading}>Apply</Button>
+          <Button
+            icon={<ThunderboltOutlined />}
+            type={streaming ? 'primary' : 'default'}
+            onClick={() => setStreaming(!streaming)}
+          >
+            {streaming ? 'Live' : 'Offline'}
+          </Button>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
         </Space>
       </Space>
@@ -316,7 +371,7 @@ export default function DashboardViewPage() {
         </Col>
         <Col xs={24} sm={12} md={8} lg={6}>
           <Card>
-            <Statistic title="Devices" value={devices.length || 'All'} />
+            <Statistic title="Devices" value={dashDevices.length || 'All'} />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={8} lg={6}>
@@ -331,10 +386,10 @@ export default function DashboardViewPage() {
         </Col>
       </Row>
 
-      {(devices.length > 0 || fields.length > 0) && (
+      {(dashDevices.length > 0 || fields.length > 0) && (
         <Descriptions bordered column={3} size="small" style={{ marginBottom: 16 }}>
           <Descriptions.Item label="Devices" span={1}>
-            {devices.length ? devices.map(d => <Tag key={d}>{d}</Tag>) : <Tag>All</Tag>}
+            {dashDevices.length ? dashDevices.map(d => <Tag key={d}>{d}</Tag>) : <Tag>All</Tag>}
           </Descriptions.Item>
           <Descriptions.Item label="Active Fields" span={1}>
             {fields.length ? fields.map(f => <Tag key={f} color="green">{f}</Tag>) : <Tag>Default</Tag>}
@@ -362,7 +417,7 @@ export default function DashboardViewPage() {
           total: total,
           showSizeChanger: true,
           showTotal: (t) => `${t} total`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps) },
+          onChange: (p, ps) => { setPage(p); setPageSize(ps); loadLogs((p - 1) * ps) },
         }}
       />
 

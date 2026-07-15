@@ -102,6 +102,7 @@ export interface TimelinePoint {
 export interface DeviceStats {
   fromhost_ip: string
   hostname: string
+  old_hostname?: string
   display_name?: string
   total_logs: number
   last_seen: string
@@ -138,10 +139,11 @@ export async function getTimeline(interval = '1h', from?: string, to?: string) {
 
 export async function getDevices() {
   const res = await api.get('/devices')
-  return ((res.data?.devices || []) as DeviceStats[]).map(d => ({
-    fromhost_ip: d.fromhost_ip,
-    label: d.display_name || d.hostname || d.fromhost_ip || '-',
-  }))
+  return (res.data?.devices || []) as DeviceStats[]
+}
+
+export function resolveDeviceDisplayName(device: DeviceStats): string {
+  return device.display_name || device.hostname || device.fromhost_ip || '-'
 }
 
 export async function getDeviceStats() {

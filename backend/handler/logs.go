@@ -288,10 +288,13 @@ func GetDevices(db *sql.DB) gin.HandlerFunc {
 				ds.HasParsed = len(ds.MatchedParsers) > 0
 			}
 
-			var alias sql.NullString
-			db.QueryRow("SELECT display_name FROM device_aliases WHERE fromhost_ip = $1", ds.FromHostIP).Scan(&alias)
+			var alias, oldH sql.NullString
+			db.QueryRow("SELECT display_name, old_hostname FROM device_aliases WHERE fromhost_ip = $1", ds.FromHostIP).Scan(&alias, &oldH)
 			if alias.Valid {
 				ds.DisplayName = alias.String
+			}
+			if oldH.Valid {
+				ds.OldHostname = oldH.String
 			}
 
 			devices = append(devices, ds)
@@ -311,10 +314,13 @@ func UpdateDeviceAlias(db *sql.DB) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 			return
 		}
+		var curHostname sql.NullString
+		db.QueryRow("SELECT hostname FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1 ORDER BY timestamp DESC LIMIT 1", ip).Scan(&curHostname)
+		oldhn := curHostname.String
 		_, err := db.Exec(
-			`INSERT INTO device_aliases (fromhost_ip, display_name) VALUES ($1, $2)
-			 ON CONFLICT (fromhost_ip) DO UPDATE SET display_name = $2, updated_at = NOW()`,
-			ip, body.DisplayName,
+			`INSERT INTO device_aliases (fromhost_ip, display_name, old_hostname) VALUES ($1, $2, $3)
+			 ON CONFLICT (fromhost_ip) DO UPDATE SET display_name = $2, old_hostname = $3, updated_at = NOW()`,
+			ip, body.DisplayName, oldhn,
 		)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update alias"})

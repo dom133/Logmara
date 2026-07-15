@@ -3,7 +3,7 @@ import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, message, P
 import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardConfig, ParsedField } from '../services/api'
-import { getDevices, getParsedFields } from '../services/api'
+import { getDevices, getParsedFields, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import { useAuth } from '../services/auth'
 
@@ -18,7 +18,7 @@ export default function DashboardsPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Dashboard | null>(null)
   const [form] = Form.useForm()
-  const [devices, setDevices] = useState<Array<{ fromhost_ip: string; label: string }>>([])
+  const [devices, setDevices] = useState<DeviceStats[]>([])
   const [parsedFields, setParsedFields] = useState<ParsedField[]>([])
   const navigate = useNavigate()
   const prevDevices = useRef<string[]>([])
@@ -336,7 +336,7 @@ export default function DashboardsPage() {
                 mode="multiple"
                 placeholder="Select devices to monitor (leave empty for all)"
                 style={{ width: '100%' }}
-                options={devices.map(d => ({ label: d.label, value: d.fromhost_ip }))}
+                options={devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))}
               />
             </Form.Item>
           </Form.Item>
