@@ -107,7 +107,13 @@ func (e *Engine) Match(hostname, appName, message string) []model.Parser {
 	var matched []model.Parser
 	for _, p := range e.parsers {
 		if !e.parserMatches(&p, hostname, appName, message) {
-			log.Printf("Parser: %s (%s=%s) did not match for msg=%.100s", p.Name, p.MatchType, p.MatchValue, message)
+			if p.Name == "Ubiquiti Firewall Log" {
+				mv := ""
+				if p.MatchValue != nil {
+					mv = *p.MatchValue
+				}
+				log.Printf("Parser: %s (%s=%s) did not match for msg=[%s]", p.Name, p.MatchType, mv, message)
+			}
 			continue
 		}
 
