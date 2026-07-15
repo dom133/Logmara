@@ -163,6 +163,8 @@ function ThemeProvider({ children }: { children: React.ReactNode }) {
         token: { colorError: '#ff4d4f' },
       }}>
         <style>{`
+          html, body { margin: 0; padding: 0; height: 100%; width: 100%; }
+          body { background: ${themeMode === 'dark' ? '#141414' : '#f0f2f5'}; }
           .ant-message-error .anticon { color: #ff4d4f !important; }
           .ant-message-error .ant-message-notice-content { border-color: #ff4d4f !important; background: #fff2f0 !important; }
           .ant-message-error { color: #ff4d4f !important; }
@@ -211,7 +213,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
   }, [isMobile])
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout style={{ minHeight: '100vh', background: token.colorBgContainer }}>
       {!isMobile && (
         <Sider
           width={220}
