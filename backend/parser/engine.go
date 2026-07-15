@@ -107,16 +107,21 @@ func (e *Engine) Match(hostname, appName, message string) []model.Parser {
 	var matched []model.Parser
 	for _, p := range e.parsers {
 		if !e.parserMatches(&p, hostname, appName, message) {
+			log.Printf("Parser: %s (%s=%s) did not match for msg=%.100s", p.Name, p.MatchType, p.MatchValue, message)
 			continue
 		}
 
 		re, err := regexp.Compile(p.Regex)
 		if err != nil {
+			log.Printf("Parser: %s regex compile error: %v, regex=%s", p.Name, err, p.Regex)
 			continue
 		}
 
 		if re.MatchString(message) {
+			log.Printf("Parser: %s MATCHED! regex=%s, msg=%.100s", p.Name, p.Regex, message)
 			matched = append(matched, p)
+		} else {
+			log.Printf("Parser: %s regex did not match. regex=%s, msg=%.200s", p.Name, p.Regex, message)
 		}
 	}
 
