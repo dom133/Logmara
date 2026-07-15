@@ -86,7 +86,9 @@ export default function Dashboard() {
   }
 
   const topDevicesColumns = [
-    { title: 'Device', dataIndex: 'hostname', key: 'hostname', width: 160, render: (v: string) => <Tag color="blue">{v}</Tag> },
+    { title: 'Device', dataIndex: 'hostname', key: 'hostname', width: 160, render: (v: string, record: any) => (
+      <a onClick={() => window.location.href = `/logs?fromhost_ip=${encodeURIComponent(record.fromhost_ip)}`}><Tag color="blue">{v}</Tag></a>
+    )},
     { title: 'Logs', dataIndex: 'count', key: 'count', width: 100, sorter: (a: any, b: any) => a.count - b.count },
   ]
 

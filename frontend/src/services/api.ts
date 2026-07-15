@@ -114,6 +114,7 @@ export async function getLogs(params: {
   offset?: number
   limit?: number
   hostname?: string
+  fromhost_ip?: string
   severity?: string
   app_name?: string
   search?: string
@@ -137,7 +138,10 @@ export async function getTimeline(interval = '1h', from?: string, to?: string) {
 
 export async function getDevices() {
   const res = await api.get('/devices')
-  return ((res.data?.devices || []) as DeviceStats[]).map(d => d.hostname)
+  return ((res.data?.devices || []) as DeviceStats[]).map(d => ({
+    fromhost_ip: d.fromhost_ip,
+    label: d.display_name || d.hostname || d.fromhost_ip || '-',
+  }))
 }
 
 export async function getDeviceStats() {

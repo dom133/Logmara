@@ -31,6 +31,7 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 
 		since := c.DefaultQuery("since", time.Now().Format(time.RFC3339))
 		hostname := c.Query("hostname")
+		fromHostIP := c.Query("fromhost_ip")
 		severity := c.Query("severity")
 		search := c.Query("search")
 		from := c.Query("from")
@@ -46,6 +47,11 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 			if hostname != "" {
 				clauses = append(clauses, fmt.Sprintf("hostname = $%d", idx))
 				args = append(args, hostname)
+				idx++
+			}
+			if fromHostIP != "" {
+				clauses = append(clauses, fmt.Sprintf("COALESCE(fromhost_ip, '') = $%d", idx))
+				args = append(args, fromHostIP)
 				idx++
 			}
 			if severity != "" {

@@ -109,6 +109,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 		limit := c.DefaultQuery("limit", "50")
 		offset := c.DefaultQuery("offset", "0")
 		hostname := c.Query("hostname")
+		fromHostIP := c.Query("fromhost_ip")
 		severity := c.Query("severity")
 		appName := c.Query("app_name")
 		search := c.Query("search")
@@ -130,6 +131,12 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 		if hostname != "" {
 			whereClauses = append(whereClauses, fmt.Sprintf("hostname = $%d", argIdx))
 			args = append(args, hostname)
+			argIdx++
+		}
+
+		if fromHostIP != "" {
+			whereClauses = append(whereClauses, fmt.Sprintf("COALESCE(fromhost_ip, '') = $%d", argIdx))
+			args = append(args, fromHostIP)
 			argIdx++
 		}
 
@@ -237,7 +244,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 
 func GetDevices(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		rows, err := db.Query(`SELECT fromhost_ip, MIN(hostname) as hostname, COUNT(*) as total_logs, MAX(timestamp) as last_seen,
+		rows, err := db.Query(`SELECT COALESCE(fromhost_ip, '') as fromhost_ip, MIN(hostname) as hostname, COUNT(*) as total_logs, MAX(timestamp) as last_seen,
 			SUM(CASE WHEN severity = 'emergency' THEN 1 ELSE 0 END) as emergency,
 			SUM(CASE WHEN severity = 'alert' THEN 1 ELSE 0 END) as alert,
 			SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) as critical,
@@ -246,7 +253,7 @@ func GetDevices(db *sql.DB) gin.HandlerFunc {
 			SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END) as notice,
 			SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END) as info,
 			SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug
-			FROM syslog_logs GROUP BY fromhost_ip ORDER BY fromhost_ip`)
+			FROM syslog_logs GROUP BY COALESCE(fromhost_ip, '') ORDER BY fromhost_ip`)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Query failed"})
 			return
@@ -264,7 +271,7 @@ func GetDevices(db *sql.DB) gin.HandlerFunc {
 			ds.TotalLogs = total
 			ds.SeverityCount = model.SeverityCounts{"emergency": emergency, "alert": alert, "critical": critical, "error": errCount, "warning": warning, "notice": notice, "info": info, "debug": debug}
 
-			pRows, _ := db.Query("SELECT ARRAY(SELECT DISTINCT unnest(matched_parsers) FROM syslog_logs WHERE fromhost_ip = $1 AND matched_parsers IS NOT NULL AND matched_parsers != '{}')", ds.FromHostIP)
+			pRows, _ := db.Query("SELECT ARRAY(SELECT DISTINCT unnest(matched_parsers) FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1 AND matched_parsers IS NOT NULL AND matched_parsers != '{}')", ds.FromHostIP)
 			if pRows != nil {
 				defer pRows.Close()
 				if pRows.Next() {
@@ -277,7 +284,7 @@ func GetDevices(db *sql.DB) gin.HandlerFunc {
 			}
 
 			var alias sql.NullString
-			db.QueryRow("SELECT display_name FROM device_aliases WHERE fromhost_ip = $1", ds.FromHostIP).Scan(&alias)
+			db.QueryRow("SELECT display_name FROM device_aliases WHERE COALESCE(fromhost_ip, '') = $1", ds.FromHostIP).Scan(&alias)
 			if alias.Valid {
 				ds.DisplayName = alias.String
 			}

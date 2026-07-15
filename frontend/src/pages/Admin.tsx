@@ -450,7 +450,7 @@ export default function Admin() {
                       render: (hostname: string, record: DeviceStats) => {
                         const name = record.display_name || hostname || record.hostname || '-';
                         return (
-                          <a onClick={() => window.location.href = `/logs?hostname=${encodeURIComponent(record.fromhost_ip)}`}>
+                          <a onClick={() => window.location.href = `/logs?fromhost_ip=${encodeURIComponent(record.fromhost_ip)}`}>
                             {name}
                           </a>
                         );

@@ -5,6 +5,7 @@ interface UseSSEOptions {
   onNewLogs: (logs: LogEntry[]) => void
   filters?: {
     hostname?: string
+    fromhost_ip?: string
     severity?: string
     search?: string
     from?: string

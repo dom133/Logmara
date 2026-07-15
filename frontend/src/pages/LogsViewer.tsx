@@ -21,9 +21,10 @@ export default function LogsViewer() {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
-  const [devices, setDevices] = useState<string[]>([])
+  const [devices, setDevices] = useState<Array<{ fromhost_ip: string; label: string }>>([])
   const [filters, setFilters] = useState({
     hostname: urlHostname,
+    fromhost_ip: '',
     severity: '',
     search: '',
     from: '',
@@ -80,6 +81,7 @@ export default function LogsViewer() {
     onNewLogs: handleNewLogs,
     filters: {
       hostname: filters.hostname || undefined,
+      fromhost_ip: filters.fromhost_ip || undefined,
       severity: filters.severity || undefined,
       search: filters.search || undefined,
       from: filters.from || undefined,
@@ -134,6 +136,7 @@ export default function LogsViewer() {
   const handleExport = (format: 'csv' | 'html') => {
     const params: Record<string, string> = {}
     if (filters.hostname) params.hostname = filters.hostname
+    if (filters.fromhost_ip) params.fromhost_ip = filters.fromhost_ip
     if (filters.severity) params.severity = filters.severity
     if (filters.search) params.search = filters.search
     if (filters.from) params.from = filters.from
@@ -155,7 +158,7 @@ export default function LogsViewer() {
     let i = 0
     while (i < records.length) {
       let j = i + 1
-      while (j < records.length && records[j].hostname === records[i].hostname) j++
+      while (j < records.length && (records[j].fromhost_ip || '') === (records[i].fromhost_ip || '')) j++
       const span = j - i
       for (let k = i; k < j; k++) spans.set(k, k === i ? span : 0)
       i = j
@@ -288,9 +291,9 @@ export default function LogsViewer() {
             placeholder="Device"
             style={{ minWidth: 140 }}
             allowClear
-            options={devices.map(d => ({ label: d, value: d }))}
-            value={filters.hostname || undefined}
-            onChange={v => setFilters(f => ({ ...f, hostname: v || '' }))}
+            options={devices.map(d => ({ label: d.label, value: d.fromhost_ip }))}
+            value={filters.fromhost_ip || undefined}
+            onChange={v => setFilters(f => ({ ...f, fromhost_ip: v || '' }))}
           />
           <Select
             placeholder="Severity"
@@ -342,7 +345,7 @@ export default function LogsViewer() {
           description="No logs found. Try adjusting your filters."
           actionLabel="Clear Filters"
           actionClick={() => {
-            setFilters({ hostname: '', severity: '', search: '', from: '', to: '', sort: 'timestamp_desc' })
+            setFilters({ hostname: '', fromhost_ip: '', severity: '', search: '', from: '', to: '', sort: 'timestamp_desc' })
             setPagination({ current: 1, pageSize: 50 })
           }}
         />

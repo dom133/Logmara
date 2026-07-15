@@ -39,12 +39,12 @@ func GetDashboardStats(db *sql.DB) gin.HandlerFunc {
 			}
 		}
 
-		rows, err = db.Query("SELECT hostname, COUNT(*) as cnt FROM syslog_logs GROUP BY hostname ORDER BY cnt DESC LIMIT 10")
+		rows, err = db.Query("SELECT COALESCE(fromhost_ip, ''), MIN(hostname) as hostname, COUNT(*) as cnt FROM syslog_logs GROUP BY COALESCE(fromhost_ip, '') ORDER BY cnt DESC LIMIT 10")
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {
 				var d model.DeviceCount
-				if rows.Scan(&d.Hostname, &d.Count) == nil {
+				if rows.Scan(&d.FromHostIP, &d.Hostname, &d.Count) == nil {
 					stats.TopDevices = append(stats.TopDevices, d)
 				}
 			}
@@ -80,8 +80,8 @@ func GetDashboardStats(db *sql.DB) gin.HandlerFunc {
 func GetDeviceStats(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rows, err := db.Query(
-			"SELECT fromhost_ip, MIN(hostname) as hostname, COUNT(*) as total, MAX(timestamp) as last_seen " +
-				"FROM syslog_logs GROUP BY fromhost_ip ORDER BY total DESC",
+			"SELECT COALESCE(fromhost_ip, ''), MIN(hostname) as hostname, COUNT(*) as total, MAX(timestamp) as last_seen " +
+				"FROM syslog_logs GROUP BY COALESCE(fromhost_ip, '') ORDER BY total DESC",
 		)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Query failed"})
@@ -98,7 +98,7 @@ func GetDeviceStats(db *sql.DB) gin.HandlerFunc {
 
 			d.SeverityCount = make(model.SeverityCounts)
 			sevRows, _ := db.Query(
-				"SELECT severity, COUNT(*) FROM syslog_logs WHERE fromhost_ip = $1 GROUP BY severity",
+				"SELECT severity, COUNT(*) FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1 GROUP BY severity",
 				d.FromHostIP,
 			)
 			if sevRows != nil {
