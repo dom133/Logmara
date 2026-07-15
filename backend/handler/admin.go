@@ -4,9 +4,11 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 
 	"syslog-gui/auth"
+	"syslog-gui/control"
 	"syslog-gui/db"
 	"syslog-gui/ldap"
 
@@ -252,18 +254,38 @@ func CleanupLogs(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func PurgeAllLogs(database *sql.DB) gin.HandlerFunc {
+type PurgeRequest struct {
+	PauseDuringPurge bool `json:"pause_during_purge"`
+}
+
+func PurgeAllLogs(database *sql.DB, ic *control.IngestionController) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		result, err := database.Exec("DELETE FROM syslog_logs")
+		var req PurgeRequest
+		_ = c.ShouldBindJSON(&req)
+
+		wasPaused := ic.IsPaused()
+		if req.PauseDuringPurge {
+			ic.Pause()
+		}
+
+		_, err := database.Exec("TRUNCATE TABLE syslog_logs")
 		if err != nil {
+			if !wasPaused {
+				ic.Resume()
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		count, _ := result.RowsAffected()
+
+		_ = os.Truncate("/data/logs.jsonl", 0)
+
+		if req.PauseDuringPurge && !wasPaused {
+			ic.Resume()
+		}
 
 		c.JSON(http.StatusOK, gin.H{
 			"message":       "All logs purged",
-			"deleted_count": count,
+			"deleted_count": 0,
 		})
 	}
 }
@@ -328,5 +350,25 @@ func GetAuditLog(database *sql.DB) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, logs)
+	}
+}
+
+func PauseIngestion(ic *control.IngestionController) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ic.Pause()
+		c.JSON(http.StatusOK, gin.H{"message": "Ingestion paused", "paused": true})
+	}
+}
+
+func ResumeIngestion(ic *control.IngestionController) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ic.Resume()
+		c.JSON(http.StatusOK, gin.H{"message": "Ingestion resumed", "paused": false})
+	}
+}
+
+func GetIngestionStatus(ic *control.IngestionController) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"paused": ic.IsPaused()})
 	}
 }

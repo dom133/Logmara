@@ -10,11 +10,12 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+	"syslog-gui/control"
 	"syslog-gui/model"
 	"syslog-gui/parser"
 )
 
-func Start(db *sql.DB, filePath string, engine *parser.Engine) {
+func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.IngestionController) {
 	log.Printf("File tailer started, watching: %s", filePath)
 	batchSize := 500
 	batchInterval := 2 * time.Second
@@ -55,6 +56,9 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine) {
 		scanner.Buffer(buf, 1024*1024)
 
 		for scanner.Scan() {
+			if ic.IsPaused() {
+				break
+			}
 			line := scanner.Text()
 			if line == "" {
 				continue
@@ -89,8 +93,10 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine) {
 
 			now := time.Now()
 			if len(entries) >= batchSize || now.Sub(lastFlush) >= batchInterval {
-				if err := flushBatch(db, entries); err != nil {
-					log.Printf("Tailer: flush error: %v", err)
+				if !ic.IsPaused() {
+					if err := flushBatch(db, entries); err != nil {
+						log.Printf("Tailer: flush error: %v", err)
+					}
 				}
 				entries = entries[:0]
 				lastFlush = now
@@ -103,7 +109,7 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine) {
 		}
 		f.Close()
 
-		if len(entries) > 0 {
+		if len(entries) > 0 && !ic.IsPaused() {
 			if err := flushBatch(db, entries); err != nil {
 				log.Printf("Tailer: flush error: %v", err)
 			}

@@ -413,11 +413,24 @@ func GetAllSettings(db *sql.DB) (map[string]string, error) {
 
 // CleanupOldLogs deletes logs older than retentionDays
 func CleanupOldLogs(db *sql.DB, retentionDays int) (int64, error) {
-	result, err := db.Exec("DELETE FROM syslog_logs WHERE timestamp < NOW() - INTERVAL $1", fmt.Sprintf("%d days", retentionDays))
-	if err != nil {
-		return 0, err
+	const batchSize = 10000
+	var totalDeleted int64
+
+	for {
+		result, err := db.Exec(
+			"DELETE FROM syslog_logs WHERE ctid IN (SELECT ctid FROM syslog_logs WHERE timestamp < NOW() - INTERVAL $1 LIMIT $2)",
+			fmt.Sprintf("%d days", retentionDays), batchSize,
+		)
+		if err != nil {
+			return totalDeleted, err
+		}
+		affected, _ := result.RowsAffected()
+		totalDeleted += affected
+		if affected == 0 {
+			break
+		}
 	}
-	return result.RowsAffected()
+	return totalDeleted, nil
 }
 
 type User struct {

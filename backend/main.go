@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"syslog-gui/auth"
+	"syslog-gui/control"
 	"syslog-gui/db"
 	"syslog-gui/handler"
 	"syslog-gui/parser"
@@ -76,12 +77,13 @@ func main() {
 	auth.Init(database)
 
 	engine := parser.NewEngine(database)
+	ic := control.NewIngestionController()
 
 	logFilePath := os.Getenv("LOG_FILE_PATH")
 	if logFilePath == "" {
 		logFilePath = "/data/logs.jsonl"
 	}
-	go tailer.Start(database, logFilePath, engine)
+	go tailer.Start(database, logFilePath, engine, ic)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -92,7 +94,7 @@ func main() {
 	r.POST("/api/auth/login", rateLimitMiddleware(loginLimiter), handler.Login(database))
 	r.POST("/api/auth/refresh", handler.Refresh(database))
 	r.POST("/api/auth/logout", handler.Logout(database))
-	r.POST("/api/ingest/batch", handler.IngestBatch(database, engine))
+	r.POST("/api/ingest/batch", handler.IngestBatch(database, engine, ic))
 	r.GET("/api/status/initialized", handler.CheckInitialized(database))
 	r.POST("/api/init", handler.Initialize(database))
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
@@ -148,7 +150,10 @@ authGroup := r.Group("/api")
       adminGroup.GET("/settings", handler.GetSettings(database))
       adminGroup.PUT("/settings", handler.UpdateSettings(database))
       adminGroup.POST("/settings/cleanup", handler.CleanupLogs(database))
-      adminGroup.DELETE("/logs", handler.PurgeAllLogs(database))
+      adminGroup.DELETE("/logs", handler.PurgeAllLogs(database, ic))
+      adminGroup.POST("/ingestion/pause", handler.PauseIngestion(ic))
+      adminGroup.POST("/ingestion/resume", handler.ResumeIngestion(ic))
+      adminGroup.GET("/ingestion/status", handler.GetIngestionStatus(ic))
       adminGroup.POST("/ldap/test", handler.TestLDAP(database))
       adminGroup.GET("/audit-log", handler.GetAuditLog(database))
       adminGroup.PUT("/devices/:ip/alias", handler.UpdateDeviceAlias(database))

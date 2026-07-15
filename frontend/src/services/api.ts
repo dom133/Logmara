@@ -412,8 +412,18 @@ export async function cleanupLogs() {
 	return res.data
 }
 
-export async function purgeAllLogs() {
-	const res = await api.delete('/admin/logs')
+export async function purgeAllLogs(pauseDuringPurge: boolean) {
+	const res = await api.delete('/admin/logs', { data: { pause_during_purge: pauseDuringPurge } })
+	return res.data
+}
+
+export async function pauseIngestion() {
+	const res = await api.post('/admin/ingestion/pause')
+	return res.data
+}
+
+export async function resumeIngestion() {
+	const res = await api.post('/admin/ingestion/resume')
 	return res.data
 }
 

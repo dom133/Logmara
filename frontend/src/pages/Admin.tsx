@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm } from 'antd'
+import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider } from 'antd'
 import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined } from '@ant-design/icons'
 import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, User, DeviceStats } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
@@ -22,6 +22,8 @@ export default function Admin() {
   const [editDeviceForm] = Form.useForm()
   const [ldapEnabled, setLdapEnabled] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [purgeModalOpen, setPurgeModalOpen] = useState(false)
+  const [pauseDuringPurge, setPauseDuringPurge] = useState(false)
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_admin',
@@ -206,8 +208,9 @@ export default function Admin() {
 
   const handlePurgeAll = async () => {
     try {
-      const result = await purgeAllLogs()
+      const result = await purgeAllLogs(pauseDuringPurge)
       message.success(`${result.deleted_count} logs purged`)
+      setPurgeModalOpen(false)
     } catch (e: any) {
       message.error(e.response?.data?.error || 'Purge failed')
     }
@@ -342,15 +345,30 @@ export default function Admin() {
                     <Button danger icon={<ThunderboltOutlined />} onClick={handleCleanup}>
                       Clean Old Logs
                     </Button>
-                    <Popconfirm
+                    <Button danger type="primary" onClick={() => setPurgeModalOpen(true)}>
+                      Purge All Logs
+                    </Button>
+                    <Modal
                       title="Purge ALL logs?"
-                      description="This will permanently delete every log entry. This cannot be undone."
+                      open={purgeModalOpen}
+                      onOk={handlePurgeAll}
+                      onCancel={() => setPurgeModalOpen(false)}
                       okText="Yes, purge all"
                       cancelText="Cancel"
-                      onConfirm={handlePurgeAll}
+                      okButtonProps={{ danger: true }}
                     >
-                      <Button danger type="primary">Purge All Logs</Button>
-                    </Popconfirm>
+                      <p>This will permanently delete every log entry. This cannot be undone.</p>
+                      <div style={{ marginTop: 16 }}>
+                        <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <input
+                            type="checkbox"
+                            checked={pauseDuringPurge}
+                            onChange={(e) => setPauseDuringPurge(e.target.checked)}
+                          />
+                          Pause ingestion during purge (resumes after)
+                        </label>
+                      </div>
+                    </Modal>
                   </Space>
                 </Form>
               </Card>

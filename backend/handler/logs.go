@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"syslog-gui/control"
 	"syslog-gui/model"
 	"syslog-gui/parser"
 
@@ -19,8 +20,12 @@ import (
 	"github.com/lib/pq"
 )
 
-func IngestBatch(db *sql.DB, engine *parser.Engine) gin.HandlerFunc {
+func IngestBatch(db *sql.DB, engine *parser.Engine, ic *control.IngestionController) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if ic.IsPaused() {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Ingestion is paused"})
+			return
+		}
 		body, err := io.ReadAll(c.Request.Body)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Could not read body"})
