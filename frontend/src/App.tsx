@@ -201,7 +201,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
       setDashboardTitle(null)
       const load = async () => {
         try {
-          const d = await getDashboard(match)
+          const d = await getDashboard(parseInt(match, 10))
           setDashboardTitle(d.name)
         } catch { /* ignore */ }
       }
