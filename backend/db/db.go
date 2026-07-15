@@ -267,7 +267,6 @@ func nullStrPtr(s string) *string {
 func seedSettings(db *sql.DB) error {
 	settings := map[string]string{
 		"retention_days":         "30",
-		"default_role":           "viewer",
 		"jwt_expiry":             "24",
 		"is_initialized":         "false",
 		"ldap_enabled":           "false",
@@ -296,8 +295,6 @@ func seedSettings(db *sql.DB) error {
 		switch k {
 		case "retention_days":
 			desc = "Days to keep logs before auto-deletion"
-		case "default_role":
-			desc = "Default role for new users"
 		case "jwt_expiry":
 			desc = "JWT token expiry in hours"
 		case "is_initialized":

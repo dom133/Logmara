@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined } from '@ant-design/icons'
+import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined } from '@ant-design/icons'
 import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, User, DeviceStats } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
@@ -21,6 +21,7 @@ export default function Admin() {
   const [editDevice, setEditDevice] = useState<DeviceStats | null>(null)
   const [editDeviceForm] = Form.useForm()
   const [ldapEnabled, setLdapEnabled] = useState(false)
+  const [ldapAutoProvision, setLdapAutoProvision] = useState(false)
   const [testing, setTesting] = useState(false)
   const [purgeModalOpen, setPurgeModalOpen] = useState(false)
   const [pauseDuringPurge, setPauseDuringPurge] = useState(false)
@@ -56,12 +57,14 @@ export default function Admin() {
       const formValues: Record<string, any> = { ...data }
       formValues['ldap_enabled'] = data['ldap_enabled'] === 'true'
       formValues['ldap_use_tls'] = data['ldap_use_tls'] === 'true'
+      formValues['ldap_verify_cert'] = data['ldap_verify_cert'] === 'true'
       formValues['ldap_auto_provision'] = data['ldap_auto_provision'] === 'true'
       if (data['ldap_port']) formValues['ldap_port'] = parseInt(data['ldap_port'], 10)
       if (data['retention_days']) formValues['retention_days'] = parseInt(data['retention_days'], 10)
       if (data['jwt_expiry']) formValues['jwt_expiry'] = parseInt(data['jwt_expiry'], 10)
       settingsForm.setFieldsValue(formValues)
       setLdapEnabled(data['ldap_enabled'] === 'true')
+      setLdapAutoProvision(data['ldap_auto_provision'] === 'true')
     } catch (e: any) {
       message.error('Failed to load settings')
     }
@@ -385,6 +388,43 @@ export default function Admin() {
                   <Form.Item label="Use TLS" name="ldap_use_tls" valuePropName="checked">
                     <Switch disabled={!ldapEnabled} />
                   </Form.Item>
+                  <Divider orientation="left">TLS/Certificate</Divider>
+                  <Form.Item label="Verify TLS Certificate" name="ldap_verify_cert" valuePropName="checked">
+                    <Switch disabled={!ldapEnabled} />
+                  </Form.Item>
+                  <Form.Item label="Custom CA Certificate (PEM)" name="ldap_ca_cert">
+                    <Space style={{ width: '100%' }}>
+                      <Input.TextArea rows={4} placeholder="Wklej certyfikat PEM lub załaduj plik..." style={{ flex: 1 }} disabled={!ldapEnabled} />
+                      <div>
+                        <input
+                          type="file"
+                          accept=".pem,.crt,.cer"
+                          style={{ display: 'none' }}
+                          id="ca-cert-upload"
+                          disabled={!ldapEnabled}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0]
+                            if (!file) return
+                            const reader = new FileReader()
+                            reader.onload = (ev) => {
+                              const text = ev.target?.result
+                              if (typeof text === 'string') {
+                                settingsForm.setFieldValue('ldap_ca_cert', text)
+                                message.success('PEM file loaded')
+                              }
+                            }
+                            reader.onerror = () => message.error('Failed to read PEM file')
+                            reader.readAsText(file)
+                            e.target.value = ''
+                          }}
+                        />
+                        <Button icon={<UploadOutlined />} disabled={!ldapEnabled} onClick={() => { document.getElementById('ca-cert-upload')?.click() }}>
+                          Upload PEM
+                        </Button>
+                      </div>
+                    </Space>
+                  </Form.Item>
+                  <Divider orientation="left">Connection</Divider>
                   <Form.Item label="Base DN" name="ldap_base_dn">
                     <Input placeholder="dc=example,dc=com" disabled={!ldapEnabled} />
                   </Form.Item>
@@ -405,10 +445,10 @@ export default function Admin() {
                     <Input placeholder="mail" disabled={!ldapEnabled} />
                   </Form.Item>
                   <Form.Item label="Auto-Provision LDAP Users" name="ldap_auto_provision" valuePropName="checked">
-                    <Switch disabled={!ldapEnabled} />
+                    <Switch disabled={!ldapEnabled} onChange={(v) => { setLdapAutoProvision(v); settingsForm.setFieldValue('ldap_auto_provision', v); }} />
                   </Form.Item>
                   <Form.Item label="Default Role (auto-provisioned)" name="ldap_default_role">
-                    <Select style={{ width: '100%' }} disabled={!ldapEnabled}>
+                    <Select style={{ width: '100%' }} disabled={!ldapEnabled || !ldapAutoProvision}>
                       <Option value="viewer">Viewer</Option>
                       <Option value="editor">Editor</Option>
                       <Option value="admin">Admin</Option>
