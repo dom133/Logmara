@@ -100,7 +100,7 @@ export default function DashboardViewPage() {
       search: searchOverride || dashboard?.config?.filters?.search || undefined,
       from: dateRange?.[0]?.toISOString() || dashboard?.config?.filters?.from || undefined,
       to: dateRange?.[1]?.toISOString() || dashboard?.config?.filters?.to || undefined,
-      require_parser: dashboard?.config?.fields?.length > 0 ? 'true' : undefined,
+      require_parser: (dashboard?.config?.fields?.length ?? 0) > 0 ? 'true' : undefined,
     },
     enabled: streaming,
   })
