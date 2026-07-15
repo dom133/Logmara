@@ -249,7 +249,7 @@ export default function Admin() {
       render: (_: any, record: User) => (
         <Space>
           <Button size="small" onClick={() => handleEdit(record)} icon={<EditOutlined />} />
-          <Button size="small" onClick={() => handleResetPassword(record)} icon={<KeyOutlined />} />
+          {record.auth_type !== 'ldap' && <Button size="small" onClick={() => handleResetPassword(record)} icon={<KeyOutlined />} />}
           <Popconfirm
             title="Delete user?"
             okText="Yes"

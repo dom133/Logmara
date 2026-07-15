@@ -170,6 +170,16 @@ func ResetPassword(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		var authType string
+		if err := database.QueryRow("SELECT auth_type FROM users WHERE id = $1", id).Scan(&authType); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "User not found"})
+			return
+		}
+		if authType == "ldap" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot reset password for LDAP users"})
+			return
+		}
+
 		hash, err := auth.HashPassword(req.Password)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not hash password"})
