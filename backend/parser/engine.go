@@ -107,31 +107,17 @@ func (e *Engine) Match(hostname, appName, message string) []model.Parser {
 	var matched []model.Parser
 	for _, p := range e.parsers {
 		if !e.parserMatches(&p, hostname, appName, message) {
-			if p.Name == "Ubiquiti Firewall Log" {
-				mv := ""
-				if p.MatchValue != nil {
-					mv = *p.MatchValue
-				}
-				log.Printf("Parser: %s (%s=%s) did not match for msg=[%s]", p.Name, p.MatchType, mv, message)
-			}
 			continue
 		}
 
 		re, err := regexp.Compile(p.Regex)
 		if err != nil {
-			log.Printf("Parser: %s regex compile error: %v, regex=%s", p.Name, err, p.Regex)
+			log.Printf("Parser: %s regex compile error: %v", p.Name, err)
 			continue
 		}
 
 		if re.MatchString(message) {
-			if p.Name == "Ubiquiti Firewall Log" {
-				log.Printf("Parser: %s MATCHED! msg=[%s]", p.Name, message)
-			}
 			matched = append(matched, p)
-		} else {
-			if p.Name == "Ubiquiti Firewall Log" {
-				log.Printf("Parser: %s regex did not match. regex=%s, msg=[%s]", p.Name, p.Regex, message)
-			}
 		}
 	}
 
@@ -241,7 +227,6 @@ func (e *Engine) Parse(hostname, appName, message string) *ParseResult {
 		}
 	}
 
-	log.Printf("Parser: matched %d parsers for hostname=%s app=%s -> %v (%v)", len(matched), hostname, appName, merged, parserNames)
 	return &ParseResult{Fields: merged, Parsers: parserNames}
 }
 
