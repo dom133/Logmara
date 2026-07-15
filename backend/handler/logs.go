@@ -237,7 +237,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 
 func GetDevices(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		rows, err := db.Query(`SELECT hostname, COUNT(*) as total_logs, MAX(timestamp) as last_seen,
+		rows, err := db.Query(`SELECT fromhost_ip, MIN(hostname) as hostname, COUNT(*) as total_logs, MAX(timestamp) as last_seen,
 			SUM(CASE WHEN severity = 'emergency' THEN 1 ELSE 0 END) as emergency,
 			SUM(CASE WHEN severity = 'alert' THEN 1 ELSE 0 END) as alert,
 			SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) as critical,
@@ -246,7 +246,7 @@ func GetDevices(db *sql.DB) gin.HandlerFunc {
 			SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END) as notice,
 			SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END) as info,
 			SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug
-			FROM syslog_logs GROUP BY hostname ORDER BY hostname`)
+			FROM syslog_logs GROUP BY fromhost_ip ORDER BY fromhost_ip`)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Query failed"})
 			return
@@ -258,13 +258,13 @@ func GetDevices(db *sql.DB) gin.HandlerFunc {
 			var ds model.DeviceStats
 			var total int64
 			var emergency, alert, critical, errCount, warning, notice, info, debug int64
-			if err := rows.Scan(&ds.Hostname, &total, &ds.LastSeen, &emergency, &alert, &critical, &errCount, &warning, &notice, &info, &debug); err != nil {
+			if err := rows.Scan(&ds.FromHostIP, &ds.Hostname, &total, &ds.LastSeen, &emergency, &alert, &critical, &errCount, &warning, &notice, &info, &debug); err != nil {
 				continue
 			}
 			ds.TotalLogs = total
 			ds.SeverityCount = model.SeverityCounts{"emergency": emergency, "alert": alert, "critical": critical, "error": errCount, "warning": warning, "notice": notice, "info": info, "debug": debug}
 
-			pRows, _ := db.Query("SELECT ARRAY(SELECT DISTINCT unnest(matched_parsers) FROM syslog_logs WHERE hostname = $1 AND matched_parsers IS NOT NULL AND matched_parsers != '{}')", ds.Hostname)
+			pRows, _ := db.Query("SELECT ARRAY(SELECT DISTINCT unnest(matched_parsers) FROM syslog_logs WHERE fromhost_ip = $1 AND matched_parsers IS NOT NULL AND matched_parsers != '{}')", ds.FromHostIP)
 			if pRows != nil {
 				defer pRows.Close()
 				if pRows.Next() {
@@ -276,10 +276,39 @@ func GetDevices(db *sql.DB) gin.HandlerFunc {
 				ds.HasParsed = len(ds.MatchedParsers) > 0
 			}
 
+			var alias sql.NullString
+			db.QueryRow("SELECT display_name FROM device_aliases WHERE fromhost_ip = $1", ds.FromHostIP).Scan(&alias)
+			if alias.Valid {
+				ds.DisplayName = alias.String
+			}
+
 			devices = append(devices, ds)
 		}
 
 		c.JSON(http.StatusOK, gin.H{"devices": devices})
+	}
+}
+
+func UpdateDeviceAlias(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ip := c.Param("ip")
+		var body struct {
+			DisplayName string `json:"display_name" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+			return
+		}
+		_, err := db.Exec(
+			`INSERT INTO device_aliases (fromhost_ip, display_name) VALUES ($1, $2)
+			 ON CONFLICT (fromhost_ip) DO UPDATE SET display_name = $2, updated_at = NOW()`,
+			ip, body.DisplayName,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update alias"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
 }
 

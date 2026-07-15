@@ -171,7 +171,9 @@ type SeverityStats struct {
 }
 
 type DeviceStats struct {
+	FromHostIP     string         `json:"fromhost_ip"`
 	Hostname       string         `json:"hostname"`
+	DisplayName    string         `json:"display_name,omitempty"`
 	TotalLogs      int64          `json:"total_logs"`
 	LastSeen       sql.NullTime   `json:"-"`
 	SeverityCount  SeverityCounts `json:"severity_count"`

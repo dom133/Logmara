@@ -100,7 +100,9 @@ export interface TimelinePoint {
 }
 
 export interface DeviceStats {
+  fromhost_ip: string
   hostname: string
+  display_name?: string
   total_logs: number
   last_seen: string
   severity_count: Record<string, number>
@@ -141,6 +143,11 @@ export async function getDevices() {
 export async function getDeviceStats() {
   const res = await api.get('/devices')
   return (res.data?.devices || []) as DeviceStats[]
+}
+
+export async function updateDeviceAlias(ip: string, displayName: string) {
+  const res = await api.put(`/admin/devices/${ip}/alias`, { display_name: displayName })
+  return res.data
 }
 
 export async function getSeverityStats(from?: string, to?: string) {

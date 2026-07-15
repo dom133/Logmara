@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm } from 'antd'
 import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined } from '@ant-design/icons'
-import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, User, DeviceStats } from '../services/api'
+import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, User, DeviceStats } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 
@@ -18,6 +18,8 @@ export default function Admin() {
   const [settings, setSettings] = useState<Record<string, string>>({})
   const [settingsForm] = Form.useForm()
   const [devices, setDevices] = useState<DeviceStats[]>([])
+  const [editDevice, setEditDevice] = useState<DeviceStats | null>(null)
+  const [editDeviceForm] = Form.useForm()
   const [ldapEnabled, setLdapEnabled] = useState(false)
   const [testing, setTesting] = useState(false)
 
@@ -96,6 +98,19 @@ export default function Admin() {
       setDevices(data)
     } catch (e: any) {
       message.error('Failed to load devices')
+    }
+  }
+
+  const handleEditDeviceSave = async () => {
+    if (!editDevice) return
+    const values = editDeviceForm.getFieldsValue()
+    try {
+      await updateDeviceAlias(editDevice.fromhost_ip, values.display_name)
+      message.success('Device alias updated')
+      setEditDevice(null)
+      loadDevices()
+    } catch (e: any) {
+      message.error('Failed to update alias')
     }
   }
 
@@ -282,7 +297,7 @@ export default function Admin() {
                   <Space>
                     {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
                     <Button type="primary" icon={<PlusOutlined />} onClick={() => {
-                    form.setFieldsValue({ auth_type: settings['ldap_auto_provision'] === 'true' ? 'ldap' : 'local' })
+                    form.setFieldsValue({ auth_type: 'local' })
                     setModalVisible(true)
                   }}>
                       Add User
@@ -417,19 +432,25 @@ export default function Admin() {
                 }
               >
                 <Table
-                  rowKey="hostname"
+                  rowKey="fromhost_ip"
                   dataSource={devices}
                   pagination={false}
                   scroll={{ x: 'max-content' }}
                   columns={[
                     {
+                      title: 'Source IP',
+                      dataIndex: 'fromhost_ip',
+                      key: 'fromhost_ip',
+                      render: (ip: string) => ip || '-',
+                    },
+                    {
                       title: 'Hostname',
                       dataIndex: 'hostname',
                       key: 'hostname',
                       render: (hostname: string, record: DeviceStats) => {
-                        const name = hostname || record.hostname || '-';
+                        const name = record.display_name || hostname || record.hostname || '-';
                         return (
-                          <a onClick={() => window.location.href = `/logs?hostname=${encodeURIComponent(name)}`}>
+                          <a onClick={() => window.location.href = `/logs?hostname=${encodeURIComponent(record.fromhost_ip)}`}>
                             {name}
                           </a>
                         );
@@ -493,6 +514,22 @@ export default function Admin() {
                         </Tag>
                       ),
                     },
+                    {
+                      title: 'Actions',
+                      key: 'actions',
+                      render: (_: any, record: DeviceStats) => (
+                        <Button
+                          type="link"
+                          icon={<EditOutlined />}
+                          onClick={() => {
+                            setEditDevice(record)
+                            editDeviceForm.setFieldsValue({ display_name: record.display_name || record.hostname })
+                          }}
+                        >
+                          Edit Name
+                        </Button>
+                      ),
+                    },
                   ]}
                 />
               </Card>
@@ -517,19 +554,15 @@ export default function Admin() {
           <Form.Item name="email" label="Email" rules={[{ required: true, message: 'Required' }, { type: 'email' }]}>
             <Input />
           </Form.Item>
-          {settings['ldap_auto_provision'] !== 'true' && (
-            <Form.Item name="auth_type" label="Auth Type" rules={[{ required: true }]} initialValue="local">
-              <Select>
-                <Option value="local">Local</Option>
-                <Option value="ldap">LDAP</Option>
-              </Select>
-            </Form.Item>
-          )}
-          {form.getFieldValue('auth_type') !== 'ldap' && (
-            <Form.Item name="password" label="Password" required rules={[{ required: true, min: 8, message: 'Min 8 characters' }]}>
-              <Input.Password />
-            </Form.Item>
-          )}
+          <Form.Item name="auth_type" label="Auth Type" rules={[{ required: true }]} initialValue="local">
+            <Select>
+              <Option value="local">Local</Option>
+              <Option value="ldap">LDAP</Option>
+            </Select>
+          </Form.Item>
+          <Form.Item name="password" label="Password" dependencies={['auth_type']} hidden={form.getFieldValue('auth_type') === 'ldap'} rules={[{ required: true, min: 8, message: 'Min 8 characters' }]}>
+            <Input.Password />
+          </Form.Item>
           <Form.Item name="role" label="Role" rules={[{ required: true }]}>
             <Select>
               <Option value="viewer">Viewer</Option>
@@ -562,6 +595,25 @@ export default function Admin() {
           </Form.Item>
           <Form.Item name="is_active" label="Active" valuePropName="checked">
             <Switch />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="Edit Device Name"
+        open={!!editDevice}
+        onCancel={() => setEditDevice(null)}
+        onOk={handleEditDeviceSave}
+        okText="Save"
+        cancelText="Cancel"
+        width={{ sm: '90%', md: 500 }}
+      >
+        <Form form={editDeviceForm} layout="vertical">
+          <Form.Item label="Source IP">
+            <Input value={editDevice?.fromhost_ip} disabled />
+          </Form.Item>
+          <Form.Item name="display_name" label="Display Name" rules={[{ required: true, message: 'Required' }]}>
+            <Input />
           </Form.Item>
         </Form>
       </Modal>

@@ -151,6 +151,7 @@ authGroup := r.Group("/api")
       adminGroup.DELETE("/logs", handler.PurgeAllLogs(database))
       adminGroup.POST("/ldap/test", handler.TestLDAP(database))
       adminGroup.GET("/audit-log", handler.GetAuditLog(database))
+      adminGroup.PUT("/devices/:ip/alias", handler.UpdateDeviceAlias(database))
     }
   }
 
