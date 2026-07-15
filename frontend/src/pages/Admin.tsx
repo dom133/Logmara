@@ -327,13 +327,6 @@ export default function Admin() {
                   <Form.Item label="Log Retention (days)" name="retention_days">
                     <InputNumber min={1} max={3650} style={{ width: '100%' }} />
                   </Form.Item>
-                  <Form.Item label="Default Role" name="default_role">
-                    <Select style={{ width: '100%' }}>
-                      <Option value="viewer">Viewer</Option>
-                      <Option value="editor">Editor</Option>
-                      <Option value="admin">Admin</Option>
-                    </Select>
-                  </Form.Item>
                   <Form.Item label="JWT Expiry (hours)" name="jwt_expiry">
                     <InputNumber min={1} max={8760} style={{ width: '100%' }} />
                   </Form.Item>
