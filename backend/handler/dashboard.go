@@ -422,7 +422,7 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 				countArgs = append(countArgs, d)
 				countIdx++
 			}
-			countQuery += " AND hostname IN (" + strings.Join(placeholders, ", ") + ")"
+			countQuery += " AND COALESCE(fromhost_ip, '') IN (" + strings.Join(placeholders, ", ") + ")"
 		}
 
 		if cfg.Filters.Severity != "" {
