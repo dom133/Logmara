@@ -191,7 +191,6 @@ export default function LogsViewer() {
       dataIndex: 'timestamp',
       key: 'timestamp',
       width: 180,
-      fixed: 'left' as const,
       render: (v: string) => new Date(v).toLocaleString(),
       sorter: (a: LogEntry, b: LogEntry) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
       defaultSortOrder: 'descend',
