@@ -521,9 +521,12 @@ export default function Admin() {
             </Select>
           </Form.Item>
           <Form.Item name="password" label="Password" dependencies={['auth_type']} rules={[
-            ({ getFieldValue }) => getFieldValue('auth_type') === 'local'
-              ? [{ required: true, min: 8, message: 'Min 8 characters' }]
-              : []
+            ({ getFieldValue }) => {
+              const authType = getFieldValue('auth_type');
+              return authType === 'local'
+                ? [{ required: true, min: 8, message: 'Min 8 characters' } as any]
+                : ([] as any);
+            }
           ]}>
             <Input.Password disabled={form.getFieldValue('auth_type') === 'ldap'} />
           </Form.Item>
