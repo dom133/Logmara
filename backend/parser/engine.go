@@ -118,10 +118,14 @@ func (e *Engine) Match(hostname, appName, message string) []model.Parser {
 		}
 
 		if re.MatchString(message) {
-			log.Printf("Parser: %s MATCHED! regex=%s, msg=%.100s", p.Name, p.Regex, message)
+			if p.Name == "Ubiquiti Firewall Log" {
+				log.Printf("Parser: %s MATCHED! msg=[%s]", p.Name, message)
+			}
 			matched = append(matched, p)
 		} else {
-			log.Printf("Parser: %s regex did not match. regex=%s, msg=%.200s", p.Name, p.Regex, message)
+			if p.Name == "Ubiquiti Firewall Log" {
+				log.Printf("Parser: %s regex did not match. regex=%s, msg=[%s]", p.Name, p.Regex, message)
+			}
 		}
 	}
 
