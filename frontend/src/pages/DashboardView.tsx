@@ -95,7 +95,7 @@ export default function DashboardViewPage() {
   const { connected } = useSSE({
     onNewLogs: handleNewLogs,
     filters: {
-      fromhost_ip: dashDevices.join(',') || undefined,
+      fromhost_ip: (dashboard?.config?.devices ?? []).join(',') || undefined,
       severity: severityFilter || undefined,
       search: searchOverride || undefined,
       from: dateRange?.[0]?.toISOString() || undefined,
