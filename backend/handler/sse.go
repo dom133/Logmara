@@ -50,9 +50,14 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 				idx++
 			}
 			if fromHostIP != "" {
-				clauses = append(clauses, fmt.Sprintf("COALESCE(fromhost_ip, '') = $%d", idx))
-				args = append(args, fromHostIP)
-				idx++
+				ips := strings.Split(fromHostIP, ",")
+				placeholders := make([]string, len(ips))
+				for i, ip := range ips {
+					placeholders[i] = fmt.Sprintf("$%d", idx)
+					args = append(args, ip)
+					idx++
+				}
+				clauses = append(clauses, fmt.Sprintf("COALESCE(fromhost_ip, '') IN (%s)", strings.Join(placeholders, ", ")))
 			}
 			if severity != "" {
 				clauses = append(clauses, fmt.Sprintf("severity = $%d", idx))
@@ -74,6 +79,7 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 				args = append(args, to)
 				idx++
 			}
+			clauses = append(clauses, "matched_parsers IS NOT NULL AND array_length(matched_parsers, 1) > 0")
 
 			return "WHERE " + strings.Join(clauses, " AND "), args
 		}

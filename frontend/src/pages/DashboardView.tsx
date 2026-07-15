@@ -96,10 +96,10 @@ export default function DashboardViewPage() {
     onNewLogs: handleNewLogs,
     filters: {
       fromhost_ip: (dashboard?.config?.devices ?? []).join(',') || undefined,
-      severity: severityFilter || undefined,
-      search: searchOverride || undefined,
-      from: dateRange?.[0]?.toISOString() || undefined,
-      to: dateRange?.[1]?.toISOString() || undefined,
+      severity: severityFilter || dashboard?.config?.filters?.severity || undefined,
+      search: searchOverride || dashboard?.config?.filters?.search || undefined,
+      from: dateRange?.[0]?.toISOString() || dashboard?.config?.filters?.from || undefined,
+      to: dateRange?.[1]?.toISOString() || dashboard?.config?.filters?.to || undefined,
     },
     enabled: streaming,
   })
