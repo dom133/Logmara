@@ -506,17 +506,17 @@ func ResetUserPassword(db *sql.DB, id int64, passwordHash string) error {
 	return err
 }
 
-func CreateLDAPUser(db *sql.DB, username, email, role string) (*User, error) {
+func CreateLDAPUser(db *sql.DB, username, email, role string, isAdmin bool) (*User, error) {
 	var id int64
 	var createdAt time.Time
 	err := db.QueryRow(
 		"INSERT INTO users (username, password_hash, email, is_admin, role, is_active, auth_type) VALUES ($1, '', $2, $3, $4, $5, 'ldap') RETURNING id, created_at",
-		username, email, role == "admin", role, true,
+		username, email, isAdmin, role, true,
 	).Scan(&id, &createdAt)
 	if err != nil {
 		return nil, err
 	}
-	return &User{ID: id, Username: username, Email: email, Role: role, AuthType: "ldap", IsAdmin: role == "admin", IsActive: true, CreatedAt: createdAt}, nil
+	return &User{ID: id, Username: username, Email: email, Role: role, AuthType: "ldap", IsAdmin: isAdmin, IsActive: true, CreatedAt: createdAt}, nil
 }
 
 func UpdateLastLogin(db *sql.DB, username string) error {

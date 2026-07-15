@@ -366,7 +366,7 @@ export async function getUsers() {
 	return (res.data || []) as User[]
 }
 
-export async function createUser(data: { username: string; email: string; password: string; role: string }) {
+export async function createUser(data: { username: string; email: string; password: string; role: string; auth_type: string }) {
 	const res = await api.post('/admin/users', data)
 	return res.data as User
 }

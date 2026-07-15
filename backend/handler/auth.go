@@ -74,7 +74,7 @@ func Login(database *sql.DB) gin.HandlerFunc {
 					existing, err := db.GetUserByUsername(database, username)
 					if err != nil {
 						if ldapCfg.AutoProvision {
-							u, err := db.CreateLDAPUser(database, username, email, ldapCfg.DefaultRole)
+							u, err := db.CreateLDAPUser(database, username, email, ldapCfg.DefaultRole, ldapCfg.DefaultRole == "admin")
 							if err != nil {
 								log.Printf("LDAP auto-provision failed: %v", err)
 								logAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "auto-provision failed")

@@ -514,8 +514,18 @@ export default function Admin() {
           <Form.Item name="email" label="Email" rules={[{ required: true, message: 'Required' }, { type: 'email' }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="password" label="Password" rules={[{ required: true, min: 8, message: 'Min 8 characters' }]}>
-            <Input.Password />
+          <Form.Item name="auth_type" label="Auth Type" rules={[{ required: true }]} initialValue="local">
+            <Select>
+              <Option value="local">Local</Option>
+              <Option value="ldap">LDAP</Option>
+            </Select>
+          </Form.Item>
+          <Form.Item name="password" label="Password" dependencies={['auth_type']} rules={[
+            ({ getFieldValue }) => getFieldValue('auth_type') === 'local'
+              ? [{ required: true, min: 8, message: 'Min 8 characters' }]
+              : []
+          ]}>
+            <Input.Password disabled={form.getFieldValue('auth_type') === 'ldap'} />
           </Form.Item>
           <Form.Item name="role" label="Role" rules={[{ required: true }]}>
             <Select>

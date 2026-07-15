@@ -14,10 +14,11 @@ import (
 )
 
 type CreateUserRequest struct {
-	Username string `json:"username" binding:"required"`
-	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,min=8"`
-	Role     string `json:"role" binding:"required"`
+	Username  string `json:"username" binding:"required"`
+	Email     string `json:"email" binding:"required,email"`
+	Password  string `json:"password"`
+	Role      string `json:"role" binding:"required"`
+	AuthType  string `json:"auth_type"`
 }
 
 type UpdateUserRequest struct {
@@ -58,6 +59,27 @@ func CreateUser(database *sql.DB) gin.HandlerFunc {
 		}
 		if !found {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid role. Must be admin, editor, or viewer"})
+			return
+		}
+
+		authType := req.AuthType
+		if authType == "" {
+			authType = "local"
+		}
+
+		if authType == "ldap" {
+			isAdmin := req.Role == "admin"
+			user, err := db.CreateLDAPUser(database, req.Username, req.Email, req.Role, isAdmin)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusCreated, user)
+			return
+		}
+
+		if req.Password == "" || len(req.Password) < 8 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Password is required and must be at least 8 characters"})
 			return
 		}
 
