@@ -46,7 +46,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collaps
   const renderLinks = () => (
     <>
       <nav>
-        {navItems.map(item => (
+        {navItems.filter(item => !(item.adminOnly && !isAdmin)).map(item => (
           <RouterLink
             key={item.key}
             to={item.key}
@@ -99,27 +99,6 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collaps
             ))}
           </>
         )}
-        {isAdmin && (
-          <RouterLink
-            to="/admin"
-            onClick={onClose}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '12px 16px',
-              textDecoration: 'none',
-              color: location.pathname === '/admin' ? '#1890ff' : token.colorText,
-              background: location.pathname === '/admin' ? activeBg : 'transparent',
-              borderRadius: 4,
-              margin: '2px 8px',
-              fontSize: 14,
-            }}
-          >
-            <span style={{ fontSize: 18 }}><SafetyOutlined /></span>
-            {!collapsed && 'Admin'}
-          </RouterLink>
-        )}
       </nav>
     </>
   )
@@ -168,6 +147,7 @@ function ThemeProvider({ children }: { children: React.ReactNode }) {
           .ant-message-error .anticon { color: #ff4d4f !important; }
           .ant-message-error .ant-message-notice-content { border-color: #ff4d4f !important; background: #fff2f0 !important; }
           .ant-message-error { color: #ff4d4f !important; }
+          @media (max-width: 768px) { .navbar-text-label { display: none !important; } }
         `}</style>
         {children}
       </ConfigProvider>
@@ -180,6 +160,7 @@ const navItems = [
   { key: '/logs', label: 'Logs', icon: <FileTextOutlined /> },
   { key: '/parsers', label: 'Parsers', icon: <SettingOutlined /> },
   { key: '/dashboards', label: 'Dashboards', icon: <FundOutlined /> },
+  { key: '/admin', label: 'Admin', icon: <SafetyOutlined />, adminOnly: true },
 ]
 
 function AppLayout({ children }: { children: React.ReactNode }) {
@@ -261,8 +242,8 @@ function AppLayout({ children }: { children: React.ReactNode }) {
               {location.pathname === '/' ? 'Dashboard' : location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'SysLog GUI'}
             </span>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 13, color: token.colorTextSecondary, display: 'flex', alignItems: 'center', gap: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'nowrap', overflow: 'hidden' }}>
+            <span style={{ fontSize: 13, color: token.colorTextSecondary, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
               <UserOutlined /> {user?.username}
             </span>
             <Button
@@ -270,7 +251,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
               icon={themeMode === 'dark' ? <SunOutlined /> : <MoonOutlined />}
               onClick={toggleTheme}
             >
-              {themeMode === 'dark' ? 'Light' : 'Dark'}
+              <span className="navbar-text-label">{themeMode === 'dark' ? 'Light' : 'Dark'}</span>
             </Button>
             <Button
               type="text"
@@ -278,7 +259,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
               icon={<LogoutOutlined />}
               onClick={logout}
             >
-              Logout
+              <span className="navbar-text-label">Logout</span>
             </Button>
           </div>
         </Header>

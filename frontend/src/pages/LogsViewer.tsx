@@ -90,6 +90,7 @@ export default function LogsViewer() {
       const ids = new Set(prev.map(l => l.id))
       const unique = newLogs.filter(l => !ids.has(l.id))
       if (unique.length === 0) return prev
+      setTotal(t => t + unique.length)
       const combined = [...unique, ...prev]
       return combined.slice(0, pagination.pageSize * 3)
     })
@@ -191,8 +192,9 @@ export default function LogsViewer() {
       key: 'timestamp',
       width: 180,
       fixed: 'left' as const,
-      render: (v: string) => <Text style={{ fontFamily: 'monospace', fontSize: 12 }}>{new Date(v).toLocaleString()}</Text>,
-      sorter: true,
+      render: (v: string) => new Date(v).toLocaleString(),
+      sorter: (a: LogEntry, b: LogEntry) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+      defaultSortOrder: 'descend',
     },
     {
       title: 'Severity',

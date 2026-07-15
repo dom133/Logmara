@@ -87,6 +87,7 @@ export default function DashboardViewPage() {
       const ids = new Set(prev.map(l => l.id))
       const unique = newLogs.filter(l => !ids.has(l.id))
       if (unique.length === 0) return prev
+      setTotal(t => t + unique.length)
       const combined = [...unique, ...prev]
       return combined.slice(0, pageSize * 3)
     })
@@ -442,7 +443,7 @@ export default function DashboardViewPage() {
         width={{ sm: '90%', md: 720 }}
       >
         {detailLog && (
-          <Descriptions column={2} size="small" bordered>
+          <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered>
             {(renderDetailContent() ?? []).map((item, i) => (
               <Descriptions.Item key={i} label={item.label} span={item.span || 1}>
                 {item.content}

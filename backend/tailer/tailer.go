@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"time"
@@ -15,6 +16,11 @@ import (
 	"syslog-gui/parser"
 )
 
+const (
+	compactionInterval = 5 * time.Minute
+	maxFileSize        = 100 * 1024 * 1024 // 100 MB
+)
+
 func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.IngestionController) {
 	log.Printf("File tailer started, watching: %s", filePath)
 	batchSize := 500
@@ -22,10 +28,12 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 
 	var entries []model.IngestEntry
 	lastFlush := time.Now()
+	lastCompaction := time.Now()
 	var filePos int64 = 0
+	var flushedPos int64 = 0
 
 	for {
-		f, err := os.OpenFile(filePath, os.O_RDONLY, 0644)
+		f, err := os.OpenFile(filePath, os.O_RDWR, 0644)
 		if err != nil {
 			log.Printf("Tailer: waiting for file %s: %v", filePath, err)
 			time.Sleep(2 * time.Second)
@@ -45,6 +53,19 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 			log.Println("Tailer: file rotated, resetting position")
 		}
 
+		// Periodic compaction: remove data already flushed to DB
+		if time.Since(lastCompaction) > compactionInterval && fileSize > maxFileSize {
+			if err := compactFile(f, flushedPos, filePath); err != nil {
+				log.Printf("Tailer: compaction error: %v", err)
+			} else {
+				filePos = 0
+				flushedPos = 0
+				stat, _ = f.Stat()
+				fileSize = stat.Size()
+				lastCompaction = time.Now()
+			}
+		}
+
 		if _, err := f.Seek(filePos, 0); err != nil {
 			f.Close()
 			time.Sleep(1 * time.Second)
@@ -55,6 +76,9 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 		buf := make([]byte, 0, 1024*1024)
 		scanner.Buffer(buf, 1024*1024)
 
+		batchStartPos := filePos
+		scanned := false
+
 		for scanner.Scan() {
 			if ic.IsPaused() {
 				break
@@ -64,16 +88,18 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 				continue
 			}
 
+			scanned = true
+
 			var entry model.IngestEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			log.Printf("Tailer: invalid JSON: %v, line: %.200s", err, line)
-			entry = model.IngestEntry{
-				Timestamp: time.Now().Format(time.RFC3339),
-				Hostname:  "unknown",
-				Severity:  "error",
-				Message:   fmt.Sprintf("[MALFORMED JSON] %s", line),
+			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				log.Printf("Tailer: invalid JSON: %v, line: %.200s", err, line)
+				entry = model.IngestEntry{
+					Timestamp: time.Now().Format(time.RFC3339),
+					Hostname:  "unknown",
+					Severity:  "error",
+					Message:   fmt.Sprintf("[MALFORMED JSON] %s", line),
+				}
 			}
-		}
 
 			if entry.Hostname == "" {
 				continue
@@ -96,28 +122,79 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 				if !ic.IsPaused() {
 					if err := flushBatch(db, entries); err != nil {
 						log.Printf("Tailer: flush error: %v", err)
+					} else {
+						flushedPos = batchStartPos
 					}
 				}
 				entries = entries[:0]
+				batchStartPos = filePos
 				lastFlush = now
 			}
 		}
 
-		curPos, err := f.Seek(0, 2)
-		if err == nil {
-			filePos = curPos
+		if scanned {
+			curPos, err := f.Seek(0, 2)
+			if err == nil {
+				filePos = curPos
+			}
 		}
 		f.Close()
 
 		if len(entries) > 0 && !ic.IsPaused() {
 			if err := flushBatch(db, entries); err != nil {
 				log.Printf("Tailer: flush error: %v", err)
+			} else {
+				flushedPos = batchStartPos
 			}
 			entries = entries[:0]
 		}
 
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+func compactFile(f *os.File, flushedPos int64, filePath string) error {
+	stat, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat: %w", err)
+	}
+	fileSize := stat.Size()
+
+	if flushedPos >= fileSize {
+		log.Printf("Tailer: nothing to compact (flushedPos=%d, fileSize=%d)", flushedPos, fileSize)
+		return nil
+	}
+
+	// Read unprocessed data (from flushedPos to EOF)
+	if _, err := f.Seek(flushedPos, 0); err != nil {
+		return fmt.Errorf("seek to flushedPos: %w", err)
+	}
+	remaining, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("read remaining: %w", err)
+	}
+
+	log.Printf("Tailer: compacting %s: %d -> %d bytes (%d bytes flushed)",
+		filePath, fileSize, len(remaining), flushedPos)
+
+	// Truncate to 0
+	if err := f.Truncate(0); err != nil {
+		return fmt.Errorf("truncate: %w", err)
+	}
+
+	// Write back unprocessed data
+	if _, err := f.Seek(0, 0); err != nil {
+		return fmt.Errorf("seek to start: %w", err)
+	}
+	if _, err := f.Write(remaining); err != nil {
+		return fmt.Errorf("write remaining: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("sync: %w", err)
+	}
+
+	log.Printf("Tailer: compaction done, %d bytes remaining", len(remaining))
+	return nil
 }
 
 func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
@@ -183,7 +260,8 @@ func parseTimestamp(s string) (time.Time, error) {
 		time.RFC3339Nano,
 		"2006-01-02T15:04:05",
 		"2006-01-02 15:04:05",
-		"Jan 2 15:04:05",
+		"Jan  2 15:04:05",
+		"Jan  2 03:04:05",
 		time.UnixDate,
 	}
 

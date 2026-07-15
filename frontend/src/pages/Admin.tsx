@@ -398,37 +398,35 @@ export default function Admin() {
                   <Form.Item
                     label="Custom CA Certificate (PEM)"
                     name="ldap_ca_cert"
-                    extra={
-                      <Space>
-                        <input
-                          type="file"
-                          accept=".pem,.crt,.cer"
-                          style={{ display: 'none' }}
-                          id="ca-cert-upload"
-                          disabled={!ldapEnabled}
-                          onChange={(e) => {
-                            const file = e.target.files?.[0]
-                            if (!file) return
-                            const reader = new FileReader()
-                            reader.onload = (ev) => {
-                              const text = ev.target?.result
-                              if (typeof text === 'string') {
-                                settingsForm.setFieldValue('ldap_ca_cert', text)
-                                message.success('PEM file loaded')
-                              }
-                            }
-                            reader.onerror = () => message.error('Failed to read PEM file')
-                            reader.readAsText(file)
-                            e.target.value = ''
-                          }}
-                        />
-                        <Button icon={<UploadOutlined />} disabled={!ldapEnabled} onClick={() => { document.getElementById('ca-cert-upload')?.click() }}>
-                          Upload PEM
-                        </Button>
-                      </Space>
-                    }
                   >
-                    <Input.TextArea rows={4} placeholder="Paste PEM certificate or upload a file..." disabled={!ldapEnabled} />
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <Input.TextArea rows={4} placeholder="Paste PEM certificate or upload a file..." disabled={!ldapEnabled} style={{ resize: 'none' }} />
+                      <input
+                        type="file"
+                        accept=".pem,.crt,.cer"
+                        style={{ display: 'none' }}
+                        id="ca-cert-upload"
+                        disabled={!ldapEnabled}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0]
+                          if (!file) return
+                          const reader = new FileReader()
+                          reader.onload = (ev) => {
+                            const text = ev.target?.result
+                            if (typeof text === 'string') {
+                              settingsForm.setFieldValue('ldap_ca_cert', text)
+                              message.success('PEM file loaded')
+                            }
+                          }
+                          reader.onerror = () => message.error('Failed to read PEM file')
+                          reader.readAsText(file)
+                          e.target.value = ''
+                        }}
+                      />
+                      <Button icon={<UploadOutlined />} disabled={!ldapEnabled} block onClick={() => { document.getElementById('ca-cert-upload')?.click() }}>
+                        Upload PEM
+                      </Button>
+                    </div>
                   </Form.Item>
                   <Divider orientation="left">Connection</Divider>
                   <Form.Item label="Base DN" name="ldap_base_dn">

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, message, Popconfirm, Typography, List } from 'antd'
+import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, message, Popconfirm, Typography, List, Spin } from 'antd'
 import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardConfig, ParsedField } from '../services/api'
@@ -248,6 +248,11 @@ export default function DashboardsPage() {
         </div>
       </div>
 
+      {loading && dashboards.length === 0 && (
+        <div style={{ textAlign: 'center', padding: 48 }}>
+          <Spin size="large" tip="Loading dashboards..." />
+        </div>
+      )}
       {dashboards.length === 0 && !loading && (
         <Card style={{ marginBottom: 16 }}>
           <Typography.Paragraph>
