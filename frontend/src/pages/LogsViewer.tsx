@@ -18,13 +18,14 @@ const severities = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info'
 export default function LogsViewer() {
   const [searchParams] = useSearchParams()
   const urlHostname = searchParams.get('hostname') || ''
+  const urlFromHostIP = searchParams.get('fromhost_ip') || ''
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [devices, setDevices] = useState<Array<{ fromhost_ip: string; label: string }>>([])
   const [filters, setFilters] = useState({
     hostname: urlHostname,
-    fromhost_ip: '',
+    fromhost_ip: urlFromHostIP,
     severity: '',
     search: '',
     from: '',

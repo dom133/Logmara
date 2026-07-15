@@ -320,8 +320,8 @@ func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.Parsed
 
 	parserIDs := make(map[int64]bool)
 
-	for _, hostname := range hostnames {
-		appRows, err := e.db.Query(`SELECT DISTINCT app_name FROM syslog_logs WHERE hostname = $1`, hostname)
+	for _, fromHostIP := range hostnames {
+		appRows, err := e.db.Query(`SELECT DISTINCT app_name FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1`, fromHostIP)
 		if err != nil {
 			continue
 		}
@@ -346,7 +346,7 @@ func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.Parsed
 
 		// Collect sample messages for message-type parser matching
 		var messages []string
-		msgRows, err := e.db.Query(`SELECT message FROM syslog_logs WHERE hostname = $1 LIMIT 100`, hostname)
+		msgRows, err := e.db.Query(`SELECT message FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1 LIMIT 100`, fromHostIP)
 		if err == nil {
 			for msgRows.Next() {
 				var msg sql.NullString
@@ -357,13 +357,31 @@ func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.Parsed
 			msgRows.Close()
 		}
 
+		// Collect hostnames for hostname-type parser matching
+		var hostnamesFromDevice []string
+		hnRows, err := e.db.Query(`SELECT DISTINCT hostname FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1`, fromHostIP)
+		if err == nil {
+			for hnRows.Next() {
+				var hn sql.NullString
+				if err := hnRows.Scan(&hn); err == nil && hn.Valid {
+					hostnamesFromDevice = append(hostnamesFromDevice, hn.String)
+				}
+			}
+			hnRows.Close()
+		}
+
 		for _, p := range parsers {
 			switch p.MatchType {
 			case "all":
 				parserIDs[p.ID] = true
 			case "hostname":
-				if p.MatchValue != nil && *p.MatchValue != "" && matchGlob(*p.MatchValue, hostname) {
-					parserIDs[p.ID] = true
+				if p.MatchValue != nil && *p.MatchValue != "" {
+					for _, hn := range hostnamesFromDevice {
+						if matchGlob(*p.MatchValue, hn) {
+							parserIDs[p.ID] = true
+							break
+						}
+					}
 				}
 			case "app_name":
 				if p.MatchValue != nil && *p.MatchValue != "" {
@@ -460,7 +478,7 @@ func (e *Engine) ReparseUnparsed(hostname, from, to string, limit int) (*model.R
 	argIdx := 1
 
 	if hostname != "" {
-		query += fmt.Sprintf(" AND hostname = $%d", argIdx)
+		query += fmt.Sprintf(" AND COALESCE(fromhost_ip, '') = $%d", argIdx)
 		args = append(args, hostname)
 		argIdx++
 	}

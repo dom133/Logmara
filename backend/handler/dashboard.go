@@ -333,7 +333,7 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 				args = append(args, d)
 				argIdx++
 			}
-			query += " AND hostname IN (" + strings.Join(placeholders, ", ") + ")"
+			query += " AND COALESCE(fromhost_ip, '') IN (" + strings.Join(placeholders, ", ") + ")"
 		}
 
 		severityFilter := c.DefaultQuery("severity", "")
