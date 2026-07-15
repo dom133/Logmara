@@ -18,6 +18,7 @@ export default function Admin() {
   const [settings, setSettings] = useState<Record<string, string>>({})
   const [settingsForm] = Form.useForm()
   const [devices, setDevices] = useState<DeviceStats[]>([])
+  const [devicesLoading, setDevicesLoading] = useState(false)
   const [editDevice, setEditDevice] = useState<DeviceStats | null>(null)
   const [editDeviceForm] = Form.useForm()
   const [ldapEnabled, setLdapEnabled] = useState(false)
@@ -98,11 +99,14 @@ export default function Admin() {
   }
 
   const loadDevices = async () => {
+    setDevicesLoading(true)
     try {
       const data = await getDeviceStats()
       setDevices(data)
     } catch (e: any) {
       message.error('Failed to load devices')
+    } finally {
+      setDevicesLoading(false)
     }
   }
 
@@ -487,6 +491,7 @@ export default function Admin() {
                 }
               >
                 <Table
+                  loading={devicesLoading}
                   rowKey="fromhost_ip"
                   dataSource={devices}
                   pagination={false}
