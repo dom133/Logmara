@@ -13,6 +13,7 @@ services:
       timeout: 3s
       retries: 10
     restart: unless-stopped
+    pids_limit: 100
     networks:
       - syslog_net
     deploy:
@@ -23,7 +24,6 @@ services:
         reservations:
           cpus: '0.25'
           memory: 128M
-      pids_limit: 100
     logging:
       driver: json-file
       options:
@@ -46,6 +46,7 @@ services:
       api:
         condition: service_healthy
     restart: unless-stopped
+    pids_limit: 50
     networks:
       - syslog_net
     deploy:
@@ -56,7 +57,6 @@ services:
         reservations:
           cpus: '0.1'
           memory: 64M
-      pids_limit: 50
     logging:
       driver: json-file
       options:
@@ -84,6 +84,7 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    pids_limit: 100
     networks:
       - syslog_net
     deploy:
@@ -94,7 +95,6 @@ services:
         reservations:
           cpus: '0.25'
           memory: 128M
-      pids_limit: 100
     logging:
       driver: json-file
       options:
@@ -110,6 +110,7 @@ services:
     depends_on:
       - api
     restart: unless-stopped
+    pids_limit: 50
     networks:
       - syslog_net
     deploy:
@@ -120,7 +121,6 @@ services:
         reservations:
           cpus: '0.1'
           memory: 64M
-      pids_limit: 50
     logging:
       driver: json-file
       options:
