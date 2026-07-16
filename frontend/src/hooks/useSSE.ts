@@ -48,6 +48,7 @@ export function useSSE({ onNewLogs, filters = {}, enabled = true }: UseSSEOption
   const filtersRef = useRef(filters)
   const enabledRef = useRef(enabled)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const isTabActiveRef = useRef(true)
   onNewLogsRef.current = onNewLogs
   filtersRef.current = filters
   enabledRef.current = enabled
@@ -55,6 +56,12 @@ export function useSSE({ onNewLogs, filters = {}, enabled = true }: UseSSEOption
   const connect = useCallback(() => {
     if (abortRef.current) {
       abortRef.current.abort()
+    }
+
+    // Check if tab is still active
+    if (!isTabActiveRef.current) {
+      setConnected(false)
+      return
     }
 
     const controller = new AbortController()
@@ -156,6 +163,18 @@ for (const evt of events) {
   }, [connect])
 
   useEffect(() => {
+    // Check if tab is active
+    const handleVisibilityChange = () => {
+      isTabActiveRef.current = !document.hidden;
+      
+      // If tab became active and we should be connected, reconnect
+      if (isTabActiveRef.current && enabledRef.current && !abortRef.current?.signal.aborted) {
+        connect();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
     if (!enabled) {
       if (abortRef.current) {
         abortRef.current.abort()
@@ -172,6 +191,8 @@ for (const evt of events) {
     connect()
 
     return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      
       if (abortRef.current) {
         abortRef.current.abort()
         abortRef.current = null
