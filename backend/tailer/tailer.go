@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/lib/pq"
@@ -17,8 +19,9 @@ import (
 )
 
 const (
-	compactionInterval = 5 * time.Minute
+	compactionInterval = 30 * time.Minute
 	maxFileSize        = 100 * 1024 * 1024 // 100 MB
+	positionFileName   = ".tailer_pos"
 )
 
 func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.IngestionController) {
@@ -26,11 +29,12 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 	batchSize := 500
 	batchInterval := 2 * time.Second
 
+	posFile := filepath.Join(filepath.Dir(filePath), positionFileName)
+	filePos, flushedPos := loadStartPosition(db, filePath, posFile)
+
 	var entries []model.IngestEntry
 	lastFlush := time.Now()
 	lastCompaction := time.Now()
-	var filePos int64 = 0
-	var flushedPos int64 = 0
 
 	for {
 		f, err := os.OpenFile(filePath, os.O_RDWR, 0644)
@@ -54,12 +58,13 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 		}
 
 		// Periodic compaction: remove data already flushed to DB
-		if time.Since(lastCompaction) > compactionInterval && fileSize > maxFileSize {
+		if (time.Since(lastCompaction) > compactionInterval || fileSize > maxFileSize) && fileSize > flushedPos*2 {
 			if err := compactFile(f, flushedPos, filePath); err != nil {
 				log.Printf("Tailer: compaction error: %v", err)
 			} else {
 				filePos = 0
 				flushedPos = 0
+				savePosition(posFile, 0)
 				stat, _ = f.Stat()
 				fileSize = stat.Size()
 				lastCompaction = time.Now()
@@ -124,6 +129,7 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 						log.Printf("Tailer: flush error: %v", err)
 					} else {
 						flushedPos = batchStartPos
+						savePosition(posFile, flushedPos)
 					}
 				}
 				entries = entries[:0]
@@ -145,6 +151,7 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 				log.Printf("Tailer: flush error: %v", err)
 			} else {
 				flushedPos = batchStartPos
+				savePosition(posFile, flushedPos)
 			}
 			entries = entries[:0]
 		}
@@ -280,4 +287,81 @@ func nullStr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+func savePosition(path string, pos int64) {
+	if err := os.WriteFile(path, []byte(strconv.FormatInt(pos, 10)), 0644); err != nil {
+		log.Printf("Tailer: save position error: %v", err)
+	}
+}
+
+func loadPosition(path string) (int64, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	pos, err := strconv.ParseInt(string(data), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return pos, true
+}
+
+func loadStartPosition(db *sql.DB, filePath, posFile string) (filePos, flushedPos int64) {
+	if pos, ok := loadPosition(posFile); ok {
+		if f, err := os.Open(filePath); err == nil {
+			stat, _ := f.Stat()
+			f.Close()
+			if pos <= stat.Size() {
+				log.Printf("Tailer: restored position from file: %d", pos)
+				return pos, pos
+			}
+		}
+		log.Println("Tailer: saved position invalid, falling back to DB")
+	}
+
+	var lastTs *time.Time
+	if err := db.QueryRow("SELECT max(timestamp) FROM syslog_logs").Scan(&lastTs); err != nil {
+		log.Printf("Tailer: DB fallback query error: %v", err)
+		return 0, 0
+	}
+	if lastTs == nil {
+		log.Println("Tailer: DB empty, starting from beginning")
+		return 0, 0
+	}
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		log.Printf("Tailer: cannot open file for DB fallback: %v", err)
+		return 0, 0
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 0, 1024*1024)
+	scanner.Buffer(buf, 1024*1024)
+	pos := int64(0)
+	lineLen := int64(0)
+	for scanner.Scan() {
+		line := scanner.Text()
+		lineLen = int64(len(line)) + 1
+
+		var entry model.IngestEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			pos += lineLen
+			continue
+		}
+		ts, err := parseTimestamp(entry.Timestamp)
+		if err != nil {
+			pos += lineLen
+			continue
+		}
+		if ts.After(*lastTs) {
+			break
+		}
+		pos += lineLen
+	}
+
+	log.Printf("Tailer: restored position from DB (lastTs=%s, pos=%d)", lastTs.Format(time.RFC3339), pos)
+	return pos, pos
 }
