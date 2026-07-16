@@ -51,6 +51,9 @@ func (w *gzipResponseWriter) WriteHeader(code int) {
 }
 
 func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	if w.gz == nil {
+		return w.ResponseWriter.Write(b)
+	}
 	return w.gz.Write(b)
 }
 

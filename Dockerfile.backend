@@ -11,9 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
     groupadd -r appgroup && useradd -r -g appgroup -s /sbin/nologin -m -d /app appuser
 WORKDIR /app
 COPY --from=builder /app/server .
-RUN chown -R appuser:appgroup /app
-USER appuser
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:8080/api/health || exit 1
-ENTRYPOINT ["/bin/sh", "-c", "chmod -R a+r /data 2>/dev/null; ./server"]
+ENTRYPOINT ["/bin/sh", "-c", "chmod -R a+r /data 2>/dev/null; exec ./server"]
