@@ -7,7 +7,7 @@ ARG JWT_SECRET
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/server .
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/* && \
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/* && \
     groupadd -r appgroup && useradd -r -g appgroup -s /sbin/nologin -m -d /app appuser
 WORKDIR /app
 COPY --from=builder /app/server .

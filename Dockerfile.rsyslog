@@ -1,5 +1,5 @@
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends rsyslog curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends rsyslog procps && rm -rf /var/lib/apt/lists/*
 COPY rsyslog/syslog.conf /etc/rsyslog.d/syslog.conf
 EXPOSE 514 514/udp
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
