@@ -68,11 +68,28 @@ export default function LogsViewer() {
     ],
   )
 
+  const [isTabActive, setIsTabActive] = useState(true)
+
   useEffect(() => {
     loadDevices()
-    const interval = setInterval(loadDevices, 30000)
-    return () => clearInterval(interval)
-  }, [])
+    const interval = setInterval(() => {
+      if (isTabActive) {
+        loadDevices()
+      }
+    }, 30000)
+    
+    // Check if tab is active
+    const handleVisibilityChange = () => {
+      setIsTabActive(!document.hidden)
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [isTabActive])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

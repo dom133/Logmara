@@ -42,11 +42,27 @@ export default function Dashboard() {
     [{ key: 'message', width: 140 }, { key: 'hostname', width: 120 }, { key: 'count', width: 70 }],
   )
 
+  const [isTabActive, setIsTabActive] = useState(true)
+
   useEffect(() => {
+    // Check if tab is active
+    const handleVisibilityChange = () => {
+      setIsTabActive(!document.hidden)
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
     loadData()
-    const interval = setInterval(loadData, 30000)
-    return () => clearInterval(interval)
-  }, [])
+    const interval = setInterval(() => {
+      if (isTabActive) {
+        loadData()
+      }
+    }, 30000)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [isTabActive])
 
   const loadDevices = async () => {
     const d = await getDevices()

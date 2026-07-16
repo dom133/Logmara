@@ -121,12 +121,29 @@ export default function DashboardViewPage() {
     }
   }, [dashboardId, pageSize, dateRange])
 
+  const [isTabActive, setIsTabActive] = useState(true)
+
   useEffect(() => {
     loadDashboard()
     loadDevices()
-    const interval = setInterval(loadDevices, 30000)
-    return () => clearInterval(interval)
-  }, [dashboardId])
+    const interval = setInterval(() => {
+      if (isTabActive) {
+        loadDevices()
+      }
+    }, 30000)
+    
+    // Check if tab is active
+    const handleVisibilityChange = () => {
+      setIsTabActive(!document.hidden)
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [dashboardId, isTabActive])
 
   useEffect(() => {
     if (dashboard) {
