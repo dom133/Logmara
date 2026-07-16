@@ -397,7 +397,9 @@ export default function LogsViewer() {
             title="Log Details"
             open={detailModalOpen}
             onCancel={() => setDetailModalOpen(false)}
-            footer={null}
+            footer={[
+              <Button key="close" onClick={() => setDetailModalOpen(false)} style={{ width: '100%' }}>Close</Button>
+            ]}
             width={{ sm: '90%', md: 700 }}
           >
             {selectedLog && (

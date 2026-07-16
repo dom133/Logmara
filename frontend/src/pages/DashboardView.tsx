@@ -425,7 +425,7 @@ export default function DashboardViewPage() {
         open={!!detailLog}
         onCancel={() => setDetailLog(null)}
         footer={[
-          <Button key="close" onClick={() => setDetailLog(null)}>Close</Button>
+          <Button key="close" onClick={() => setDetailLog(null)} style={{ width: '100%' }}>Close</Button>
         ]}
         width={{ sm: '90%', md: 720 }}
       >
@@ -433,13 +433,13 @@ export default function DashboardViewPage() {
           const detail = renderDetailContent()
           if (!detail) return null
           return (
-            <Descriptions bordered column={{ xs: 1, sm: 2 }} size="small">
+            <Descriptions bordered column={1} size="small">
               {detail.metadata.map((item, i) => (
-                <Descriptions.Item key={i} label={item.label} span={1}>
+                <Descriptions.Item key={i} label={item.label}>
                   {item.content}
                 </Descriptions.Item>
               ))}
-              <Descriptions.Item label="Full Message" span={2}>
+              <Descriptions.Item label="Full Message">
                 <pre style={{
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
