@@ -32,7 +32,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [sessionTimeout, setSessionTimeoutValue] = useState<number | null>(300) // Default: 5 minutes
   const [isSessionExpiringSoon, setIsSessionExpiringSoon] = useState(false)
   const [showSessionWarning, setShowSessionWarning] = useState(false)
-  const [tokenExpiryTimer, setTokenExpiryTimer] = useState<NodeJS.Timeout | null>(null)
+  const [tokenExpiryTimer, setTokenExpiryTimer] = useState<any | null>(null)
 
   useEffect(() => {
     if (token) {

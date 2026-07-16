@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useAuth } from './auth'
+import { useAuth } from '../services/auth'
 
 interface SessionWarningModalProps {
   onExtend: () => void

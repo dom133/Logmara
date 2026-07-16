@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useAuth } from './auth'
-import { api } from './api'
+import { api } from '../services/api'
 import { Space, Card, Form, InputNumber, Button, Alert, Spin } from 'antd'
 
 export function AdminSettings() {
