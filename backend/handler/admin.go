@@ -3,9 +3,11 @@ package handler
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"syslog-gui/auth"
 	"syslog-gui/control"
@@ -266,7 +268,13 @@ func PurgeAllLogs(database *sql.DB, ic *control.IngestionController) gin.Handler
 		wasPaused := ic.IsPaused()
 		if req.PauseDuringPurge {
 			ic.Pause()
+			time.Sleep(500 * time.Millisecond)
 		}
+
+		row := database.QueryRow("SELECT COUNT(*) FROM syslog_logs")
+		var count int
+		row.Scan(&count)
+		log.Printf("PurgeAll: %d logs in database before truncate", count)
 
 		_, err := database.Exec("TRUNCATE TABLE syslog_logs")
 		if err != nil {
@@ -276,16 +284,26 @@ func PurgeAllLogs(database *sql.DB, ic *control.IngestionController) gin.Handler
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		log.Printf("PurgeAll: database truncated (%d logs deleted)", count)
 
-		_ = os.Truncate("/data/logs.jsonl", 0)
+		logFilePath := os.Getenv("LOG_FILE_PATH")
+		if logFilePath == "" {
+			logFilePath = "/data/logs.jsonl"
+		}
+		if err := os.Truncate(logFilePath, 0); err != nil {
+			log.Printf("PurgeAll: failed to truncate log file %s: %v", logFilePath, err)
+		} else {
+			log.Printf("PurgeAll: log file %s truncated", logFilePath)
+		}
 
 		if req.PauseDuringPurge && !wasPaused {
 			ic.Resume()
+			log.Printf("PurgeAll: ingestion resumed")
 		}
 
 		c.JSON(http.StatusOK, gin.H{
 			"message":       "All logs purged",
-			"deleted_count": 0,
+			"deleted_count": count,
 		})
 	}
 }

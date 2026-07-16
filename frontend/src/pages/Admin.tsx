@@ -26,6 +26,7 @@ export default function Admin() {
   const [testing, setTesting] = useState(false)
   const [purgeModalOpen, setPurgeModalOpen] = useState(false)
   const [pauseDuringPurge, setPauseDuringPurge] = useState(false)
+  const [purging, setPurging] = useState(false)
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_admin',
@@ -217,12 +218,15 @@ export default function Admin() {
   }
 
   const handlePurgeAll = async () => {
+    setPurging(true)
     try {
       const result = await purgeAllLogs(pauseDuringPurge)
-      message.success(`${result.deleted_count} logs purged`)
+      message.success(result.message || 'All logs purged')
       setPurgeModalOpen(false)
     } catch (e: any) {
       message.error(e.response?.data?.error || 'Purge failed')
+    } finally {
+      setPurging(false)
     }
   }
 
@@ -341,7 +345,7 @@ export default function Admin() {
                     <InputNumber min={1} max={8760} style={{ width: '100%' }} />
                   </Form.Item>
                   <Divider />
-                  <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <Button type="primary" htmlType="submit">
                       Save Settings
                     </Button>
@@ -358,7 +362,7 @@ export default function Admin() {
                       onCancel={() => setPurgeModalOpen(false)}
                       okText="Yes, purge all"
                       cancelText="Cancel"
-                      okButtonProps={{ danger: true }}
+                      okButtonProps={{ danger: true, disabled: purging, loading: purging }}
                     >
                       <p>This will permanently delete every log entry. This cannot be undone.</p>
                       <div style={{ marginTop: 16 }}>
