@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strconv"
-	"strings"
+	"sync"
 	"time"
 
 	"syslog-gui/control"
+	"syslog-gui/middleware"
 	"syslog-gui/model"
 	"syslog-gui/parser"
 
@@ -20,21 +21,37 @@ import (
 	"github.com/lib/pq"
 )
 
+var (
+	devicesCache     []model.DeviceStats
+	devicesCacheMu   sync.RWMutex
+	devicesCacheTime time.Time
+	devicesTTL       = 60 * time.Second
+)
+
+func InvalidateAllCaches() {
+	devicesCacheMu.Lock()
+	devicesCache = nil
+	devicesCacheTime = time.Time{}
+	devicesCacheMu.Unlock()
+
+	statsInvalidateAll()
+}
+
 func IngestBatch(db *sql.DB, engine *parser.Engine, ic *control.IngestionController) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if ic.IsPaused() {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Ingestion is paused"})
+			middleware.HandleError(c, model.NewServiceUnavailable("Ingestion is paused", nil))
 			return
 		}
 		body, err := io.ReadAll(c.Request.Body)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Could not read body"})
+			middleware.HandleError(c, model.NewBadRequest("Could not read body", err))
 			return
 		}
 
 		var entries []model.IngestEntry
 		if err := json.Unmarshal(body, &entries); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON: " + err.Error()})
+			middleware.HandleError(c, model.NewBadRequest("Invalid JSON", err))
 			return
 		}
 
@@ -45,16 +62,16 @@ func IngestBatch(db *sql.DB, engine *parser.Engine, ic *control.IngestionControl
 
 		tx, err := db.Begin()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not begin transaction"})
+			middleware.HandleError(c, model.NewInternal("Could not begin transaction", err))
 			return
 		}
 		defer tx.Rollback()
 
-query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers)
+		query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers)
 		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
 		stmt, err := tx.Prepare(query)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not prepare statement"})
+			middleware.HandleError(c, model.NewInternal("Could not prepare statement", err))
 			return
 		}
 		defer stmt.Close()
@@ -63,7 +80,7 @@ query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, p
 		for _, entry := range entries {
 			ts, err := parseTimestamp(entry.Timestamp)
 			if err != nil {
-				log.Printf("Invalid timestamp: %s, using now", entry.Timestamp)
+				slog.Warn("invalid timestamp, using now", "value", entry.Timestamp)
 				ts = time.Now()
 			}
 
@@ -80,7 +97,7 @@ query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, p
 				_, err = stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
 					entry.Severity, facility, entry.Message, rawMsg, parsedJSON, pq.StringArray(nil))
 				if err != nil {
-					log.Printf("Insert error: %v", err)
+					slog.Error("insert error", "error", err)
 				}
 				ingested++
 				continue
@@ -93,18 +110,19 @@ query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, p
 			_, err = stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
 				entry.Severity, facility, entry.Message, rawMsg, parsedJSON, pq.StringArray(result.Parsers))
 			if err != nil {
-				log.Printf("Insert error: %v", err)
+				slog.Error("insert error", "error", err)
 				continue
 			}
 			ingested++
 		}
 
 		if err := tx.Commit(); err != nil {
-			log.Printf("Commit error: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Transaction commit failed"})
+			slog.Error("commit error", "error", err)
+			middleware.HandleError(c, model.NewInternal("Transaction commit failed", err))
 			return
 		}
 
+		InvalidateAllCaches()
 		c.JSON(http.StatusOK, gin.H{"ingested": ingested})
 	}
 }
@@ -125,62 +143,21 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 		limitInt, _ := strconv.Atoi(limit)
 		offsetInt, _ := strconv.Atoi(offset)
 
-		if limitInt > 1000 {
-			limitInt = 1000
+		if limitInt > MaxLogLimit {
+			limitInt = MaxLogLimit
 		}
 
-		whereClauses := []string{}
-		args := []interface{}{}
-		argIdx := 1
-
-		if hostname != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("hostname = $%d", argIdx))
-			args = append(args, hostname)
-			argIdx++
+		opts := LogFilterOptions{
+			Hostname:   hostname,
+			FromHostIP: fromHostIP,
+			Severity:   severity,
+			AppName:    appName,
+			Search:     search,
+			From:       from,
+			To:         to,
 		}
-
-		if fromHostIP == "__unknown__" {
-			whereClauses = append(whereClauses, fmt.Sprintf("(fromhost_ip IS NULL OR fromhost_ip = '')"))
-		} else if fromHostIP != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("COALESCE(fromhost_ip, '') = $%d", argIdx))
-			args = append(args, fromHostIP)
-			argIdx++
-		}
-
-		if severity != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("severity = $%d", argIdx))
-			args = append(args, severity)
-			argIdx++
-		}
-
-		if appName != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("app_name ILIKE $%d", argIdx))
-			args = append(args, "%"+appName+"%")
-			argIdx++
-		}
-
-		if search != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("search_vector @@ websearch_to_tsquery('english', $%d)", argIdx))
-			args = append(args, search)
-			argIdx++
-		}
-
-		if from != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("timestamp >= $%d", argIdx))
-			args = append(args, from)
-			argIdx++
-		}
-
-		if to != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("timestamp <= $%d", argIdx))
-			args = append(args, to)
-			argIdx++
-		}
-
-		whereSQL := ""
-		if len(whereClauses) > 0 {
-			whereSQL = "WHERE " + strings.Join(whereClauses, " AND ")
-		}
+		whereClauses, args, argIdx := buildLogWhereClauses(opts)
+		whereSQL := buildWhereSQL(whereClauses)
 
 		orderClause := "timestamp DESC"
 		switch sort {
@@ -192,15 +169,13 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 			orderClause = "hostname ASC, timestamp DESC"
 		}
 
-		// Count total
 		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL)
 		var total int64
 		if err := db.QueryRow(countQuery, args...).Scan(&total); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Count query failed"})
+			middleware.HandleError(c, model.NewInternal("Count query failed", err))
 			return
 		}
 
-		// Fetch logs
 		logsQuery := fmt.Sprintf(
 			"SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at "+
 				"FROM syslog_logs %s ORDER BY %s LIMIT $%d OFFSET $%d",
@@ -210,35 +185,12 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 
 		rows, err := db.Query(logsQuery, args...)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Query failed: " + err.Error()})
+			middleware.HandleError(c, model.NewInternal("Query failed", err))
 			return
 		}
 		defer rows.Close()
 
-		var logs []model.SyslogLog
-		for rows.Next() {
-			var l model.SyslogLog
-			var rawParsed json.RawMessage
-			var parsers pq.StringArray
-			err := rows.Scan(
-				&l.ID, &l.Timestamp, &l.Hostname, &l.FromHostIP, &l.AppName,
-				&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
-				&l.Message, &l.RawMessage, &rawParsed, &parsers, &l.CreatedAt,
-			)
-			if err != nil {
-				log.Printf("Scan error: %v", err)
-				continue
-			}
-			l.MatchedParsers = parsers
-			if len(rawParsed) > 0 {
-				json.Unmarshal(rawParsed, &l.ParsedFields)
-			}
-			logs = append(logs, l)
-		}
-
-		if logs == nil {
-			logs = []model.SyslogLog{}
-		}
+		logs := scanLogRows(rows)
 
 		c.JSON(http.StatusOK, gin.H{
 			"logs":   logs,
@@ -251,70 +203,92 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 
 func GetDevices(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		rows, err := db.Query(`
-			WITH dev_stats AS (
-				SELECT COALESCE(MIN(fromhost_ip), '') as fromhost_ip, MIN(hostname) as hostname,
-					COUNT(*) as total_logs, MAX(timestamp) as last_seen,
-					SUM(CASE WHEN severity = 'emergency' THEN 1 ELSE 0 END) as emergency,
-					SUM(CASE WHEN severity = 'alert' THEN 1 ELSE 0 END) as alert,
-					SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) as critical,
-					SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END) as err_count,
-					SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) as warning,
-					SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END) as notice,
-					SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END) as info,
-					SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug
-				FROM syslog_logs
-				GROUP BY fromhost_ip
-			),
-			dev_parsers AS (
-				SELECT COALESCE(fromhost_ip, '') as fromhost_ip,
-					array_agg(DISTINCT elem) as parsers
-				FROM syslog_logs, unnest(matched_parsers) as elem
-				WHERE matched_parsers IS NOT NULL AND matched_parsers != '{}'
-				GROUP BY fromhost_ip
-			)
-			SELECT d.fromhost_ip, d.hostname, d.total_logs, d.last_seen,
-				d.emergency, d.alert, d.critical, d.err_count, d.warning, d.notice, d.info, d.debug,
-				COALESCE(p.parsers, '{}'::TEXT[]) as parsers,
-				a.display_name, a.old_hostname
-			FROM dev_stats d
-			LEFT JOIN dev_parsers p ON p.fromhost_ip = d.fromhost_ip
-			LEFT JOIN device_aliases a ON a.fromhost_ip = d.fromhost_ip
-			ORDER BY d.total_logs DESC
-		`)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Query failed"})
+		devicesCacheMu.RLock()
+		if time.Since(devicesCacheTime) < devicesTTL && devicesCache != nil {
+			devices := devicesCache
+			devicesCacheMu.RUnlock()
+			c.JSON(http.StatusOK, gin.H{"devices": devices})
 			return
 		}
-		defer rows.Close()
+		devicesCacheMu.RUnlock()
 
-		var devices []model.DeviceStats
-		for rows.Next() {
-			var ds model.DeviceStats
-			var total int64
-			var emergency, alert, critical, errCount, warning, notice, info, debug int64
-			var parsersArr pq.StringArray
-			var alias, oldH sql.NullString
-			if err := rows.Scan(&ds.FromHostIP, &ds.Hostname, &total, &ds.LastSeen,
-				&emergency, &alert, &critical, &errCount, &warning, &notice, &info, &debug,
-				&parsersArr, &alias, &oldH); err != nil {
-				continue
-			}
-			ds.TotalLogs = total
-			ds.SeverityCount = model.SeverityCounts{"emergency": emergency, "alert": alert, "critical": critical, "error": errCount, "warning": warning, "notice": notice, "info": info, "debug": debug}
-			ds.MatchedParsers = parsersArr
-			ds.HasParsed = len(parsersArr) > 0
-			if alias.Valid {
-				ds.DisplayName = alias.String
-			}
-			if oldH.Valid {
-				ds.OldHostname = oldH.String
-			}
-			devices = append(devices, ds)
-		}
+		devices := fetchDevices(db)
+
+		devicesCacheMu.Lock()
+		devicesCache = devices
+		devicesCacheTime = time.Now()
+		devicesCacheMu.Unlock()
 
 		c.JSON(http.StatusOK, gin.H{"devices": devices})
 	}
+}
+
+func fetchDevices(db *sql.DB) []model.DeviceStats {
+	rows, err := db.Query(`
+		WITH dev_stats AS (
+			SELECT COALESCE(MIN(fromhost_ip), '') as fromhost_ip, MIN(hostname) as hostname,
+				COUNT(*) as total_logs, MAX(timestamp) as last_seen,
+				SUM(CASE WHEN severity = 'emergency' THEN 1 ELSE 0 END) as emergency,
+				SUM(CASE WHEN severity = 'alert' THEN 1 ELSE 0 END) as alert,
+				SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) as critical,
+				SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END) as err_count,
+				SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) as warning,
+				SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END) as notice,
+				SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END) as info,
+				SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug
+			FROM syslog_logs
+			GROUP BY fromhost_ip
+		),
+		dev_parsers AS (
+			SELECT COALESCE(fromhost_ip, '') as fromhost_ip,
+				array_agg(DISTINCT elem) as parsers
+			FROM syslog_logs, unnest(matched_parsers) as elem
+			WHERE matched_parsers IS NOT NULL AND matched_parsers != '{}'
+			GROUP BY fromhost_ip
+		)
+		SELECT d.fromhost_ip, d.hostname, d.total_logs, d.last_seen,
+			d.emergency, d.alert, d.critical, d.err_count, d.warning, d.notice, d.info, d.debug,
+			COALESCE(p.parsers, '{}'::TEXT[]) as parsers,
+			a.display_name, a.old_hostname
+		FROM dev_stats d
+		LEFT JOIN dev_parsers p ON p.fromhost_ip = d.fromhost_ip
+		LEFT JOIN device_aliases a ON a.fromhost_ip = d.fromhost_ip
+		ORDER BY d.total_logs DESC
+	`)
+	if err != nil {
+		return []model.DeviceStats{}
+	}
+	defer rows.Close()
+
+	var devices []model.DeviceStats
+	for rows.Next() {
+		var ds model.DeviceStats
+		var total int64
+		var emergency, alert, critical, errCount, warning, notice, info, debug int64
+		var parsersArr pq.StringArray
+		var alias, oldH sql.NullString
+		if err := rows.Scan(&ds.FromHostIP, &ds.Hostname, &total, &ds.LastSeen,
+			&emergency, &alert, &critical, &errCount, &warning, &notice, &info, &debug,
+			&parsersArr, &alias, &oldH); err != nil {
+			continue
+		}
+		ds.TotalLogs = total
+		ds.SeverityCount = model.SeverityCounts{"emergency": emergency, "alert": alert, "critical": critical, "error": errCount, "warning": warning, "notice": notice, "info": info, "debug": debug}
+		ds.MatchedParsers = parsersArr
+		ds.HasParsed = len(parsersArr) > 0
+		if alias.Valid {
+			ds.DisplayName = alias.String
+		}
+		if oldH.Valid {
+			ds.OldHostname = oldH.String
+		}
+		devices = append(devices, ds)
+	}
+
+	if devices == nil {
+		devices = []model.DeviceStats{}
+	}
+	return devices
 }
 
 func UpdateDeviceAlias(db *sql.DB) gin.HandlerFunc {
@@ -324,7 +298,7 @@ func UpdateDeviceAlias(db *sql.DB) gin.HandlerFunc {
 			DisplayName string `json:"display_name" binding:"required"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+			middleware.HandleError(c, model.NewBadRequest("Invalid request", err))
 			return
 		}
 		var curHostname sql.NullString
@@ -336,9 +310,10 @@ func UpdateDeviceAlias(db *sql.DB) gin.HandlerFunc {
 			ip, body.DisplayName, oldhn,
 		)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update alias"})
+			middleware.HandleError(c, model.NewInternal("Failed to update alias", err))
 			return
 		}
+		InvalidateAllCaches()
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
 }

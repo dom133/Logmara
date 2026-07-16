@@ -135,7 +135,7 @@ export default function LogsViewer() {
     }
   }, [filters, pagination.pageSize])
 
-  const handleTableChange = (pag: any) => {
+  const handleTableChange = (pag) => {
     setPagination(pag)
     loadLogs((pag.current - 1) * pag.pageSize)
   }
@@ -144,7 +144,7 @@ export default function LogsViewer() {
     setFilters(f => ({ ...f, search: value }))
   }
 
-  const handleDateRange = (dates: any) => {
+  const handleDateRange = (dates) => {
     setFilters(f => ({
       ...f,
       from: dates?.[0]?.toISOString() || '',
@@ -202,7 +202,7 @@ export default function LogsViewer() {
       width: 90,
       render: (v: string) => <SeverityTag severity={v} />,
       filters: severities.map(s => ({ text: s.toUpperCase(), value: s })),
-      onFilter: (v: any, record: LogEntry) => record.severity === String(v),
+      onFilter: (v, record: LogEntry) => record.severity === String(v),
     },
     {
       title: 'Device',

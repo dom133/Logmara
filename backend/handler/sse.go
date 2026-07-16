@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"syslog-gui/middleware"
 	"syslog-gui/model"
 
 	"github.com/gin-gonic/gin"
@@ -19,7 +20,7 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		flusher, ok := c.Writer.(http.Flusher)
 		if !ok {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Streaming not supported"})
+			middleware.HandleError(c, model.NewServiceUnavailable("Streaming not supported", nil))
 			return
 		}
 

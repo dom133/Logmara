@@ -9,20 +9,20 @@ import (
 type SeverityCounts map[string]int64
 
 type SyslogLog struct {
-	ID              int64             `json:"id"`
-	Timestamp       time.Time         `json:"timestamp"`
-	Hostname        string            `json:"hostname"`
-	FromHostIP      *string           `json:"fromhost_ip,omitempty"`
-	AppName         *string           `json:"app_name,omitempty"`
-	ProcessID       *string           `json:"process_id,omitempty"`
-	MsgID           *string           `json:"msg_id,omitempty"`
-	Severity        string            `json:"severity"`
-	Facility        *string           `json:"facility,omitempty"`
-	Message         string            `json:"message"`
-	RawMessage      *string           `json:"raw_message,omitempty"`
-	ParsedFields    map[string]string `json:"parsed_fields,omitempty"`
-	MatchedParsers  []string          `json:"matched_parsers,omitempty"`
-	CreatedAt       time.Time         `json:"created_at"`
+	ID             int64             `json:"id"`
+	Timestamp      time.Time         `json:"timestamp"`
+	Hostname       string            `json:"hostname"`
+	FromHostIP     *string           `json:"fromhost_ip,omitempty"`
+	AppName        *string           `json:"app_name,omitempty"`
+	ProcessID      *string           `json:"process_id,omitempty"`
+	MsgID          *string           `json:"msg_id,omitempty"`
+	Severity       string            `json:"severity"`
+	Facility       *string           `json:"facility,omitempty"`
+	Message        string            `json:"message"`
+	RawMessage     *string           `json:"raw_message,omitempty"`
+	ParsedFields   map[string]string `json:"parsed_fields,omitempty"`
+	MatchedParsers []string          `json:"matched_parsers,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
 }
 
 type IngestEntry struct {
@@ -43,29 +43,29 @@ type IngestEntry struct {
 // UnmarshalJSON handles both old format and RSYSLOG_EF-JSON
 func (e *IngestEntry) UnmarshalJSON(data []byte) error {
 	type RawEntry struct {
-		Timestamp        string `json:"timestamp"`
-		TimeReported     string `json:"timereported"`
-		Hostname         string `json:"hostname"`
-		FromHostIP       string `json:"fromhost-ip"`
+		Timestamp            string `json:"timestamp"`
+		TimeReported         string `json:"timereported"`
+		Hostname             string `json:"hostname"`
+		FromHostIP           string `json:"fromhost-ip"`
 		FromHostIPUnderscore string `json:"fromhost_ip"`
-		AppName          string `json:"app_name"`
-		ProgramName      string `json:"programname"`
-		ProcessID        string `json:"process_id"`
-		ProcID           string `json:"procid"`
-		Pid              string `json:"pid"`
-		MsgID            string `json:"msg_id"`
-		Severity         string `json:"severity"`
-		SeverityText     string `json:"severity_text"`
-		SyslogSevText    string `json:"syslogseverity-text"`
-		Facility         string `json:"facility"`
-		FacilityText     string `json:"facility_text"`
-		SyslogFacText    string `json:"syslogfacility-text"`
-		Message          string `json:"message"`
-		Msg              string `json:"msg"`
-		RawMessage       string `json:"raw_message"`
-		AtTimestamp      string `json:"@timestamp"`
-		Program          string `json:"program"`
-		SyslogTag        string `json:"syslog_tag"`
+		AppName              string `json:"app_name"`
+		ProgramName          string `json:"programname"`
+		ProcessID            string `json:"process_id"`
+		ProcID               string `json:"procid"`
+		Pid                  string `json:"pid"`
+		MsgID                string `json:"msg_id"`
+		Severity             string `json:"severity"`
+		SeverityText         string `json:"severity_text"`
+		SyslogSevText        string `json:"syslogseverity-text"`
+		Facility             string `json:"facility"`
+		FacilityText         string `json:"facility_text"`
+		SyslogFacText        string `json:"syslogfacility-text"`
+		Message              string `json:"message"`
+		Msg                  string `json:"msg"`
+		RawMessage           string `json:"raw_message"`
+		AtTimestamp          string `json:"@timestamp"`
+		Program              string `json:"program"`
+		SyslogTag            string `json:"syslog_tag"`
 	}
 
 	var raw RawEntry
@@ -144,13 +144,13 @@ type LogQueryParams struct {
 }
 
 type DashboardStats struct {
-	TotalLogs      int64             `json:"total_logs"`
-	LogsLastHour   int64             `json:"logs_last_hour"`
-	LogsLastDay    int64             `json:"logs_last_day"`
-	UniqueDevices  int64             `json:"unique_devices"`
-	SeverityCounts map[string]int64  `json:"severity_counts"`
-	TopDevices     []DeviceCount     `json:"top_devices"`
-	TopErrors      []ErrorMessage    `json:"top_errors"`
+	TotalLogs      int64            `json:"total_logs"`
+	LogsLastHour   int64            `json:"logs_last_hour"`
+	LogsLastDay    int64            `json:"logs_last_day"`
+	UniqueDevices  int64            `json:"unique_devices"`
+	SeverityCounts map[string]int64 `json:"severity_counts"`
+	TopDevices     []DeviceCount    `json:"top_devices"`
+	TopErrors      []ErrorMessage   `json:"top_errors"`
 }
 
 type DeviceCount struct {

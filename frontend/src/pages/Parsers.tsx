@@ -4,6 +4,7 @@ import { PlusOutlined, PlayCircleOutlined, ReloadOutlined, DeleteOutlined, EditO
 import { getParsers, createParser, updateParser, deleteParser, cloneParser, testParser, reparseUnparsed, getParsedFields, Parser, ParsedField } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import { useAuth } from '../services/auth'
+import { getErrorMessage } from '../utils/error'
 
 const { Title, Text } = Typography
 
@@ -53,19 +54,19 @@ export default function ParsersPage() {
     loadData()
   }, [])
 
-  const handleCreate = async (values: any) => {
+  const handleCreate = async (values: unknown) => {
     try {
       await createParser(values)
       message.success('Parser created')
       setModalOpen(false)
       form.resetFields()
       loadData()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to create parser')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to create parser'))
     }
   }
 
-  const handleUpdate = async (values: any) => {
+  const handleUpdate = async (values: unknown) => {
     if (!editing) return
     try {
       await updateParser(editing.id, values)
@@ -74,8 +75,8 @@ export default function ParsersPage() {
       setEditing(null)
       form.resetFields()
       loadData()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to update parser')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to update parser'))
     }
   }
 
@@ -84,8 +85,8 @@ export default function ParsersPage() {
       await deleteParser(id)
       message.success('Parser deleted')
       loadData()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to delete parser')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to delete parser'))
     }
   }
 
@@ -94,8 +95,8 @@ export default function ParsersPage() {
       await cloneParser(id)
       message.success('Parser cloned')
       loadData()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to clone parser')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to clone parser'))
     }
   }
 
@@ -108,9 +109,10 @@ export default function ParsersPage() {
     try {
       const res = await testParser(pattern, sampleLog)
       setTestResult(res)
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Test failed')
-      setTestResult({ matched: false, parser_name: null, fields: null, message: e.response?.data?.error || 'Error' })
+    } catch (e: unknown) {
+      const msg = getErrorMessage(e, 'Test failed')
+      message.error(msg)
+      setTestResult({ matched: false, parser_name: null, fields: null, message: msg })
     } finally {
       setTestLoading(false)
     }
@@ -120,8 +122,8 @@ export default function ParsersPage() {
     try {
       await reparseUnparsed()
       message.success('Reparse started in background')
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to start reparse')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to start reparse'))
     }
   }
 
@@ -169,7 +171,7 @@ export default function ParsersPage() {
     {
       title: 'Match',
       key: 'match',
-      render: (_: any, r: Parser) => `${r.match_type}: ${r.match_value || '-'}`,
+      render: (_v, r: Parser) => `${r.match_type}: ${r.match_value || '-'}`,
     },
     {
       title: 'Regex',
@@ -181,7 +183,7 @@ export default function ParsersPage() {
     {
       title: 'Fields',
       key: 'fields',
-      render: (_: any, r: Parser) => {
+      render: (_v, r: Parser) => {
         const fs = parserFields(r.id)
         return fs.length ? fs.map(f => <Tag key={f.field_name}>{f.field_label}</Tag>) : <Text type="secondary">-</Text>
       },
@@ -195,7 +197,7 @@ export default function ParsersPage() {
     {
       title: 'Actions',
       key: 'actions',
-      render: (_: any, r: Parser) => (
+      render: (_v, r: Parser) => (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {canEdit && <Tooltip title="Edit">
             <Button size="small" icon={<EditOutlined />} disabled={r.is_builtin} onClick={() => openEdit(r)} />

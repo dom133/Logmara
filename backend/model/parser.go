@@ -30,24 +30,24 @@ type ParsedField struct {
 }
 
 type Dashboard struct {
-	ID                 int64            `json:"id"`
-	Name               string           `json:"name"`
-	Description        *string          `json:"description,omitempty"`
-	OwnerID            int64            `json:"owner_id"`
-	OwnerUsername      string           `json:"owner_username"`
-	Pinned             bool             `json:"pinned"`
-	IsPublic           bool             `json:"is_public"`
-	Config             json.RawMessage  `json:"config"`
-	CreatedAt          time.Time        `json:"created_at"`
-	UpdatedAt          time.Time        `json:"updated_at"`
-	UpdatedByUserID    int64            `json:"updated_by_user_id"`
-	UpdatedByUsername  string           `json:"updated_by_username"`
+	ID                int64           `json:"id"`
+	Name              string          `json:"name"`
+	Description       *string         `json:"description,omitempty"`
+	OwnerID           int64           `json:"owner_id"`
+	OwnerUsername     string          `json:"owner_username"`
+	Pinned            bool            `json:"pinned"`
+	IsPublic          bool            `json:"is_public"`
+	Config            json.RawMessage `json:"config"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+	UpdatedByUserID   int64           `json:"updated_by_user_id"`
+	UpdatedByUsername string          `json:"updated_by_username"`
 }
 
 type DashboardConfig struct {
-	Devices []string          `json:"devices"`
-	Fields  []string          `json:"fields"`
-	Filters DashboardFilters  `json:"filters"`
+	Devices []string         `json:"devices"`
+	Fields  []string         `json:"fields"`
+	Filters DashboardFilters `json:"filters"`
 }
 
 type DashboardFilters struct {
@@ -65,8 +65,8 @@ type DashboardDataResponse struct {
 }
 
 type ParserTestRequest struct {
-	Pattern    string `json:"pattern"`
-	SampleLog  string `json:"sample_log"`
+	Pattern   string `json:"pattern"`
+	SampleLog string `json:"sample_log"`
 }
 
 type ParserTestResponse struct {

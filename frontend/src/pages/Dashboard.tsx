@@ -109,15 +109,15 @@ export default function Dashboard() {
   }
 
   const topDevicesColumns = [
-    { title: 'Device', dataIndex: 'hostname', key: 'hostname', width: 160, render: (v: string, record: any) => (
+    { title: 'Device', dataIndex: 'hostname', key: 'hostname', width: 160, render: (v: string, record: DeviceStats) => (
       <a onClick={() => window.location.href = `/logs?fromhost_ip=${encodeURIComponent(record.fromhost_ip)}`}><Tag color="blue">{resolveHostname(v, record.fromhost_ip)}</Tag></a>
     )},
-    { title: 'Logs', dataIndex: 'count', key: 'count', width: 100, sorter: (a: any, b: any) => a.count - b.count },
+    { title: 'Logs', dataIndex: 'count', key: 'count', width: 100, sorter: (a: DeviceStats, b: DeviceStats) => a.count - b.count },
   ]
 
   const topErrorsColumns = [
     { title: 'Message', dataIndex: 'message', key: 'message', width: 140, ellipsis: true },
-    { title: 'Source', dataIndex: 'hostname', key: 'hostname', width: 120, render: (v: string, record: any) => (
+    { title: 'Source', dataIndex: 'hostname', key: 'hostname', width: 120, render: (v: string, record: { hostname: string; fromhost_ip?: string; count: number }) => (
       <a onClick={() => window.location.href = `/logs?fromhost_ip=${encodeURIComponent(record.fromhost_ip)}`}><Tag color="blue">{resolveHostname(v, record.fromhost_ip)}</Tag></a>
     )},
     { title: 'Count', dataIndex: 'count', key: 'count', width: 70 },

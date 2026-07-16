@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Layout, Card, Form, Input, Button, message, Typography, Steps, Space, Divider, Switch, Checkbox } from 'antd'
 import { UploadOutlined } from '@ant-design/icons'
 import { generateKeys, initialize, getDbConfig, InitRequest } from '../services/api'
+import { getErrorMessage } from '../utils/error'
 
 const { Title, Text } = Typography
 const { Step } = Steps
@@ -115,8 +116,8 @@ export default function SetupWizard() {
       await initialize(data)
       message.success('Application initialized! Redirecting...')
       setTimeout(() => { window.location.href = '/login' }, 1000)
-    } catch (e: any) {
-      message.error(e?.response?.data?.error || 'Initialization failed')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Initialization failed'))
       setLoading(false)
     }
   }

@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"syslog-gui/middleware"
+	"syslog-gui/model"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -22,10 +25,10 @@ func ExportCSV(db *sql.DB) gin.HandlerFunc {
 		limitStr := c.DefaultQuery("limit", "100000")
 		limit, err := strconv.Atoi(limitStr)
 		if err != nil || limit <= 0 {
-			limit = 100000
+			limit = DefaultExportLimit
 		}
-		if limit > 100000 {
-			limit = 100000
+		if limit > MaxExportLimit {
+			limit = MaxExportLimit
 		}
 
 		whereClauses := []string{}
@@ -68,7 +71,7 @@ func ExportCSV(db *sql.DB) gin.HandlerFunc {
 			append(args, limit)...,
 		)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Query failed"})
+			middleware.HandleError(c, model.NewInternal("Query failed", err))
 			return
 		}
 		defer rows.Close()
@@ -143,7 +146,7 @@ func ExportHTML(db *sql.DB) gin.HandlerFunc {
 			args...,
 		)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Query failed"})
+			middleware.HandleError(c, model.NewInternal("Query failed", err))
 			return
 		}
 		defer rows.Close()

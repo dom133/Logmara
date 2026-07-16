@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,7 +25,7 @@ const (
 )
 
 func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.IngestionController) {
-	log.Printf("File tailer started, watching: %s", filePath)
+	slog.Info("file tailer started", "path", filePath)
 	batchSize := 500
 	batchInterval := 2 * time.Second
 
@@ -39,7 +39,7 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 	for {
 		f, err := os.OpenFile(filePath, os.O_RDWR, 0644)
 		if err != nil {
-			log.Printf("Tailer: waiting for file %s: %v", filePath, err)
+			slog.Error("waiting for file", "path", filePath, "error", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -54,13 +54,13 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 		fileSize := stat.Size()
 		if filePos > fileSize {
 			filePos = 0
-			log.Println("Tailer: file rotated, resetting position")
+			slog.Info("file rotated, resetting position")
 		}
 
 		// Periodic compaction: remove data already flushed to DB
 		if (time.Since(lastCompaction) > compactionInterval || fileSize > maxFileSize) && fileSize > flushedPos*2 {
 			if err := compactFile(f, flushedPos, filePath); err != nil {
-				log.Printf("Tailer: compaction error: %v", err)
+				slog.Error("compaction error", "error", err)
 			} else {
 				filePos = 0
 				flushedPos = 0
@@ -97,7 +97,7 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 
 			var entry model.IngestEntry
 			if err := json.Unmarshal([]byte(line), &entry); err != nil {
-				log.Printf("Tailer: invalid JSON: %v, line: %.200s", err, line)
+				slog.Error("invalid JSON", "error", err)
 				entry = model.IngestEntry{
 					Timestamp: time.Now().Format(time.RFC3339),
 					Hostname:  "unknown",
@@ -126,7 +126,7 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 			if len(entries) >= batchSize || now.Sub(lastFlush) >= batchInterval {
 				if !ic.IsPaused() {
 					if err := flushBatch(db, entries); err != nil {
-						log.Printf("Tailer: flush error: %v", err)
+						slog.Error("flush error", "error", err)
 					} else {
 						flushedPos = batchStartPos
 						savePosition(posFile, flushedPos)
@@ -148,7 +148,7 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 
 		if len(entries) > 0 && !ic.IsPaused() {
 			if err := flushBatch(db, entries); err != nil {
-				log.Printf("Tailer: flush error: %v", err)
+				slog.Error("flush error", "error", err)
 			} else {
 				flushedPos = batchStartPos
 				savePosition(posFile, flushedPos)
@@ -168,7 +168,7 @@ func compactFile(f *os.File, flushedPos int64, filePath string) error {
 	fileSize := stat.Size()
 
 	if flushedPos >= fileSize {
-		log.Printf("Tailer: nothing to compact (flushedPos=%d, fileSize=%d)", flushedPos, fileSize)
+		slog.Info("nothing to compact", "flushedPos", flushedPos, "fileSize", fileSize)
 		return nil
 	}
 
@@ -181,8 +181,7 @@ func compactFile(f *os.File, flushedPos int64, filePath string) error {
 		return fmt.Errorf("read remaining: %w", err)
 	}
 
-	log.Printf("Tailer: compacting %s: %d -> %d bytes (%d bytes flushed)",
-		filePath, fileSize, len(remaining), flushedPos)
+	slog.Info("compacting file", "path", filePath, "fileSize", fileSize, "remaining", len(remaining), "flushedPos", flushedPos)
 
 	// Truncate to 0
 	if err := f.Truncate(0); err != nil {
@@ -200,7 +199,7 @@ func compactFile(f *os.File, flushedPos int64, filePath string) error {
 		return fmt.Errorf("sync: %w", err)
 	}
 
-	log.Printf("Tailer: compaction done, %d bytes remaining", len(remaining))
+	slog.Info("compaction done", "remaining", len(remaining))
 	return nil
 }
 
@@ -244,7 +243,7 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 		_, err = stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
 			entry.Severity, facility, entry.Message, rawMsg, parsedFields, pq.StringArray(entry.MatchedParsers))
 		if err != nil {
-			log.Printf("Tailer: insert error: %v", err)
+			slog.Error("insert error", "error", err)
 			continue
 		}
 		ingested++
@@ -255,7 +254,7 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 	}
 
 	if ingested > 0 {
-		log.Printf("Tailer: flushed %d logs", ingested)
+		slog.Info("flushed logs", "count", ingested)
 	}
 
 	return nil
@@ -291,7 +290,7 @@ func nullStr(s string) *string {
 
 func savePosition(path string, pos int64) {
 	if err := os.WriteFile(path, []byte(strconv.FormatInt(pos, 10)), 0644); err != nil {
-		log.Printf("Tailer: save position error: %v", err)
+		slog.Error("save position error", "error", err)
 	}
 }
 
@@ -313,26 +312,26 @@ func loadStartPosition(db *sql.DB, filePath, posFile string) (filePos, flushedPo
 			stat, _ := f.Stat()
 			f.Close()
 			if pos <= stat.Size() {
-				log.Printf("Tailer: restored position from file: %d", pos)
+				slog.Info("restored position from file", "pos", pos)
 				return pos, pos
 			}
 		}
-		log.Println("Tailer: saved position invalid, falling back to DB")
+		slog.Info("saved position invalid, falling back to DB")
 	}
 
 	var lastTs *time.Time
 	if err := db.QueryRow("SELECT max(timestamp) FROM syslog_logs").Scan(&lastTs); err != nil {
-		log.Printf("Tailer: DB fallback query error: %v", err)
+		slog.Error("db fallback query error", "error", err)
 		return 0, 0
 	}
 	if lastTs == nil {
-		log.Println("Tailer: DB empty, starting from beginning")
+		slog.Info("db empty, starting from beginning")
 		return 0, 0
 	}
 
 	f, err := os.Open(filePath)
 	if err != nil {
-		log.Printf("Tailer: cannot open file for DB fallback: %v", err)
+		slog.Error("cannot open file for db fallback", "error", err)
 		return 0, 0
 	}
 	defer f.Close()
@@ -362,6 +361,6 @@ func loadStartPosition(db *sql.DB, filePath, posFile string) (filePos, flushedPo
 		pos += lineLen
 	}
 
-	log.Printf("Tailer: restored position from DB (lastTs=%s, pos=%d)", lastTs.Format(time.RFC3339), pos)
+	slog.Info("restored position from DB", "lastTs", lastTs.Format(time.RFC3339), "pos", pos)
 	return pos, pos
 }

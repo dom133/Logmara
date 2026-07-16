@@ -4,6 +4,7 @@ import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOut
 import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, User, DeviceStats } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
+import { getErrorMessage } from '../utils/error'
 
 const { Option } = Select
 
@@ -47,7 +48,7 @@ export default function Admin() {
     try {
       const data = await getUsers()
       setUsers(data)
-    } catch (e: any) {
+    } catch {
       message.error('Failed to load users')
     }
     setLoading(false)
@@ -57,7 +58,7 @@ export default function Admin() {
     try {
       const data = await getSettings()
       setSettings(data)
-      const formValues: Record<string, any> = { ...data }
+      const formValues: Record<string, unknown> = { ...data }
       formValues['ldap_enabled'] = data['ldap_enabled'] === 'true'
       formValues['ldap_use_tls'] = data['ldap_use_tls'] === 'true'
       formValues['ldap_verify_cert'] = data['ldap_verify_cert'] === 'true'
@@ -68,7 +69,7 @@ export default function Admin() {
       settingsForm.setFieldsValue(formValues)
       setLdapEnabled(data['ldap_enabled'] === 'true')
       setLdapAutoProvision(data['ldap_auto_provision'] === 'true')
-    } catch (e: any) {
+    } catch {
       message.error('Failed to load settings')
     }
   }
@@ -93,8 +94,8 @@ export default function Admin() {
         bind_password: values.ldap_bind_password,
       })
       message.success('LDAP connection successful')
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'LDAP connection failed')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'LDAP connection failed'))
     } finally {
       setTesting(false)
     }
@@ -105,7 +106,7 @@ export default function Admin() {
     try {
       const data = await getDeviceStats()
       setDevices(data)
-    } catch (e: any) {
+    } catch {
       message.error('Failed to load devices')
     } finally {
       setDevicesLoading(false)
@@ -120,7 +121,7 @@ export default function Admin() {
       message.success('Device alias updated')
       setEditDevice(null)
       loadDevices()
-    } catch (e: any) {
+    } catch {
       message.error('Failed to update alias')
     }
   }
@@ -131,7 +132,7 @@ export default function Admin() {
     loadDevices()
   }, [])
 
-  const handleCreate = async () => {
+const handleCreate = async () => {
     const values = await form.validateFields()
     if (settings['ldap_auto_provision'] === 'true') {
       values.auth_type = 'local'
@@ -142,8 +143,8 @@ export default function Admin() {
       setModalVisible(false)
       form.resetFields()
       loadUsers()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to create user')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to create user'))
     }
   }
 
@@ -152,7 +153,7 @@ export default function Admin() {
     editForm.setFieldsValue({ role: user.role, is_active: user.is_active })
   }
 
-  const handleEditSave = async () => {
+const handleEditSave = async () => {
     if (!editUser) return
     const values = await editForm.validateFields()
     try {
@@ -160,22 +161,22 @@ export default function Admin() {
       message.success('User updated')
       setEditUser(null)
       loadUsers()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to update user')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to update user'))
     }
   }
 
-  const handleDelete = async (id: number) => {
+const handleDelete = async (id: number) => {
     try {
       await deleteUser(id)
       message.success('User deleted')
       loadUsers()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to delete user')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to delete user'))
     }
   }
 
-  const handleResetPassword = async (user: User) => {
+const handleResetPassword = async (user: User) => {
     const password = prompt(`Enter new password for ${user.username}:`)
     if (!password || password.length < 4) {
       if (password !== null) message.error('Password must be at least 4 characters')
@@ -184,12 +185,12 @@ export default function Admin() {
     try {
       await resetPassword(user.id, password)
       message.success('Password reset')
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to reset password')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to reset password'))
     }
   }
 
-  const handleSaveSettings = async () => {
+const handleSaveSettings = async () => {
     const values = settingsForm.getFieldsValue()
     const strValues: Record<string, string> = {}
     for (const [k, v] of Object.entries(values)) {
@@ -199,8 +200,8 @@ export default function Admin() {
       await updateSettings(strValues)
       message.success('Settings saved')
       loadSettings()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to save settings')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to save settings'))
     }
   }
 
@@ -209,12 +210,12 @@ export default function Admin() {
     return v === true || v === 'true' || v === 1
   }
 
-  const handleCleanup = async () => {
+const handleCleanup = async () => {
     try {
       const result = await cleanupLogs()
       message.success(`${result.deleted_count} old logs deleted`)
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Cleanup failed')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Cleanup failed'))
     }
   }
 
@@ -224,8 +225,8 @@ export default function Admin() {
       const result = await purgeAllLogs(pauseDuringPurge)
       message.success(result.message || 'All logs purged')
       setPurgeModalOpen(false)
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Purge failed')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Purge failed'))
     } finally {
       setPurging(false)
     }
@@ -279,7 +280,7 @@ export default function Admin() {
     {
       title: 'Actions',
       key: 'actions',
-      render: (_: any, record: User) => (
+      render: (_v, record: User) => (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <Button size="small" onClick={() => handleEdit(record)} icon={<EditOutlined />} />
           {record.auth_type !== 'ldap' && <Button size="small" onClick={() => handleResetPassword(record)} icon={<KeyOutlined />} />}
@@ -583,7 +584,7 @@ export default function Admin() {
                     {
                       title: 'Actions',
                       key: 'actions',
-                      render: (_: any, record: DeviceStats) => (
+                      render: (_v, record: DeviceStats) => (
                         <Button
                           type="link"
                           icon={<EditOutlined />}

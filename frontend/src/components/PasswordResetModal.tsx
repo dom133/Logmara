@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Modal, Form, Input, Button, message } from 'antd';
 import { api } from '../services/api';
+import { getErrorMessage } from '../utils/error';
 
 interface PasswordResetModalProps {
   open: boolean;
@@ -30,8 +31,8 @@ const PasswordResetModal: React.FC<PasswordResetModalProps> = ({ open, username,
       form.resetFields();
       onReset();
       onClose();
-    } catch (err: any) {
-      message.error(err.response?.data?.message || 'Failed to reset password');
+    } catch (err: unknown) {
+      message.error(getErrorMessage(err, 'Failed to reset password'));
     } finally {
       setConfirming(false);
     }

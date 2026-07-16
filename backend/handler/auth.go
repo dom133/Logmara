@@ -2,7 +2,7 @@ package handler
 
 import (
 	"database/sql"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -16,23 +16,23 @@ import (
 )
 
 type LoginRequest struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"`
+	Username string `json:"username" binding:"required,max=100"`
+	Password string `json:"password" binding:"required,max=128"`
 }
 
 type LoginResponse struct {
-	Token        string `json:"token"`
-	RefreshToken string `json:"refresh_token"`
+	Token        string  `json:"token"`
+	RefreshToken string  `json:"refresh_token"`
 	User         db.User `json:"user"`
 }
 
 type RefreshRequest struct {
-	RefreshToken string `json:"refresh_token" binding:"required"`
+	RefreshToken string `json:"refresh_token" binding:"required,max=512"`
 }
 
 type ChangePasswordRequest struct {
-	CurrentPassword string `json:"current_password" binding:"required"`
-	NewPassword     string `json:"new_password" binding:"required,min=8"`
+	CurrentPassword string `json:"current_password" binding:"required,max=128"`
+	NewPassword     string `json:"new_password" binding:"required,min=8,max=128"`
 }
 
 func Login(database *sql.DB) gin.HandlerFunc {
@@ -63,7 +63,7 @@ func Login(database *sql.DB) gin.HandlerFunc {
 			if ldapCfg.Enabled {
 				attrs, err := ldap.Authenticate(ldapCfg, req.Username, req.Password)
 				if err != nil {
-					log.Printf("LDAP auth error: %v", err)
+					slog.Error("ldap auth error", "error", err)
 				} else if attrs != nil {
 					email := attrs["email"]
 					username := attrs["username"]
@@ -74,9 +74,9 @@ func Login(database *sql.DB) gin.HandlerFunc {
 					existing, err := db.GetUserByUsername(database, username)
 					if err != nil {
 						if ldapCfg.AutoProvision {
-							u, err := db.CreateLDAPUser(database, username, email, ldapCfg.DefaultRole, ldapCfg.DefaultRole == "admin")
+							u, err := db.CreateLDAPUser(database, username, email, ldapCfg.DefaultRole, ldapCfg.DefaultRole == RoleAdmin)
 							if err != nil {
-								log.Printf("LDAP auto-provision failed: %v", err)
+								slog.Error("ldap auto-provision failed", "error", err)
 								logAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "auto-provision failed")
 								c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 								return
@@ -111,7 +111,7 @@ func Login(database *sql.DB) gin.HandlerFunc {
 
 		refreshToken, expiresAt := auth.GenerateRefreshToken(int(user.ID))
 		if err := insertRefreshToken(database, int(user.ID), refreshToken, expiresAt); err != nil {
-			log.Printf("Failed to store refresh token: %v", err)
+			slog.Error("failed to store refresh token", "error", err)
 		}
 
 		logAudit(database, user.ID, user.Username, "login_success", c.ClientIP(), "")
@@ -167,7 +167,7 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 
 		newRefreshToken, newExpiresAt := auth.GenerateRefreshToken(userID)
 		if err := insertRefreshToken(database, userID, newRefreshToken, newExpiresAt); err != nil {
-			log.Printf("Failed to store refresh token: %v", err)
+			slog.Error("failed to store refresh token", "error", err)
 		}
 
 		c.JSON(http.StatusOK, gin.H{
@@ -225,6 +225,11 @@ func ChangePassword(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		if err := auth.ValidatePassword(req.NewPassword); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
 		var storedHash string
 		err := database.QueryRow("SELECT password_hash FROM users WHERE username = $1", username).Scan(&storedHash)
 		if err != nil {
@@ -273,6 +278,6 @@ func logAudit(db *sql.DB, userID int64, username, action, ip, details string) {
 		userID, username, action, ip, details,
 	)
 	if err != nil {
-		log.Printf("Audit log error: %v", err)
+		slog.Error("audit log error", "error", err)
 	}
 }

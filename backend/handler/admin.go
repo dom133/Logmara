@@ -3,7 +3,7 @@ package handler
 import (
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -18,11 +18,11 @@ import (
 )
 
 type CreateUserRequest struct {
-	Username  string `json:"username" binding:"required"`
-	Email     string `json:"email" binding:"required,email"`
-	Password  string `json:"password"`
-	Role      string `json:"role" binding:"required"`
-	AuthType  string `json:"auth_type"`
+	Username string `json:"username" binding:"required,max=100"`
+	Email    string `json:"email" binding:"required,email,max=256"`
+	Password string `json:"password" binding:"max=128"`
+	Role     string `json:"role" binding:"required"`
+	AuthType string `json:"auth_type"`
 }
 
 type UpdateUserRequest struct {
@@ -31,7 +31,7 @@ type UpdateUserRequest struct {
 }
 
 type ResetPasswordRequest struct {
-	Password string `json:"password" binding:"required,min=8"`
+	Password string `json:"password" binding:"required,min=8,max=128"`
 }
 
 func ListUsers(database *sql.DB) gin.HandlerFunc {
@@ -53,7 +53,7 @@ func CreateUser(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		validRoles := []string{"admin", "editor", "viewer"}
+		validRoles := []string{RoleAdmin, RoleEditor, RoleViewer}
 		found := false
 		for _, r := range validRoles {
 			if req.Role == r {
@@ -72,7 +72,7 @@ func CreateUser(database *sql.DB) gin.HandlerFunc {
 		}
 
 		if authType == "ldap" {
-			isAdmin := req.Role == "admin"
+			isAdmin := req.Role == RoleAdmin
 			user, err := db.CreateLDAPUser(database, req.Username, req.Email, req.Role, isAdmin)
 			if err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -86,6 +86,10 @@ func CreateUser(database *sql.DB) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Password is required and must be at least 8 characters"})
 			return
 		}
+		if err := auth.ValidatePassword(req.Password); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 
 		hash, err := auth.HashPassword(req.Password)
 		if err != nil {
@@ -93,7 +97,7 @@ func CreateUser(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		isAdmin := req.Role == "admin"
+		isAdmin := req.Role == RoleAdmin
 		user, err := db.CreateUser(database, req.Username, hash, req.Email, isAdmin, req.Role)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -106,7 +110,7 @@ func CreateUser(database *sql.DB) gin.HandlerFunc {
 
 func UpdateUser(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
 			return
@@ -119,7 +123,7 @@ func UpdateUser(database *sql.DB) gin.HandlerFunc {
 		}
 
 		if req.Role != nil {
-			validRoles := []string{"admin", "editor", "viewer"}
+			validRoles := []string{RoleAdmin, RoleEditor, RoleViewer}
 			found := false
 			for _, r := range validRoles {
 				if *req.Role == r {
@@ -145,7 +149,7 @@ func UpdateUser(database *sql.DB) gin.HandlerFunc {
 
 func DeleteUser(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
 			return
@@ -162,19 +166,23 @@ func DeleteUser(database *sql.DB) gin.HandlerFunc {
 
 func ResetPassword(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
 			return
 		}
 
 		var req ResetPasswordRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
+if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := auth.ValidatePassword(req.Password); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
-		var authType string
+	var authType string
 		if err := database.QueryRow("SELECT auth_type FROM users WHERE id = $1", id).Scan(&authType); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "User not found"})
 			return
@@ -274,7 +282,7 @@ func PurgeAllLogs(database *sql.DB, ic *control.IngestionController) gin.Handler
 		row := database.QueryRow("SELECT COUNT(*) FROM syslog_logs")
 		var count int
 		row.Scan(&count)
-		log.Printf("PurgeAll: %d logs in database before truncate", count)
+		slog.Info("purge started", "count", count)
 
 		_, err := database.Exec("TRUNCATE TABLE syslog_logs")
 		if err != nil {
@@ -284,21 +292,22 @@ func PurgeAllLogs(database *sql.DB, ic *control.IngestionController) gin.Handler
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		log.Printf("PurgeAll: database truncated (%d logs deleted)", count)
+		InvalidateAllCaches()
+		slog.Info("database truncated", "count", count)
 
 		logFilePath := os.Getenv("LOG_FILE_PATH")
 		if logFilePath == "" {
 			logFilePath = "/data/logs.jsonl"
 		}
 		if err := os.Truncate(logFilePath, 0); err != nil {
-			log.Printf("PurgeAll: failed to truncate log file %s: %v", logFilePath, err)
+			slog.Error("failed to truncate log file", "path", logFilePath, "error", err)
 		} else {
-			log.Printf("PurgeAll: log file %s truncated", logFilePath)
+			slog.Info("log file truncated", "path", logFilePath)
 		}
 
 		if req.PauseDuringPurge && !wasPaused {
 			ic.Resume()
-			log.Printf("PurgeAll: ingestion resumed")
+			slog.Info("ingestion resumed")
 		}
 
 		c.JSON(http.StatusOK, gin.H{
@@ -309,12 +318,12 @@ func PurgeAllLogs(database *sql.DB, ic *control.IngestionController) gin.Handler
 }
 
 type TestLDAPRequest struct {
-	Server       string `json:"server"`
+	Server       string `json:"server" binding:"max=256"`
 	Port         int    `json:"port"`
 	UseTLS       bool   `json:"use_tls"`
-	BaseDN       string `json:"base_dn"`
-	BindDN       string `json:"bind_dn"`
-	BindPassword string `json:"bind_password"`
+	BaseDN       string `json:"base_dn" binding:"max=512"`
+	BindDN       string `json:"bind_dn" binding:"max=512"`
+	BindPassword string `json:"bind_password" binding:"max=256"`
 }
 
 func TestLDAP(database *sql.DB) gin.HandlerFunc {
@@ -341,7 +350,7 @@ func TestLDAP(database *sql.DB) gin.HandlerFunc {
 
 func GetAuditLog(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		limit := 100
+		limit := DefaultAdminLimit
 		if l := c.Query("limit"); l != "" {
 			if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 1000 {
 				limit = n

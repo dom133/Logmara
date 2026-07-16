@@ -170,8 +170,8 @@ export default function DashboardViewPage() {
   const fields = dashboard?.config?.fields || []
   const dashDevices = dashboard?.config?.devices || []
 
-  const buildCustomColumns = (): any[] => {
-    const cols: any[] = []
+  const buildCustomColumns = () => {
+    const cols = []
     if (fields.length > 0) {
       for (const field of fields) {
         cols.push({
@@ -179,7 +179,7 @@ export default function DashboardViewPage() {
           key: `pf_${field}`,
           width: 120,
           ellipsis: true,
-          render: (_: any, r: LogEntry) => {
+          render: (_v, r: LogEntry) => {
             const val = r.parsed_fields?.[field]
             return val ? <Tag color="geekblue" style={{ maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis' }}>{val}</Tag> : <Tag>-</Tag>
           },
@@ -189,7 +189,7 @@ export default function DashboardViewPage() {
     return cols
   }
 
-  const columns: any[] = [
+  const columns = [
     {
       title: 'Time',
       dataIndex: 'timestamp',
@@ -206,7 +206,7 @@ export default function DashboardViewPage() {
       width: 150,
       render: (v: string, r: LogEntry) => <Tag color="blue">{resolveHostname(v, r.fromhost_ip)}</Tag>,
       filters: Array.from(new Set(logs.map(l => l.hostname))).map(h => ({ text: h, value: h })),
-      onFilter: (v: any, record: LogEntry) => record.hostname === String(v),
+      onFilter: (v, record: LogEntry) => record.hostname === String(v),
     },
     {
       title: 'Severity',
@@ -215,7 +215,7 @@ export default function DashboardViewPage() {
       width: 100,
       render: (v: string) => <SeverityTag severity={v} />,
       filters: severities.map(s => ({ text: (SEVERITY_LABELS[s] || s).toUpperCase(), value: s })),
-      onFilter: (v: any, record: LogEntry) => record.severity === String(v),
+      onFilter: (v, record: LogEntry) => record.severity === String(v),
     },
     {
       title: 'App',
