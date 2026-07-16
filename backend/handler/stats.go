@@ -232,13 +232,17 @@ func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
 			field = "hour"
 		}
 
-		if from == "" {
-			from = "now() - interval '24 hours'"
-		}
+		var query string
+		args := []interface{}{field}
+		argIdx := 2
 
-		query := "SELECT date_trunc($1, timestamp) as ts, COUNT(*) FROM syslog_logs WHERE timestamp >= $2"
-		args := []interface{}{field, from}
-		argIdx := 3
+		if from == "" {
+			query = "SELECT date_trunc($1, timestamp) as ts, COUNT(*) FROM syslog_logs WHERE timestamp >= now() - interval '24 hours'"
+		} else {
+			query = fmt.Sprintf("SELECT date_trunc($1, timestamp) as ts, COUNT(*) FROM syslog_logs WHERE timestamp >= $%d", argIdx)
+			args = append(args, from)
+			argIdx++
+		}
 
 		if to != "" {
 			query += fmt.Sprintf(" AND timestamp <= $%d", argIdx)
