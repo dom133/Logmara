@@ -431,6 +431,7 @@ export default function DashboardViewPage() {
       >
         {detailLog && (() => {
           const detail = renderDetailContent()
+          if (!detail) return null
           return (
             <>
               <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered>
