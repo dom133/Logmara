@@ -27,7 +27,7 @@ func GzipCompress() gin.HandlerFunc {
 		w := &gzipResponseWriter{
 			ResponseWriter: c.Writer,
 		}
-		w.gz = gzip.NewWriter(w)
+		w.gz = gzip.NewWriter(w.ResponseWriter)
 		w.Header().Set("Content-Encoding", "gzip")
 		w.Header().Del("Content-Length")
 
