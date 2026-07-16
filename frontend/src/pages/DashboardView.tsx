@@ -252,7 +252,7 @@ export default function DashboardViewPage() {
 
   const renderDetailContent = () => {
     if (!detailLog) return null
-    const items: { label: string; content: React.ReactNode; span?: number }[] = [
+    const items: { label: string; content: React.ReactNode }[] = [
       { label: 'Timestamp', content: new Date(detailLog.timestamp).toLocaleString() },
       { label: 'Hostname', content: <Tag color="blue">{resolveHostname(detailLog.hostname, detailLog.fromhost_ip)}</Tag> },
       { label: 'Source IP', content: detailLog.fromhost_ip ? <Tag color="green">{detailLog.fromhost_ip}</Tag> : '-' },
@@ -265,7 +265,7 @@ export default function DashboardViewPage() {
     if (fields.length > 0) {
       for (const field of fields) {
         const val = detailLog.parsed_fields?.[field]
-        items.push({ label: field, content: val ? <Tag color="geekblue">{val}</Tag> : '-', span: 1 })
+        items.push({ label: field, content: val ? <Tag color="geekblue">{val}</Tag> : '-' })
       }
     }
 
@@ -276,23 +276,10 @@ export default function DashboardViewPage() {
         : 'None',
     })
 
-    items.push({
-      label: 'Full Message',
-      content: (
-        <pre style={{
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          fontFamily: 'Consolas, Monaco, monospace',
-          fontSize: 12,
-          lineHeight: 1.4,
-          margin: 0,
-        }}>
-          {detailLog.raw_message || detailLog.message}
-        </pre>
-      ),
-    })
-
-    return items
+    return {
+      metadata: items,
+      message: detailLog.raw_message || detailLog.message,
+    }
   }
 
   if (loading) {
@@ -442,15 +429,38 @@ export default function DashboardViewPage() {
         ]}
         width={{ sm: '90%', md: 720 }}
       >
-        {detailLog && (
-          <Descriptions column={{ xs: 1, sm: 2, lg: 4 }} size="small" bordered>
-            {(renderDetailContent() ?? []).map((item, i) => (
-              <Descriptions.Item key={i} label={item.label} span={item.label === 'Full Message' ? 4 : 1}>
-                {item.content}
-              </Descriptions.Item>
-            ))}
-          </Descriptions>
-        )}
+        {detailLog && (() => {
+          const detail = renderDetailContent()
+          return (
+            <>
+              <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered>
+                {detail.metadata.map((item, i) => (
+                  <Descriptions.Item key={i} label={item.label}>
+                    {item.content}
+                  </Descriptions.Item>
+                ))}
+              </Descriptions>
+              <div style={{ marginTop: 16 }}>
+                <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>Full Message</Typography.Text>
+                <pre style={{
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontFamily: 'Consolas, Monaco, monospace',
+                  fontSize: 12,
+                  lineHeight: 1.4,
+                  margin: 0,
+                  padding: 12,
+                  background: '#fafafa',
+                  borderRadius: 4,
+                  maxHeight: 300,
+                  overflow: 'auto',
+                }}>
+                  {detail.message}
+                </pre>
+              </div>
+            </>
+          )
+        })()}
       </Modal>
     </>
   )
