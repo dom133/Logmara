@@ -3,6 +3,7 @@
 *.md
 .env
 .env.local
+.env.production
 node_modules
 dist
 *.sum
@@ -24,3 +25,7 @@ Thumbs.db
 .dockerignore
 Dockerfile*
 docker-compose*.yml
+*.exe
+*.test
+*.test.exe
+*.exe.coverage

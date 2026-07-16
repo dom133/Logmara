@@ -1,77 +1,131 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: syslog_db
-      POSTGRES_USER: syslog
-      POSTGRES_PASSWORD: syslogpass
+      POSTGRES_DB: ${POSTGRES_DB:-syslog_db}
+      POSTGRES_USER: ${POSTGRES_USER:-syslog}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-syslogpass}
     volumes:
       - pg_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U syslog -d syslog_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-syslog} -d ${POSTGRES_DB:-syslog_db}"]
       interval: 5s
       timeout: 3s
       retries: 10
     restart: unless-stopped
     networks:
       - syslog_net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+      pids_limit: 100
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   rsyslog:
     build:
       context: .
       dockerfile: Dockerfile.rsyslog
     environment:
-      - TZ=Europe/Warsaw
+      - TZ=${TZ:-Europe/Warsaw}
     volumes:
       - log_data:/data
       - log_spool:/spool
     ports:
-      - "514:514"
-      - "514:514/udp"
+      - "${RSYSLOG_PORT:-514}:514"
+      - "${RSYSLOG_PORT:-514}:514/udp"
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - syslog_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+      pids_limit: 50
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   api:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        JWT_SECRET: ${JWT_SECRET:-change-this-to-a-random-secret-key}
     environment:
-      DATABASE_URL: postgres://syslog:syslogpass@postgres:5432/syslog_db?sslmode=disable
-      JWT_SECRET: change-this-to-a-random-secret-key
-      ADMIN_USERNAME: admin
-      ADMIN_PASSWORD: admin123
+      DATABASE_URL: postgres://${POSTGRES_USER:-syslog}:${POSTGRES_PASSWORD:-syslogpass}@postgres:5432/${POSTGRES_DB:-syslog_db}?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:-change-this-to-a-random-secret-key}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
       PORT: "8080"
       LOG_FILE_PATH: /data/logs.jsonl
     volumes:
       - log_data:/data
     ports:
-      - "8080:8080"
+      - "${API_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
     networks:
       - syslog_net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+      pids_limit: 100
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
     ports:
-      - "80:80"
+      - "${FRONTEND_PORT:-80}:80"
     depends_on:
       - api
     restart: unless-stopped
     networks:
       - syslog_net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+      pids_limit: 50
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   pg_data:

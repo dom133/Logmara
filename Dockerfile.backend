@@ -1,18 +1,19 @@
 FROM golang:1.24-bookworm AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
-RUN git config --global http.sslVerify false
 COPY backend/ .
-ENV GOPROXY=direct GOSUMDB=off GOINSECURE=* GONOSUMCHECK=* GONOSUMDB=* GIT_SSL_NO_VERIFY=true GIT_HTTP_SSL_NO_VERIFY=true CURL_CA_BUNDLE="" GIT_SSL_CAINFO=""
 RUN go mod download
+ARG JWT_SECRET
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/server .
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/* && \
+    groupadd -r appgroup && useradd -r -g appgroup -s /sbin/nologin -m -d /app appuser
 WORKDIR /app
 COPY --from=builder /app/server .
+RUN chown -R appuser:appgroup /app
+USER appuser
 EXPOSE 8080
-ENV DATABASE_URL="postgres://syslog:syslogpass@postgres:5432/syslog_db?sslmode=disable"
-ENV ADMIN_USERNAME="admin"
-ENV ADMIN_PASSWORD="admin123"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:8080/api/health || exit 1
 CMD ["./server"]

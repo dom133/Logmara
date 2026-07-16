@@ -13,12 +13,14 @@ import (
 
 type etagResponseWriter struct {
 	gin.ResponseWriter
-	buf []byte
+	buf     []byte
+	written bool
 }
 
 func (w *etagResponseWriter) Write(b []byte) (int, error) {
 	w.buf = append(w.buf, b...)
-	return w.ResponseWriter.Write(b)
+	w.written = true
+	return len(b), nil
 }
 
 func ETag() gin.HandlerFunc {
@@ -47,6 +49,9 @@ func ETag() gin.HandlerFunc {
 		c.Next()
 
 		if len(w.buf) == 0 || w.buf[0] != '{' {
+			if len(w.buf) > 0 {
+				w.ResponseWriter.Write(w.buf)
+			}
 			return
 		}
 
