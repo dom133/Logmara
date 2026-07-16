@@ -27,6 +27,7 @@ export default function Admin() {
   const [purgeModalOpen, setPurgeModalOpen] = useState(false)
   const [pauseDuringPurge, setPauseDuringPurge] = useState(false)
   const [purging, setPurging] = useState(false)
+  const [authType, setAuthType] = useState('local')
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_admin',
@@ -315,6 +316,7 @@ export default function Admin() {
                     {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
                     <Button type="primary" icon={<PlusOutlined />} onClick={() => {
                     form.setFieldsValue({ auth_type: 'local' })
+                    setAuthType('local')
                     setModalVisible(true)
                   }}>
                       Add User
@@ -619,7 +621,7 @@ export default function Admin() {
             <Input />
           </Form.Item>
           <Form.Item name="auth_type" label="Auth Type" rules={[{ required: true }]} initialValue="local" hidden={settings['ldap_auto_provision'] === 'true'}>
-            <Select>
+            <Select onChange={(v) => { setAuthType(v); if (v === 'ldap') form.setFieldsValue({ password: undefined }) }}>
               <Option value="local">Local</Option>
               <Option value="ldap">LDAP</Option>
             </Select>
@@ -628,8 +630,8 @@ export default function Admin() {
             name="password"
             label="Password"
             dependencies={['auth_type']}
-            hidden={form.getFieldValue('auth_type') === 'ldap'}
-            rules={[{ required: form.getFieldValue('auth_type') === 'local' || settings['ldap_auto_provision'] === 'true', min: 8, message: 'Min 8 characters' }]}
+            hidden={authType === 'ldap'}
+            rules={[{ required: authType === 'local' || settings['ldap_auto_provision'] === 'true', min: 8, message: 'Min 8 characters' }]}
           >
             <Input.Password />
           </Form.Item>
