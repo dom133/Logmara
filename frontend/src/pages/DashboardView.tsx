@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Modal, DatePicker, Form, message } from 'antd'
+import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form, message } from 'antd'
 import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import { getDashboard, getDashboardData, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardDataResponse, LogEntry, getDevices, DeviceStats, resolveDeviceDisplayName } from '../services/api'
@@ -433,30 +433,13 @@ export default function DashboardViewPage() {
           const detail = renderDetailContent()
           if (!detail) return null
           return (
-            <>
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
-                gap: 0,
-                border: '1px solid #f0f0f0',
-                borderRadius: 4,
-                overflow: 'hidden',
-              }}>
-                {detail.metadata.map((item, i) => (
-                  <div key={i} style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    padding: '8px 12px',
-                    borderBottom: '1px solid #f0f0f0',
-                    borderRight: i % 2 === 0 ? '1px solid #f0f0f0' : undefined,
-                  }}>
-                    <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 4 }}>{item.label}</div>
-                    <div style={{ fontSize: 14 }}>{item.content}</div>
-                  </div>
-                ))}
-              </div>
-              <div style={{ marginTop: 16 }}>
-                <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>Full Message</Typography.Text>
+            <Descriptions bordered column={{ xs: 1, sm: 2 }} size="small">
+              {detail.metadata.map((item, i) => (
+                <Descriptions.Item key={i} label={item.label} span={1}>
+                  {item.content}
+                </Descriptions.Item>
+              ))}
+              <Descriptions.Item label="Full Message" span={2}>
                 <pre style={{
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
@@ -464,16 +447,11 @@ export default function DashboardViewPage() {
                   fontSize: 12,
                   lineHeight: 1.4,
                   margin: 0,
-                  padding: 12,
-                  background: '#fafafa',
-                  borderRadius: 4,
-                  maxHeight: 300,
-                  overflow: 'auto',
                 }}>
                   {detail.message}
                 </pre>
-              </div>
-            </>
+              </Descriptions.Item>
+            </Descriptions>
           )
         })()}
       </Modal>
