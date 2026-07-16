@@ -161,20 +161,24 @@ export async function getSeverityStats(from?: string, to?: string) {
   return (res.data?.stats || []) as Array<{ severity: string; count: number }>
 }
 
-export function exportCSV(params: Record<string, string>) {
-  const url = new URL('/api/export/csv', window.location.href)
-  Object.entries(params).forEach(([k, v]) => {
-    if (v) url.searchParams.set(k, v)
-  })
-  window.open(url.toString(), '_blank')
+export async function exportCSV(params: Record<string, string>) {
+  const res = await api.get('/export/csv', { params, responseType: 'blob' })
+  const url = URL.createObjectURL(res.data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'syslog_export.csv'
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
-export function exportHTML(params: Record<string, string>) {
-  const url = new URL('/api/export/html', window.location.href)
-  Object.entries(params).forEach(([k, v]) => {
-    if (v) url.searchParams.set(k, v)
-  })
-  window.open(url.toString(), '_blank')
+export async function exportHTML(params: Record<string, string>) {
+  const res = await api.get('/export/html', { params, responseType: 'blob' })
+  const url = URL.createObjectURL(res.data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'syslog_report.html'
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 // --- Parser types ---
