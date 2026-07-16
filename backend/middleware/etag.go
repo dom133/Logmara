@@ -30,7 +30,7 @@ func ETag() gin.HandlerFunc {
 			return
 		}
 
-		if strings.Contains(c.ContentType(), "text/event-stream") {
+		if c.Request.URL.Path == "/api/logs/stream" {
 			c.Next()
 			return
 		}
