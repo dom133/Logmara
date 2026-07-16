@@ -53,7 +53,7 @@ export function AdminSettings() {
       {success && <Alert message="Settings saved successfully" type="success" showIcon />}
       
       <Form
-        initialValues={settings}
+        initialValues={settings || undefined}
         onFinish={handleSave}
         layout="vertical"
       >
