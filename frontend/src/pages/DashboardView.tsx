@@ -443,9 +443,9 @@ export default function DashboardViewPage() {
         width={{ sm: '90%', md: 720 }}
       >
         {detailLog && (
-          <Descriptions column={{ xs: 1, sm: 2 }} size="small" bordered>
+          <Descriptions column={{ xs: 1, sm: 2, lg: 4 }} size="small" bordered>
             {(renderDetailContent() ?? []).map((item, i) => (
-              <Descriptions.Item key={i} label={item.label} span={item.span || 1}>
+              <Descriptions.Item key={i} label={item.label} span={item.label === 'Full Message' ? 4 : 1}>
                 {item.content}
               </Descriptions.Item>
             ))}
