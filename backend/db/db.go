@@ -61,6 +61,12 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='fromhost_ip') THEN ALTER TABLE syslog_logs ADD COLUMN fromhost_ip VARCHAR(255); END IF; END $$`,
 		`DROP INDEX IF EXISTS idx_syslog_parsed_fields`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_parsed_fields ON syslog_logs USING GIN (parsed_fields)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_fromhost_ip ON syslog_logs (fromhost_ip)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_fromhost_severity ON syslog_logs (fromhost_ip, severity)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_sev_errors ON syslog_logs (severity, timestamp) WHERE severity IN ('err', 'crit', 'alert', 'emerg')`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_ts_host ON syslog_logs (timestamp DESC, hostname)`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='search_vector') THEN ALTER TABLE syslog_logs ADD COLUMN search_vector TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', COALESCE(message, '') || ' ' || COALESCE(raw_message, ''))) STORED; END IF; END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_fts ON syslog_logs USING GIN (search_vector)`,
 		`CREATE TABLE IF NOT EXISTS users (
 			id SERIAL PRIMARY KEY,
 			username VARCHAR(100) UNIQUE NOT NULL,

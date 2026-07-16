@@ -4,84 +4,146 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"sync"
+	"time"
 
 	"syslog-gui/model"
 
 	"github.com/gin-gonic/gin"
 )
 
+var (
+	dashboardCache     model.DashboardStats
+	dashboardCacheMu   sync.RWMutex
+	dashboardCacheTime time.Time
+	dashboardTTL       = 30 * time.Second
+)
+
 func GetDashboardStats(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var stats model.DashboardStats
+		from := c.Query("from")
+		to := c.Query("to")
 
-		db.QueryRow("SELECT COUNT(*) FROM syslog_logs").Scan(&stats.TotalLogs)
-
-		db.QueryRow(
-			"SELECT COUNT(*) FROM syslog_logs WHERE timestamp >= NOW() - INTERVAL '1 hour'",
-		).Scan(&stats.LogsLastHour)
-
-		db.QueryRow(
-			"SELECT COUNT(*) FROM syslog_logs WHERE timestamp >= NOW() - INTERVAL '1 day'",
-		).Scan(&stats.LogsLastDay)
-
-		db.QueryRow("SELECT COUNT(DISTINCT hostname) FROM syslog_logs").Scan(&stats.UniqueDevices)
-
-		stats.SeverityCounts = make(map[string]int64)
-		rows, err := db.Query("SELECT severity, COUNT(*) FROM syslog_logs GROUP BY severity ORDER BY COUNT(*) DESC")
-		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var sev string
-				var cnt int64
-				if rows.Scan(&sev, &cnt) == nil {
-					stats.SeverityCounts[sev] = cnt
-				}
-			}
+		dashboardCacheMu.RLock()
+		if time.Since(dashboardCacheTime) < dashboardTTL && from == "" && to == "" {
+			stats := dashboardCache
+			dashboardCacheMu.RUnlock()
+			c.JSON(http.StatusOK, stats)
+			return
 		}
+		dashboardCacheMu.RUnlock()
 
-		rows, err = db.Query("SELECT COALESCE(MIN(fromhost_ip), ''), MIN(hostname) as hostname, COUNT(*) as cnt FROM syslog_logs GROUP BY fromhost_ip ORDER BY cnt DESC LIMIT 10")
-		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var d model.DeviceCount
-				if rows.Scan(&d.FromHostIP, &d.Hostname, &d.Count) == nil {
-					stats.TopDevices = append(stats.TopDevices, d)
-				}
-			}
-		}
+		stats := buildDashboardStats(db, from, to)
 
-		if stats.TopDevices == nil {
-			stats.TopDevices = []model.DeviceCount{}
-		}
-
-		rows, err = db.Query(
-			"SELECT substring(message from 1 for 100) as msg, COALESCE(MIN(fromhost_ip), ''), MIN(hostname) as hostname, COUNT(*) as cnt " +
-				"FROM syslog_logs WHERE severity IN ('err', 'crit', 'alert', 'emerg') " +
-				"GROUP BY msg, fromhost_ip ORDER BY cnt DESC LIMIT 10",
-		)
-		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var e model.ErrorMessage
-				if rows.Scan(&e.Message, &e.FromHostIP, &e.Hostname, &e.Count) == nil {
-					stats.TopErrors = append(stats.TopErrors, e)
-				}
-			}
-		}
-
-		if stats.TopErrors == nil {
-			stats.TopErrors = []model.ErrorMessage{}
+		if from == "" && to == "" {
+			dashboardCacheMu.Lock()
+			dashboardCache = stats
+			dashboardCacheTime = time.Now()
+			dashboardCacheMu.Unlock()
 		}
 
 		c.JSON(http.StatusOK, stats)
 	}
 }
 
+func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
+	var stats model.DashboardStats
+
+	whereBase := ""
+	args := []interface{}{}
+	argIdx := 1
+
+	if from != "" {
+		whereBase = fmt.Sprintf("WHERE timestamp >= $%d", argIdx)
+		args = append(args, from)
+		argIdx++
+	} else {
+		whereBase = "WHERE timestamp >= NOW() - INTERVAL '7 days'"
+	}
+
+	if to != "" {
+		whereBase += fmt.Sprintf(" AND timestamp <= $%d", argIdx)
+		args = append(args, to)
+		argIdx++
+	}
+
+	db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereBase), args...).Scan(&stats.TotalLogs)
+
+	hourArgs := make([]interface{}, len(args))
+	copy(hourArgs, args)
+	db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s AND timestamp >= NOW() - INTERVAL '1 hour'", whereBase), hourArgs...).Scan(&stats.LogsLastHour)
+
+	dayArgs := make([]interface{}, len(args))
+	copy(dayArgs, args)
+	db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s AND timestamp >= NOW() - INTERVAL '1 day'", whereBase), dayArgs...).Scan(&stats.LogsLastDay)
+
+	devArgs := make([]interface{}, len(args))
+	copy(devArgs, args)
+	db.QueryRow(fmt.Sprintf("SELECT COUNT(DISTINCT hostname) FROM syslog_logs %s", whereBase), devArgs...).Scan(&stats.UniqueDevices)
+
+	stats.SeverityCounts = make(map[string]int64)
+	sevRows, err := db.Query(fmt.Sprintf("SELECT severity, COUNT(*) FROM syslog_logs %s GROUP BY severity ORDER BY COUNT(*) DESC", whereBase), args...)
+	if err == nil {
+		defer sevRows.Close()
+		for sevRows.Next() {
+			var sev string
+			var cnt int64
+			if sevRows.Scan(&sev, &cnt) == nil {
+				stats.SeverityCounts[sev] = cnt
+			}
+		}
+	}
+
+	devRows, err := db.Query(fmt.Sprintf(
+		"SELECT COALESCE(MIN(fromhost_ip), ''), MIN(hostname) as hostname, COUNT(*) as cnt FROM syslog_logs %s GROUP BY fromhost_ip ORDER BY cnt DESC LIMIT 10", whereBase), args...)
+	if err == nil {
+		defer devRows.Close()
+		for devRows.Next() {
+			var d model.DeviceCount
+			if devRows.Scan(&d.FromHostIP, &d.Hostname, &d.Count) == nil {
+				stats.TopDevices = append(stats.TopDevices, d)
+			}
+		}
+	}
+
+	if stats.TopDevices == nil {
+		stats.TopDevices = []model.DeviceCount{}
+	}
+
+	errRows, err := db.Query(fmt.Sprintf(
+		"SELECT substring(message from 1 for 100) as msg, COALESCE(MIN(fromhost_ip), ''), MIN(hostname) as hostname, COUNT(*) as cnt "+
+			"FROM syslog_logs %s AND severity IN ('err', 'crit', 'alert', 'emerg') "+
+			"GROUP BY msg, fromhost_ip ORDER BY cnt DESC LIMIT 10", whereBase), args...)
+	if err == nil {
+		defer errRows.Close()
+		for errRows.Next() {
+			var e model.ErrorMessage
+			if errRows.Scan(&e.Message, &e.FromHostIP, &e.Hostname, &e.Count) == nil {
+				stats.TopErrors = append(stats.TopErrors, e)
+			}
+		}
+	}
+
+	if stats.TopErrors == nil {
+		stats.TopErrors = []model.ErrorMessage{}
+	}
+
+	return stats
+}
+
 func GetDeviceStats(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rows, err := db.Query(
-			"SELECT COALESCE(MIN(fromhost_ip), ''), MIN(hostname) as hostname, COUNT(*) as total, MAX(timestamp) as last_seen " +
-				"FROM syslog_logs GROUP BY fromhost_ip ORDER BY total DESC",
+			`SELECT COALESCE(MIN(fromhost_ip), ''), MIN(hostname) as hostname, COUNT(*) as total, MAX(timestamp) as last_seen,
+				SUM(CASE WHEN severity = 'emergency' THEN 1 ELSE 0 END),
+				SUM(CASE WHEN severity = 'alert' THEN 1 ELSE 0 END),
+				SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END),
+				SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END),
+				SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END),
+				SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END),
+				SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END),
+				SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END)
+				FROM syslog_logs GROUP BY fromhost_ip ORDER BY total DESC`,
 		)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Query failed"})
@@ -92,26 +154,15 @@ func GetDeviceStats(db *sql.DB) gin.HandlerFunc {
 		var devices []model.DeviceStats
 		for rows.Next() {
 			var d model.DeviceStats
-			if err := rows.Scan(&d.FromHostIP, &d.Hostname, &d.TotalLogs, &d.LastSeen); err != nil {
+			var emergency, alert, critical, errCount, warning, notice, info, debug int64
+			if err := rows.Scan(&d.FromHostIP, &d.Hostname, &d.TotalLogs, &d.LastSeen,
+				&emergency, &alert, &critical, &errCount, &warning, &notice, &info, &debug); err != nil {
 				continue
 			}
-
-			d.SeverityCount = make(model.SeverityCounts)
-			sevRows, _ := db.Query(
-				"SELECT severity, COUNT(*) FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1 GROUP BY severity",
-				d.FromHostIP,
-			)
-			if sevRows != nil {
-				for sevRows.Next() {
-					var sev string
-					var cnt int64
-					if sevRows.Scan(&sev, &cnt) == nil {
-						d.SeverityCount[sev] = cnt
-					}
-				}
-				sevRows.Close()
+			d.SeverityCount = model.SeverityCounts{
+				"emergency": emergency, "alert": alert, "critical": critical, "error": errCount,
+				"warning": warning, "notice": notice, "info": info, "debug": debug,
 			}
-
 			devices = append(devices, d)
 		}
 
@@ -145,7 +196,6 @@ func GetSeverityStats(db *sql.DB) gin.HandlerFunc {
 			}
 			where += fmt.Sprintf(" timestamp <= $%d", argIdx)
 			args = append(args, to)
-			argIdx++
 		}
 
 		rows, err := db.Query(
@@ -182,24 +232,17 @@ func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
 			field = "hour"
 		}
 
-		query := "SELECT date_trunc($1, timestamp) as ts, COUNT(*) FROM syslog_logs"
-		args := []interface{}{field}
-		argIdx := 2
-
-		if from != "" {
-			query += fmt.Sprintf(" WHERE timestamp >= $%d", argIdx)
-			args = append(args, from)
-			argIdx++
+		if from == "" {
+			from = "now() - interval '24 hours'"
 		}
+
+		query := "SELECT date_trunc($1, timestamp) as ts, COUNT(*) FROM syslog_logs WHERE timestamp >= $2"
+		args := []interface{}{field, from}
+		argIdx := 3
+
 		if to != "" {
-			if from == "" {
-				query += " WHERE"
-			} else {
-				query += " AND"
-			}
-			query += fmt.Sprintf(" timestamp <= $%d", argIdx)
+			query += fmt.Sprintf(" AND timestamp <= $%d", argIdx)
 			args = append(args, to)
-			argIdx++
 		}
 
 		query += " GROUP BY ts ORDER BY ts"

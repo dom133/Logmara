@@ -160,8 +160,8 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 		}
 
 		if search != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("(message ILIKE $%d OR raw_message ILIKE $%d)", argIdx, argIdx))
-			args = append(args, "%"+search+"%")
+			whereClauses = append(whereClauses, fmt.Sprintf("search_vector @@ websearch_to_tsquery('english', $%d)", argIdx))
+			args = append(args, search)
 			argIdx++
 		}
 
@@ -251,16 +251,37 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 
 func GetDevices(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		rows, err := db.Query(`SELECT COALESCE(MIN(fromhost_ip), ''), MIN(hostname) as hostname, COUNT(*) as total_logs, MAX(timestamp) as last_seen,
-			SUM(CASE WHEN severity = 'emergency' THEN 1 ELSE 0 END) as emergency,
-			SUM(CASE WHEN severity = 'alert' THEN 1 ELSE 0 END) as alert,
-			SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) as critical,
-			SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END) as error,
-			SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) as warning,
-			SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END) as notice,
-			SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END) as info,
-			SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug
-			FROM syslog_logs GROUP BY fromhost_ip ORDER BY total_logs DESC`)
+		rows, err := db.Query(`
+			WITH dev_stats AS (
+				SELECT COALESCE(MIN(fromhost_ip), '') as fromhost_ip, MIN(hostname) as hostname,
+					COUNT(*) as total_logs, MAX(timestamp) as last_seen,
+					SUM(CASE WHEN severity = 'emergency' THEN 1 ELSE 0 END) as emergency,
+					SUM(CASE WHEN severity = 'alert' THEN 1 ELSE 0 END) as alert,
+					SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) as critical,
+					SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END) as err_count,
+					SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) as warning,
+					SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END) as notice,
+					SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END) as info,
+					SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug
+				FROM syslog_logs
+				GROUP BY fromhost_ip
+			),
+			dev_parsers AS (
+				SELECT COALESCE(fromhost_ip, '') as fromhost_ip,
+					array_agg(DISTINCT elem) as parsers
+				FROM syslog_logs, unnest(matched_parsers) as elem
+				WHERE matched_parsers IS NOT NULL AND matched_parsers != '{}'
+				GROUP BY fromhost_ip
+			)
+			SELECT d.fromhost_ip, d.hostname, d.total_logs, d.last_seen,
+				d.emergency, d.alert, d.critical, d.err_count, d.warning, d.notice, d.info, d.debug,
+				COALESCE(p.parsers, '{}'::TEXT[]) as parsers,
+				a.display_name, a.old_hostname
+			FROM dev_stats d
+			LEFT JOIN dev_parsers p ON p.fromhost_ip = d.fromhost_ip
+			LEFT JOIN device_aliases a ON a.fromhost_ip = d.fromhost_ip
+			ORDER BY d.total_logs DESC
+		`)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Query failed"})
 			return
@@ -272,33 +293,23 @@ func GetDevices(db *sql.DB) gin.HandlerFunc {
 			var ds model.DeviceStats
 			var total int64
 			var emergency, alert, critical, errCount, warning, notice, info, debug int64
-			if err := rows.Scan(&ds.FromHostIP, &ds.Hostname, &total, &ds.LastSeen, &emergency, &alert, &critical, &errCount, &warning, &notice, &info, &debug); err != nil {
+			var parsersArr pq.StringArray
+			var alias, oldH sql.NullString
+			if err := rows.Scan(&ds.FromHostIP, &ds.Hostname, &total, &ds.LastSeen,
+				&emergency, &alert, &critical, &errCount, &warning, &notice, &info, &debug,
+				&parsersArr, &alias, &oldH); err != nil {
 				continue
 			}
 			ds.TotalLogs = total
 			ds.SeverityCount = model.SeverityCounts{"emergency": emergency, "alert": alert, "critical": critical, "error": errCount, "warning": warning, "notice": notice, "info": info, "debug": debug}
-
-			pRows, _ := db.Query("SELECT ARRAY(SELECT DISTINCT unnest(matched_parsers) FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1 AND matched_parsers IS NOT NULL AND matched_parsers != '{}')", ds.FromHostIP)
-			if pRows != nil {
-				defer pRows.Close()
-				if pRows.Next() {
-					var parsersArr pq.StringArray
-					if err := pRows.Scan(&parsersArr); err == nil {
-						ds.MatchedParsers = parsersArr
-					}
-				}
-				ds.HasParsed = len(ds.MatchedParsers) > 0
-			}
-
-			var alias, oldH sql.NullString
-			db.QueryRow("SELECT display_name, old_hostname FROM device_aliases WHERE fromhost_ip = $1", ds.FromHostIP).Scan(&alias, &oldH)
+			ds.MatchedParsers = parsersArr
+			ds.HasParsed = len(parsersArr) > 0
 			if alias.Valid {
 				ds.DisplayName = alias.String
 			}
 			if oldH.Valid {
 				ds.OldHostname = oldH.String
 			}
-
 			devices = append(devices, ds)
 		}
 
