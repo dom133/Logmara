@@ -318,12 +318,13 @@ func PurgeAllLogs(database *sql.DB, ic *control.IngestionController) gin.Handler
 }
 
 type TestLDAPRequest struct {
-	Server       string `json:"server" binding:"max=256"`
+	Server       string `json:"server"`
 	Port         int    `json:"port"`
 	UseTLS       bool   `json:"use_tls"`
-	BaseDN       string `json:"base_dn" binding:"max=512"`
-	BindDN       string `json:"bind_dn" binding:"max=512"`
-	BindPassword string `json:"bind_password" binding:"max=256"`
+	VerifyCert   bool   `json:"verify_cert"`
+	BaseDN       string `json:"base_dn"`
+	BindDN       string `json:"bind_dn"`
+	BindPassword string `json:"bind_password"`
 }
 
 func TestLDAP(database *sql.DB) gin.HandlerFunc {
