@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { Table, Input, InputRef, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Dropdown, Modal, Descriptions } from 'antd'
 import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { getLogs, getDevices, exportCSV, exportHTML, LogEntry, DeviceStats, resolveDeviceDisplayName } from '../services/api'
-import dayjs from 'dayjs'
+import dayjs, { type Dayjs } from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import { useSSE } from '../hooks/useSSE'
 import SeverityTag from '../components/SeverityTag'
@@ -135,16 +135,18 @@ export default function LogsViewer() {
     }
   }, [filters, pagination.pageSize])
 
-  const handleTableChange = (pag: typeof pagination) => {
-    setPagination(pag)
-    loadLogs((pag.current - 1) * pag.pageSize)
+  const handleTableChange = (pag: { current?: number; pageSize?: number }) => {
+    const page = pag.current ?? 1
+    const size = pag.pageSize ?? 50
+    setPagination({ current: page, pageSize: size })
+    loadLogs((page - 1) * size)
   }
 
   const handleSearch = (value: string) => {
     setFilters(f => ({ ...f, search: value }))
   }
 
-  const handleDateRange = (dates: [moment.Moment | null, moment.Moment | null] | null) => {
+  const handleDateRange = (dates: [Dayjs | null, Dayjs | null] | null) => {
     setFilters(f => ({
       ...f,
       from: dates?.[0]?.toISOString() || '',
