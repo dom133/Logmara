@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { useCrud } from '../useCRUD'
+import { useCrud } from './useCRUD'
 import { FormInstance, message } from 'antd'
 
 vi.mock('antd', async () => {
@@ -247,7 +247,7 @@ describe('useCRUD', () => {
     await act(async () => {})
 
     await act(async () => {
-      result.current.setItems((prev) => [...prev, { id: 2, name: 'item2' }])
+      result.current.setItems((prev: typeof result.current.items) => [...prev, { id: 2, name: 'item2' }])
     })
 
     expect(result.current.items).toHaveLength(2)

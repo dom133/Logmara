@@ -103,7 +103,7 @@ export function useCrud<T, CreateData, UpdateData>(options: UseCrudOptions<T, Cr
   const handleUpdate = useCallback(
     async (values: UpdateData) => {
       if (!state.editing) return
-      const id = (state.editing as { id: number }).id
+      const id = ((state.editing as unknown) as { id: number }).id
       try {
         await updateItem(id, values)
         message.success(msgs.updated)

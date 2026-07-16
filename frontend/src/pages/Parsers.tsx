@@ -56,7 +56,7 @@ export default function ParsersPage() {
 
   const handleCreate = async (values: unknown) => {
     try {
-      await createParser(values)
+      await createParser(values as { name: string; description?: string; device_type: string; match_type: string; match_value?: string; regex: string; enabled: boolean; fields: ParserFieldDef[] })
       message.success('Parser created')
       setModalOpen(false)
       form.resetFields()
@@ -69,7 +69,7 @@ export default function ParsersPage() {
   const handleUpdate = async (values: unknown) => {
     if (!editing) return
     try {
-      await updateParser(editing.id, values)
+      await updateParser(editing.id, values as Partial<{ name: string; description: string; device_type: string; match_type: string; match_value: string; regex: string; enabled: boolean }>)
       message.success('Parser updated')
       setModalOpen(false)
       setEditing(null)
@@ -171,7 +171,7 @@ export default function ParsersPage() {
     {
       title: 'Match',
       key: 'match',
-      render: (_v, r: Parser) => `${r.match_type}: ${r.match_value || '-'}`,
+      render: (_v: unknown, r: Parser) => `${r.match_type}: ${r.match_value || '-'}`,
     },
     {
       title: 'Regex',
@@ -183,7 +183,7 @@ export default function ParsersPage() {
     {
       title: 'Fields',
       key: 'fields',
-      render: (_v, r: Parser) => {
+      render: (_v: unknown, r: Parser) => {
         const fs = parserFields(r.id)
         return fs.length ? fs.map(f => <Tag key={f.field_name}>{f.field_label}</Tag>) : <Text type="secondary">-</Text>
       },
@@ -197,7 +197,7 @@ export default function ParsersPage() {
     {
       title: 'Actions',
       key: 'actions',
-      render: (_v, r: Parser) => (
+      render: (_v: unknown, r: Parser) => (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {canEdit && <Tooltip title="Edit">
             <Button size="small" icon={<EditOutlined />} disabled={r.is_builtin} onClick={() => openEdit(r)} />

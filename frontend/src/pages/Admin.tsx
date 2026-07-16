@@ -280,7 +280,7 @@ const handleCleanup = async () => {
     {
       title: 'Actions',
       key: 'actions',
-      render: (_v, record: User) => (
+      render: (_v: unknown, record: User) => (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <Button size="small" onClick={() => handleEdit(record)} icon={<EditOutlined />} />
           {record.auth_type !== 'ldap' && <Button size="small" onClick={() => handleResetPassword(record)} icon={<KeyOutlined />} />}

@@ -51,9 +51,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(res.data.user)
       return { ok: true }
     } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: string } } }
       return {
         ok: false,
-        error: e.response?.data?.error || 'Invalid credentials',
+        error: err.response?.data?.error || 'Invalid credentials',
       }
     }
   }

@@ -69,7 +69,7 @@ export default function DashboardsPage() {
 
   const handleCreate = async (values: unknown) => {
     try {
-      await createDashboard(values)
+      await createDashboard(values as { name: string; description?: string; config: DashboardConfig })
       message.success('Dashboard created')
       setModalOpen(false)
       form.resetFields()
@@ -82,7 +82,7 @@ export default function DashboardsPage() {
   const handleUpdate = async (values: unknown) => {
     if (!editing) return
     try {
-      await updateDashboard(editing.id, values)
+      await updateDashboard(editing.id, values as Partial<{ name: string; description: string; config: DashboardConfig }>)
       message.success('Dashboard updated')
       setModalOpen(false)
       setEditing(null)
@@ -169,7 +169,7 @@ export default function DashboardsPage() {
     {
       title: 'Devices',
       key: 'devices',
-      render: (_v, r: Dashboard) => {
+      render: (_v: unknown, r: Dashboard) => {
         const devs = r.config?.devices || []
         return devs.length
           ? devs.slice(0, 3).map(d => <Tag key={d}>{d}</Tag>)
@@ -179,7 +179,7 @@ export default function DashboardsPage() {
     {
       title: 'Fields',
       key: 'fields',
-      render: (_v, r: Dashboard) => {
+      render: (_v: unknown, r: Dashboard) => {
         const fs = r.config?.fields || []
         return fs.length ? fs.map(f => <Tag key={f} color="green">{f}</Tag>) : <Tag color="default">Default</Tag>
       },
@@ -199,7 +199,7 @@ export default function DashboardsPage() {
     {
       title: 'Last Modified',
       key: 'last_modified',
-      render: (_v, r: Dashboard) => {
+      render: (_v: unknown, r: Dashboard) => {
         if (!r.updated_at) return '-'
         const date = new Date(r.updated_at).toLocaleDateString()
         const by = r.updated_by_username || r.owner_username
@@ -209,7 +209,7 @@ export default function DashboardsPage() {
     {
       title: 'Actions',
       key: 'actions',
-      render: (_v, r: Dashboard) => {
+      render: (_v: unknown, r: Dashboard) => {
         const isOwner = r.owner_id === user?.id
         const canManage = isOwner && canEdit || isAdmin
         return (
