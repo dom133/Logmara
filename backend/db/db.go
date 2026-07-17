@@ -223,7 +223,8 @@ func Migrate(db *sql.DB) error {
 		partitionStmts := []string{
 			`ALTER TABLE syslog_logs DROP CONSTRAINT IF EXISTS syslog_logs_pkey`,
 			`ALTER TABLE syslog_logs ADD PRIMARY KEY (timestamp, id)`,
-			`ALTER TABLE syslog_logs CONVERT TO PARTITIONED RANGE (timestamp)`,
+			`CREATE TABLE syslog_logs_new (LIKE syslog_logs INCLUDING DEFAULTS INCLUDING GENERATED INCLUDING STORAGE) PARTITION BY RANGE (timestamp)`,
+			`ALTER TABLE syslog_logs_new ADD PRIMARY KEY (timestamp, id)`,
 			`DO $$
 DECLARE
 	v_min_ts TIMESTAMPTZ;
@@ -242,11 +243,14 @@ BEGIN
 	END IF;
 	v_curr := v_start;
 	WHILE v_curr < v_end LOOP
-		EXECUTE format('CREATE TABLE IF NOT EXISTS %I PARTITION OF syslog_logs FOR VALUES FROM (%L) TO (%L)', 'syslog_logs_' || to_char(v_curr, 'YYYY_MM'), v_curr, v_curr + INTERVAL '1 month');
+		EXECUTE format('CREATE TABLE IF NOT EXISTS %I PARTITION OF syslog_logs_new FOR VALUES FROM (%L) TO (%L)', 'syslog_logs_' || to_char(v_curr, 'YYYY_MM'), v_curr, v_curr + INTERVAL '1 month');
 		v_curr := v_curr + INTERVAL '1 month';
 	END LOOP;
-	EXECUTE 'CREATE TABLE IF NOT EXISTS syslog_logs_default PARTITION OF syslog_logs DEFAULT';
+	EXECUTE 'CREATE TABLE IF NOT EXISTS syslog_logs_default PARTITION OF syslog_logs_new DEFAULT';
 END $$`,
+			`INSERT INTO syslog_logs_new SELECT * FROM syslog_logs`,
+			`DROP TABLE syslog_logs`,
+			`ALTER TABLE syslog_logs_new RENAME TO syslog_logs`,
 		}
 		for _, stmt := range partitionStmts {
 			if _, err := db.Exec(stmt); err != nil {
