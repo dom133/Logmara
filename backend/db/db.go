@@ -250,8 +250,11 @@ BEGIN
 	EXECUTE 'CREATE TABLE IF NOT EXISTS syslog_logs_default PARTITION OF syslog_logs_new DEFAULT';
 END $$`,
 			`INSERT INTO syslog_logs_new (id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, created_at, matched_parsers) SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, created_at, matched_parsers FROM syslog_logs`,
-			`DROP TABLE syslog_logs`,
-			`ALTER TABLE syslog_logs_new RENAME TO syslog_logs`,
+			`DROP TABLE syslog_logs CASCADE`,
+			`ALTER TABLE syslog_logs_new RENAME TO syslog_logs
+			`CREATE SEQUENCE IF NOT EXISTS syslog_logs_id_seq OWNED BY syslog_logs.id`,
+			`ALTER TABLE syslog_logs ALTER COLUMN id SET DEFAULT nextval('syslog_logs_id_seq')`,
+			`SELECT setval('syslog_logs_id_seq', COALESCE((SELECT MAX(id) FROM syslog_logs), 0))`,`,
 		}
 		for _, stmt := range partitionStmts {
 			if _, err := db.Exec(stmt); err != nil {
