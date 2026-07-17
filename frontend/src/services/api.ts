@@ -448,7 +448,7 @@ export async function testLDAPConnection(data: {
 // --- Init / Setup ---
 export async function checkInitialized() {
 	const res = await api.get('/status/initialized')
-	return res.data as { initialized: boolean }
+	return res.data as { initialized: boolean; starting: boolean }
 }
 
 export async function generateKeys() {

@@ -1,11 +1,10 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Table, Input, InputRef, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Dropdown, Modal, Descriptions } from 'antd'
-import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import { getLogs, getDevices, exportCSV, exportHTML, LogEntry, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
-import { useSSE } from '../hooks/useSSE'
 import SeverityTag from '../components/SeverityTag'
 import EmptyState from '../components/EmptyState'
 import { DATE_PRESETS } from '../constants'
@@ -38,7 +37,6 @@ export default function LogsViewer() {
   const [detailModalOpen, setDetailModalOpen] = useState(false)
   const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null)
   const [groupByDevice, setGroupByDevice] = useState(false)
-  const [streaming, setStreaming] = useState(false)
   const logsRef = useRef(logs)
   logsRef.current = logs
 
@@ -102,30 +100,6 @@ export default function LogsViewer() {
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [])
 
-  const handleNewLogs = useCallback((newLogs: LogEntry[]) => {
-    setLogs(prev => {
-      const ids = new Set(prev.map(l => l.id))
-      const unique = newLogs.filter(l => !ids.has(l.id))
-      if (unique.length === 0) return prev
-      setTotal(t => t + unique.length)
-      const combined = [...unique, ...prev]
-      return combined.slice(0, pagination.pageSize * 3)
-    })
-  }, [pagination.pageSize])
-
-  const { connected } = useSSE({
-    onNewLogs: handleNewLogs,
-    filters: {
-      hostname: filters.hostname || undefined,
-      fromhost_ip: filters.fromhost_ip || undefined,
-      severity: filters.severity || undefined,
-      search: filters.search || undefined,
-      from: filters.from || undefined,
-      to: filters.to || undefined,
-    },
-    enabled: streaming,
-  })
-
   useEffect(() => {
     loadLogs(0)
   }, [filters])
@@ -151,6 +125,14 @@ export default function LogsViewer() {
       setLoading(false)
     }
   }, [filters, pagination.pageSize])
+
+  useEffect(() => {
+    if (!isTabActive) return
+    const interval = setInterval(() => {
+      loadLogs(0)
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [isTabActive, loadLogs])
 
   const handleTableChange = (pag: { current?: number; pageSize?: number }) => {
     const page = pag.current ?? 1
@@ -304,15 +286,7 @@ export default function LogsViewer() {
         >
           Group by Device
         </Button>
-        <Button
-          size="small"
-          icon={<ThunderboltOutlined />}
-          type={streaming ? 'primary' : 'default'}
-          onClick={() => setStreaming(!streaming)}
-          style={{ color: streaming && connected ? '#52c41a' : undefined }}
-        >
-          {streaming ? (connected ? 'Live ●' : 'Connecting...') : 'Live'}
-        </Button>
+        
       </div>
 
       <Card style={{ marginBottom: 16 }} size="small">

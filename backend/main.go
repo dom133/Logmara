@@ -83,12 +83,16 @@ func main() {
 	}
 	defer database.Close()
 
-	if err := db.Migrate(database); err != nil {
-		slog.Error("failed to migrate database", "error", err)
-		os.Exit(1)
-	}
-
-	db.RefreshMaterializedViews(database)
+	db.SetAppStarting(true)
+	go func() {
+		if err := db.Migrate(database); err != nil {
+			slog.Error("failed to migrate database", "error", err)
+			os.Exit(1)
+		}
+		db.RefreshMaterializedViews(database)
+		db.SetAppStarting(false)
+		slog.Info("database migration and initialization complete")
+	}()
 
 	ctx, maintCancel := context.WithCancel(context.Background())
 	stopVacuum, stopMV := db.StartMaintenance(ctx, database)
@@ -130,7 +134,7 @@ func main() {
 	authGroup.Use(auth.JWTRequired())
 	{
 		authGroup.GET("/logs", handler.GetLogs(database))
-		authGroup.GET("/logs/stream", handler.StreamLogs(database))
+		
 		authGroup.GET("/stats/dashboard", handler.GetDashboardStats(database))
 		authGroup.GET("/stats/devices", handler.GetDeviceStats(database))
 		authGroup.GET("/stats/severity", handler.GetSeverityStats(database))

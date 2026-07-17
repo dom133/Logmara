@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -13,6 +14,16 @@ import (
 	"syslog-gui/db/parsers"
 	"syslog-gui/util"
 )
+
+var appStarting atomic.Bool
+
+func SetAppStarting(v bool) {
+	appStarting.Store(v)
+}
+
+func IsAppStarting() bool {
+	return appStarting.Load()
+}
 
 func Connect(dsn string) (*sql.DB, error) {
 	db, err := sql.Open("postgres", dsn)

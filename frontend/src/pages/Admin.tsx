@@ -68,7 +68,7 @@ export default function Admin() {
       if (data['ldap_port']) formValues['ldap_port'] = parseInt(data['ldap_port'], 10)
       if (data['retention_days']) formValues['retention_days'] = parseInt(data['retention_days'], 10)
       if (data['jwt_expiry']) formValues['jwt_expiry'] = parseInt(data['jwt_expiry'], 10)
-      if (data['session_timeout']) formValues['session_timeout'] = parseInt(data['session_timeout'], 10)
+      if (data['session_timeout_min']) formValues['session_timeout_min'] = parseInt(data['session_timeout_min'], 10)
       settingsForm.setFieldsValue(formValues)
       setLdapEnabled(data['ldap_enabled'] === 'true')
       setLdapAutoProvision(data['ldap_auto_provision'] === 'true')
@@ -373,7 +373,7 @@ const handleCleanup = async () => {
                   <Form.Item label="JWT Expiry (hours)" name="jwt_expiry">
                     <InputNumber min={1} max={8760} style={{ width: '100%' }} />
                   </Form.Item>
-                  <Form.Item label="Session Timeout (minutes)" name="session_timeout">
+                  <Form.Item label="Session Timeout (minutes)" name="session_timeout_min">
                     <InputNumber min={1} max={10080} style={{ width: '100%' }} />
                   </Form.Item>
                   <Divider />

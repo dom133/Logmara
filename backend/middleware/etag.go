@@ -30,10 +30,7 @@ func ETag() gin.HandlerFunc {
 			return
 		}
 
-		if c.Request.URL.Path == "/api/logs/stream" {
-			c.Next()
-			return
-		}
+		
 
 		if c.Writer.Status() != 0 && c.Writer.Status() != http.StatusOK {
 			c.Next()

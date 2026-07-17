@@ -1,10 +1,9 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form, message } from 'antd'
-import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import { getDashboard, getDashboardData, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardDataResponse, LogEntry, getDevices, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
-import { useSSE } from '../hooks/useSSE'
 import SeverityTag from '../components/SeverityTag'
 import { SEVERITY_LABELS } from '../constants'
 import { useAuth } from '../services/auth'
@@ -33,7 +32,6 @@ export default function DashboardViewPage() {
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
   const [detailLog, setDetailLog] = useState<LogEntry | null>(null)
   const [devices, setDevices] = useState<DeviceStats[]>([])
-  const [streaming, setStreaming] = useState(false)
   const { user } = useAuth()
   const isOwner = dashboard?.owner_id === user?.id
   const searchRef = useRef<InputRef>(null)
@@ -82,30 +80,6 @@ export default function DashboardViewPage() {
     setDevices(d)
   }
 
-  const handleNewLogs = useCallback((newLogs: LogEntry[]) => {
-    setLogs(prev => {
-      const ids = new Set(prev.map(l => l.id))
-      const unique = newLogs.filter(l => !ids.has(l.id))
-      if (unique.length === 0) return prev
-      setTotal(t => t + unique.length)
-      const combined = [...unique, ...prev]
-      return combined.slice(0, pageSize * 3)
-    })
-  }, [pageSize])
-
-  const { connected } = useSSE({
-    onNewLogs: handleNewLogs,
-    filters: {
-      fromhost_ip: (dashboard?.config?.devices ?? []).join(',') || undefined,
-      severity: severityFilter || dashboard?.config?.filters?.severity || undefined,
-      search: searchOverride || dashboard?.config?.filters?.search || undefined,
-      from: dateRange?.[0]?.toISOString() || dashboard?.config?.filters?.from || undefined,
-      to: dateRange?.[1]?.toISOString() || dashboard?.config?.filters?.to || undefined,
-      require_parser: (dashboard?.config?.fields?.length ?? 0) > 0 ? 'true' : undefined,
-    },
-    enabled: streaming,
-  })
-
   const loadLogs = useCallback(async (offset: number) => {
     setTableLoading(true)
     try {
@@ -150,6 +124,14 @@ export default function DashboardViewPage() {
       loadLogs(0)
     }
   }, [dashboard, loadLogs])
+
+  useEffect(() => {
+    if (!isTabActive) return
+    const interval = setInterval(() => {
+      loadLogs(0)
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [isTabActive, loadLogs])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -357,14 +339,6 @@ export default function DashboardViewPage() {
             onChange={(dates) => setDateRange(dates as [any, any] | null)}
           />
           <Button icon={<ReloadOutlined />} onClick={() => loadLogs((page - 1) * pageSize)} loading={tableLoading}>Apply</Button>
-          <Button
-            icon={<ThunderboltOutlined />}
-            type={streaming ? 'primary' : 'default'}
-            style={{ color: streaming && connected ? '#52c41a' : undefined }}
-            onClick={() => setStreaming(!streaming)}
-          >
-            {streaming ? (connected ? 'Live ●' : 'Connecting...') : 'Live'}
-          </Button>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
         </div>
       </div>

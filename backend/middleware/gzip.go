@@ -11,14 +11,7 @@ import (
 )
 
 func GzipCompress() gin.HandlerFunc {
-	skipPaths := map[string]bool{
-		"/api/logs/stream": true,
-	}
 	return func(c *gin.Context) {
-		if skipPaths[c.Request.URL.Path] {
-			c.Next()
-			return
-		}
 		if !strings.Contains(c.GetHeader("Accept-Encoding"), "gzip") {
 			c.Next()
 			return

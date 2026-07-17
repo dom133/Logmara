@@ -15,9 +15,18 @@ import (
 
 func CheckInitialized(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		starting := db.IsAppStarting()
+		if starting {
+			c.JSON(http.StatusOK, gin.H{
+				"initialized": false,
+				"starting":    true,
+			})
+			return
+		}
 		val := db.GetSetting(database, "is_initialized", "false")
 		c.JSON(http.StatusOK, gin.H{
 			"initialized": val == "true",
+			"starting":    false,
 		})
 	}
 }
