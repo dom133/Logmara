@@ -137,9 +137,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const refreshToken = localStorage.getItem('refresh_token')
       if (!refreshToken) return
 
-      const res = await refreshAccessToken(refreshToken)
-      const newToken = res.data.token
-      const newRT = res.data.refresh_token
+      const data = await refreshAccessToken(refreshToken)
+      const newToken = data.token
+      const newRT = data.refresh_token
       setToken(newToken)
       localStorage.setItem('token', newToken)
       localStorage.setItem('refresh_token', newRT)
