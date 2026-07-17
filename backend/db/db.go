@@ -398,6 +398,7 @@ func seedSettings(db *sql.DB) error {
 	settings := map[string]string{
 		"retention_days":      "30",
 		"jwt_expiry":          "24",
+		"session_timeout_min": "15",
 		"is_initialized":      "false",
 		"ldap_enabled":        "false",
 		"ldap_server":         "",
@@ -427,6 +428,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "Days to keep logs before auto-deletion"
 		case "jwt_expiry":
 			desc = "JWT token expiry in hours"
+		case "session_timeout_min":
+			desc = "Session timeout in minutes"
 		case "is_initialized":
 			desc = "Application initialization flag"
 		case "ldap_enabled":
