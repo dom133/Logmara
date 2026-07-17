@@ -172,7 +172,7 @@ await testLDAPConnection({
       setCertFile(null)
       setKeyFile(null)
       if (result.restart_needed || result.need_reset) {
-        message.warn('Server is restarting to apply SSL changes. Page will reload shortly.')
+        message.warning('Server is restarting to apply SSL changes. Page will reload shortly.')
         setTimeout(() => {
           window.location.reload()
         }, 3000)
@@ -261,7 +261,7 @@ const handleSaveSettings = async () => {
       const result = await updateSettings(strValues)
       message.success('Settings saved')
       if (result.restart_needed) {
-        message.warn('Server is restarting to apply HTTPS changes. Page will reload shortly.')
+        message.warning('Server is restarting to apply HTTPS changes. Page will reload shortly.')
         setTimeout(() => {
           window.location.reload()
         }, 3000)
@@ -431,7 +431,7 @@ const handleCleanup = async () => {
 <Form.Item label="Key Path (.key)" name="https_key_file">
                       <Input placeholder="/etc/ssl/private/app.key" disabled={!httpsEnabled} />
                     </Form.Item>
-                    <Form.Item label="Upload Certificate (.pem/.crt)" disabled={!httpsEnabled}>
+                    <Form.Item label="Upload Certificate (.pem/.crt)">
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                         <input
                           type="file"
@@ -450,7 +450,7 @@ const handleCleanup = async () => {
                         </Button>
                       </div>
                     </Form.Item>
-                    <Form.Item label="Upload Private Key (.key)" disabled={!httpsEnabled}>
+                    <Form.Item label="Upload Private Key (.key)">
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                         <input
                           type="file"
