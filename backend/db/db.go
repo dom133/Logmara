@@ -255,7 +255,11 @@ END $$`,
 		}
 		for _, stmt := range partitionStmts {
 			if _, err := db.Exec(stmt); err != nil {
-				return fmt.Errorf("partitioning failed (%s): %w", stmt[:50], err)
+				truncated := stmt
+				if len(truncated) > 50 {
+					truncated = truncated[:50]
+				}
+				return fmt.Errorf("partitioning failed (%s): %w", truncated, err)
 			}
 		}
 	}
