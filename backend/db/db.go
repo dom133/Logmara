@@ -235,7 +235,7 @@ BEGIN
 
 	ALTER TABLE syslog_logs DROP CONSTRAINT IF EXISTS syslog_logs_pkey;
 	ALTER TABLE syslog_logs ADD PRIMARY KEY (timestamp, id);
-	ALTER TABLE syslog_logs SET PARTITION KEY (RANGE (timestamp));
+	ALTER TABLE syslog_logs CONVERT TO PARTITIONED RANGE (timestamp);
 
 	v_curr := v_start;
 	WHILE v_curr < v_end LOOP
