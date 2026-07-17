@@ -21,6 +21,7 @@ interface AuthContextType {
   isSessionExpiringSoon: boolean
   showSessionWarning: boolean
   setShowSessionWarning: (show: boolean) => void
+  sessionWarningCountdown: number
   extendSession: () => Promise<void>
 }
 
@@ -32,6 +33,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [sessionTimeout, setSessionTimeoutValue] = useState<number | null>(300) // Default: 5 minutes
   const [isSessionExpiringSoon, setIsSessionExpiringSoon] = useState(false)
   const [showSessionWarning, setShowSessionWarning] = useState(false)
+  const [sessionWarningCountdown, setSessionWarningCountdown] = useState(30)
   const [tokenExpiryTimer, setTokenExpiryTimer] = useState<any | null>(null)
 
   useEffect(() => {
@@ -52,6 +54,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const timer = setTimeout(() => {
               setIsSessionExpiringSoon(true)
               setShowSessionWarning(true)
+              setSessionWarningCountdown(Math.max(1, Math.floor(warningTime / 1000)))
             }, warningTime)
             setTokenExpiryTimer(timer)
           }
@@ -106,6 +109,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     setIsSessionExpiringSoon(false)
     setShowSessionWarning(false)
+    setSessionWarningCountdown(30)
   }
 
   const extendSession = async () => {
@@ -122,6 +126,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Reset the warning timer
       setIsSessionExpiringSoon(false)
       setShowSessionWarning(false)
+      setSessionWarningCountdown(30)
       
       if (tokenExpiryTimer) {
         clearTimeout(tokenExpiryTimer)
@@ -140,6 +145,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const timer = setTimeout(() => {
               setIsSessionExpiringSoon(true)
               setShowSessionWarning(true)
+              setSessionWarningCountdown(Math.max(1, Math.floor(warningTime / 1000)))
             }, warningTime)
             setTokenExpiryTimer(timer)
           }
@@ -178,6 +184,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isSessionExpiringSoon,
       showSessionWarning,
       setShowSessionWarning,
+      sessionWarningCountdown,
       extendSession
     }}>
       {children}

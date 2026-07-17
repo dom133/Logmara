@@ -12,7 +12,7 @@ import DashboardViewPage from './pages/DashboardView'
 import Admin from './pages/Admin'
 import SetupWizard from './pages/SetupWizard'
 import ErrorBoundary from './components/ErrorBoundary'
-import SessionWarningModal from './components/SessionWarningModal'
+import { SessionWarningModal } from './components/SessionWarningModal'
 import { AuthProvider, useAuth } from './services/auth'
 import { getDashboards, getDashboard, Dashboard as DashboardType, checkInitialized } from './services/api'
 
