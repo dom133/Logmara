@@ -223,6 +223,7 @@ func Migrate(db *sql.DB) error {
 		partitionStmts := []string{
 			`ALTER TABLE syslog_logs DROP CONSTRAINT IF EXISTS syslog_logs_pkey`,
 			`ALTER TABLE syslog_logs ADD PRIMARY KEY (timestamp, id)`,
+			`DROP TABLE IF EXISTS syslog_logs_new CASCADE`,
 			`CREATE TABLE syslog_logs_new (LIKE syslog_logs INCLUDING DEFAULTS INCLUDING GENERATED INCLUDING STORAGE) PARTITION BY RANGE (timestamp)`,
 			`ALTER TABLE syslog_logs_new ADD PRIMARY KEY (timestamp, id)`,
 			`DO $$
@@ -248,7 +249,7 @@ BEGIN
 	END LOOP;
 	EXECUTE 'CREATE TABLE IF NOT EXISTS syslog_logs_default PARTITION OF syslog_logs_new DEFAULT';
 END $$`,
-			`INSERT INTO syslog_logs_new SELECT * FROM syslog_logs`,
+			`INSERT INTO syslog_logs_new (id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, created_at, matched_parsers) SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, created_at, matched_parsers FROM syslog_logs`,
 			`DROP TABLE syslog_logs`,
 			`ALTER TABLE syslog_logs_new RENAME TO syslog_logs`,
 		}
