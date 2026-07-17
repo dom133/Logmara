@@ -246,9 +246,9 @@ BEGIN
 		v_curr := v_curr + INTERVAL '1 month';
 	END LOOP;
 
-	CREATE TABLE IF NOT EXISTS syslog_logs_default PARTITION OF syslog_logs DEFAULT;
-	CREATE INDEX IF NOT EXISTS idx_syslog_timestamp ON syslog_logs USING BRIN (timestamp);
-	CREATE INDEX IF NOT EXISTS idx_syslog_recent_7d ON syslog_logs (timestamp DESC) WHERE timestamp >= NOW() - INTERVAL '7 days';
+	EXECUTE 'CREATE TABLE IF NOT EXISTS syslog_logs_default PARTITION OF syslog_logs DEFAULT';
+	EXECUTE 'CREATE INDEX IF NOT EXISTS idx_syslog_timestamp ON syslog_logs USING BRIN (timestamp)';
+	EXECUTE 'CREATE INDEX IF NOT EXISTS idx_syslog_recent_7d ON syslog_logs (timestamp DESC) WHERE timestamp >= NOW() - INTERVAL ''7 days''';
 END $$`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_timeline_hourly AS
 			SELECT date_trunc('hour', timestamp) AS hour, COUNT(*) AS cnt FROM syslog_logs GROUP BY 1 ORDER BY 1
