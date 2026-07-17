@@ -24,6 +24,7 @@ export default function Admin() {
   const [editDeviceForm] = Form.useForm()
   const [ldapEnabled, setLdapEnabled] = useState(false)
   const [ldapAutoProvision, setLdapAutoProvision] = useState(false)
+  const [httpsEnabled, setHttpsEnabled] = useState(false)
   const [testing, setTesting] = useState(false)
   const [purgeModalOpen, setPurgeModalOpen] = useState(false)
   const [pauseDuringPurge, setPauseDuringPurge] = useState(false)
@@ -69,9 +70,12 @@ export default function Admin() {
       if (data['retention_days']) formValues['retention_days'] = parseInt(data['retention_days'], 10)
       if (data['jwt_expiry']) formValues['jwt_expiry'] = parseInt(data['jwt_expiry'], 10)
       if (data['session_timeout_min'] !== undefined && data['session_timeout_min'] !== '') formValues['session_timeout_min'] = parseInt(data['session_timeout_min'], 10)
+      formValues['https_enabled'] = data['https_enabled'] === 'true'
+      if (data['https_port']) formValues['https_port'] = parseInt(data['https_port'], 10)
       settingsForm.setFieldsValue(formValues)
       setLdapEnabled(data['ldap_enabled'] === 'true')
       setLdapAutoProvision(data['ldap_auto_provision'] === 'true')
+      setHttpsEnabled(data['https_enabled'] === 'true')
     } catch {
       message.error('Failed to load settings')
     }
@@ -375,9 +379,22 @@ const handleCleanup = async () => {
                   <Form.Item label="JWT Expiry (hours)" name="jwt_expiry">
                     <InputNumber min={1} max={8760} style={{ width: '100%' }} />
                   </Form.Item>
-                  <Form.Item label="Session Timeout (minutes)" name="session_timeout_min">
-                    <InputNumber min={1} max={10080} style={{ width: '100%' }} />
-                  </Form.Item>
+<Form.Item label="Session Timeout (minutes)" name="session_timeout_min">
+                     <InputNumber min={1} max={10080} style={{ width: '100%' }} />
+                   </Form.Item>
+                   <Divider orientation="left">HTTPS</Divider>
+                   <Form.Item label="Enable HTTPS" name="https_enabled" valuePropName="checked">
+                     <Switch checked={httpsEnabled} onChange={(v) => { setHttpsEnabled(v); settingsForm.setFieldValue('https_enabled', v); }} />
+                   </Form.Item>
+                   <Form.Item label="HTTPS Port" name="https_port">
+                     <InputNumber min={1} max={65535} style={{ width: '100%' }} disabled={!httpsEnabled} />
+                   </Form.Item>
+                   <Form.Item label="Certificate Path (.pem/.crt)" name="https_cert_file">
+                     <Input placeholder="/etc/ssl/certs/app.pem" disabled={!httpsEnabled} />
+                   </Form.Item>
+                   <Form.Item label="Key Path (.key)" name="https_key_file">
+                     <Input placeholder="/etc/ssl/private/app.key" disabled={!httpsEnabled} />
+                   </Form.Item>
                   <Divider />
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <Button type="primary" htmlType="submit">

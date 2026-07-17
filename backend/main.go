@@ -213,8 +213,29 @@ func main() {
 		port = "8080"
 	}
 
+	httpsEnabled := os.Getenv("HTTPS_ENABLED") == "true" || db.GetSetting(database, "https_enabled", "false") == "true"
+	httpsCert := os.Getenv("HTTPS_CERT_FILE")
+	httpsKey := os.Getenv("HTTPS_KEY_FILE")
+	httpsPort := os.Getenv("HTTPS_PORT")
+	if httpsCert == "" {
+		httpsCert = db.GetSetting(database, "https_cert_file", "")
+	}
+	if httpsKey == "" {
+		httpsKey = db.GetSetting(database, "https_key_file", "")
+	}
+	if httpsPort == "" {
+		httpsPort = db.GetSetting(database, "https_port", "8443")
+	}
+
+	startHTTPS := httpsEnabled && httpsCert != "" && httpsKey != ""
+
+	srvPort := port
+	if startHTTPS {
+		srvPort = httpsPort
+	}
+
 	srv := &http.Server{
-		Addr:         ":" + port,
+		Addr:         ":" + srvPort,
 		Handler:      r,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
@@ -222,10 +243,18 @@ func main() {
 	}
 
 	go func() {
-		slog.Info("server starting", "port", port)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server failed", "error", err)
-			os.Exit(1)
+		if startHTTPS {
+			slog.Info("starting HTTPS server", "port", httpsPort)
+			if err := srv.ListenAndServeTLS(httpsCert, httpsKey); err != nil && err != http.ErrServerClosed {
+				slog.Error("https server failed", "error", err)
+				os.Exit(1)
+			}
+		} else {
+			slog.Info("server starting", "port", port)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("server failed", "error", err)
+				os.Exit(1)
+			}
 		}
 	}()
 
