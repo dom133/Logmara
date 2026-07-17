@@ -177,8 +177,8 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 		}
 
 		logsQuery := fmt.Sprintf(
-			"SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at "+
-				"FROM syslog_logs %s ORDER BY %s LIMIT $%d OFFSET $%d",
+			"SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at, COALESCE(da.display_name, '') "+
+				"FROM syslog_logs %s LEFT JOIN device_aliases da ON da.fromhost_ip = COALESCE(syslog_logs.fromhost_ip, '') ORDER BY %s LIMIT $%d OFFSET $%d",
 			whereSQL, orderClause, argIdx, argIdx+1,
 		)
 		args = append(args, limitInt, offsetInt)

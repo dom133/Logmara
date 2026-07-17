@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Table, Input, InputRef, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Dropdown, Modal, Descriptions } from 'antd'
-import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined } from '@ant-design/icons'
+import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined, ClockCircleOutlined } from '@ant-design/icons'
 import { getLogs, getDevices, exportCSV, exportHTML, LogEntry, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
@@ -13,6 +13,7 @@ const { Title, Text } = Typography
 const { RangePicker } = DatePicker
 
 const severities = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug']
+const INTERVAL_OPTIONS = [1, 3, 5, 10, 30]
 
 export default function LogsViewer() {
   const [searchParams] = useSearchParams()
@@ -40,6 +41,15 @@ export default function LogsViewer() {
   const logsRef = useRef(logs)
   logsRef.current = logs
 
+  const [refreshInterval, setRefreshInterval] = useState(() => {
+    const saved = localStorage.getItem('logs_refresh_interval')
+    return saved ? parseInt(saved, 10) : 5
+  })
+
+  useEffect(() => {
+    localStorage.setItem('logs_refresh_interval', String(refreshInterval))
+  }, [refreshInterval])
+
   const deviceMap = useMemo(() => {
     const m = new Map<string, string>()
     for (const d of devices) {
@@ -51,7 +61,8 @@ export default function LogsViewer() {
     return m
   }, [devices])
 
-  const resolveHostname = (hostname: string, fromhost_ip?: string): string => {
+  const resolveHostname = (hostname: string, fromhost_ip?: string, displayName?: string): string => {
+    if (displayName) return displayName
     return deviceMap.get(fromhost_ip || hostname || '') || hostname || '-'
   }
 
@@ -75,8 +86,7 @@ export default function LogsViewer() {
         loadDevices()
       }
     }, 30000)
-    
-    // Check if tab is active
+
     const handleVisibilityChange = () => {
       setIsTabActive(!document.hidden)
     }
@@ -126,13 +136,38 @@ export default function LogsViewer() {
     }
   }, [filters, pagination.pageSize])
 
+  const pollLogs = useCallback(async () => {
+    try {
+      const currentIds = new Set(logsRef.current.map(l => l.id))
+      const buffer = Math.min(20, pagination.pageSize)
+      const data = await getLogs({
+        ...filters,
+        offset: 0,
+        limit: pagination.pageSize + buffer,
+        from: filters.from ? dayjs(filters.from).format() : '',
+        to: filters.to ? dayjs(filters.to).format() : '',
+      })
+      const fetched = data.logs || []
+      const newLogs = fetched.filter(l => !currentIds.has(l.id))
+      if (newLogs.length > 0) {
+        setLogs(prev => {
+          const merged = [...newLogs, ...prev]
+          return merged.slice(0, pagination.pageSize)
+        })
+        setTotal(data.total || total)
+      }
+    } catch {
+      // silent fail on poll
+    }
+  }, [filters, pagination.pageSize, total])
+
   useEffect(() => {
     if (!isTabActive) return
     const interval = setInterval(() => {
-      loadLogs(0)
-    }, 5000)
+      pollLogs()
+    }, refreshInterval * 1000)
     return () => clearInterval(interval)
-  }, [isTabActive, loadLogs])
+  }, [isTabActive, pollLogs, refreshInterval])
 
   const handleTableChange = (pag: { current?: number; pageSize?: number }) => {
     const page = pag.current ?? 1
@@ -214,7 +249,7 @@ export default function LogsViewer() {
         const rowSpans = getRowSpans(logs)
         return {
           props: { rowSpan: rowSpans.get(index) },
-          children: v ? <Tag color="blue">{resolveHostname(v, _record.fromhost_ip)}</Tag> : '-',
+          children: v ? <Tag color="blue">{resolveHostname(v, _record.fromhost_ip, _record.display_name)}</Tag> : '-',
         }
       },
     },
@@ -286,6 +321,14 @@ export default function LogsViewer() {
         >
           Group by Device
         </Button>
+        <Select
+          size="small"
+          style={{ width: 100 }}
+          value={refreshInterval}
+          onChange={setRefreshInterval}
+          options={INTERVAL_OPTIONS.map(v => ({ label: `${v}s`, value: v }))}
+          suffixIcon={<ClockCircleOutlined />}
+        />
         
       </div>
 
@@ -399,7 +442,7 @@ export default function LogsViewer() {
               <Descriptions bordered column={1} size="small">
                 <Descriptions.Item label="Timestamp">{new Date(selectedLog.timestamp).toLocaleString()}</Descriptions.Item>
                 <Descriptions.Item label="Severity"><SeverityTag severity={selectedLog.severity} /></Descriptions.Item>
-                <Descriptions.Item label="Device"><Tag color="blue">{resolveHostname(selectedLog.hostname, selectedLog.fromhost_ip)}</Tag></Descriptions.Item>
+                <Descriptions.Item label="Device"><Tag color="blue">{resolveHostname(selectedLog.hostname, selectedLog.fromhost_ip, selectedLog.display_name)}</Tag></Descriptions.Item>
                 {selectedLog.fromhost_ip && <Descriptions.Item label="Source IP"><Tag color="green">{selectedLog.fromhost_ip}</Tag></Descriptions.Item>}
                 {selectedLog.app_name && <Descriptions.Item label="App">{selectedLog.app_name}</Descriptions.Item>}
                 <Descriptions.Item label="Message">

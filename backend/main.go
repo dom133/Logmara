@@ -97,6 +97,22 @@ func main() {
 	ctx, maintCancel := context.WithCancel(context.Background())
 	stopVacuum, stopMV := db.StartMaintenance(ctx, database)
 
+	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		slog.Info("fast dashboard MV refresh started", "interval_seconds", 30)
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("fast dashboard MV refresh stopped")
+				return
+			case <-ticker.C:
+				db.RefreshMV(database)
+			}
+		}
+	}()
+
 	auth.Init(database)
 
 	engine := parser.NewEngine(database)

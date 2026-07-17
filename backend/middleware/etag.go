@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -65,19 +64,7 @@ func ETag() gin.HandlerFunc {
 			}
 		}
 
-		lastMod := time.Now().UTC().Format(time.RFC1123)
-		if modifiedSince := c.GetHeader("If-Modified-Since"); modifiedSince != "" {
-			t, err := time.Parse(time.RFC1123, modifiedSince)
-			if err == nil && time.Since(t) < 60*time.Second {
-				w.ResponseWriter.Header().Set("ETag", etag)
-				w.ResponseWriter.Header().Set("Last-Modified", lastMod)
-				w.ResponseWriter.WriteHeader(http.StatusNotModified)
-				return
-			}
-		}
-
 		w.ResponseWriter.Header().Set("ETag", etag)
-		w.ResponseWriter.Header().Set("Last-Modified", lastMod)
 		w.ResponseWriter.Header().Set("Cache-Control", "no-cache, max-age=10")
 		w.ResponseWriter.Write(w.buf)
 	}

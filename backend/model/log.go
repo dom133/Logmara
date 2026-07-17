@@ -23,6 +23,7 @@ type SyslogLog struct {
 	ParsedFields   map[string]string `json:"parsed_fields,omitempty"`
 	MatchedParsers []string          `json:"matched_parsers,omitempty"`
 	CreatedAt      time.Time         `json:"created_at"`
+	DisplayName    string            `json:"display_name,omitempty"`
 }
 
 type IngestEntry struct {

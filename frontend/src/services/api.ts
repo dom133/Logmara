@@ -82,6 +82,7 @@ export interface LogEntry {
   parsed_fields?: Record<string, string>
   matched_parsers?: string[]
   created_at: string
+  display_name?: string
 }
 
 export interface DashboardStats {

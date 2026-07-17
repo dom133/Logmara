@@ -120,7 +120,7 @@ func scanLogRows(rows *sql.Rows) []model.SyslogLog {
 		err := rows.Scan(
 			&l.ID, &l.Timestamp, &l.Hostname, &l.FromHostIP, &l.AppName,
 			&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
-			&l.Message, &l.RawMessage, &rawParsed, &parsers, &l.CreatedAt,
+			&l.Message, &l.RawMessage, &rawParsed, &parsers, &l.CreatedAt, &l.DisplayName,
 		)
 		if err != nil {
 			continue
