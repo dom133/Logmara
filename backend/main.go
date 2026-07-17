@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -205,6 +206,7 @@ func main() {
 			adminGroup.GET("/slow-queries", handler.GetSlowQueries())
 			adminGroup.DELETE("/slow-queries", handler.ClearSlowQueriesHandler())
 			adminGroup.PUT("/devices/:ip/alias", handler.UpdateDeviceAlias(database))
+			adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(database))
 		}
 	}
 
@@ -242,6 +244,8 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
+	handler.TriggerRestart = make(chan struct{}, 1)
+
 	go func() {
 		if startHTTPS {
 			slog.Info("starting HTTPS server", "port", httpsPort)
@@ -256,6 +260,36 @@ func main() {
 				os.Exit(1)
 			}
 		}
+	}()
+
+	go func() {
+		<-handler.TriggerRestart
+		slog.Warn("restarting server due to HTTPS settings change")
+		maintCancel()
+		stopVacuum()
+		stopMV()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("forced shutdown", "error", err)
+		}
+		slog.Info("server stopped, restarting...")
+
+		executable, err := os.Executable()
+		if err != nil {
+			slog.Error("failed to get executable path", "error", err)
+			os.Exit(1)
+		}
+
+		cmd := exec.Command(executable)
+		cmd.Env = os.Environ()
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			slog.Error("failed to restart", "error", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	}()
 
 	quit := make(chan os.Signal, 1)

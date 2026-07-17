@@ -17,6 +17,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+var TriggerRestart chan struct{}
+
 type CreateUserRequest struct {
 	Username string `json:"username" binding:"required,max=100"`
 	Email    string `json:"email" binding:"required,email,max=256"`
@@ -231,11 +233,34 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		oldHttpsEnabled := db.GetSetting(database, "https_enabled", "false")
+		oldCert := db.GetSetting(database, "https_cert_file", "")
+		oldKey := db.GetSetting(database, "https_key_file", "")
+		oldPort := db.GetSetting(database, "https_port", "8443")
+
 		for k, v := range settings {
 			if err := db.UpdateSetting(database, k, v); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to update setting: " + k})
 				return
 			}
+		}
+
+		newHttpsEnabled := settings["https_enabled"]
+		newCert := settings["https_cert_file"]
+		newKey := settings["https_key_file"]
+		newPort := settings["https_port"]
+
+		httpsChanged := oldHttpsEnabled != newHttpsEnabled || oldCert != newCert || oldKey != newKey || oldPort != newPort
+
+		if httpsChanged {
+			c.JSON(http.StatusOK, gin.H{
+				"message":        "Settings updated",
+				"restart_needed": true,
+			})
+			if TriggerRestart != nil {
+				go func() { TriggerRestart <- struct{}{} }()
+			}
+			return
 		}
 
 		c.JSON(http.StatusOK, gin.H{"message": "Settings updated"})

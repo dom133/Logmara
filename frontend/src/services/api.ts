@@ -520,3 +520,14 @@ export async function clearSlowQueries() {
 	const res = await api.delete('/admin/slow-queries')
 	return res.data
 }
+
+export async function uploadSSLCerts(certFile: File, keyFile: File) {
+	const formData = new FormData()
+	formData.append('cert', certFile)
+	formData.append('key', keyFile)
+	const res = await api.post('/admin/ssl/upload', formData, {
+		headers: { 'Content-Type': 'multipart/form-data' },
+		timeout: 60000,
+	})
+	return res.data
+}

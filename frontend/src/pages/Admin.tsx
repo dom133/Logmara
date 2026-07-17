@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm } from 'antd'
 import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined } from '@ant-design/icons'
-import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, User, DeviceStats, SlowQueryRecord } from '../services/api'
+import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, User, DeviceStats, SlowQueryRecord } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
@@ -32,6 +32,9 @@ export default function Admin() {
   const [authType, setAuthType] = useState('local')
   const [slowQueries, setSlowQueries] = useState<SlowQueryRecord[]>([])
   const [slowQueriesLoading, setSlowQueriesLoading] = useState(false)
+  const [sslUploading, setSslUploading] = useState(false)
+  const [certFile, setCertFile] = useState<File | null>(null)
+  const [keyFile, setKeyFile] = useState<File | null>(null)
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_admin',
@@ -157,6 +160,32 @@ await testLDAPConnection({
     }
   }
 
+  const handleUploadSSLCerts = async () => {
+    if (!certFile || !keyFile) {
+      message.warning('Both certificate and key files are required')
+      return
+    }
+    setSslUploading(true)
+    try {
+      const result = await uploadSSLCerts(certFile, keyFile)
+      message.success(result.message || 'SSL certificates uploaded')
+      setCertFile(null)
+      setKeyFile(null)
+      if (result.restart_needed || result.need_reset) {
+        message.warn('Server is restarting to apply SSL changes. Page will reload shortly.')
+        setTimeout(() => {
+          window.location.reload()
+        }, 3000)
+      } else {
+        loadSettings()
+      }
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to upload SSL certificates'))
+    } finally {
+      setSslUploading(false)
+    }
+  }
+
   useEffect(() => {
     loadUsers()
     loadSettings()
@@ -229,9 +258,16 @@ const handleSaveSettings = async () => {
       strValues[k] = v === undefined || v === null ? '' : String(v)
     }
     try {
-      await updateSettings(strValues)
+      const result = await updateSettings(strValues)
       message.success('Settings saved')
-      loadSettings()
+      if (result.restart_needed) {
+        message.warn('Server is restarting to apply HTTPS changes. Page will reload shortly.')
+        setTimeout(() => {
+          window.location.reload()
+        }, 3000)
+      } else {
+        loadSettings()
+      }
     } catch (e: unknown) {
       message.error(getErrorMessage(e, 'Failed to save settings'))
     }
@@ -392,9 +428,59 @@ const handleCleanup = async () => {
                    <Form.Item label="Certificate Path (.pem/.crt)" name="https_cert_file">
                      <Input placeholder="/etc/ssl/certs/app.pem" disabled={!httpsEnabled} />
                    </Form.Item>
-                   <Form.Item label="Key Path (.key)" name="https_key_file">
-                     <Input placeholder="/etc/ssl/private/app.key" disabled={!httpsEnabled} />
-                   </Form.Item>
+<Form.Item label="Key Path (.key)" name="https_key_file">
+                      <Input placeholder="/etc/ssl/private/app.key" disabled={!httpsEnabled} />
+                    </Form.Item>
+                    <Form.Item label="Upload Certificate (.pem/.crt)" disabled={!httpsEnabled}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <input
+                          type="file"
+                          accept=".pem,.crt,.cer"
+                          style={{ display: 'none' }}
+                          id="ssl-cert-upload"
+                          disabled={!httpsEnabled}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0]
+                            if (file) { setCertFile(file); message.success(`Certificate selected: ${file.name}`) }
+                            e.target.value = ''
+                          }}
+                        />
+                        <Button icon={<UploadOutlined />} disabled={!httpsEnabled} onClick={() => { document.getElementById('ssl-cert-upload')?.click() }}>
+                          {certFile ? `Selected: ${certFile.name}` : 'Choose Certificate'}
+                        </Button>
+                      </div>
+                    </Form.Item>
+                    <Form.Item label="Upload Private Key (.key)" disabled={!httpsEnabled}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <input
+                          type="file"
+                          accept=".key,.pem"
+                          style={{ display: 'none' }}
+                          id="ssl-key-upload"
+                          disabled={!httpsEnabled}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0]
+                            if (file) { setKeyFile(file); message.success(`Key selected: ${file.name}`) }
+                            e.target.value = ''
+                          }}
+                        />
+                        <Button icon={<UploadOutlined />} disabled={!httpsEnabled} onClick={() => { document.getElementById('ssl-key-upload')?.click() }}>
+                          {keyFile ? `Selected: ${keyFile.name}` : 'Choose Key'}
+                        </Button>
+                      </div>
+                    </Form.Item>
+                    <Form.Item>
+                      <Button
+                        type="primary"
+                        icon={<UploadOutlined />}
+                        loading={sslUploading}
+                        disabled={!httpsEnabled || !certFile || !keyFile || sslUploading}
+                        onClick={handleUploadSSLCerts}
+                        block
+                      >
+                        {sslUploading ? 'Uploading...' : 'Upload Certificates & Restart Server'}
+                      </Button>
+                    </Form.Item>
                   <Divider />
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <Button type="primary" htmlType="submit">
