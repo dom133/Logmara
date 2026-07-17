@@ -246,21 +246,39 @@ func main() {
 
 	handler.TriggerRestart = make(chan struct{}, 1)
 
-	go func() {
-		if startHTTPS {
-			slog.Info("starting HTTPS server", "port", httpsPort)
+	var httpSrv *http.Server
+
+	if startHTTPS {
+		slog.Info("starting HTTPS server", "port", httpsPort)
+		go func() {
 			if err := srv.ListenAndServeTLS(httpsCert, httpsKey); err != nil && err != http.ErrServerClosed {
 				slog.Error("https server failed", "error", err)
 				os.Exit(1)
 			}
-		} else {
+		}()
+
+		httpSrv = &http.Server{
+			Addr:         ":" + port,
+			Handler:      r,
+			ReadTimeout:  15 * time.Second,
+			WriteTimeout: 15 * time.Second,
+			IdleTimeout:  60 * time.Second,
+		}
+		slog.Info("starting HTTP server (internal proxy)", "port", port)
+		go func() {
+			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("http server failed", "error", err)
+			}
+		}()
+	} else {
+		go func() {
 			slog.Info("server starting", "port", port)
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				slog.Error("server failed", "error", err)
 				os.Exit(1)
 			}
-		}
-	}()
+		}()
+	}
 
 	go func() {
 		<-handler.TriggerRestart
@@ -270,6 +288,11 @@ func main() {
 		stopMV()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if httpSrv != nil {
+			if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+				slog.Error("forced shutdown http", "error", err)
+			}
+		}
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("forced shutdown", "error", err)
 		}
@@ -303,6 +326,11 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	if httpSrv != nil {
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("forced shutdown http", "error", err)
+		}
+	}
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("forced shutdown", "error", err)
 	}
