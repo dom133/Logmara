@@ -79,7 +79,7 @@ export default function Admin() {
 
   const handleTestLDAP = async () => {
     const values = settingsForm.getFieldsValue([
-      'ldap_server', 'ldap_port', 'ldap_use_tls',
+      'ldap_server', 'ldap_port', 'ldap_use_tls', 'ldap_verify_cert', 'ldap_ca_cert',
       'ldap_base_dn', 'ldap_bind_dn', 'ldap_bind_password',
     ])
     if (!values.ldap_server) {
@@ -88,10 +88,12 @@ export default function Admin() {
     }
     setTesting(true)
     try {
-      await testLDAPConnection({
+await testLDAPConnection({
         server: values.ldap_server,
         port: Number(values.ldap_port) || 389,
         use_tls: getLdapBool('ldap_use_tls'),
+        verify_cert: getLdapBool('ldap_verify_cert'),
+        ca_cert: values.ldap_ca_cert || '',
         base_dn: values.ldap_base_dn,
         bind_dn: values.ldap_bind_dn,
         bind_password: values.ldap_bind_password,

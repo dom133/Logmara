@@ -199,7 +199,7 @@ func buildTLSConfig(cfg *Config) *tls.Config {
 	return tc
 }
 
-func TestConnection(server string, port int, useTLS bool, baseDN, bindDN, bindPassword string) error {
+func TestConnection(server string, port int, useTLS bool, verifyCert bool, caCert, baseDN, bindDN, bindPassword string) error {
 	if server == "" {
 		return fmt.Errorf("server is required")
 	}
@@ -208,10 +208,11 @@ func TestConnection(server string, port int, useTLS bool, baseDN, bindDN, bindPa
 		Server:       server,
 		Port:         port,
 		UseTLS:       useTLS,
+		VerifyCert:   verifyCert,
+		CaCert:       caCert,
 		BaseDN:       baseDN,
 		BindDN:       bindDN,
 		BindPassword: bindPassword,
-		VerifyCert:   false,
 	}
 
 	l, err := dialLDAP(cfg)

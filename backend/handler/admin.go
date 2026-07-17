@@ -322,6 +322,7 @@ type TestLDAPRequest struct {
 	Port         int    `json:"port"`
 	UseTLS       bool   `json:"use_tls"`
 	VerifyCert   bool   `json:"verify_cert"`
+	CaCert       string `json:"ca_cert"`
 	BaseDN       string `json:"base_dn"`
 	BindDN       string `json:"bind_dn"`
 	BindPassword string `json:"bind_password"`
@@ -339,7 +340,7 @@ func TestLDAP(database *sql.DB) gin.HandlerFunc {
 			req.Port = 389
 		}
 
-		err := ldap.TestConnection(req.Server, req.Port, req.UseTLS, req.BaseDN, req.BindDN, req.BindPassword)
+		err := ldap.TestConnection(req.Server, req.Port, req.UseTLS, req.VerifyCert, req.CaCert, req.BaseDN, req.BindDN, req.BindPassword)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return

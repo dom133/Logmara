@@ -438,6 +438,8 @@ export async function testLDAPConnection(data: {
 	server: string
 	port: number
 	use_tls: boolean
+	verify_cert: boolean
+	ca_cert: string
 	base_dn: string
 	bind_dn: string
 	bind_password: string
