@@ -254,7 +254,7 @@ END $$`,
 			`ALTER TABLE syslog_logs_new RENAME TO syslog_logs`,
 			`CREATE SEQUENCE IF NOT EXISTS syslog_logs_id_seq OWNED BY syslog_logs.id`,
 			`ALTER TABLE syslog_logs ALTER COLUMN id SET DEFAULT nextval('syslog_logs_id_seq')`,
-			`SELECT setval('syslog_logs_id_seq', COALESCE((SELECT MAX(id) FROM syslog_logs), 0))`,
+			`SELECT setval('syslog_logs_id_seq', GREATEST(1, COALESCE((SELECT MAX(id) FROM syslog_logs), 0)))`,
 		}
 		for _, stmt := range partitionStmts {
 			if _, err := db.Exec(stmt); err != nil {
@@ -269,7 +269,6 @@ END $$`,
 
 	postStmts := []string{
 		`DO $$ BEGIN CREATE INDEX idx_syslog_timestamp ON syslog_logs USING BRIN (timestamp); EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_object THEN NULL; END $$`,
-		`DO $$ BEGIN CREATE INDEX idx_syslog_recent_7d ON syslog_logs (timestamp DESC) WHERE timestamp >= NOW() - INTERVAL '7 days'; EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_object THEN NULL; END $$`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_timeline_hourly AS
 			SELECT date_trunc('hour', timestamp) AS hour, COUNT(*) AS cnt FROM syslog_logs GROUP BY 1 ORDER BY 1
 		`,
@@ -277,7 +276,11 @@ END $$`,
 	}
 	for _, stmt := range postStmts {
 		if _, err := db.Exec(stmt); err != nil {
-			return fmt.Errorf("post-migration failed (%s): %w", stmt[:50], err)
+			truncated := stmt
+			if len(truncated) > 50 {
+				truncated = truncated[:50]
+			}
+			return fmt.Errorf("post-migration failed (%s): %w", truncated, err)
 		}
 	}
 
