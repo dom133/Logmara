@@ -68,7 +68,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const setupSessionWarning = useCallback((tok: string) => {
     clearAllTimers()
     try {
-      const payload = JSON.parse(atob(tok.split('.')[1]))
+      const base64 = tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/').padEnd(tok.split('.')[1].length + (4 - (tok.split('.')[1].length % 4)) % 4, '=')
+      const payload = JSON.parse(atob(base64))
       const currentTime = Math.floor(Date.now() / 1000)
       const expiresIn = payload.exp - currentTime
 
@@ -164,13 +165,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       countdownRef.current = setTimeout(() => {
         setSessionWarningCountdown(prev => prev - 1)
       }, 1000)
+    } else if (showSessionWarning && sessionWarningCountdown === 0) {
+      logout()
     }
     return () => {
       if (countdownRef.current) {
         clearTimeout(countdownRef.current)
       }
     }
-  }, [showSessionWarning, sessionWarningCountdown])
+  }, [showSessionWarning, sessionWarningCountdown, logout])
 
   const isAdmin = user?.is_admin || false
   const canEdit = user?.role === 'admin' || user?.role === 'editor'

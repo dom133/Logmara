@@ -324,10 +324,9 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 		whereClauses, args, argIdx := buildLogWhereClauses(opts)
 
 		if searchTerm != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("message ILIKE $%d OR hostname ILIKE $%d", argIdx, argIdx+1))
-			pattern := "%" + searchTerm + "%"
-			args = append(args, pattern, pattern)
-			argIdx += 2
+			whereClauses = append(whereClauses, fmt.Sprintf("search_vector @@ websearch_to_tsquery('english', $%d)", argIdx))
+			args = append(args, searchTerm)
+			argIdx++
 		}
 
 		whereSQL := buildWhereSQL(whereClauses)
@@ -361,14 +360,16 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 		countClauses, countArgs, _ := buildLogWhereClauses(countOpts)
 
 		if cfg.Filters.Search != "" {
-			countClauses = append(countClauses, fmt.Sprintf("message ILIKE $%d OR hostname ILIKE $%d", len(countArgs)+1, len(countArgs)+2))
-			pattern := "%" + cfg.Filters.Search + "%"
-			countArgs = append(countArgs, pattern, pattern)
+			countClauses = append(countClauses, fmt.Sprintf("search_vector @@ websearch_to_tsquery('english', $%d)", len(countArgs)+1))
+			countArgs = append(countArgs, cfg.Filters.Search)
 		}
 
 		countSQL := buildWhereSQL(countClauses)
 		var total int64
 		_ = timedQuery("dashboard_data_count", func() error {
+			if len(countClauses) == 0 {
+				return db.QueryRow("SELECT total_logs FROM mv_dashboard_summary ORDER BY refreshed_at DESC LIMIT 1").Scan(&total)
+			}
 			return db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", countSQL), countArgs...).Scan(&total)
 		})
 
