@@ -133,7 +133,7 @@ func main() {
 		authGroup.GET("/devices", handler.GetDevices(database))
 		authGroup.GET("/export/csv", handler.ExportCSV(database))
 		authGroup.GET("/export/html", handler.ExportHTML(database))
-		authGroup.GET("/auth/me", handler.GetMe())
+		authGroup.GET("/auth/me", handler.GetMe(database))
 		changePasswordLimiter := newRateLimiter(5, time.Minute)
 		authGroup.POST("/auth/change-password", rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
 
