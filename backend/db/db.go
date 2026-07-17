@@ -233,9 +233,9 @@ BEGIN
 		v_end := (date_trunc('month', NOW()) + INTERVAL '1 month')::DATE;
 	END IF;
 
-	ALTER TABLE syslog_logs DROP CONSTRAINT IF EXISTS syslog_logs_pkey;
-	ALTER TABLE syslog_logs ADD PRIMARY KEY (timestamp, id);
-	ALTER TABLE syslog_logs CONVERT TO PARTITIONED RANGE (timestamp);
+	EXECUTE 'ALTER TABLE syslog_logs DROP CONSTRAINT IF EXISTS syslog_logs_pkey';
+	EXECUTE 'ALTER TABLE syslog_logs ADD PRIMARY KEY (timestamp, id)';
+	EXECUTE 'ALTER TABLE syslog_logs CONVERT TO PARTITIONED RANGE (timestamp)';
 
 	v_curr := v_start;
 	WHILE v_curr < v_end LOOP
