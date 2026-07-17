@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, CertificateOutlined } from '@ant-design/icons'
+import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
 import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, User, DeviceStats, SlowQueryRecord } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
@@ -477,7 +477,7 @@ const handleCleanup = async () => {
                     {certInfo && (
                       <Result
                         status={certInfo.error ? 'error' : 'success'}
-                        icon={<CertificateOutlined />}
+                        icon={<SafetyCertificateOutlined />}
                         title={certInfo.error || 'Certificate Verified'}
                         subTitle={certInfo.subject}
                       >
