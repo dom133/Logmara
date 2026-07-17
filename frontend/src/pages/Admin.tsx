@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm } from 'antd'
 import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined } from '@ant-design/icons'
-import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, User, DeviceStats } from '../services/api'
+import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, User, DeviceStats, SlowQueryRecord } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
@@ -29,6 +29,8 @@ export default function Admin() {
   const [pauseDuringPurge, setPauseDuringPurge] = useState(false)
   const [purging, setPurging] = useState(false)
   const [authType, setAuthType] = useState('local')
+  const [slowQueries, setSlowQueries] = useState<SlowQueryRecord[]>([])
+  const [slowQueriesLoading, setSlowQueriesLoading] = useState(false)
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_admin',
@@ -127,10 +129,33 @@ export default function Admin() {
     }
   }
 
+  const loadSlowQueries = async () => {
+    setSlowQueriesLoading(true)
+    try {
+      const data = await getSlowQueries()
+      setSlowQueries(data)
+    } catch {
+      message.error('Failed to load slow queries')
+    } finally {
+      setSlowQueriesLoading(false)
+    }
+  }
+
+  const handleClearSlowQueries = async () => {
+    try {
+      await clearSlowQueries()
+      message.success('Slow query log cleared')
+      loadSlowQueries()
+    } catch {
+      message.error('Failed to clear slow queries')
+    }
+  }
+
   useEffect(() => {
     loadUsers()
     loadSettings()
     loadDevices()
+    loadSlowQueries()
   }, [])
 
 const handleCreate = async () => {
@@ -600,6 +625,57 @@ const handleCleanup = async () => {
                           Edit Name
                         </Button>
                       ),
+                    },
+                  ]}
+                />
+              </Card>
+            ),
+          },
+          {
+            key: 'slow_queries',
+            label: 'Slow Queries',
+            children: (
+              <Card
+                title="Slow Query Log"
+                extra={
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Button icon={<ReloadOutlined />} onClick={loadSlowQueries}>
+                      Refresh
+                    </Button>
+                    <Button danger icon={<DeleteOutlined />} onClick={handleClearSlowQueries}>
+                      Clear
+                    </Button>
+                  </div>
+                }
+              >
+                <Table
+                  loading={slowQueriesLoading}
+                  rowKey={(record, i) => String(i)}
+                  dataSource={slowQueries}
+                  pagination={{ pageSize: 50 }}
+                  scroll={{ x: 'max-content' }}
+                  columns={[
+                    {
+                      title: 'Query',
+                      dataIndex: 'name',
+                      key: 'name',
+                      render: (name: string) => <Tag color="orange">{name}</Tag>,
+                    },
+                    {
+                      title: 'Duration',
+                      dataIndex: 'duration_ms',
+                      key: 'duration_ms',
+                      sorter: (a: SlowQueryRecord, b: SlowQueryRecord) => a.duration_ms - b.duration_ms,
+                      render: (ms: number) => {
+                        const color = ms > 5000 ? 'red' : ms > 1000 ? 'orange' : 'green'
+                        return <Tag color={color}>{ms} ms</Tag>
+                      },
+                    },
+                    {
+                      title: 'Timestamp',
+                      dataIndex: 'timestamp',
+                      key: 'timestamp',
+                      render: (ts: string) => new Date(ts).toLocaleString(),
                     },
                   ]}
                 />

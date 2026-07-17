@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -13,6 +14,7 @@ func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func()) {
 	vacuumInterval := getIntervalHours("VACUUM_INTERVAL_HOURS", "vacuum_interval_hours", 24)
 	mvInterval := getIntervalMinutes("MV_REFRESH_INTERVAL_MIN", "mv_refresh_interval_min", 30)
 
+	createPartitions(db)
 	stopVacuum := startVacuumScheduler(ctx, db, vacuumInterval)
 	stopMV := startMVScheduler(ctx, db, mvInterval)
 
@@ -74,13 +76,15 @@ func runVacuumAnalyze(db *sql.DB) {
 }
 
 func refreshMV(db *sql.DB) {
-	slog.Info("refreshing materialized view", "view", "mv_dashboard_summary")
-	_, err := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_summary")
-	if err != nil {
-		slog.Error("mv refresh failed", "view", "mv_dashboard_summary", "err", err)
-		return
+	slog.Info("refreshing materialized views")
+	for _, mv := range []string{"mv_dashboard_summary", "mv_dashboard_severity", "mv_timeline_hourly"} {
+		_, err := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY " + mv)
+		if err != nil {
+			slog.Error("mv refresh failed", "view", mv, "err", err)
+		} else {
+			slog.Info("materialized view refreshed", "view", mv)
+		}
 	}
-	slog.Info("materialized view refreshed", "view", "mv_dashboard_summary")
 }
 
 func getIntervalHours(envKey, settingKey string, defaultHours int) time.Duration {
@@ -99,4 +103,36 @@ func getIntervalMinutes(envKey, settingKey string, defaultMinutes int) time.Dura
 		}
 	}
 	return time.Duration(defaultMinutes) * time.Minute
+}
+
+func createPartitions(db *sql.DB) {
+	isPartitioned := false
+	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p')`).Scan(&isPartitioned)
+	if err != nil || !isPartitioned {
+		return
+	}
+
+	now := time.Now().UTC()
+	currentMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	monthsAhead := 3
+
+	for i := 0; i <= monthsAhead; i++ {
+		partStart := currentMonth.AddDate(0, i, 0)
+		partEnd := partStart.AddDate(0, 1, 0)
+		partName := "syslog_logs_" + partStart.Format("2006_01")
+
+		_, err := db.Exec(
+			fmt.Sprintf(
+				"CREATE TABLE IF NOT EXISTS %s PARTITION OF syslog_logs FOR VALUES FROM (%s) TO (%s)",
+				partName,
+				fmt.Sprintf("'%s'", partStart.Format(time.RFC3339)),
+				fmt.Sprintf("'%s'", partEnd.Format(time.RFC3339)),
+			),
+		)
+		if err != nil {
+			slog.Error("partition creation failed", "partition", partName, "err", err)
+		} else {
+			slog.Info("partition ensured", "partition", partName)
+		}
+	}
 }

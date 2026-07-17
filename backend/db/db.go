@@ -73,7 +73,7 @@ func Migrate(db *sql.DB) error {
 			parsed_fields JSONB DEFAULT '{}',
 			created_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_timestamp ON syslog_logs (timestamp DESC)`,
+		`DROP INDEX IF EXISTS idx_syslog_timestamp`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_hostname ON syslog_logs (hostname)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_severity ON syslog_logs (severity)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_app_name ON syslog_logs (app_name)`,
@@ -208,6 +208,52 @@ func Migrate(db *sql.DB) error {
 			updated_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='device_aliases' AND column_name='old_hostname') THEN ALTER TABLE device_aliases ADD COLUMN old_hostname VARCHAR(255); END IF; END $$`,
+		`DO $$
+DECLARE
+	v_min_ts TIMESTAMPTZ;
+	v_max_ts TIMESTAMPTZ;
+	v_start DATE;
+	v_end DATE;
+	v_curr DATE;
+	v_part_name TEXT;
+BEGIN
+	-- Skip if already partitioned
+	IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p') THEN
+		RETURN;
+	END IF;
+
+	SELECT MIN(timestamp), MAX(timestamp) INTO v_min_ts, v_max_ts FROM syslog_logs;
+
+	IF v_min_ts IS NOT NULL THEN
+		v_start := date_trunc('month', v_min_ts)::DATE;
+		v_end := (date_trunc('month', v_max_ts) + INTERVAL '1 month')::DATE;
+	ELSE
+		v_start := date_trunc('month', NOW())::DATE;
+		v_end := (date_trunc('month', NOW()) + INTERVAL '1 month')::DATE;
+	END IF;
+
+	ALTER TABLE syslog_logs DROP CONSTRAINT IF EXISTS syslog_logs_pkey;
+	ALTER TABLE syslog_logs ADD PRIMARY KEY (timestamp, id);
+	ALTER TABLE syslog_logs SET PARTITION KEY (RANGE (timestamp));
+
+	v_curr := v_start;
+	WHILE v_curr < v_end LOOP
+		v_part_name := 'syslog_logs_' || to_char(v_curr, 'YYYY_MM');
+		EXECUTE format(
+			'CREATE TABLE IF NOT EXISTS %I PARTITION OF syslog_logs FOR VALUES FROM (%L) TO (%L)',
+			v_part_name, v_curr, v_curr + INTERVAL '1 month'
+		);
+		v_curr := v_curr + INTERVAL '1 month';
+	END LOOP;
+
+	CREATE TABLE IF NOT EXISTS syslog_logs_default PARTITION OF syslog_logs DEFAULT;
+	CREATE INDEX IF NOT EXISTS idx_syslog_timestamp ON syslog_logs USING BRIN (timestamp);
+	CREATE INDEX IF NOT EXISTS idx_syslog_recent_7d ON syslog_logs (timestamp DESC) WHERE timestamp >= NOW() - INTERVAL '7 days';
+END $$`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_timeline_hourly AS
+			SELECT date_trunc('hour', timestamp) AS hour, COUNT(*) AS cnt FROM syslog_logs GROUP BY 1 ORDER BY 1
+		`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_timeline_hourly_key ON mv_timeline_hourly (hour)`,
 	}
 
 	for _, stmt := range statements {

@@ -100,6 +100,14 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 	if from == "" && to == "" {
 		_ = timedQuery("dashboard_stats_refresh_mv", func() error {
 			_, err := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_summary")
+			if err != nil {
+				return err
+			}
+			_, err = db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_severity")
+			if err != nil {
+				return err
+			}
+			_, err = db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_timeline_hourly")
 			return err
 		})
 		_ = timedQuery("dashboard_stats_scalar_mv", func() error {
@@ -120,23 +128,41 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 	}
 
 	stats.SeverityCounts = make(map[string]int64)
-	_ = timedQuery("dashboard_stats_severity", func() error {
-		sevRows, err := db.Query(fmt.Sprintf(
-			"WITH filtered AS (SELECT severity FROM syslog_logs %s) "+
-				"SELECT severity, COUNT(*) FROM filtered GROUP BY severity ORDER BY COUNT(*) DESC", whereBase), args...)
-		if err != nil {
-			return err
-		}
-		defer sevRows.Close()
-		for sevRows.Next() {
-			var sev string
-			var cnt int64
-			if sevRows.Scan(&sev, &cnt) == nil {
-				stats.SeverityCounts[sev] = cnt
+	if from == "" && to == "" {
+		_ = timedQuery("dashboard_stats_severity", func() error {
+			sevRows, err := db.Query("SELECT severity, cnt FROM mv_dashboard_severity ORDER BY cnt DESC")
+			if err != nil {
+				return err
 			}
-		}
-		return nil
-	})
+			defer sevRows.Close()
+			for sevRows.Next() {
+				var sev string
+				var cnt int64
+				if sevRows.Scan(&sev, &cnt) == nil {
+					stats.SeverityCounts[sev] = cnt
+				}
+			}
+			return nil
+		})
+	} else {
+		_ = timedQuery("dashboard_stats_severity", func() error {
+			sevRows, err := db.Query(fmt.Sprintf(
+				"WITH filtered AS (SELECT severity FROM syslog_logs %s) "+
+					"SELECT severity, COUNT(*) FROM filtered GROUP BY severity ORDER BY COUNT(*) DESC", whereBase), args...)
+			if err != nil {
+				return err
+			}
+			defer sevRows.Close()
+			for sevRows.Next() {
+				var sev string
+				var cnt int64
+				if sevRows.Scan(&sev, &cnt) == nil {
+					stats.SeverityCounts[sev] = cnt
+				}
+			}
+			return nil
+		})
+	}
 
 	_ = timedQuery("dashboard_stats_devices", func() error {
 		devRows, err := db.Query(fmt.Sprintf(
@@ -382,41 +408,76 @@ func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
 			field = "hour"
 		}
 
-		var query string
-		args := []interface{}{field}
-		argIdx := 2
-
-		if from == "" {
-			query = "SELECT date_trunc($1, timestamp) as ts, COUNT(*) FROM syslog_logs WHERE timestamp >= now() - interval '24 hours'"
-		} else {
-			query = fmt.Sprintf("SELECT date_trunc($1, timestamp) as ts, COUNT(*) FROM syslog_logs WHERE timestamp >= $%d", argIdx)
-			args = append(args, from)
-			argIdx++
-		}
-
-		if to != "" {
-			query += fmt.Sprintf(" AND timestamp <= $%d", argIdx)
-			args = append(args, to)
-		}
-
-		query += " GROUP BY ts ORDER BY ts"
-
 		var points []model.TimelinePoint
-		_ = timedQuery("timeline_stats", func() error {
-			rows, err := db.Query(query, args...)
-			if err != nil {
-				return err
-			}
-			defer rows.Close()
 
-			for rows.Next() {
-				var p model.TimelinePoint
-				if rows.Scan(&p.Timestamp, &p.Count) == nil {
-					points = append(points, p)
-				}
+		if from == "" && to == "" && field != "minute" {
+			lookback := "24 hours"
+			switch field {
+			case "hour":
+				lookback = "7 days"
+			case "day":
+				lookback = "30 days"
+			case "week":
+				lookback = "90 days"
+			case "month":
+				lookback = "365 days"
 			}
-			return nil
-		})
+
+			_ = timedQuery("timeline_stats", func() error {
+				query := fmt.Sprintf(
+					"SELECT date_trunc(%s, hour) as ts, SUM(cnt) as cnt FROM mv_timeline_hourly WHERE hour >= now() - interval '%s' GROUP BY ts ORDER BY ts",
+					field, lookback,
+				)
+				rows, err := db.Query(query)
+				if err != nil {
+					return err
+				}
+				defer rows.Close()
+
+				for rows.Next() {
+					var p model.TimelinePoint
+					if rows.Scan(&p.Timestamp, &p.Count) == nil {
+						points = append(points, p)
+					}
+				}
+				return nil
+			})
+		} else {
+			var query string
+			args := []interface{}{field}
+			argIdx := 2
+
+			if from == "" {
+				query = "SELECT date_trunc($1, timestamp) as ts, COUNT(*) FROM syslog_logs WHERE timestamp >= now() - interval '24 hours'"
+			} else {
+				query = fmt.Sprintf("SELECT date_trunc($1, timestamp) as ts, COUNT(*) FROM syslog_logs WHERE timestamp >= $%d", argIdx)
+				args = append(args, from)
+				argIdx++
+			}
+
+			if to != "" {
+				query += fmt.Sprintf(" AND timestamp <= $%d", argIdx)
+				args = append(args, to)
+			}
+
+			query += " GROUP BY ts ORDER BY ts"
+
+			_ = timedQuery("timeline_stats", func() error {
+				rows, err := db.Query(query, args...)
+				if err != nil {
+					return err
+				}
+				defer rows.Close()
+
+				for rows.Next() {
+					var p model.TimelinePoint
+					if rows.Scan(&p.Timestamp, &p.Count) == nil {
+						points = append(points, p)
+					}
+				}
+				return nil
+			})
+		}
 
 		c.JSON(http.StatusOK, gin.H{"timeline": points})
 	}
