@@ -386,7 +386,7 @@ export default function DashboardViewPage() {
             onClick={() => setAppendMode(!appendMode)}
             style={{ color: appendMode ? '#1890ff' : undefined }}
           >
-            Append Mode
+            Live
           </Button>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
         </div>

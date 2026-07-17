@@ -46,6 +46,8 @@ export default function LogsViewer() {
     return saved ? parseInt(saved, 10) : 5
   })
 
+  const [appendMode, setAppendMode] = useState(true)
+
   useEffect(() => {
     localStorage.setItem('logs_refresh_interval', String(refreshInterval))
   }, [refreshInterval])
@@ -162,12 +164,12 @@ export default function LogsViewer() {
   }, [filters, pagination.pageSize, total])
 
   useEffect(() => {
-    if (!isTabActive) return
+    if (!isTabActive || !appendMode) return
     const interval = setInterval(() => {
       pollLogs()
     }, refreshInterval * 1000)
     return () => clearInterval(interval)
-  }, [isTabActive, pollLogs, refreshInterval])
+  }, [isTabActive, appendMode, pollLogs, refreshInterval])
 
   const handleTableChange = (pag: { current?: number; pageSize?: number }) => {
     const page = pag.current ?? 1
@@ -329,7 +331,14 @@ export default function LogsViewer() {
           options={INTERVAL_OPTIONS.map(v => ({ label: `${v}s`, value: v }))}
           suffixIcon={<ClockCircleOutlined />}
         />
-        
+        <Button
+          size="small"
+          icon={<UnorderedListOutlined />}
+          onClick={() => setAppendMode(!appendMode)}
+          style={{ color: appendMode ? '#1890ff' : undefined }}
+        >
+          Live
+        </Button>
       </div>
 
       <Card style={{ marginBottom: 16 }} size="small">
