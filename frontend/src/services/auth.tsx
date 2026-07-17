@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { api, refreshAccessToken } from './api'
 
 interface User {
@@ -30,51 +30,89 @@ const AuthContext = createContext<AuthContextType>({} as AuthContextType)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('token'))
   const [user, setUser] = useState<User | null>(null)
-  const [sessionTimeout, setSessionTimeoutValue] = useState<number | null>(300) // Default: 5 minutes
+  const [sessionTimeout, setSessionTimeoutValue] = useState<number | null>(300)
   const [isSessionExpiringSoon, setIsSessionExpiringSoon] = useState(false)
   const [showSessionWarning, setShowSessionWarning] = useState(false)
-  const [sessionWarningCountdown, setSessionWarningCountdown] = useState(30)
-  const [tokenExpiryTimer, setTokenExpiryTimer] = useState<any | null>(null)
+  const [sessionWarningCountdown, setSessionWarningCountdown] = useState(0)
+  const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const countdownRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  useEffect(() => {
-    if (token) {
-      api.defaults.headers.common['Authorization'] = `Bearer ${token}`
-      loadUser()
-      
-      // Parse token to get expiry time
-      try {
-        const payload = JSON.parse(atob(token.split('.')[1]))
-        const currentTime = Math.floor(Date.now() / 1000)
-        const timeRemaining = payload.exp - currentTime
-        
-        if (timeRemaining > 0) {
-          // Set up timer for session warnings
-          const warningTime = Math.max(0, timeRemaining - 30) * 1000 // 30 seconds before expiration
-          if (warningTime > 0 && warningTime < 300000) { // Don't show warning for very short sessions
-            const timer = setTimeout(() => {
-              setIsSessionExpiringSoon(true)
-              setShowSessionWarning(true)
-              setSessionWarningCountdown(Math.max(1, Math.floor(warningTime / 1000)))
-            }, warningTime)
-            setTokenExpiryTimer(timer)
-          }
-        }
-      } catch (e) {
-        console.error('Error parsing token:', e)
-      }
+  const clearAllTimers = useCallback(() => {
+    if (warningTimerRef.current) {
+      clearTimeout(warningTimerRef.current)
+      warningTimerRef.current = null
     }
-  }, [token])
+    if (countdownRef.current) {
+      clearTimeout(countdownRef.current)
+      countdownRef.current = null
+    }
+  }, [])
 
-  const loadUser = async () => {
+  const loadUser = useCallback(async () => {
     try {
       const res = await api.get('/auth/me')
       setUser(res.data)
     } catch {
-      logout()
+      setToken(null)
+      setUser(null)
+      localStorage.removeItem('token')
+      localStorage.removeItem('refresh_token')
+      delete api.defaults.headers.common['Authorization']
+      clearAllTimers()
+      setIsSessionExpiringSoon(false)
+      setShowSessionWarning(false)
+      setSessionWarningCountdown(0)
     }
-  }
+  }, [clearAllTimers])
 
-  const login = async (username: string, password: string) => {
+  const setupSessionWarning = useCallback((tok: string) => {
+    clearAllTimers()
+    try {
+      const payload = JSON.parse(atob(tok.split('.')[1]))
+      const currentTime = Math.floor(Date.now() / 1000)
+      const expiresIn = payload.exp - currentTime
+
+      if (expiresIn <= 0) {
+        return
+      }
+
+      const delayBeforeWarning = (expiresIn - 30) * 1000
+
+      if (delayBeforeWarning <= 0) {
+        setIsSessionExpiringSoon(true)
+        setShowSessionWarning(true)
+        setSessionWarningCountdown(Math.max(1, expiresIn))
+        return
+      }
+
+      warningTimerRef.current = setTimeout(() => {
+        setIsSessionExpiringSoon(true)
+        setShowSessionWarning(true)
+        setSessionWarningCountdown(30)
+      }, delayBeforeWarning)
+    } catch (e) {
+      console.error('Error parsing token:', e)
+    }
+  }, [clearAllTimers])
+
+  const logout = useCallback(async () => {
+    try {
+      await api.post('/auth/logout')
+    } catch (e) {
+      console.error('Error during logout:', e)
+    }
+    setToken(null)
+    setUser(null)
+    localStorage.removeItem('token')
+    localStorage.removeItem('refresh_token')
+    delete api.defaults.headers.common['Authorization']
+    clearAllTimers()
+    setIsSessionExpiringSoon(false)
+    setShowSessionWarning(false)
+    setSessionWarningCountdown(0)
+  }, [clearAllTimers])
+
+  const login = useCallback(async (username: string, password: string) => {
     try {
       const res = await api.post('/auth/login', { username, password })
       const t = res.data.token
@@ -88,88 +126,54 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error: any) {
       return { ok: false, error: error.response?.data?.message || 'Login failed' }
     }
-  }
+  }, [loadUser])
 
-  const logout = async () => {
-    try {
-      await api.post('/auth/logout')
-    } catch (e) {
-      console.error('Error during logout:', e)
-    }
-    setToken(null)
-    setUser(null)
-    localStorage.removeItem('token')
-    localStorage.removeItem('refresh_token')
-    delete api.defaults.headers.common['Authorization']
-    
-    // Clear any pending timers
-    if (tokenExpiryTimer) {
-      clearTimeout(tokenExpiryTimer)
-      setTokenExpiryTimer(null)
-    }
-    setIsSessionExpiringSoon(false)
-    setShowSessionWarning(false)
-    setSessionWarningCountdown(30)
-  }
-
-  const extendSession = async () => {
+  const extendSession = useCallback(async () => {
     try {
       const refreshToken = localStorage.getItem('refresh_token')
       if (!refreshToken) return
-      
+
       const res = await refreshAccessToken(refreshToken)
       const newToken = res.data.token
       setToken(newToken)
       localStorage.setItem('token', newToken)
       api.defaults.headers.common['Authorization'] = `Bearer ${newToken}`
-      
-      // Reset the warning timer
+
+      clearAllTimers()
       setIsSessionExpiringSoon(false)
       setShowSessionWarning(false)
-      setSessionWarningCountdown(30)
-      
-      if (tokenExpiryTimer) {
-        clearTimeout(tokenExpiryTimer)
-        setTokenExpiryTimer(null)
-      }
-      
-      // Set up new timer
-      try {
-        const payload = JSON.parse(atob(newToken.split('.')[1]))
-        const currentTime = Math.floor(Date.now() / 1000)
-        const timeRemaining = payload.exp - currentTime
-        
-        if (timeRemaining > 0) {
-          const warningTime = Math.max(0, timeRemaining - 30) * 1000
-          if (warningTime > 0 && warningTime < 300000) {
-            const timer = setTimeout(() => {
-              setIsSessionExpiringSoon(true)
-              setShowSessionWarning(true)
-              setSessionWarningCountdown(Math.max(1, Math.floor(warningTime / 1000)))
-            }, warningTime)
-            setTokenExpiryTimer(timer)
-          }
-        }
-      } catch (e) {
-        console.error('Error parsing token:', e)
-      }
+      setSessionWarningCountdown(0)
+
+      setupSessionWarning(newToken)
     } catch (e) {
       console.error('Error extending session:', e)
       logout()
     }
-  }
+  }, [clearAllTimers, setupSessionWarning, logout])
+
+  useEffect(() => {
+    if (token) {
+      api.defaults.headers.common['Authorization'] = `Bearer ${token}`
+      loadUser()
+      setupSessionWarning(token)
+    }
+  }, [token, loadUser, setupSessionWarning])
+
+  useEffect(() => {
+    if (showSessionWarning && sessionWarningCountdown > 0) {
+      countdownRef.current = setTimeout(() => {
+        setSessionWarningCountdown(prev => prev - 1)
+      }, 1000)
+    }
+    return () => {
+      if (countdownRef.current) {
+        clearTimeout(countdownRef.current)
+      }
+    }
+  }, [showSessionWarning, sessionWarningCountdown])
 
   const isAdmin = user?.is_admin || false
   const canEdit = user?.role === 'admin' || user?.role === 'editor'
-
-  useEffect(() => {
-    // Clean up timer on unmount
-    return () => {
-      if (tokenExpiryTimer) {
-        clearTimeout(tokenExpiryTimer)
-      }
-    }
-  }, [tokenExpiryTimer])
 
   return (
     <AuthContext.Provider value={{
