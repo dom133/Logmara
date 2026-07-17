@@ -36,6 +36,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [sessionWarningCountdown, setSessionWarningCountdown] = useState(0)
   const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const countdownRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const extendingRef = useRef(false)
 
   const clearAllTimers = useCallback(() => {
     if (warningTimerRef.current) {
@@ -130,17 +131,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [loadUser])
 
   const extendSession = useCallback(async () => {
+    extendingRef.current = true
+    clearAllTimers()
     try {
       const refreshToken = localStorage.getItem('refresh_token')
       if (!refreshToken) return
 
       const res = await refreshAccessToken(refreshToken)
       const newToken = res.data.token
+      const newRT = res.data.refresh_token
       setToken(newToken)
       localStorage.setItem('token', newToken)
+      localStorage.setItem('refresh_token', newRT)
       api.defaults.headers.common['Authorization'] = `Bearer ${newToken}`
 
-      clearAllTimers()
       setIsSessionExpiringSoon(false)
       setShowSessionWarning(false)
       setSessionWarningCountdown(0)
@@ -149,6 +153,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (e) {
       console.error('Error extending session:', e)
       logout()
+    } finally {
+      extendingRef.current = false
     }
   }, [clearAllTimers, setupSessionWarning, logout])
 
@@ -165,7 +171,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       countdownRef.current = setTimeout(() => {
         setSessionWarningCountdown(prev => prev - 1)
       }, 1000)
-    } else if (showSessionWarning && sessionWarningCountdown === 0) {
+    } else if (showSessionWarning && sessionWarningCountdown === 0 && !extendingRef.current) {
       logout()
     }
     return () => {
