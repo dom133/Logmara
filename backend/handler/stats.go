@@ -425,7 +425,7 @@ func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
 
 			_ = timedQuery("timeline_stats", func() error {
 				query := fmt.Sprintf(
-					"SELECT date_trunc(%s, hour) as ts, SUM(cnt) as cnt FROM mv_timeline_hourly WHERE hour >= now() - interval '%s' GROUP BY ts ORDER BY ts",
+					"SELECT date_trunc('%s', hour) as ts, SUM(cnt) as cnt FROM mv_timeline_hourly WHERE hour >= now() - interval '%s' GROUP BY ts ORDER BY ts",
 					field, lookback,
 				)
 				rows, err := db.Query(query)
