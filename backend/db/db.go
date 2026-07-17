@@ -209,22 +209,30 @@ func Migrate(db *sql.DB) error {
 			updated_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='device_aliases' AND column_name='old_hostname') THEN ALTER TABLE device_aliases ADD COLUMN old_hostname VARCHAR(255); END IF; END $$`,
-		`DO $$
+	}
+
+	for _, stmt := range statements {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("migration failed (%s): %w", stmt[:50], err)
+		}
+	}
+
+	var isPartitioned bool
+	db.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p')").Scan(&isPartitioned)
+	if !isPartitioned {
+		partitionStmts := []string{
+			`ALTER TABLE syslog_logs DROP CONSTRAINT IF EXISTS syslog_logs_pkey`,
+			`ALTER TABLE syslog_logs ADD PRIMARY KEY (timestamp, id)`,
+			`ALTER TABLE syslog_logs CONVERT TO PARTITIONED RANGE (timestamp)`,
+			`DO $$
 DECLARE
 	v_min_ts TIMESTAMPTZ;
 	v_max_ts TIMESTAMPTZ;
 	v_start DATE;
 	v_end DATE;
 	v_curr DATE;
-	v_part_name TEXT;
 BEGIN
-	-- Skip if already partitioned
-	IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p') THEN
-		RETURN;
-	END IF;
-
 	SELECT MIN(timestamp), MAX(timestamp) INTO v_min_ts, v_max_ts FROM syslog_logs;
-
 	IF v_min_ts IS NOT NULL THEN
 		v_start := date_trunc('month', v_min_ts)::DATE;
 		v_end := (date_trunc('month', v_max_ts) + INTERVAL '1 month')::DATE;
@@ -232,23 +240,22 @@ BEGIN
 		v_start := date_trunc('month', NOW())::DATE;
 		v_end := (date_trunc('month', NOW()) + INTERVAL '1 month')::DATE;
 	END IF;
-
-	EXECUTE 'ALTER TABLE syslog_logs DROP CONSTRAINT IF EXISTS syslog_logs_pkey';
-	EXECUTE 'ALTER TABLE syslog_logs ADD PRIMARY KEY (timestamp, id)';
-	EXECUTE 'ALTER TABLE syslog_logs CONVERT TO PARTITIONED RANGE (timestamp)';
-
 	v_curr := v_start;
 	WHILE v_curr < v_end LOOP
-		v_part_name := 'syslog_logs_' || to_char(v_curr, 'YYYY_MM');
-		EXECUTE format(
-			'CREATE TABLE IF NOT EXISTS %I PARTITION OF syslog_logs FOR VALUES FROM (%L) TO (%L)',
-			v_part_name, v_curr, v_curr + INTERVAL '1 month'
-		);
+		EXECUTE format('CREATE TABLE IF NOT EXISTS %I PARTITION OF syslog_logs FOR VALUES FROM (%L) TO (%L)', 'syslog_logs_' || to_char(v_curr, 'YYYY_MM'), v_curr, v_curr + INTERVAL '1 month');
 		v_curr := v_curr + INTERVAL '1 month';
 	END LOOP;
-
 	EXECUTE 'CREATE TABLE IF NOT EXISTS syslog_logs_default PARTITION OF syslog_logs DEFAULT';
 END $$`,
+		}
+		for _, stmt := range partitionStmts {
+			if _, err := db.Exec(stmt); err != nil {
+				return fmt.Errorf("partitioning failed (%s): %w", stmt[:50], err)
+			}
+		}
+	}
+
+	postStmts := []string{
 		`DO $$ BEGIN CREATE INDEX idx_syslog_timestamp ON syslog_logs USING BRIN (timestamp); EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_object THEN NULL; END $$`,
 		`DO $$ BEGIN CREATE INDEX idx_syslog_recent_7d ON syslog_logs (timestamp DESC) WHERE timestamp >= NOW() - INTERVAL '7 days'; EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_object THEN NULL; END $$`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_timeline_hourly AS
@@ -256,10 +263,9 @@ END $$`,
 		`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_timeline_hourly_key ON mv_timeline_hourly (hour)`,
 	}
-
-	for _, stmt := range statements {
+	for _, stmt := range postStmts {
 		if _, err := db.Exec(stmt); err != nil {
-			return fmt.Errorf("migration failed (%s): %w", stmt[:50], err)
+			return fmt.Errorf("post-migration failed (%s): %w", stmt[:50], err)
 		}
 	}
 
