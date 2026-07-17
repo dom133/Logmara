@@ -148,7 +148,7 @@ export default function LogsViewer() {
         to: filters.to ? dayjs(filters.to).format() : '',
       })
       const fetched = data.logs || []
-      const newLogs = fetched.filter(l => !currentIds.has(l.id))
+      const newLogs = fetched.filter((l: LogEntry) => !currentIds.has(l.id))
       if (newLogs.length > 0) {
         setLogs(prev => {
           const merged = [...newLogs, ...prev]
