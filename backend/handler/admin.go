@@ -234,8 +234,6 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 		}
 
 		oldHttpsEnabled := db.GetSetting(database, "https_enabled", "false")
-		oldCert := db.GetSetting(database, "https_cert_file", "")
-		oldKey := db.GetSetting(database, "https_key_file", "")
 		oldPort := db.GetSetting(database, "https_port", "8443")
 
 		for k, v := range settings {
@@ -246,11 +244,9 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 		}
 
 		newHttpsEnabled := settings["https_enabled"]
-		newCert := settings["https_cert_file"]
-		newKey := settings["https_key_file"]
 		newPort := settings["https_port"]
 
-		httpsChanged := oldHttpsEnabled != newHttpsEnabled || oldCert != newCert || oldKey != newKey || oldPort != newPort
+		httpsChanged := oldHttpsEnabled != newHttpsEnabled || oldPort != newPort
 
 		if httpsChanged {
 			c.JSON(http.StatusOK, gin.H{

@@ -217,16 +217,16 @@ func main() {
 
 	httpsEnabled := os.Getenv("HTTPS_ENABLED") == "true" || db.GetSetting(database, "https_enabled", "false") == "true"
 	httpsCert := os.Getenv("HTTPS_CERT_FILE")
-	httpsKey := os.Getenv("HTTPS_KEY_FILE")
-	httpsPort := os.Getenv("HTTPS_PORT")
 	if httpsCert == "" {
-		httpsCert = db.GetSetting(database, "https_cert_file", "")
+		httpsCert = "/data/ssl/server.crt"
 	}
+	httpsKey := os.Getenv("HTTPS_KEY_FILE")
 	if httpsKey == "" {
-		httpsKey = db.GetSetting(database, "https_key_file", "")
+		httpsKey = "/data/ssl/server.key"
 	}
+	httpsPort := os.Getenv("HTTPS_PORT")
 	if httpsPort == "" {
-		httpsPort = db.GetSetting(database, "https_port", "8443")
+		httpsPort = "8443"
 	}
 
 	startHTTPS := httpsEnabled && httpsCert != "" && httpsKey != ""

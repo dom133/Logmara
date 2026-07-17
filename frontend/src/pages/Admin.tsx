@@ -422,14 +422,8 @@ const handleCleanup = async () => {
                    <Form.Item label="Enable HTTPS" name="https_enabled" valuePropName="checked">
                      <Switch checked={httpsEnabled} onChange={(v) => { setHttpsEnabled(v); settingsForm.setFieldValue('https_enabled', v); }} />
                    </Form.Item>
-                   <Form.Item label="HTTPS Port" name="https_port">
-                     <InputNumber min={1} max={65535} style={{ width: '100%' }} disabled={!httpsEnabled} />
-                   </Form.Item>
-                   <Form.Item label="Certificate Path (.pem/.crt)" name="https_cert_file">
-                     <Input placeholder="/etc/ssl/certs/app.pem" disabled={!httpsEnabled} />
-                   </Form.Item>
-<Form.Item label="Key Path (.key)" name="https_key_file">
-                      <Input placeholder="/etc/ssl/private/app.key" disabled={!httpsEnabled} />
+<Form.Item label="HTTPS Port" name="https_port">
+                      <InputNumber min={1} max={65535} style={{ width: '100%' }} disabled={!httpsEnabled} />
                     </Form.Item>
                     <Form.Item label="Upload Certificate (.pem/.crt)">
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>

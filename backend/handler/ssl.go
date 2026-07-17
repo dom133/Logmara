@@ -36,9 +36,9 @@ func UploadSSLCerts(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		sslDir := os.Getenv("SSL_DIR")
+sslDir := os.Getenv("SSL_DIR")
 		if sslDir == "" {
-			sslDir = db.GetSetting(database, "ssl_dir", "/data/ssl")
+			sslDir = "/data/ssl"
 		}
 
 		if err := os.MkdirAll(sslDir, 0700); err != nil {
@@ -65,16 +65,15 @@ func UploadSSLCerts(database *sql.DB) gin.HandlerFunc {
 		os.Chmod(certPath, 0644)
 		os.Chmod(keyPath, 0600)
 
-		db.UpdateSetting(database, "https_cert_file", certPath)
-		db.UpdateSetting(database, "https_key_file", keyPath)
+		db.UpdateSetting(database, "https_enabled", "true")
 
 		slog.Info("SSL certificates uploaded", "cert", certPath, "key", keyPath)
 
 		c.JSON(http.StatusOK, gin.H{
-			"message":    "SSL certificates uploaded successfully",
-			"cert_path":  certPath,
-			"key_path":   keyPath,
-			"need_reset": true,
+			"message":      "SSL certificates uploaded successfully",
+			"cert_path":    certPath,
+			"key_path":     keyPath,
+			"need_reset":   true,
 		})
 
 		if TriggerRestart != nil {
