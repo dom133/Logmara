@@ -87,9 +87,11 @@ export function useSSE({ onNewLogs, filters = {}, enabled = true }: UseSSEOption
       return
     }
 
+    url.searchParams.set('token', token)
+
     // Create EventSource properly for streaming
     try {
-      const eventSource = new EventSource(url.toString() + `&token=${encodeURIComponent(token)}`)
+      const eventSource = new EventSource(url.toString())
       eventSourceRef.current = eventSource
 
       eventSource.onmessage = (event) => {
