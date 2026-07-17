@@ -127,46 +127,63 @@ func IngestBatch(db *sql.DB, engine *parser.Engine, ic *control.IngestionControl
 	}
 }
 
+type LogQueryRequest struct {
+	Limit      int    `json:"limit"`
+	Offset     int    `json:"offset"`
+	Hostname   string `json:"hostname"`
+	FromHostIP string `json:"fromhost_ip"`
+	Severity   string `json:"severity"`
+	AppName    string `json:"app_name"`
+	Search     string `json:"search"`
+	From       string `json:"from"`
+	To         string `json:"to"`
+	Sort       string `json:"sort"`
+}
+
 func GetLogs(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		limit := c.DefaultQuery("limit", "50")
-		offset := c.DefaultQuery("offset", "0")
-		hostname := c.Query("hostname")
-		fromHostIP := c.Query("fromhost_ip")
-		severity := c.Query("severity")
-		appName := c.Query("app_name")
-		search := c.Query("search")
-		from := c.Query("from")
-		to := c.Query("to")
-		sort := c.DefaultQuery("sort", "timestamp_desc")
+		var req LogQueryRequest
+		if err := c.ShouldBindJSON(&req); err == nil {
+			req.Limit = req.Limit
+			req.Sort = req.Sort
+		} else {
+			req.Limit = 50
+			req.Sort = "timestamp_desc"
+		}
+		if req.Limit == 0 {
+			req.Limit = 50
+		}
+		if req.Sort == "" {
+			req.Sort = "timestamp_desc"
+		}
 
-		limitInt, _ := strconv.Atoi(limit)
-		offsetInt, _ := strconv.Atoi(offset)
+		limitInt := req.Limit
+		offsetInt := req.Offset
 
 		if limitInt > MaxLogLimit {
 			limitInt = MaxLogLimit
 		}
 
 		opts := LogFilterOptions{
-			Hostname:   hostname,
-			FromHostIP: fromHostIP,
-			Severity:   severity,
-			AppName:    appName,
-			Search:     search,
-			From:       from,
-			To:         to,
+			Hostname:   req.Hostname,
+			FromHostIP: req.FromHostIP,
+			Severity:   req.Severity,
+			AppName:    req.AppName,
+			Search:     req.Search,
+			From:       req.From,
+			To:         req.To,
 		}
 		whereClauses, args, argIdx := buildLogWhereClauses(opts)
 		whereSQL := buildWhereSQL(whereClauses)
 
-		orderClause := "timestamp DESC"
-		switch sort {
+		orderClause := "syslog_logs.timestamp DESC"
+		switch req.Sort {
 		case "timestamp_asc":
-			orderClause = "timestamp ASC"
+			orderClause = "syslog_logs.timestamp ASC"
 		case "severity":
-			orderClause = "severity ASC, timestamp DESC"
+			orderClause = "syslog_logs.severity ASC, syslog_logs.timestamp DESC"
 		case "hostname":
-			orderClause = "hostname ASC, timestamp DESC"
+			orderClause = "syslog_logs.hostname ASC, syslog_logs.timestamp DESC"
 		}
 
 		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL)
@@ -177,7 +194,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 		}
 
 		logsQuery := fmt.Sprintf(
-			"SELECT id, timestamp, hostname, syslog_logs.fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at, COALESCE(da.display_name, '') "+
+			"SELECT syslog_logs.id, syslog_logs.timestamp, syslog_logs.hostname, syslog_logs.fromhost_ip, syslog_logs.app_name, syslog_logs.process_id, syslog_logs.msg_id, syslog_logs.severity, syslog_logs.facility, syslog_logs.message, syslog_logs.raw_message, syslog_logs.parsed_fields, syslog_logs.matched_parsers, syslog_logs.created_at, COALESCE(da.display_name, '') "+
 				"FROM syslog_logs %s LEFT JOIN device_aliases da ON da.fromhost_ip = COALESCE(syslog_logs.fromhost_ip, '') ORDER BY %s LIMIT $%d OFFSET $%d",
 			whereSQL, orderClause, argIdx, argIdx+1,
 		)

@@ -124,7 +124,7 @@ export async function getLogs(params: {
   to?: string
   sort?: string
 }) {
-  const res = await api.get('/logs', { params })
+  const res = await api.post('/logs', params)
   return res.data || { logs: [], total: 0 }
 }
 

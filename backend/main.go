@@ -149,7 +149,7 @@ func main() {
 	authGroup := r.Group("/api")
 	authGroup.Use(auth.JWTRequired())
 	{
-		authGroup.GET("/logs", handler.GetLogs(database))
+		authGroup.POST("/logs", handler.GetLogs(database))
 		
 		authGroup.GET("/stats/dashboard", handler.GetDashboardStats(database))
 		authGroup.GET("/stats/devices", handler.GetDeviceStats(database))
