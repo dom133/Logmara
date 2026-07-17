@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"crypto/x509"
+	"encoding/pem"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -9,8 +11,6 @@ import (
 	"path/filepath"
 
 	"database/sql"
-
-	"syslog-gui/db"
 
 	"github.com/gin-gonic/gin"
 )
@@ -65,20 +65,16 @@ sslDir := os.Getenv("SSL_DIR")
 		os.Chmod(certPath, 0644)
 		os.Chmod(keyPath, 0600)
 
-		db.UpdateSetting(database, "https_enabled", "true")
-
 		slog.Info("SSL certificates uploaded", "cert", certPath, "key", keyPath)
 
-		c.JSON(http.StatusOK, gin.H{
-			"message":      "SSL certificates uploaded successfully",
-			"cert_path":    certPath,
-			"key_path":     keyPath,
-			"need_reset":   true,
-		})
+		certMeta := parseCertMetadata(certPath)
 
-		if TriggerRestart != nil {
-			go func() { TriggerRestart <- struct{}{} }()
-		}
+		c.JSON(http.StatusOK, gin.H{
+			"message":   "SSL certificates uploaded successfully",
+			"cert_path": certPath,
+			"key_path":  keyPath,
+			"cert_info": certMeta,
+		})
 	}
 }
 
@@ -91,4 +87,29 @@ func saveUploadedFile(file multipart.File, dst string) error {
 
 	_, err = io.Copy(out, file)
 	return err
+}
+
+func parseCertMetadata(path string) map[string]interface{} {
+	result := make(map[string]interface{})
+	data, err := os.ReadFile(path)
+	if err != nil {
+		result["error"] = "failed to read certificate"
+		return result
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		result["error"] = "invalid PEM format"
+		return result
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		result["error"] = "failed to parse certificate: " + err.Error()
+		return result
+	}
+	result["subject"] = cert.Subject.CommonName
+	result["issuer"] = cert.Issuer.CommonName
+	result["valid_from"] = cert.NotBefore.Format("2006-01-02 15:04:05")
+	result["valid_to"] = cert.NotAfter.Format("2006-01-02 15:04:05")
+	result["dns_names"] = cert.DNSNames
+	return result
 }

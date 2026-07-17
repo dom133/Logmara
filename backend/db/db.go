@@ -417,6 +417,7 @@ func seedSettings(db *sql.DB) error {
 		"ldap_auto_provision": "true",
 		"encryption_key":      "",
 		"cors_origins":        "",
+		"https_port":          "8443",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -465,6 +466,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "AES-256 encryption key for sensitive data"
 		case "cors_origins":
 			desc = "Allowed CORS origins (comma-separated)"
+		case "https_port":
+			desc = "HTTPS listener port"
 		}
 		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
 			return fmt.Errorf("seed setting %s: %w", k, err)

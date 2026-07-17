@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined } from '@ant-design/icons'
+import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result } from 'antd'
+import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, CertificateOutlined } from '@ant-design/icons'
 import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, User, DeviceStats, SlowQueryRecord } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
@@ -35,6 +35,7 @@ export default function Admin() {
   const [sslUploading, setSslUploading] = useState(false)
   const [certFile, setCertFile] = useState<File | null>(null)
   const [keyFile, setKeyFile] = useState<File | null>(null)
+  const [certInfo, setCertInfo] = useState<any>(null)
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_admin',
@@ -75,6 +76,7 @@ export default function Admin() {
       if (data['session_timeout_min'] !== undefined && data['session_timeout_min'] !== '') formValues['session_timeout_min'] = parseInt(data['session_timeout_min'], 10)
       formValues['https_enabled'] = data['https_enabled'] === 'true'
       if (data['https_port']) formValues['https_port'] = parseInt(data['https_port'], 10)
+      else formValues['https_port'] = 8443
       settingsForm.setFieldsValue(formValues)
       setLdapEnabled(data['ldap_enabled'] === 'true')
       setLdapAutoProvision(data['ldap_auto_provision'] === 'true')
@@ -171,14 +173,10 @@ await testLDAPConnection({
       message.success(result.message || 'SSL certificates uploaded')
       setCertFile(null)
       setKeyFile(null)
-      if (result.restart_needed || result.need_reset) {
-        message.warning('Server is restarting to apply SSL changes. Page will reload shortly.')
-        setTimeout(() => {
-          window.location.reload()
-        }, 3000)
-      } else {
-        loadSettings()
+      if (result.cert_info) {
+        setCertInfo(result.cert_info)
       }
+      loadSettings()
     } catch (e: unknown) {
       message.error(getErrorMessage(e, 'Failed to upload SSL certificates'))
     } finally {
@@ -269,7 +267,8 @@ const handleSaveSettings = async () => {
         loadSettings()
       }
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to save settings'))
+      const errMsg = getErrorMessage(e, 'Failed to save settings')
+      message.error(errMsg)
     }
   }
 
@@ -420,7 +419,7 @@ const handleCleanup = async () => {
                    </Form.Item>
                    <Divider orientation="left">HTTPS</Divider>
                    <Form.Item label="Enable HTTPS" name="https_enabled" valuePropName="checked">
-                     <Switch checked={httpsEnabled} onChange={(v) => { setHttpsEnabled(v); settingsForm.setFieldValue('https_enabled', v); }} />
+                     <Switch checked={httpsEnabled} onChange={(v) => { setHttpsEnabled(v); settingsForm.setFieldValue('https_enabled', v); if (!v) { setCertInfo(null); setCertFile(null); setKeyFile(null); } }} />
                    </Form.Item>
 <Form.Item label="HTTPS Port" name="https_port">
                       <InputNumber min={1} max={65535} style={{ width: '100%' }} disabled={!httpsEnabled} />
@@ -463,7 +462,7 @@ const handleCleanup = async () => {
                         </Button>
                       </div>
                     </Form.Item>
-                    <Form.Item>
+<Form.Item>
                       <Button
                         type="primary"
                         icon={<UploadOutlined />}
@@ -472,9 +471,26 @@ const handleCleanup = async () => {
                         onClick={handleUploadSSLCerts}
                         block
                       >
-                        {sslUploading ? 'Uploading...' : 'Upload Certificates & Restart Server'}
+                        {sslUploading ? 'Uploading...' : 'Upload Certificates'}
                       </Button>
                     </Form.Item>
+                    {certInfo && (
+                      <Result
+                        status={certInfo.error ? 'error' : 'success'}
+                        icon={<CertificateOutlined />}
+                        title={certInfo.error || 'Certificate Verified'}
+                        subTitle={certInfo.subject}
+                      >
+                        <Descriptions bordered column={1} size="small">
+                          <Descriptions.Item label="Subject">{certInfo.subject || '-'}</Descriptions.Item>
+                          <Descriptions.Item label="Issuer">{certInfo.issuer || '-'}</Descriptions.Item>
+                          <Descriptions.Item label="Valid From">{certInfo.valid_from || '-'}</Descriptions.Item>
+                          <Descriptions.Item label="Valid To">{certInfo.valid_to || '-'}</Descriptions.Item>
+                          <Descriptions.Item label="DNS Names">{Array.isArray(certInfo.dns_names) && certInfo.dns_names.length > 0 ? certInfo.dns_names.join(', ') : '-'}</Descriptions.Item>
+                          {certInfo.error && <Descriptions.Item label="Error">{certInfo.error}</Descriptions.Item>}
+                        </Descriptions>
+                      </Result>
+                    )}
                   <Divider />
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <Button type="primary" htmlType="submit">

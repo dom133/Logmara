@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -236,15 +237,32 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 		oldHttpsEnabled := db.GetSetting(database, "https_enabled", "false")
 		oldPort := db.GetSetting(database, "https_port", "8443")
 
+		newHttpsEnabled := settings["https_enabled"]
+		newPort := settings["https_port"]
+
+		if newHttpsEnabled == "true" && oldHttpsEnabled != "true" {
+			sslDir := os.Getenv("SSL_DIR")
+			if sslDir == "" {
+				sslDir = "/data/ssl"
+			}
+			certPath := filepath.Join(sslDir, "server.crt")
+			keyPath := filepath.Join(sslDir, "server.key")
+			if _, err := os.Stat(certPath); os.IsNotExist(err) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot enable HTTPS: SSL certificate not found. Please upload certificate and key first."})
+				return
+			}
+			if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot enable HTTPS: SSL private key not found. Please upload certificate and key first."})
+				return
+			}
+		}
+
 		for k, v := range settings {
 			if err := db.UpdateSetting(database, k, v); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to update setting: " + k})
 				return
 			}
 		}
-
-		newHttpsEnabled := settings["https_enabled"]
-		newPort := settings["https_port"]
 
 		httpsChanged := oldHttpsEnabled != newHttpsEnabled || oldPort != newPort
 
