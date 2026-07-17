@@ -19,7 +19,7 @@ import (
 )
 
 var jwtSecret []byte
-var jwtExpiryMin = 15
+var authDB *sql.DB
 
 func Init(database *sql.DB) {
 	secret := os.Getenv("JWT_SECRET")
@@ -31,14 +31,7 @@ func Init(database *sql.DB) {
 		db.UpdateSetting(database, "jwt_secret", secret)
 	}
 	jwtSecret = []byte(secret)
-
-	timeoutStr := os.Getenv("SESSION_TIMEOUT_MIN")
-	if timeoutStr == "" {
-		timeoutStr = db.GetSetting(database, "session_timeout_min", "15")
-	}
-	if t, err := strconv.Atoi(timeoutStr); err == nil && t > 0 {
-		jwtExpiryMin = t
-	}
+	authDB = database
 }
 
 func generateRandomKey() string {
@@ -47,12 +40,29 @@ func generateRandomKey() string {
 	return hex.EncodeToString(b)
 }
 
+func getJWTExpiryMin() int {
+	timeoutStr := os.Getenv("SESSION_TIMEOUT_MIN")
+	if timeoutStr != "" {
+		if t, err := strconv.Atoi(timeoutStr); err == nil && t > 0 {
+			return t
+		}
+	}
+	if authDB != nil {
+		timeoutStr = db.GetSetting(authDB, "session_timeout_min", "15")
+	}
+	if t, err := strconv.Atoi(timeoutStr); err == nil && t > 0 {
+		return t
+	}
+	return 15
+}
+
 func GenerateToken(userID int64, username string, role string) (string, error) {
+	expiryMin := getJWTExpiryMin()
 	claims := jwt.MapClaims{
 		"user_id":  userID,
 		"username": username,
 		"role":     role,
-		"exp":      time.Now().Add(time.Duration(jwtExpiryMin) * time.Minute).Unix(),
+		"exp":      time.Now().Add(time.Duration(expiryMin) * time.Minute).Unix(),
 		"iat":      time.Now().Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
