@@ -333,7 +333,7 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 		whereSQL := buildWhereSQL(whereClauses)
 
 		logsQuery := fmt.Sprintf(
-			"SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at "+
+			"SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at, '' "+
 				"FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d OFFSET $%d",
 			whereSQL, argIdx, argIdx+1,
 		)

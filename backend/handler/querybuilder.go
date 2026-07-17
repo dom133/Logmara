@@ -50,9 +50,9 @@ func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) 
 	}
 
 	if opts.FromHostIP == "__unknown__" {
-		clauses = append(clauses, "(fromhost_ip IS NULL OR fromhost_ip = '')")
+		clauses = append(clauses, "(syslog_logs.fromhost_ip IS NULL OR syslog_logs.fromhost_ip = '')")
 	} else if opts.FromHostIP != "" {
-		clauses = append(clauses, fmt.Sprintf("COALESCE(fromhost_ip, '') = $%d", idx))
+		clauses = append(clauses, fmt.Sprintf("COALESCE(syslog_logs.fromhost_ip, '') = $%d", idx))
 		args = append(args, opts.FromHostIP)
 		idx++
 	}
@@ -94,7 +94,7 @@ func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) 
 			args = append(args, d)
 			idx++
 		}
-		clauses = append(clauses, "COALESCE(fromhost_ip, '') IN ("+strings.Join(placeholders, ", ")+")")
+		clauses = append(clauses, "COALESCE(syslog_logs.fromhost_ip, '') IN ("+strings.Join(placeholders, ", ")+")")
 	}
 
 	if opts.HasFields {
