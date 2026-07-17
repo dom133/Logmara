@@ -400,3 +400,16 @@ func GetIngestionStatus(ic *control.IngestionController) gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{"paused": ic.IsPaused()})
 	}
 }
+
+func GetSlowQueries() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, GetSlowQueryRecords())
+	}
+}
+
+func ClearSlowQueriesHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ClearSlowQueries()
+		c.JSON(http.StatusOK, gin.H{"message": "Slow query log cleared"})
+	}
+}

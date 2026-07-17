@@ -91,6 +91,27 @@ func Migrate(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_syslog_fts ON syslog_logs USING GIN (search_vector)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_dev_ts ON syslog_logs (fromhost_ip, timestamp DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_sev_ts ON syslog_logs (severity, timestamp DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_ts_sev_host_cover ON syslog_logs (timestamp DESC) INCLUDE (severity, hostname)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_ts_dev_cover ON syslog_logs (timestamp DESC) INCLUDE (fromhost_ip, hostname)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_dev_sev_cover ON syslog_logs (fromhost_ip) INCLUDE (hostname)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_sev_dev_cover ON syslog_logs (severity) INCLUDE (fromhost_ip, hostname)`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_summary AS
+			SELECT
+				NOW() as refreshed_at,
+				COUNT(*) as total_logs,
+				COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour') as logs_last_hour,
+				COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 day') as logs_last_day,
+				COUNT(DISTINCT hostname) as unique_devices,
+				COUNT(DISTINCT fromhost_ip) as unique_ips
+			FROM syslog_logs
+		`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_summary_key ON mv_dashboard_summary (refreshed_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_coalesce_fromhost_ip ON syslog_logs (COALESCE(fromhost_ip, ''))`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_app_ts_cover ON syslog_logs (app_name, timestamp DESC) INCLUDE (hostname, severity)`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_severity AS
+			SELECT NOW() as refreshed_at, severity, COUNT(*) as cnt FROM syslog_logs GROUP BY severity
+		`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_severity_key ON mv_dashboard_severity (severity)`,
 		`CREATE TABLE IF NOT EXISTS users (
 			id SERIAL PRIMARY KEY,
 			username VARCHAR(100) UNIQUE NOT NULL,
@@ -581,4 +602,25 @@ func GetUserByUsername(db *sql.DB, username string) (*User, error) {
 		return nil, err
 	}
 	return &u, nil
+}
+
+func RefreshMaterializedViews(db *sql.DB) {
+	slog.Info("refreshing materialized views")
+	_, err1 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_summary")
+	_, err2 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_severity")
+	if err1 != nil || err2 != nil {
+		slog.Error("materialized view refresh failed", "err1", err1, "err2", err2)
+	}
+	slog.Info("materialized views refreshed")
+}
+
+func StartMVRefreshLoop(db *sql.DB, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			RefreshMaterializedViews(db)
+		}
+	}()
+	slog.Info("materialized view refresh loop started", "interval", interval)
 }

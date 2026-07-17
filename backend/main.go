@@ -88,6 +88,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	db.RefreshMaterializedViews(database)
+
+	ctx, maintCancel := context.WithCancel(context.Background())
+	stopVacuum, stopMV := db.StartMaintenance(ctx, database)
+
 	auth.Init(database)
 
 	engine := parser.NewEngine(database)
@@ -177,6 +182,8 @@ func main() {
 			adminGroup.GET("/ingestion/status", handler.GetIngestionStatus(ic))
 			adminGroup.POST("/ldap/test", handler.TestLDAP(database))
 			adminGroup.GET("/audit-log", handler.GetAuditLog(database))
+			adminGroup.GET("/slow-queries", handler.GetSlowQueries())
+			adminGroup.DELETE("/slow-queries", handler.ClearSlowQueriesHandler())
 			adminGroup.PUT("/devices/:ip/alias", handler.UpdateDeviceAlias(database))
 		}
 	}
@@ -207,10 +214,13 @@ func main() {
 	<-quit
 
 	slog.Info("shutting down server...")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	maintCancel()
+	stopVacuum()
+	stopMV()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("forced shutdown", "error", err)
 	}
 	slog.Info("server stopped")
