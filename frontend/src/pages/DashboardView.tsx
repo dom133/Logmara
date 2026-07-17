@@ -88,7 +88,6 @@ export default function DashboardViewPage() {
     return saved ? parseInt(saved, 10) : 5
   })
   const [appendMode, setAppendMode] = useState(true)
-  const lastLogIdsRef = useRef<Set<number>>(new Set())
 
   const loadLogs = useCallback(async (offset: number) => {
     setTableLoading(true)
@@ -98,7 +97,6 @@ export default function DashboardViewPage() {
       const data = await getDashboardData(dashboardId, pageSize, offset, searchOverrideRef.current, severityRef.current, from, to)
       setLogs(data.logs)
       setTotal(data.total)
-      lastLogIdsRef.current = new Set(data.logs.map((l: LogEntry) => l.id))
     } catch (e) {
       // error handled by API
     } finally {
@@ -111,20 +109,14 @@ export default function DashboardViewPage() {
     try {
       const from = dateRange?.[0]?.toISOString() || ''
       const to = dateRange?.[1]?.toISOString() || ''
-      const bufferSize = pageSize + 20
-      const data = await getDashboardData(dashboardId, bufferSize, 0, searchOverrideRef.current, severityRef.current, from, to)
+      const offset = (page - 1) * pageSize
+      const data = await getDashboardData(dashboardId, pageSize, offset, searchOverrideRef.current, severityRef.current, from, to)
       setTotal(data.total)
-      setLogs(prev => {
-        const newLogs = data.logs.filter((l: LogEntry) => !lastLogIdsRef.current.has(l.id))
-        if (newLogs.length === 0) return prev
-        for (const l of newLogs) lastLogIdsRef.current.add(l.id)
-        const merged = [...newLogs, ...prev]
-        return merged.slice(0, pageSize)
-      })
+      setLogs(data.logs)
     } catch (e) {
       // error handled by API
     }
-  }, [dashboardId, pageSize, dateRange, appendMode])
+  }, [dashboardId, pageSize, page, dateRange, appendMode])
 
   useEffect(() => {
     loadDashboard()

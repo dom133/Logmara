@@ -38,8 +38,6 @@ export default function LogsViewer() {
   const [detailModalOpen, setDetailModalOpen] = useState(false)
   const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null)
   const [groupByDevice, setGroupByDevice] = useState(false)
-  const logsRef = useRef(logs)
-  logsRef.current = logs
 
   const [refreshInterval, setRefreshInterval] = useState(() => {
     const saved = localStorage.getItem('logs_refresh_interval')
@@ -140,28 +138,20 @@ export default function LogsViewer() {
 
   const pollLogs = useCallback(async () => {
     try {
-      const currentIds = new Set(logsRef.current.map(l => l.id))
-      const buffer = Math.min(20, pagination.pageSize)
+      const offset = (pagination.current - 1) * pagination.pageSize
       const data = await getLogs({
         ...filters,
-        offset: 0,
-        limit: pagination.pageSize + buffer,
+        offset,
+        limit: pagination.pageSize,
         from: filters.from ? dayjs(filters.from).format() : '',
         to: filters.to ? dayjs(filters.to).format() : '',
       })
-      const fetched = data.logs || []
-      const newLogs = fetched.filter((l: LogEntry) => !currentIds.has(l.id))
-      if (newLogs.length > 0) {
-        setLogs(prev => {
-          const merged = [...newLogs, ...prev]
-          return merged.slice(0, pagination.pageSize)
-        })
-        setTotal(data.total || total)
-      }
+      setLogs(data.logs || [])
+      setTotal(data.total || total)
     } catch {
       // silent fail on poll
     }
-  }, [filters, pagination.pageSize, total])
+  }, [filters, pagination.current, pagination.pageSize, total])
 
   useEffect(() => {
     if (!isTabActive || !appendMode) return
