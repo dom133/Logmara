@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -125,6 +126,37 @@ func Migrate(db *sql.DB) error {
 			SELECT NOW() as refreshed_at, severity, COUNT(*) as cnt FROM syslog_logs GROUP BY severity
 		`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_severity_key ON mv_dashboard_severity (severity)`,
+		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
+		`DO $$ BEGIN CREATE INDEX idx_syslog_app_name_trgm ON syslog_logs USING GIN (app_name gin_trgm_ops); EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_object THEN NULL; END $$`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_device_stats AS
+			WITH dev_stats AS (
+				SELECT COALESCE(fromhost_ip, '') as fromhost_ip, MIN(hostname) as hostname,
+					COUNT(*) as total_logs, MAX(timestamp) as last_seen,
+					SUM(CASE WHEN severity = 'emergency' THEN 1 ELSE 0 END) as emergency,
+					SUM(CASE WHEN severity = 'alert' THEN 1 ELSE 0 END) as alert,
+					SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) as critical,
+					SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END) as err_count,
+					SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) as warning,
+					SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END) as notice,
+					SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END) as info,
+					SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug
+				FROM syslog_logs
+				GROUP BY fromhost_ip
+			),
+			dev_parsers AS (
+				SELECT COALESCE(fromhost_ip, '') as fromhost_ip,
+					array_agg(DISTINCT elem) as parsers
+				FROM syslog_logs, unnest(matched_parsers) as elem
+				WHERE matched_parsers IS NOT NULL AND matched_parsers != '{}'
+				GROUP BY fromhost_ip
+			)
+			SELECT d.fromhost_ip, d.hostname, d.total_logs, d.last_seen,
+				d.emergency, d.alert, d.critical, d.err_count, d.warning, d.notice, d.info, d.debug,
+				COALESCE(p.parsers, '{}'::TEXT[]) as parsers
+			FROM dev_stats d
+			LEFT JOIN dev_parsers p ON p.fromhost_ip = d.fromhost_ip
+		`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_device_stats_key ON mv_device_stats (fromhost_ip)`,
 		`CREATE TABLE IF NOT EXISTS users (
 			id SERIAL PRIMARY KEY,
 			username VARCHAR(100) UNIQUE NOT NULL,
@@ -546,8 +578,80 @@ func GetAllSettings(db *sql.DB) (map[string]string, error) {
 	return settings, rows.Err()
 }
 
-// CleanupOldLogs deletes logs older than retentionDays
+var partitionNameRe = regexp.MustCompile(`^syslog_logs_\d{4}_\d{2}$`)
+
+// CleanupOldLogs deletes logs older than retentionDays. When syslog_logs is
+// partitioned by month, whole partitions that fall entirely before the
+// retention cutoff are dropped outright - this is near-instant and avoids
+// scanning/vacuuming millions of rows one by one. Only the partition
+// straddling the cutoff (plus the default partition, if any) falls back to
+// batched row deletes.
 func CleanupOldLogs(db *sql.DB, retentionDays int) (int64, error) {
+	var isPartitioned bool
+	if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p')").Scan(&isPartitioned); err != nil {
+		return 0, fmt.Errorf("check partitioning: %w", err)
+	}
+
+	if !isPartitioned {
+		return deleteOldLogsBatched(db, retentionDays)
+	}
+
+	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
+
+	rows, err := db.Query(`
+		SELECT c.relname
+		FROM pg_inherits i
+		JOIN pg_class c ON c.oid = i.inhrelid
+		JOIN pg_class p ON p.oid = i.inhparent
+		WHERE p.relname = 'syslog_logs' AND c.relname ~ '^syslog_logs_\d{4}_\d{2}$'
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("list partitions: %w", err)
+	}
+	var partitions []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		partitions = append(partitions, name)
+	}
+	rows.Close()
+
+	var totalDeleted int64
+	for _, name := range partitions {
+		if !partitionNameRe.MatchString(name) {
+			continue
+		}
+		var y, m int
+		if _, err := fmt.Sscanf(name, "syslog_logs_%d_%d", &y, &m); err != nil {
+			continue
+		}
+		partEnd := time.Date(y, time.Month(m), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
+		if partEnd.After(cutoff) {
+			continue
+		}
+
+		var estRows float64
+		_ = db.QueryRow("SELECT reltuples FROM pg_class WHERE relname = $1", name).Scan(&estRows)
+
+		if _, err := db.Exec("DROP TABLE IF EXISTS " + name); err != nil {
+			slog.Error("failed to drop expired partition", "partition", name, "err", err)
+			continue
+		}
+		if estRows > 0 {
+			totalDeleted += int64(estRows)
+		}
+		slog.Info("dropped expired partition", "partition", name, "approx_rows", estRows)
+	}
+
+	deleted, err := deleteOldLogsBatched(db, retentionDays)
+	totalDeleted += deleted
+	return totalDeleted, err
+}
+
+func deleteOldLogsBatched(db *sql.DB, retentionDays int) (int64, error) {
 	const batchSize = 10000
 	var totalDeleted int64
 
@@ -694,8 +798,9 @@ func RefreshMaterializedViews(db *sql.DB) {
 	slog.Info("refreshing materialized views")
 	_, err1 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_summary")
 	_, err2 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_severity")
-	if err1 != nil || err2 != nil {
-		slog.Error("materialized view refresh failed", "err1", err1, "err2", err2)
+	_, err3 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_device_stats")
+	if err1 != nil || err2 != nil || err3 != nil {
+		slog.Error("materialized view refresh failed", "err1", err1, "err2", err2, "err3", err3)
 	}
 	slog.Info("materialized views refreshed")
 }

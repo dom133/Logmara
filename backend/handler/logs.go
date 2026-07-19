@@ -34,6 +34,7 @@ func InvalidateAllCaches() {
 type LogQueryRequest struct {
 	Limit      int    `json:"limit"`
 	Offset     int    `json:"offset"`
+	Cursor     string `json:"cursor"`
 	Hostname   string `json:"hostname"`
 	FromHostIP string `json:"fromhost_ip"`
 	Severity   string `json:"severity"`
@@ -47,10 +48,7 @@ type LogQueryRequest struct {
 func GetLogs(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req LogQueryRequest
-		if err := c.ShouldBindJSON(&req); err == nil {
-			req.Limit = req.Limit
-			req.Sort = req.Sort
-		} else {
+		if err := c.ShouldBindJSON(&req); err != nil {
 			req.Limit = 50
 			req.Sort = "timestamp_desc"
 		}
@@ -62,8 +60,6 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 		}
 
 		limitInt := req.Limit
-		offsetInt := req.Offset
-
 		if limitInt > MaxLogLimit {
 			limitInt = MaxLogLimit
 		}
@@ -78,31 +74,55 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 			To:         req.To,
 		}
 		whereClauses, args, argIdx := buildLogWhereClauses(opts)
-		whereSQL := buildWhereSQL(whereClauses)
 
-		orderClause := "syslog_logs.timestamp DESC"
+		orderClause := "syslog_logs.timestamp DESC, syslog_logs.id DESC"
+		cursorOp := "<"
 		switch req.Sort {
 		case "timestamp_asc":
-			orderClause = "syslog_logs.timestamp ASC"
+			orderClause = "syslog_logs.timestamp ASC, syslog_logs.id ASC"
+			cursorOp = ">"
 		case "severity":
-			orderClause = "syslog_logs.severity ASC, syslog_logs.timestamp DESC"
+			orderClause = "syslog_logs.severity ASC, syslog_logs.timestamp DESC, syslog_logs.id DESC"
 		case "hostname":
-			orderClause = "syslog_logs.hostname ASC, syslog_logs.timestamp DESC"
+			orderClause = "syslog_logs.hostname ASC, syslog_logs.timestamp DESC, syslog_logs.id DESC"
 		}
 
-		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL)
-		var total int64
-		if err := db.QueryRow(countQuery, args...).Scan(&total); err != nil {
-			middleware.HandleError(c, model.NewInternal("Count query failed", err))
-			return
+		useCursor := cursorSupported(req.Sort)
+		offsetInt := req.Offset
+
+		if useCursor && req.Cursor != "" {
+			ts, id, err := decodeLogCursor(req.Cursor)
+			if err != nil {
+				middleware.HandleError(c, model.NewBadRequest("invalid cursor", err))
+				return
+			}
+			whereClauses = append(whereClauses, fmt.Sprintf("(syslog_logs.timestamp, syslog_logs.id) %s ($%d, $%d)", cursorOp, argIdx, argIdx+1))
+			args = append(args, ts, id)
+			argIdx += 2
+			offsetInt = 0
 		}
 
-		logsQuery := fmt.Sprintf(
-			"SELECT syslog_logs.id, syslog_logs.timestamp, syslog_logs.hostname, syslog_logs.fromhost_ip, syslog_logs.app_name, syslog_logs.process_id, syslog_logs.msg_id, syslog_logs.severity, syslog_logs.facility, syslog_logs.message, syslog_logs.raw_message, syslog_logs.parsed_fields, syslog_logs.matched_parsers, syslog_logs.created_at, COALESCE(da.display_name, '') "+
-				"FROM syslog_logs LEFT JOIN device_aliases da ON da.fromhost_ip = COALESCE(syslog_logs.fromhost_ip, '') %s ORDER BY %s LIMIT $%d OFFSET $%d",
-			whereSQL, orderClause, argIdx, argIdx+1,
-		)
-		args = append(args, limitInt, offsetInt)
+		whereSQL := buildWhereSQL(whereClauses)
+
+		// Fetch one extra row to detect whether more pages remain, instead
+		// of an exact COUNT(*) over the whole filtered result - on a large
+		// table that count can cost as much as the page query itself.
+		var logsQuery string
+		if useCursor {
+			logsQuery = fmt.Sprintf(
+				"SELECT syslog_logs.id, syslog_logs.timestamp, syslog_logs.hostname, syslog_logs.fromhost_ip, syslog_logs.app_name, syslog_logs.process_id, syslog_logs.msg_id, syslog_logs.severity, syslog_logs.facility, syslog_logs.message, syslog_logs.raw_message, syslog_logs.parsed_fields, syslog_logs.matched_parsers, syslog_logs.created_at, COALESCE(da.display_name, '') "+
+					"FROM syslog_logs LEFT JOIN device_aliases da ON da.fromhost_ip = COALESCE(syslog_logs.fromhost_ip, '') %s ORDER BY %s LIMIT $%d",
+				whereSQL, orderClause, argIdx,
+			)
+			args = append(args, limitInt+1)
+		} else {
+			logsQuery = fmt.Sprintf(
+				"SELECT syslog_logs.id, syslog_logs.timestamp, syslog_logs.hostname, syslog_logs.fromhost_ip, syslog_logs.app_name, syslog_logs.process_id, syslog_logs.msg_id, syslog_logs.severity, syslog_logs.facility, syslog_logs.message, syslog_logs.raw_message, syslog_logs.parsed_fields, syslog_logs.matched_parsers, syslog_logs.created_at, COALESCE(da.display_name, '') "+
+					"FROM syslog_logs LEFT JOIN device_aliases da ON da.fromhost_ip = COALESCE(syslog_logs.fromhost_ip, '') %s ORDER BY %s LIMIT $%d OFFSET $%d",
+				whereSQL, orderClause, argIdx, argIdx+1,
+			)
+			args = append(args, limitInt+1, offsetInt)
+		}
 
 		rows, err := db.Query(logsQuery, args...)
 		if err != nil {
@@ -113,11 +133,22 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 
 		logs := scanLogRows(rows)
 
+		hasMore := len(logs) > limitInt
+		if hasMore {
+			logs = logs[:limitInt]
+		}
+
+		nextCursor := ""
+		if hasMore && useCursor && len(logs) > 0 {
+			last := logs[len(logs)-1]
+			nextCursor = encodeLogCursor(last.Timestamp, last.ID)
+		}
+
 		c.JSON(http.StatusOK, gin.H{
-			"logs":   logs,
-			"total":  total,
-			"limit":  limitInt,
-			"offset": offsetInt,
+			"logs":        logs,
+			"has_more":    hasMore,
+			"next_cursor": nextCursor,
+			"limit":       limitInt,
 		})
 	}
 }
@@ -145,34 +176,16 @@ func GetDevices(db *sql.DB) gin.HandlerFunc {
 }
 
 func fetchDevices(db *sql.DB) []model.DeviceStats {
+	// Reads from the mv_device_stats rollup (refreshed on a schedule)
+	// instead of aggregating the entire syslog_logs table live on every
+	// cache miss - the live GROUP BY + unnest scan over 1M+ rows was the
+	// most expensive query on this endpoint.
 	rows, err := db.Query(`
-		WITH dev_stats AS (
-			SELECT COALESCE(MIN(fromhost_ip), '') as fromhost_ip, MIN(hostname) as hostname,
-				COUNT(*) as total_logs, MAX(timestamp) as last_seen,
-				SUM(CASE WHEN severity = 'emergency' THEN 1 ELSE 0 END) as emergency,
-				SUM(CASE WHEN severity = 'alert' THEN 1 ELSE 0 END) as alert,
-				SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) as critical,
-				SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END) as err_count,
-				SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) as warning,
-				SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END) as notice,
-				SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END) as info,
-				SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug
-			FROM syslog_logs
-			GROUP BY fromhost_ip
-		),
-		dev_parsers AS (
-			SELECT COALESCE(fromhost_ip, '') as fromhost_ip,
-				array_agg(DISTINCT elem) as parsers
-			FROM syslog_logs, unnest(matched_parsers) as elem
-			WHERE matched_parsers IS NOT NULL AND matched_parsers != '{}'
-			GROUP BY fromhost_ip
-		)
 		SELECT d.fromhost_ip, d.hostname, d.total_logs, d.last_seen,
 			d.emergency, d.alert, d.critical, d.err_count, d.warning, d.notice, d.info, d.debug,
-			COALESCE(p.parsers, '{}'::TEXT[]) as parsers,
+			d.parsers,
 			a.display_name, a.old_hostname
-		FROM dev_stats d
-		LEFT JOIN dev_parsers p ON p.fromhost_ip = d.fromhost_ip
+		FROM mv_device_stats d
 		LEFT JOIN device_aliases a ON a.fromhost_ip = d.fromhost_ip
 		ORDER BY d.total_logs DESC
 	`)

@@ -71,8 +71,8 @@ func ExportCSV(db *sql.DB) gin.HandlerFunc {
 			argIdx++
 		}
 		if search != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("(message ILIKE $%d OR raw_message ILIKE $%d)", argIdx, argIdx))
-			args = append(args, "%"+search+"%")
+			whereClauses = append(whereClauses, fmt.Sprintf("search_vector @@ websearch_to_tsquery('english', $%d)", argIdx))
+			args = append(args, search)
 			argIdx++
 		}
 
@@ -146,8 +146,8 @@ func ExportHTML(db *sql.DB) gin.HandlerFunc {
 			argIdx++
 		}
 		if search != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("(message ILIKE $%d OR raw_message ILIKE $%d)", argIdx, argIdx))
-			args = append(args, "%"+search+"%")
+			whereClauses = append(whereClauses, fmt.Sprintf("search_vector @@ websearch_to_tsquery('english', $%d)", argIdx))
+			args = append(args, search)
 			argIdx++
 		}
 

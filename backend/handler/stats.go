@@ -3,8 +3,10 @@ package handler
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -75,8 +77,89 @@ func GetDashboardStats(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
+// filteredAggregates holds every "top N" / grouped stat computed over the
+// same filtered row set (scalar counts, severity breakdown, top devices,
+// top errors). It is populated by a single combined query so the filtered
+// range is scanned once instead of once per aggregate.
+type filteredAggregates struct {
+	TotalLogs     int64
+	LogsLastHour  int64
+	LogsLastDay   int64
+	UniqueDevices int64
+	Severity      map[string]int64
+	TopDevices    []model.DeviceCount
+	TopErrors     []model.ErrorMessage
+}
+
+// queryFilteredAggregates computes scalar counts (optionally), the severity
+// breakdown (optionally), and the top-10 devices/errors for whereBase in one
+// query. The "filtered" CTE is marked MATERIALIZED so Postgres scans
+// syslog_logs exactly once and reuses that result for every branch below,
+// instead of re-running whereBase once per aggregate (previously 2-4
+// independent full scans of the same range on every dashboard load).
+func queryFilteredAggregates(db *sql.DB, whereBase string, args []interface{}, includeScalarAndSeverity bool) filteredAggregates {
+	result := filteredAggregates{Severity: make(map[string]int64)}
+
+	branches := []string{}
+	if includeScalarAndSeverity {
+		branches = append(branches,
+			"SELECT 'scalar'::text AS kind, 'total_logs'::text AS key1, NULL::text AS key2, NULL::text AS key3, COUNT(*)::bigint AS cnt FROM filtered",
+			"SELECT 'scalar'::text, 'logs_last_hour'::text, NULL::text, NULL::text, COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour')::bigint FROM filtered",
+			"SELECT 'scalar'::text, 'logs_last_day'::text, NULL::text, NULL::text, COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 day')::bigint FROM filtered",
+			"SELECT 'scalar'::text, 'unique_devices'::text, NULL::text, NULL::text, COUNT(DISTINCT hostname)::bigint FROM filtered",
+			"SELECT 'severity'::text, severity::text, NULL::text, NULL::text, COUNT(*)::bigint FROM filtered GROUP BY severity",
+		)
+	}
+	branches = append(branches,
+		"SELECT * FROM (SELECT 'device'::text AS kind, COALESCE(fromhost_ip,'')::text AS key1, MIN(hostname)::text AS key2, NULL::text AS key3, COUNT(*)::bigint AS cnt FROM filtered GROUP BY fromhost_ip ORDER BY cnt DESC LIMIT 10) d",
+		"SELECT * FROM (SELECT 'error'::text AS kind, LEFT(message, 100)::text AS key1, COALESCE(fromhost_ip,'')::text AS key2, MIN(hostname)::text AS key3, COUNT(*)::bigint AS cnt FROM filtered WHERE severity IN ('err', 'crit', 'alert', 'emerg') GROUP BY LEFT(message, 100), fromhost_ip ORDER BY cnt DESC LIMIT 10) e",
+	)
+
+	query := fmt.Sprintf(
+		"WITH filtered AS MATERIALIZED (SELECT timestamp, hostname, fromhost_ip, severity, message FROM syslog_logs %s) %s",
+		whereBase, strings.Join(branches, " UNION ALL "),
+	)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		slog.Error("filtered aggregates query failed", "err", err)
+		return result
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var kind string
+		var key1, key2, key3 sql.NullString
+		var cnt int64
+		if rows.Scan(&kind, &key1, &key2, &key3, &cnt) != nil {
+			continue
+		}
+		switch kind {
+		case "scalar":
+			switch key1.String {
+			case "total_logs":
+				result.TotalLogs = cnt
+			case "logs_last_hour":
+				result.LogsLastHour = cnt
+			case "logs_last_day":
+				result.LogsLastDay = cnt
+			case "unique_devices":
+				result.UniqueDevices = cnt
+			}
+		case "severity":
+			result.Severity[key1.String] = cnt
+		case "device":
+			result.TopDevices = append(result.TopDevices, model.DeviceCount{FromHostIP: key1.String, Hostname: key2.String, Count: cnt})
+		case "error":
+			result.TopErrors = append(result.TopErrors, model.ErrorMessage{Message: key1.String, FromHostIP: key2.String, Hostname: key3.String, Count: cnt})
+		}
+	}
+	return result
+}
+
 func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 	var stats model.DashboardStats
+	stats.SeverityCounts = make(map[string]int64)
 
 	whereBase := ""
 	args := []interface{}{}
@@ -96,8 +179,12 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 		argIdx++
 	}
 
-	// Use materialized view for scalar stats when no custom time range
-	if from == "" && to == "" {
+	useMV := from == "" && to == ""
+
+	// Use materialized views for scalar/severity stats when no custom time
+	// range is requested - refreshed on a schedule, so this avoids scanning
+	// syslog_logs at all for the common (unfiltered) dashboard load.
+	if useMV {
 		_ = timedQuery("dashboard_stats_refresh_mv", func() error {
 			_, err := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_summary")
 			if err != nil {
@@ -121,20 +208,6 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 				return row.Scan(&stats.TotalLogs, &stats.LogsLastHour, &stats.LogsLastDay, &stats.UniqueDevices)
 			})
 		}
-	} else {
-		_ = timedQuery("dashboard_stats_scalar", func() error {
-			row := db.QueryRow(fmt.Sprintf(
-				"WITH filtered AS (SELECT timestamp, hostname FROM syslog_logs %s) "+
-					"SELECT COUNT(*), "+
-					"COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour'), "+
-					"COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 day'), "+
-					"COUNT(DISTINCT hostname) FROM filtered", whereBase), args...)
-			return row.Scan(&stats.TotalLogs, &stats.LogsLastHour, &stats.LogsLastDay, &stats.UniqueDevices)
-		})
-	}
-
-	stats.SeverityCounts = make(map[string]int64)
-	if from == "" && to == "" {
 		_ = timedQuery("dashboard_stats_severity", func() error {
 			sevRows, err := db.Query("SELECT severity, cnt FROM mv_dashboard_severity ORDER BY cnt DESC")
 			if err != nil {
@@ -150,67 +223,27 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 			}
 			return nil
 		})
-	} else {
-		_ = timedQuery("dashboard_stats_severity", func() error {
-			sevRows, err := db.Query(fmt.Sprintf(
-				"WITH filtered AS (SELECT severity FROM syslog_logs %s) "+
-					"SELECT severity, COUNT(*) FROM filtered GROUP BY severity ORDER BY COUNT(*) DESC", whereBase), args...)
-			if err != nil {
-				return err
-			}
-			defer sevRows.Close()
-			for sevRows.Next() {
-				var sev string
-				var cnt int64
-				if sevRows.Scan(&sev, &cnt) == nil {
-					stats.SeverityCounts[sev] = cnt
-				}
-			}
-			return nil
-		})
 	}
 
-	_ = timedQuery("dashboard_stats_devices", func() error {
-		devRows, err := db.Query(fmt.Sprintf(
-			"WITH filtered AS (SELECT fromhost_ip, hostname FROM syslog_logs %s) "+
-				"SELECT COALESCE(MIN(fromhost_ip), ''), MIN(hostname), COUNT(*) as cnt "+
-				"FROM filtered GROUP BY fromhost_ip ORDER BY cnt DESC LIMIT 10", whereBase), args...)
-		if err != nil {
-			return err
-		}
-		defer devRows.Close()
-		for devRows.Next() {
-			var d model.DeviceCount
-			if devRows.Scan(&d.FromHostIP, &d.Hostname, &d.Count) == nil {
-				stats.TopDevices = append(stats.TopDevices, d)
-			}
-		}
+	var agg filteredAggregates
+	_ = timedQuery("dashboard_stats_filtered_aggregates", func() error {
+		agg = queryFilteredAggregates(db, whereBase, args, !useMV)
 		return nil
 	})
+
+	if !useMV {
+		stats.TotalLogs = agg.TotalLogs
+		stats.LogsLastHour = agg.LogsLastHour
+		stats.LogsLastDay = agg.LogsLastDay
+		stats.UniqueDevices = agg.UniqueDevices
+		stats.SeverityCounts = agg.Severity
+	}
+	stats.TopDevices = agg.TopDevices
+	stats.TopErrors = agg.TopErrors
 
 	if stats.TopDevices == nil {
 		stats.TopDevices = []model.DeviceCount{}
 	}
-
-	_ = timedQuery("dashboard_stats_errors", func() error {
-		errRows, err := db.Query(fmt.Sprintf(
-			"WITH filtered AS (SELECT message, fromhost_ip, hostname, severity FROM syslog_logs %s) "+
-				"SELECT LEFT(message, 100) as msg, COALESCE(MIN(fromhost_ip), ''), MIN(hostname), COUNT(*) as cnt "+
-				"FROM filtered WHERE severity IN ('err', 'crit', 'alert', 'emerg') "+
-				"GROUP BY msg, fromhost_ip ORDER BY cnt DESC LIMIT 10", whereBase), args...)
-		if err != nil {
-			return err
-		}
-		defer errRows.Close()
-		for errRows.Next() {
-			var e model.ErrorMessage
-			if errRows.Scan(&e.Message, &e.FromHostIP, &e.Hostname, &e.Count) == nil {
-				stats.TopErrors = append(stats.TopErrors, e)
-			}
-		}
-		return nil
-	})
-
 	if stats.TopErrors == nil {
 		stats.TopErrors = []model.ErrorMessage{}
 	}
@@ -256,17 +289,12 @@ func GetDeviceStats(db *sql.DB) gin.HandlerFunc {
 func fetchDeviceStats(db *sql.DB, limit int) []model.DeviceStats {
 	var devices []model.DeviceStats
 	_ = timedQuery("device_stats_all", func() error {
+		// Reads from the mv_device_stats rollup instead of aggregating
+		// syslog_logs live - see fetchDevices in logs.go for the same fix.
 		rows, err := db.Query(
-			fmt.Sprintf(`SELECT COALESCE(MIN(fromhost_ip), ''), MIN(hostname) as hostname, COUNT(*) as total, MAX(timestamp) as last_seen,
-				SUM(CASE WHEN severity = 'emergency' THEN 1 ELSE 0 END),
-				SUM(CASE WHEN severity = 'alert' THEN 1 ELSE 0 END),
-				SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END),
-				SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END),
-				SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END),
-				SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END),
-				SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END),
-				SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END)
-				FROM syslog_logs GROUP BY fromhost_ip ORDER BY total DESC LIMIT %d`, limit),
+			`SELECT fromhost_ip, hostname, total_logs, last_seen,
+				emergency, alert, critical, err_count, warning, notice, info, debug
+				FROM mv_device_stats ORDER BY total_logs DESC LIMIT $1`, limit,
 		)
 		if err != nil {
 			return err

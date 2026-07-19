@@ -58,10 +58,11 @@ type DashboardFilters struct {
 }
 
 type DashboardDataResponse struct {
-	Logs    []SyslogLog `json:"logs"`
-	Total   int64       `json:"total"`
-	Fields  []string    `json:"fields"`
-	Devices []string    `json:"devices"`
+	Logs       []SyslogLog `json:"logs"`
+	HasMore    bool        `json:"has_more"`
+	NextCursor string      `json:"next_cursor,omitempty"`
+	Fields     []string    `json:"fields"`
+	Devices    []string    `json:"devices"`
 }
 
 type ParserTestRequest struct {

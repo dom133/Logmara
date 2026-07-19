@@ -65,19 +65,57 @@ func startMVScheduler(ctx context.Context, db *sql.DB, interval time.Duration) f
 	}
 }
 
+// runVacuumAnalyze targets only the currently-active partitions (this month
+// and last month), since those are the only ones still receiving writes and
+// therefore accumulating dead tuples/stale stats. Older partitions are
+// static once the month rolls over - a daily VACUUM ANALYZE across the
+// entire multi-month history is wasted I/O once the table is partitioned.
 func runVacuumAnalyze(db *sql.DB) {
-	slog.Info("running VACUUM ANALYZE", "table", "syslog_logs")
-	_, err := db.Exec("VACUUM ANALYZE syslog_logs")
-	if err != nil {
-		slog.Error("vacuum analyze failed", "err", err)
+	partitions := activePartitionNames(db)
+	if len(partitions) == 0 {
+		slog.Info("running VACUUM ANALYZE", "table", "syslog_logs")
+		if _, err := db.Exec("VACUUM ANALYZE syslog_logs"); err != nil {
+			slog.Error("vacuum analyze failed", "err", err)
+			return
+		}
+		slog.Info("VACUUM ANALYZE completed", "table", "syslog_logs")
 		return
 	}
-	slog.Info("VACUUM ANALYZE completed", "table", "syslog_logs")
+
+	for _, name := range partitions {
+		slog.Info("running VACUUM ANALYZE", "table", name)
+		if _, err := db.Exec("VACUUM ANALYZE " + name); err != nil {
+			slog.Error("vacuum analyze failed", "table", name, "err", err)
+		}
+	}
+	if _, err := db.Exec("ANALYZE syslog_logs"); err != nil {
+		slog.Error("analyze parent failed", "err", err)
+	}
+	slog.Info("VACUUM ANALYZE completed", "partitions", partitions)
+}
+
+func activePartitionNames(db *sql.DB) []string {
+	var isPartitioned bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p')`).Scan(&isPartitioned); err != nil || !isPartitioned {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	names := make([]string, 0, 2)
+	for i := -1; i <= 0; i++ {
+		t := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, i, 0)
+		name := "syslog_logs_" + t.Format("2006_01")
+		var exists bool
+		if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = $1)", name).Scan(&exists); err == nil && exists {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 func RefreshMV(db *sql.DB) {
 	slog.Info("refreshing materialized views")
-	for _, mv := range []string{"mv_dashboard_summary", "mv_dashboard_severity", "mv_timeline_hourly"} {
+	for _, mv := range []string{"mv_dashboard_summary", "mv_dashboard_severity", "mv_timeline_hourly", "mv_device_stats"} {
 		_, err := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY " + mv)
 		if err != nil {
 			slog.Error("mv refresh failed", "view", mv, "err", err)

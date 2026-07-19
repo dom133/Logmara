@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Table, Input, InputRef, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Dropdown, Modal, Descriptions } from 'antd'
 import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined, ClockCircleOutlined } from '@ant-design/icons'
-import { getLogs, getDevices, exportCSV, exportHTML, LogEntry, DeviceStats, resolveDeviceDisplayName } from '../services/api'
+import { getLogs, getDevices, exportCSV, exportHTML, LogEntry, DeviceStats, resolveDeviceDisplayName, sortSupportsCursor } from '../services/api'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
@@ -20,8 +20,9 @@ export default function LogsViewer() {
   const urlHostname = searchParams.get('hostname') || ''
   const urlFromHostIP = searchParams.get('fromhost_ip') || ''
   const [logs, setLogs] = useState<LogEntry[]>([])
-  const [total, setTotal] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [devices, setDevices] = useState<DeviceStats[]>([])
   const [filters, setFilters] = useState({
     hostname: urlHostname,
@@ -32,7 +33,11 @@ export default function LogsViewer() {
     to: '',
     sort: 'timestamp_desc',
   })
-  const [pagination, setPagination] = useState({ current: 1, pageSize: 50 })
+  const [pageSize, setPageSize] = useState(50)
+  // Keyset pagination cursor/offset for "Load more" - avoids the OFFSET
+  // scans and exact COUNT(*) that made deep pagination slow on large tables.
+  const cursorRef = useRef('')
+  const offsetRef = useRef(0)
   const [visibleColumns, setVisibleColumns] = useState<string[]>(['timestamp', 'severity', 'hostname', 'app_name', 'message'])
   const searchRef = useRef<InputRef>(null)
   const [detailModalOpen, setDetailModalOpen] = useState(false)
@@ -110,48 +115,53 @@ export default function LogsViewer() {
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [])
 
-  useEffect(() => {
-    loadLogs(0)
-  }, [filters])
-
   const loadDevices = async () => {
     const d = await getDevices()
     setDevices(d)
   }
 
-  const loadLogs = useCallback(async (offset: number) => {
-    setLoading(true)
+  const loadLogs = useCallback(async (reset: boolean) => {
+    const useCursor = sortSupportsCursor(filters.sort)
+    reset ? setLoading(true) : setLoadingMore(true)
     try {
       const data = await getLogs({
         ...filters,
-        offset,
-        limit: pagination.pageSize,
+        limit: pageSize,
+        cursor: useCursor && !reset ? cursorRef.current : undefined,
+        offset: !useCursor && !reset ? offsetRef.current : 0,
         from: filters.from ? dayjs(filters.from).format() : '',
         to: filters.to ? dayjs(filters.to).format() : '',
       })
-      setLogs(data.logs || [])
-      setTotal(data.total || 0)
+      setLogs(prev => (reset ? (data.logs || []) : [...prev, ...(data.logs || [])]))
+      setHasMore(data.has_more || false)
+      cursorRef.current = data.next_cursor || ''
+      offsetRef.current = reset ? pageSize : offsetRef.current + pageSize
     } finally {
       setLoading(false)
+      setLoadingMore(false)
     }
-  }, [filters, pagination.pageSize])
+  }, [filters, pageSize])
+
+  useEffect(() => {
+    loadLogs(true)
+  }, [filters, pageSize])
 
   const pollLogs = useCallback(async () => {
     try {
-      const offset = (pagination.current - 1) * pagination.pageSize
       const data = await getLogs({
         ...filters,
-        offset,
-        limit: pagination.pageSize,
+        limit: pageSize,
         from: filters.from ? dayjs(filters.from).format() : '',
         to: filters.to ? dayjs(filters.to).format() : '',
       })
       setLogs(data.logs || [])
-      setTotal(data.total || total)
+      setHasMore(data.has_more || false)
+      cursorRef.current = data.next_cursor || ''
+      offsetRef.current = pageSize
     } catch {
       // silent fail on poll
     }
-  }, [filters, pagination.current, pagination.pageSize, total])
+  }, [filters, pageSize])
 
   useEffect(() => {
     if (!isTabActive || !appendMode) return
@@ -161,12 +171,7 @@ export default function LogsViewer() {
     return () => clearInterval(interval)
   }, [isTabActive, appendMode, pollLogs, refreshInterval])
 
-  const handleTableChange = (pag: { current?: number; pageSize?: number }) => {
-    const page = pag.current ?? 1
-    const size = pag.pageSize ?? 50
-    setPagination({ current: page, pageSize: size })
-    loadLogs((page - 1) * size)
-  }
+  const handleLoadMore = () => loadLogs(false)
 
   const handleSearch = (value: string) => {
     setFilters(f => ({ ...f, search: value }))
@@ -281,7 +286,7 @@ export default function LogsViewer() {
     <>
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
         <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>Logs</Title>
-        <Text type="secondary">({total.toLocaleString()} total)</Text>
+        <Text type="secondary">({logs.length.toLocaleString()} loaded)</Text>
         {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
         <Dropdown
           menu={{
@@ -400,7 +405,6 @@ export default function LogsViewer() {
           actionLabel="Clear Filters"
           actionClick={() => {
             setFilters({ hostname: '', fromhost_ip: '', severity: '', search: '', from: '', to: '', sort: 'timestamp_desc' })
-            setPagination({ current: 1, pageSize: 50 })
           }}
         />
       ) : (
@@ -414,20 +418,27 @@ export default function LogsViewer() {
             rowKey="id"
             loading={loading}
             scroll={{ x: 'max-content' }}
-            pagination={{
-              ...pagination,
-              total,
-              showSizeChanger: true,
-              showQuickJumper: true,
-              pageSizeOptions: ['25', '50', '100', '200'],
-            }}
-            onChange={handleTableChange}
+            pagination={false}
             size="small"
             onRow={(record) => ({
               onClick: () => handleRowClick(record),
               style: { cursor: 'pointer' },
             })}
           />
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8, marginTop: 16 }}>
+            <Select
+              size="small"
+              style={{ width: 100 }}
+              value={pageSize}
+              onChange={setPageSize}
+              options={['25', '50', '100', '200'].map(v => ({ label: `${v} / page`, value: parseInt(v) }))}
+            />
+            {hasMore ? (
+              <Button onClick={handleLoadMore} loading={loadingMore}>Load more</Button>
+            ) : (
+              <Text type="secondary">No more logs</Text>
+            )}
+          </div>
           <Modal
             title="Log Details"
             open={detailModalOpen}
