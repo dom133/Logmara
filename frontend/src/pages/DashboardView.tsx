@@ -231,15 +231,14 @@ export default function DashboardViewPage() {
   const dashDevices = dashboard?.config?.devices || []
   const dashFixedSeverity = dashboard?.config?.filters?.severity || ''
 
-  // Only offer sorting by a field the dashboard doesn't already pin down.
-  // "By Device" is offered only when the dashboard isn't scoped to specific
-  // devices at all - once it's scoped to one or several named devices, the
-  // Devices card/tags already show which ones, so the sort adds nothing.
+  // Only offer sorting by a field the dashboard doesn't already pin to a
+  // single value - "By Device" is meaningless when the dashboard is scoped
+  // to exactly one device, but still useful with zero (all) or several.
   const sortOptions = [
     { label: 'Newest First', value: 'timestamp_desc' },
     { label: 'Oldest First', value: 'timestamp_asc' },
     ...(dashFixedSeverity ? [] : [{ label: 'By Severity', value: 'severity' }]),
-    ...(dashDevices.length === 0 ? [{ label: 'By Device', value: 'hostname' }] : []),
+    ...(dashDevices.length === 1 ? [] : [{ label: 'By Device', value: 'hostname' }]),
   ]
 
   const buildCustomColumns = () => {

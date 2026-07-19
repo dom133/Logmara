@@ -215,10 +215,13 @@ func GetSettings(database *sql.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		for _, k := range []string{"jwt_secret", "encryption_key", "ldap_bind_password"} {
-			if v, ok := settings[k]; ok && v != "" {
-				settings[k] = "****"
-			}
+		// Not used by the frontend and not worth exposing: encryption keys and
+		// the one-time DB connection settings captured during setup.
+		for _, k := range []string{"jwt_secret", "encryption_key", "db_host", "db_port", "db_name", "db_user", "db_password"} {
+			delete(settings, k)
+		}
+		if v, ok := settings["ldap_bind_password"]; ok && v != "" {
+			settings["ldap_bind_password"] = "****"
 		}
 		c.JSON(http.StatusOK, settings)
 	}
