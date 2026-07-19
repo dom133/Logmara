@@ -26,6 +26,8 @@ if [ ! -f "$NGINX_CONF_DIR/https.conf" ]; then
     touch "$NGINX_CONF_DIR/https.conf"
 fi
 
-busybox httpd -f -p 8081 -h /srv/reload-sidecar &
+# httpd lives in the separate busybox-extras binary, not the base busybox
+# (which only has the applets baked into Alpine's minimal `busybox` package).
+busybox-extras httpd -f -p 8081 -h /srv/reload-sidecar &
 
 exec /docker-entrypoint.sh nginx -g "daemon off;"
