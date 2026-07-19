@@ -76,6 +76,11 @@ services:
       LOG_FILE_PATH: /data/logs.jsonl
       NGINX_RELOAD_URL: http://frontend:8081/cgi-bin/reload.sh
       NGINX_CONF_DIR: /data/nginx
+      # Optional: pin HTTPS settings via env instead of the admin UI. Both
+      # default to disabled when unset; if set, the value is persisted to
+      # app_settings so it shows up under Settings.
+      HTTPS_ENABLED: ${HTTPS_ENABLED:-}
+      HTTPS_REDIRECT: ${HTTPS_REDIRECT:-}
     volumes:
       - log_data:/data
     ports:

@@ -90,6 +90,7 @@ func main() {
 			os.Exit(1)
 		}
 		db.RefreshMaterializedViews(database)
+		db.ApplyEnvSettingOverrides(database)
 		db.SetAppStarting(false)
 		slog.Info("database migration and initialization complete")
 	}()

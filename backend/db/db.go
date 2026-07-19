@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -449,6 +451,7 @@ func seedSettings(db *sql.DB) error {
 		"ldap_auto_provision": "true",
 		"encryption_key":      "",
 		"cors_origins":        "",
+		"https_enabled":       "false",
 		"https_redirect":      "false",
 	}
 
@@ -498,6 +501,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "AES-256 encryption key for sensitive data"
 		case "cors_origins":
 			desc = "Allowed CORS origins (comma-separated)"
+		case "https_enabled":
+			desc = "Enable HTTPS on the reverse proxy"
 		case "https_redirect":
 			desc = "Redirect HTTP traffic to HTTPS"
 		}
@@ -557,6 +562,55 @@ func getSettingRaw(db *sql.DB, key string) string {
 		return ""
 	}
 	return val
+}
+
+// envBoolSettings maps environment variables to the app_settings key they
+// override. Both default to disabled (see seedSettings); an operator can pin
+// either one via env for container/orchestrator-managed deployments.
+var envBoolSettings = map[string]string{
+	"HTTPS_ENABLED":  "https_enabled",
+	"HTTPS_REDIRECT": "https_redirect",
+}
+
+// ApplyEnvSettingOverrides applies HTTPS settings from environment variables,
+// if present, and persists them to app_settings so they show up (and stay
+// visible) in the admin Settings UI. A var is only applied when explicitly
+// set to a non-empty value; otherwise the stored/admin-configured value is
+// left untouched, so restarting a container without the var doesn't silently
+// revert a change made through the UI.
+func ApplyEnvSettingOverrides(db *sql.DB) {
+	for envVar, key := range envBoolSettings {
+		raw := strings.TrimSpace(os.Getenv(envVar))
+		if raw == "" {
+			continue
+		}
+		enabled, err := strconv.ParseBool(raw)
+		if err != nil {
+			slog.Warn("invalid boolean value for env setting override, ignoring", "env", envVar, "value", raw)
+			continue
+		}
+		value := strconv.FormatBool(enabled)
+		if err := UpdateSetting(db, key, value); err != nil {
+			slog.Warn("failed to apply env setting override", "env", envVar, "key", key, "error", err)
+			continue
+		}
+		slog.Info("applied setting from environment variable", "env", envVar, "key", key, "value", value)
+	}
+
+	if GetSetting(db, "https_enabled", "false") == "true" {
+		sslDir := os.Getenv("SSL_DIR")
+		if sslDir == "" {
+			sslDir = "/data/ssl"
+		}
+		certPath := filepath.Join(sslDir, "server.crt")
+		keyPath := filepath.Join(sslDir, "server.key")
+		if _, err := os.Stat(certPath); os.IsNotExist(err) {
+			slog.Warn("https_enabled is true but SSL certificate is missing", "path", certPath)
+		}
+		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+			slog.Warn("https_enabled is true but SSL private key is missing", "path", keyPath)
+		}
+	}
 }
 
 // GetAllSettings retrieves all settings as a map
