@@ -93,11 +93,32 @@ func main() {
 		}
 		db.RefreshMaterializedViews(database)
 		db.ApplyEnvSettingOverrides(database)
-		if err := handler.SyncNginxHTTPS(database); err != nil {
-			slog.Warn("failed to sync nginx HTTPS config at startup", "error", err)
-		}
 		db.SetAppStarting(false)
 		slog.Info("database migration and initialization complete")
+	}()
+
+	// The frontend container only depends_on api starting (not api being
+	// healthy), and api starts well before frontend's entrypoint has
+	// generated its cert and brought up the reload sidecar - so a sync
+	// right after migration reliably hits connection-refused on a cold
+	// `docker compose up`. Retry in the background instead of blocking
+	// startup on it; nginx already defaults to HTTPS-off, so this only
+	// matters for applying an env-var override or a state left over from
+	// before a restart.
+	go func() {
+		<-migrationDone
+		const attempts = 10
+		const delay = 3 * time.Second
+		var err error
+		for i := 0; i < attempts; i++ {
+			if err = handler.SyncNginxHTTPS(database); err == nil {
+				return
+			}
+			if i < attempts-1 {
+				time.Sleep(delay)
+			}
+		}
+		slog.Warn("failed to sync nginx HTTPS config at startup after retries", "attempts", attempts, "error", err)
 	}()
 
 	ctx, maintCancel := context.WithCancel(context.Background())
