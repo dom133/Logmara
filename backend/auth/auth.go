@@ -27,13 +27,13 @@ const weakDefaultJWTSecret = "change-this-to-a-random-secret-key"
 
 func Init(database *sql.DB) error {
 	secret := os.Getenv("JWT_SECRET")
-	if secret != "" {
-		if secret == weakDefaultJWTSecret {
-			return fmt.Errorf("JWT_SECRET is set to the insecure placeholder value; set a strong random secret before starting")
-		}
-		if len(secret) < 16 {
-			return fmt.Errorf("JWT_SECRET is too short (%d chars); use at least 16 random characters", len(secret))
-		}
+	if secret == weakDefaultJWTSecret {
+		// docker-compose.yml falls back to this placeholder whenever JWT_SECRET
+		// isn't set in the environment/.env, so treat it as unset rather than
+		// failing startup — fall through to the persisted or generated secret.
+		secret = ""
+	} else if secret != "" && len(secret) < 16 {
+		return fmt.Errorf("JWT_SECRET is too short (%d chars); use at least 16 random characters", len(secret))
 	}
 	if secret == "" {
 		secret = db.GetSetting(database, "jwt_secret", "")
