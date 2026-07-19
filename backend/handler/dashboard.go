@@ -441,7 +441,7 @@ func GetDashboardDataCount(db *sql.DB) gin.HandlerFunc {
 // same device/field scoping and filter overrides as GetDashboardData.
 func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		_, opts, err := resolveDashboardFilters(db, c)
+		cfg, opts, err := resolveDashboardFilters(db, c)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
@@ -457,7 +457,7 @@ func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
 		}
 
 		whereClauses, args, _ := buildLogWhereClauses(opts)
-		writeCSVExport(c, db, buildWhereSQL(whereClauses), args, limit)
+		writeCSVExport(c, db, buildWhereSQL(whereClauses), args, limit, cfg.Fields)
 	}
 }
 
@@ -466,14 +466,14 @@ func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
 // GetDashboardData.
 func ExportDashboardHTML(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		_, opts, err := resolveDashboardFilters(db, c)
+		cfg, opts, err := resolveDashboardFilters(db, c)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
 		}
 
 		whereClauses, args, _ := buildLogWhereClauses(opts)
-		writeHTMLExport(c, db, buildWhereSQL(whereClauses), args, 5000)
+		writeHTMLExport(c, db, buildWhereSQL(whereClauses), args, 5000, cfg.Fields)
 	}
 }
 

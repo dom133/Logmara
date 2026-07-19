@@ -3,6 +3,7 @@ package handler
 import (
 	"database/sql"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"html"
 	"net/http"
@@ -62,24 +63,25 @@ func ExportCSV(db *sql.DB) gin.HandlerFunc {
 		}
 
 		whereClauses, args, _ := buildLogWhereClauses(exportFilterOptionsFromQuery(c))
-		writeCSVExport(c, db, buildWhereSQL(whereClauses), args, limit)
+		writeCSVExport(c, db, buildWhereSQL(whereClauses), args, limit, nil)
 	}
 }
 
 func ExportHTML(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		whereClauses, args, _ := buildLogWhereClauses(exportFilterOptionsFromQuery(c))
-		writeHTMLExport(c, db, buildWhereSQL(whereClauses), args, 5000)
+		writeHTMLExport(c, db, buildWhereSQL(whereClauses), args, 5000, nil)
 	}
 }
 
 // writeCSVExport streams the filtered rows as CSV. Shared by the generic
 // /export/csv endpoint and the dashboard-scoped export, which differ only in
 // how whereSQL/args were built (see exportFilterOptionsFromQuery vs.
-// resolveDashboardFilters).
-func writeCSVExport(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int) {
+// resolveDashboardFilters) and whether fields carries a dashboard's custom
+// parsed-field columns (nil for the generic endpoint, which has none).
+func writeCSVExport(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int, fields []string) {
 	rows, err := db.Query(
-		fmt.Sprintf("SELECT timestamp, hostname, app_name, severity, message FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d", whereSQL, len(args)+1),
+		fmt.Sprintf("SELECT timestamp, hostname, app_name, severity, message, parsed_fields FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d", whereSQL, len(args)+1),
 		append(args, limit)...,
 	)
 	if err != nil {
@@ -92,28 +94,37 @@ func writeCSVExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfac
 	c.Header("Content-Disposition", "attachment; filename=syslog_export_"+time.Now().Format("20060102_150405")+".csv")
 
 	w := csv.NewWriter(c.Writer)
-	w.Write([]string{"timestamp", "hostname", "app_name", "severity", "message"})
+	w.Write(append([]string{"timestamp", "hostname", "app_name", "severity", "message"}, fields...))
 
 	for rows.Next() {
 		var ts, hostname, severity, message string
 		var appName *string
-		if err := rows.Scan(&ts, &hostname, &appName, &severity, &message); err != nil {
+		var rawParsed []byte
+		if err := rows.Scan(&ts, &hostname, &appName, &severity, &message, &rawParsed); err != nil {
 			continue
 		}
 		app := ""
 		if appName != nil {
 			app = *appName
 		}
-		w.Write([]string{ts, csvSafe(hostname), csvSafe(app), csvSafe(severity), csvSafe(message)})
+		row := []string{ts, csvSafe(hostname), csvSafe(app), csvSafe(severity), csvSafe(message)}
+		if len(fields) > 0 {
+			parsed := parseFieldsJSON(rawParsed)
+			for _, f := range fields {
+				row = append(row, csvSafe(parsed[f]))
+			}
+		}
+		w.Write(row)
 	}
 	w.Flush()
 }
 
 // writeHTMLExport streams the filtered rows as an HTML report. See
-// writeCSVExport for why this is shared between two callers.
-func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int) {
+// writeCSVExport for why this is shared between two callers and what fields
+// is for.
+func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int, fields []string) {
 	rows, err := db.Query(
-		fmt.Sprintf("SELECT timestamp, hostname, app_name, severity, message FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d", whereSQL, len(args)+1),
+		fmt.Sprintf("SELECT timestamp, hostname, app_name, severity, message, parsed_fields FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d", whereSQL, len(args)+1),
 		append(args, limit)...,
 	)
 	if err != nil {
@@ -126,20 +137,32 @@ func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 	sb.WriteString("<!DOCTYPE html><html><head><meta charset='utf-8'><title>Syslog Report</title>")
 	sb.WriteString("<style>body{font-family:monospace;font-size:10px;}table{border-collapse:collapse;width:100%;}th,td{border:1px solid #ccc;padding:4px;text-align:left;}th{background:#2980b9;color:white;}tr:nth-child(even){background:#f0f0f0;}</style>")
 	sb.WriteString("</head><body><h2>Syslog Report - " + time.Now().Format("2006-01-02 15:04:05") + "</h2>")
-	sb.WriteString("<table><tr><th>Timestamp</th><th>Hostname</th><th>App</th><th>Severity</th><th>Message</th></tr>")
+	sb.WriteString("<table><tr><th>Timestamp</th><th>Hostname</th><th>App</th><th>Severity</th><th>Message</th>")
+	for _, f := range fields {
+		sb.WriteString("<th>" + html.EscapeString(f) + "</th>")
+	}
+	sb.WriteString("</tr>")
 
 	for rows.Next() {
 		var ts, hn, sev, msg string
 		var app *string
-		if err := rows.Scan(&ts, &hn, &app, &sev, &msg); err != nil {
+		var rawParsed []byte
+		if err := rows.Scan(&ts, &hn, &app, &sev, &msg, &rawParsed); err != nil {
 			continue
 		}
 		a := ""
 		if app != nil {
 			a = *app
 		}
-		sb.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>",
+		sb.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td>",
 			html.EscapeString(ts), html.EscapeString(hn), html.EscapeString(a), html.EscapeString(sev), html.EscapeString(msg)))
+		if len(fields) > 0 {
+			parsed := parseFieldsJSON(rawParsed)
+			for _, f := range fields {
+				sb.WriteString("<td>" + html.EscapeString(parsed[f]) + "</td>")
+			}
+		}
+		sb.WriteString("</tr>")
 	}
 
 	sb.WriteString("</table></body></html>")
@@ -148,6 +171,17 @@ func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 	c.Header("Content-Type", "text/html")
 	c.Header("Content-Disposition", "attachment; filename="+filename)
 	c.String(http.StatusOK, sb.String())
+}
+
+// parseFieldsJSON decodes a syslog_logs.parsed_fields jsonb column into a
+// string map, tolerating NULL/empty/malformed values (best-effort - a
+// dashboard's custom-field columns just come back blank for that row).
+func parseFieldsJSON(raw []byte) map[string]string {
+	parsed := map[string]string{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &parsed)
+	}
+	return parsed
 }
 
 func truncate(s string, max int) string {
