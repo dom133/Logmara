@@ -114,6 +114,15 @@ func activePartitionNames(db *sql.DB) []string {
 }
 
 func RefreshMV(db *sql.DB) {
+	// Migrate() runs in its own goroutine and can take a while on a large
+	// table (index builds, mv_device_stats aggregation) - the periodic
+	// refresh tickers start immediately regardless, so without this guard
+	// they can fire before Migrate() has created the views they're trying
+	// to refresh.
+	if IsAppStarting() {
+		slog.Info("skipping materialized view refresh - migration still in progress")
+		return
+	}
 	slog.Info("refreshing materialized views")
 	for _, mv := range []string{"mv_dashboard_summary", "mv_dashboard_severity", "mv_timeline_hourly", "mv_device_stats"} {
 		_, err := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY " + mv)
