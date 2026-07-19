@@ -28,15 +28,16 @@ func timedQuery(name string, fn func() error) error {
 }
 
 type LogFilterOptions struct {
-	Hostname   string
-	FromHostIP string
-	Severity   string
-	AppName    string
-	Search     string
-	From       string
-	To         string
-	Devices    []string
-	HasFields  bool
+	Hostname        string
+	FromHostIP      string
+	Severity        string
+	AppName         string
+	Search          string
+	From            string
+	To              string
+	Devices         []string
+	HasFields       bool
+	RequiredParsers []string
 }
 
 func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) {
@@ -100,6 +101,16 @@ func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) 
 
 	if opts.HasFields {
 		clauses = append(clauses, "matched_parsers IS NOT NULL AND array_length(matched_parsers, 1) > 0")
+	}
+
+	// Restrict to rows actually matched by one of the parsers that own the
+	// dashboard's selected fields - HasFields alone only requires "matched
+	// by some parser", so a log parsed by an unrelated parser would
+	// otherwise still show up with blank columns for every selected field.
+	if len(opts.RequiredParsers) > 0 {
+		clauses = append(clauses, fmt.Sprintf("matched_parsers && $%d::text[]", idx))
+		args = append(args, pq.Array(opts.RequiredParsers))
+		idx++
 	}
 
 	return clauses, args, idx

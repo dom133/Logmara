@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/lib/pq"
 )
 
 func getUserRole(c *gin.Context) string {
@@ -309,13 +310,18 @@ func resolveDashboardFilters(db *sql.DB, c *gin.Context) (*model.DashboardConfig
 		return nil, LogFilterOptions{}, model.NewBadRequest("invalid dashboard config", err)
 	}
 
+	requiredParsers, err := resolveParsersForFields(db, cfg.Fields)
+	if err != nil {
+		return nil, LogFilterOptions{}, model.NewInternal("failed to resolve parsers for fields", err)
+	}
+
 	opts := LogFilterOptions{
-		Severity:  firstNonEmpty(c.DefaultQuery("severity", ""), cfg.Filters.Severity),
-		From:      firstNonEmpty(c.DefaultQuery("from", ""), cfg.Filters.From),
-		To:        firstNonEmpty(c.DefaultQuery("to", ""), cfg.Filters.To),
-		Search:    firstNonEmpty(c.DefaultQuery("search", ""), cfg.Filters.Search),
-		Devices:   cfg.Devices,
-		HasFields: len(cfg.Fields) > 0,
+		Severity:        firstNonEmpty(c.DefaultQuery("severity", ""), cfg.Filters.Severity),
+		From:            firstNonEmpty(c.DefaultQuery("from", ""), cfg.Filters.From),
+		To:              firstNonEmpty(c.DefaultQuery("to", ""), cfg.Filters.To),
+		Search:          firstNonEmpty(c.DefaultQuery("search", ""), cfg.Filters.Search),
+		Devices:         cfg.Devices,
+		RequiredParsers: requiredParsers,
 	}
 
 	// A device narrowed down via the live filter must stay within the
@@ -338,6 +344,37 @@ func containsString(list []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// resolveParsersForFields maps a dashboard's selected field names back to
+// the parser(s) that own them, so log rows can be checked against
+// matched_parsers (verifying they were actually parsed by that parser)
+// rather than just showing up because they matched some unrelated parser.
+func resolveParsersForFields(db *sql.DB, fields []string) ([]string, error) {
+	if len(fields) == 0 {
+		return nil, nil
+	}
+
+	rows, err := db.Query(`
+		SELECT DISTINCT p.name
+		FROM parsed_fields_registry f
+		JOIN parsers p ON f.parser_id = p.id
+		WHERE f.field_name = ANY($1)
+	`, pq.Array(fields))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names, nil
 }
 
 func GetDashboardData(db *sql.DB) gin.HandlerFunc {
