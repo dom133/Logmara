@@ -109,16 +109,9 @@ func main() {
 		<-migrationDone
 		const attempts = 10
 		const delay = 3 * time.Second
-		var err error
-		for i := 0; i < attempts; i++ {
-			if err = handler.SyncNginxHTTPS(database); err == nil {
-				return
-			}
-			if i < attempts-1 {
-				time.Sleep(delay)
-			}
+		if err := handler.SyncNginxHTTPSWithRetry(database, attempts, delay); err != nil {
+			slog.Warn("failed to sync nginx HTTPS config at startup after retries", "attempts", attempts, "error", err)
 		}
-		slog.Warn("failed to sync nginx HTTPS config at startup after retries", "attempts", attempts, "error", err)
 	}()
 
 	ctx, maintCancel := context.WithCancel(context.Background())

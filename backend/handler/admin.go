@@ -265,7 +265,12 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 		httpsChanged := oldHttpsEnabled != newHttpsEnabled || oldHttpsRedirect != newHttpsRedirect
 
 		if httpsChanged {
-			if err := reloadNginx(newHttpsEnabled == "true", newHttpsRedirect == "true"); err != nil {
+			// A handful of quick retries absorbs the case where the admin
+			// toggles this shortly after `docker compose up`, before the
+			// frontend's reload sidecar has come up - without making the
+			// save button hang for the same ~30s startup budget used
+			// elsewhere.
+			if err := reloadNginxWithRetry(newHttpsEnabled == "true", newHttpsRedirect == "true", 5, 2*time.Second); err != nil {
 				slog.Warn("nginx reload failed after settings update", "error", err)
 				c.JSON(http.StatusOK, gin.H{
 					"message":             "Settings updated",
@@ -365,6 +370,22 @@ func reloadNginx(httpsEnabled, redirectEnabled bool) error {
 	return nil
 }
 
+// reloadNginxWithRetry retries reloadNginx a few times with a fixed delay,
+// smoothing over the brief window (container startup, or an admin action
+// that races it) where the frontend's reload sidecar isn't listening yet.
+func reloadNginxWithRetry(httpsEnabled, redirectEnabled bool, attempts int, delay time.Duration) error {
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = reloadNginx(httpsEnabled, redirectEnabled); err == nil {
+			return nil
+		}
+		if i < attempts-1 {
+			time.Sleep(delay)
+		}
+	}
+	return err
+}
+
 // ReloadNginx re-applies the current HTTPS/redirect settings and triggers an
 // nginx config reload via the frontend container's sidecar.
 func ReloadNginx(database *sql.DB) gin.HandlerFunc {
@@ -378,14 +399,23 @@ func ReloadNginx(database *sql.DB) gin.HandlerFunc {
 }
 
 // SyncNginxHTTPS applies the persisted https_enabled/https_redirect settings
-// to the frontend's nginx config. Call this at backend startup (after
-// migration/env overrides) so a container restart converges nginx to the
-// stored setting instead of leaving whatever was baked into the image or
-// left over from a previous state.
+// to the frontend's nginx config, with the same short retry budget as
+// UpdateSettings. Call this at backend startup (after migration/env
+// overrides) so a container restart converges nginx to the stored setting
+// instead of leaving whatever was baked into the image or left over from a
+// previous state.
 func SyncNginxHTTPS(database *sql.DB) error {
+	return SyncNginxHTTPSWithRetry(database, 5, 2*time.Second)
+}
+
+// SyncNginxHTTPSWithRetry is SyncNginxHTTPS with a caller-chosen retry
+// budget - used at startup with a much larger budget than the interactive
+// endpoints, since a cold `docker compose up` can leave the frontend
+// container down for a while and there's no request to keep fast there.
+func SyncNginxHTTPSWithRetry(database *sql.DB, attempts int, delay time.Duration) error {
 	httpsEnabled := db.GetSetting(database, "https_enabled", "false") == "true"
 	redirectEnabled := db.GetSetting(database, "https_redirect", "false") == "true"
-	return reloadNginx(httpsEnabled, redirectEnabled)
+	return reloadNginxWithRetry(httpsEnabled, redirectEnabled, attempts, delay)
 }
 
 func CleanupLogs(database *sql.DB) gin.HandlerFunc {
