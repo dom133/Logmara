@@ -24,6 +24,8 @@ export default function Admin() {
   const [editDeviceForm] = Form.useForm()
   const [ldapEnabled, setLdapEnabled] = useState(false)
   const [ldapAutoProvision, setLdapAutoProvision] = useState(false)
+  const [ldapUseTls, setLdapUseTls] = useState(false)
+  const [ldapVerifyCert, setLdapVerifyCert] = useState(true)
   const [httpsEnabled, setHttpsEnabled] = useState(false)
   const [httpsRedirect, setHttpsRedirect] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -79,6 +81,8 @@ export default function Admin() {
       settingsForm.setFieldsValue(formValues)
       setLdapEnabled(data['ldap_enabled'] === 'true')
       setLdapAutoProvision(data['ldap_auto_provision'] === 'true')
+      setLdapUseTls(data['ldap_use_tls'] === 'true')
+      setLdapVerifyCert(data['ldap_verify_cert'] !== 'false')
       setHttpsEnabled(data['https_enabled'] === 'true')
       setHttpsRedirect(data['https_redirect'] === 'true')
     } catch {
@@ -546,18 +550,20 @@ const handleCleanup = async () => {
                     <InputNumber min={1} max={65535} style={{ width: '100%' }} disabled={!ldapEnabled} />
                   </Form.Item>
                   <Form.Item label="Use TLS" name="ldap_use_tls" valuePropName="checked">
-                    <Switch disabled={!ldapEnabled} />
+                    <Switch checked={ldapUseTls} disabled={!ldapEnabled} onChange={(v) => { setLdapUseTls(v); settingsForm.setFieldValue('ldap_use_tls', v) }} />
                   </Form.Item>
                   <Divider orientation="left">TLS/Certificate</Divider>
                   <Form.Item label="Verify TLS Certificate" name="ldap_verify_cert" valuePropName="checked">
-                    <Switch disabled={!ldapEnabled} />
+                    <Switch checked={ldapVerifyCert} disabled={!ldapEnabled} onChange={(v) => { setLdapVerifyCert(v); settingsForm.setFieldValue('ldap_verify_cert', v) }} />
                   </Form.Item>
                   <Form.Item
                     label="Custom CA Certificate (PEM)"
                     name="ldap_ca_cert"
                   >
+                    <Input.TextArea rows={4} placeholder="Paste PEM certificate or upload a file..." disabled={!ldapEnabled} style={{ resize: 'none' }} />
+                  </Form.Item>
+                  <Form.Item>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <Input.TextArea rows={4} placeholder="Paste PEM certificate or upload a file..." disabled={!ldapEnabled} style={{ resize: 'none' }} />
                       <input
                         type="file"
                         accept=".pem,.crt,.cer"

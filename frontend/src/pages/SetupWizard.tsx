@@ -265,8 +265,10 @@ export default function SetupWizard() {
               <Switch />
             </Form.Item>
             <Form.Item name="ldap_ca_cert" label="CA Certificate (PEM)">
+              <Input.TextArea rows={2} placeholder="-----BEGIN CERTIFICATE-----..." style={{ resize: 'none' }} />
+            </Form.Item>
+            <Form.Item>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <Input.TextArea rows={2} placeholder="-----BEGIN CERTIFICATE-----..." style={{ resize: 'none' }} />
                 <input
                   type="file"
                   accept=".pem,.crt,.cer"
