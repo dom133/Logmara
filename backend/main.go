@@ -181,7 +181,8 @@ func main() {
 	authGroup.Use(auth.JWTRequired())
 	{
 		authGroup.POST("/logs", handler.GetLogs(database))
-		
+		authGroup.POST("/logs/count", handler.GetLogsCount(database))
+
 		authGroup.GET("/stats/dashboard", handler.GetDashboardStats(database))
 		authGroup.GET("/stats/devices", handler.GetDeviceStats(database))
 		authGroup.GET("/stats/severity", handler.GetSeverityStats(database))
@@ -198,6 +199,9 @@ func main() {
 		authGroup.GET("/dashboards", handler.ListDashboards(database))
 		authGroup.GET("/dashboards/:id", handler.GetDashboard(database))
 		authGroup.GET("/dashboards/:id/data", handler.GetDashboardData(database))
+		authGroup.GET("/dashboards/:id/count", handler.GetDashboardDataCount(database))
+		authGroup.GET("/dashboards/:id/export/csv", handler.ExportDashboardCSV(database))
+		authGroup.GET("/dashboards/:id/export/html", handler.ExportDashboardHTML(database))
 		authGroup.PATCH("/dashboards/:id/pin", handler.TogglePinDashboard(database))
 
 		editorGroup := authGroup.Group("")

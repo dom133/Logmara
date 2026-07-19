@@ -153,6 +153,36 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
+// GetLogsCount returns the exact number of rows matching the same filters as
+// GetLogs. Deliberately a separate endpoint - the paginated /logs endpoint
+// avoids COUNT(*) for cost reasons (see the comment there), but the sidebar
+// total only needs one COUNT(*) per filter change, not per page.
+func GetLogsCount(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req LogQueryRequest
+		_ = c.ShouldBindJSON(&req)
+
+		opts := LogFilterOptions{
+			Hostname:   req.Hostname,
+			FromHostIP: req.FromHostIP,
+			Severity:   req.Severity,
+			AppName:    req.AppName,
+			Search:     req.Search,
+			From:       req.From,
+			To:         req.To,
+		}
+		whereClauses, args, _ := buildLogWhereClauses(opts)
+		whereSQL := buildWhereSQL(whereClauses)
+
+		var total int64
+		_ = timedQuery("logs_count", func() error {
+			return db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL), args...).Scan(&total)
+		})
+
+		c.JSON(http.StatusOK, gin.H{"total": total})
+	}
+}
+
 func GetDevices(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		devicesCacheMu.RLock()

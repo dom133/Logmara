@@ -143,6 +143,19 @@ export async function getLogs(params: {
   return res.data || { logs: [], has_more: false, next_cursor: '', limit: params.limit || 50 }
 }
 
+export async function getLogsCount(params: {
+  hostname?: string
+  fromhost_ip?: string
+  severity?: string
+  app_name?: string
+  search?: string
+  from?: string
+  to?: string
+}): Promise<number> {
+  const res = await api.post('/logs/count', params)
+  return res.data?.total || 0
+}
+
 export async function getDashboardStats(): Promise<DashboardStats> {
   const res = await api.get('/stats/dashboard')
   return (res.data || {}) as DashboardStats
@@ -189,6 +202,26 @@ export async function exportCSV(params: Record<string, string>) {
 
 export async function exportHTML(params: Record<string, string>) {
   const res = await api.get('/export/html', { params, responseType: 'blob' })
+  const url = URL.createObjectURL(res.data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'syslog_report.html'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+export async function exportDashboardCSV(id: number, params: Record<string, string>) {
+  const res = await api.get(`/dashboards/${id}/export/csv`, { params, responseType: 'blob' })
+  const url = URL.createObjectURL(res.data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'syslog_export.csv'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+export async function exportDashboardHTML(id: number, params: Record<string, string>) {
+  const res = await api.get(`/dashboards/${id}/export/html`, { params, responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -366,10 +399,15 @@ export async function deleteDashboard(id: number) {
   return res.data
 }
 
-export async function getDashboardData(id: number, limit = 100, cursor = '', search = '', severity = '', from = '', to = '') {
-	const res = await api.get(`/dashboards/${id}/data`, { params: { limit, cursor: cursor || undefined, search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined } })
+export async function getDashboardData(id: number, limit = 100, cursor = '', search = '', severity = '', from = '', to = '', sort = 'timestamp_desc', offset = 0) {
+	const res = await api.get(`/dashboards/${id}/data`, { params: { limit, cursor: cursor || undefined, search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined, sort: sort || undefined, offset: (!sortSupportsCursor(sort) && offset) || undefined } })
 	const d = res.data || {}
 	return { logs: d.logs || [], has_more: d.has_more || false, next_cursor: d.next_cursor || '', fields: d.fields || [], devices: d.devices || [] } as DashboardDataResponse
+}
+
+export async function getDashboardDataCount(id: number, search = '', severity = '', from = '', to = ''): Promise<number> {
+	const res = await api.get(`/dashboards/${id}/count`, { params: { search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined } })
+	return res.data?.total || 0
 }
 
 export async function togglePinDashboard(id: number) {

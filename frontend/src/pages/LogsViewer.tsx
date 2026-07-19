@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Table, Input, InputRef, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Dropdown, Modal, Descriptions } from 'antd'
-import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined, ClockCircleOutlined } from '@ant-design/icons'
-import { getLogs, getDevices, exportCSV, exportHTML, LogEntry, DeviceStats, resolveDeviceDisplayName, sortSupportsCursor } from '../services/api'
+import { Table, Input, InputRef, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Modal, Descriptions } from 'antd'
+import { RestOutlined, UnorderedListOutlined, ClockCircleOutlined } from '@ant-design/icons'
+import { getLogs, getLogsCount, getDevices, exportCSV, exportHTML, LogEntry, DeviceStats, resolveDeviceDisplayName, sortSupportsCursor } from '../services/api'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
@@ -20,6 +20,7 @@ export default function LogsViewer() {
   const urlHostname = searchParams.get('hostname') || ''
   const urlFromHostIP = searchParams.get('fromhost_ip') || ''
   const [logs, setLogs] = useState<LogEntry[]>([])
+  const [totalLogs, setTotalLogs] = useState(0)
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -38,11 +39,9 @@ export default function LogsViewer() {
   // scans and exact COUNT(*) that made deep pagination slow on large tables.
   const cursorRef = useRef('')
   const offsetRef = useRef(0)
-  const [visibleColumns, setVisibleColumns] = useState<string[]>(['timestamp', 'severity', 'hostname', 'app_name', 'message'])
   const searchRef = useRef<InputRef>(null)
   const [detailModalOpen, setDetailModalOpen] = useState(false)
   const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null)
-  const [groupByDevice, setGroupByDevice] = useState(false)
 
   const [refreshInterval, setRefreshInterval] = useState(() => {
     const saved = localStorage.getItem('logs_refresh_interval')
@@ -122,6 +121,8 @@ export default function LogsViewer() {
 
   const loadLogs = useCallback(async (reset: boolean) => {
     const useCursor = sortSupportsCursor(filters.sort)
+    const from = filters.from ? dayjs(filters.from).format() : ''
+    const to = filters.to ? dayjs(filters.to).format() : ''
     reset ? setLoading(true) : setLoadingMore(true)
     try {
       const data = await getLogs({
@@ -129,13 +130,23 @@ export default function LogsViewer() {
         limit: pageSize,
         cursor: useCursor && !reset ? cursorRef.current : undefined,
         offset: !useCursor && !reset ? offsetRef.current : 0,
-        from: filters.from ? dayjs(filters.from).format() : '',
-        to: filters.to ? dayjs(filters.to).format() : '',
+        from,
+        to,
       })
       setLogs(prev => (reset ? (data.logs || []) : [...prev, ...(data.logs || [])]))
       setHasMore(data.has_more || false)
       cursorRef.current = data.next_cursor || ''
       offsetRef.current = reset ? pageSize : offsetRef.current + pageSize
+      if (reset) {
+        getLogsCount({
+          hostname: filters.hostname,
+          fromhost_ip: filters.fromhost_ip,
+          severity: filters.severity,
+          search: filters.search,
+          from,
+          to,
+        }).then(setTotalLogs).catch(() => {})
+      }
     } finally {
       setLoading(false)
       setLoadingMore(false)
@@ -204,20 +215,6 @@ export default function LogsViewer() {
     setDetailModalOpen(true)
   }
 
-  const getRowSpans = (records: LogEntry[]) => {
-    if (!groupByDevice) return new Map()
-    const spans = new Map<number, number>()
-    let i = 0
-    while (i < records.length) {
-      let j = i + 1
-      while (j < records.length && (records[j].fromhost_ip || '') === (records[i].fromhost_ip || '')) j++
-      const span = j - i
-      for (let k = i; k < j; k++) spans.set(k, k === i ? span : 0)
-      i = j
-    }
-    return spans
-  }
-
   const columns = [
     {
       title: 'Time',
@@ -225,8 +222,6 @@ export default function LogsViewer() {
       key: 'timestamp',
       width: 180,
       render: (v: string) => new Date(v).toLocaleString(),
-      sorter: (a: LogEntry, b: LogEntry) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-      defaultSortOrder: 'descend',
     },
     {
       title: 'Severity',
@@ -234,21 +229,14 @@ export default function LogsViewer() {
       key: 'severity',
       width: 90,
       render: (v: string) => <SeverityTag severity={v} />,
-      filters: severities.map(s => ({ text: s.toUpperCase(), value: s })),
-      onFilter: (v: string, record: LogEntry) => record.severity === String(v),
     },
     {
       title: 'Device',
       dataIndex: 'hostname',
       key: 'hostname',
       width: 160,
-      render: (v: string | null | undefined, _record: LogEntry, index: number) => {
-        const rowSpans = getRowSpans(logs)
-        return {
-          props: { rowSpan: rowSpans.get(index) },
-          children: v ? <Tag color="blue">{resolveHostname(v, _record.fromhost_ip, _record.display_name)}</Tag> : '-',
-        }
-      },
+      render: (v: string | null | undefined, _record: LogEntry) =>
+        v ? <Tag color="blue">{resolveHostname(v, _record.fromhost_ip, _record.display_name)}</Tag> : '-',
     },
     {
       title: 'App',
@@ -286,38 +274,8 @@ export default function LogsViewer() {
     <>
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
         <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>Logs</Title>
-        <Text type="secondary">({logs.length.toLocaleString()} loaded)</Text>
+        <Text type="secondary">({totalLogs.toLocaleString()} total)</Text>
         {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
-        <Dropdown
-          menu={{
-            items: [
-              { key: 'timestamp', label: 'Time' },
-              { key: 'severity', label: 'Severity' },
-              { key: 'hostname', label: 'Device' },
-              { key: 'app_name', label: 'App' },
-              { key: 'message', label: 'Message' },
-            ],
-            selectable: true,
-            selectedKeys: visibleColumns,
-            onSelect: (keyOrInfo) => {
-              const key = typeof keyOrInfo === 'string' ? keyOrInfo : keyOrInfo.key
-              setVisibleColumns(prev =>
-                prev.includes(key) ? prev.filter(c => c !== key) : [...prev, key],
-              )
-            },
-          }}
-          placement="bottomRight"
-        >
-          <Button size="small" icon={<ColumnHeightOutlined />}>Columns</Button>
-        </Dropdown>
-        <Button
-          size="small"
-          icon={groupByDevice ? <ClusterOutlined /> : <UnorderedListOutlined />}
-          onClick={() => setGroupByDevice(!groupByDevice)}
-          style={{ color: groupByDevice ? '#1890ff' : undefined }}
-        >
-          Group by Device
-        </Button>
         <Select
           size="small"
           style={{ width: 100 }}
@@ -413,7 +371,7 @@ export default function LogsViewer() {
             <Skeleton active paragraph={{ rows: 10 }} />
           )}
           <Table
-            columns={enhanceColumns(columns.filter(c => visibleColumns.includes(c.key)))}
+            columns={enhanceColumns(columns)}
             dataSource={logs}
             rowKey="id"
             loading={loading}

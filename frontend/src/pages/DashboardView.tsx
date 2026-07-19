@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form, message } from 'antd'
-import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined, ClockCircleOutlined, UnorderedListOutlined } from '@ant-design/icons'
+import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form, Popconfirm, message } from 'antd'
+import { ArrowLeftOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined, ClockCircleOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
-import { getDashboard, getDashboardData, togglePinDashboard, togglePublicDashboard, Dashboard, LogEntry, getDevices, DeviceStats, resolveDeviceDisplayName } from '../services/api'
+import { getDashboard, getDashboardData, getDashboardDataCount, exportDashboardCSV, exportDashboardHTML, togglePinDashboard, togglePublicDashboard, Dashboard, LogEntry, getDevices, DeviceStats, resolveDeviceDisplayName, sortSupportsCursor } from '../services/api'
+import dayjs, { type Dayjs } from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import { SEVERITY_LABELS } from '../constants'
@@ -19,22 +20,23 @@ export default function DashboardViewPage() {
   const navigate = useNavigate()
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [logs, setLogs] = useState<LogEntry[]>([])
+  const [totalLogs, setTotalLogs] = useState(0)
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(true)
   const [tableLoading, setTableLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const [pageSize, setPageSize] = useState(50)
-  // Keyset pagination cursor for "Load more" - the dashboard log list is
-  // always sorted by timestamp DESC, so a pure cursor works without any
-  // offset fallback (see LogsViewer for the mixed-sort variant).
+  // Keyset pagination cursor for "Load more" on the timestamp sorts; sorting
+  // by severity/hostname falls back to offset (see sortSupportsCursor).
   const cursorRef = useRef('')
-  const [searchOverride, setSearchOverride] = useState('')
-  const [severityFilter, setSeverityFilter] = useState('')
-  const searchOverrideRef = useRef(searchOverride)
-  const severityRef = useRef(severityFilter)
-  useEffect(() => { searchOverrideRef.current = searchOverride }, [searchOverride])
-  useEffect(() => { severityRef.current = severityFilter }, [severityFilter])
-  const [dateRange, setDateRange] = useState<[any, any] | null>(null)
+  const offsetRef = useRef(0)
+  const [filters, setFilters] = useState({
+    search: '',
+    severity: '',
+    from: '',
+    to: '',
+    sort: 'timestamp_desc',
+  })
   const [detailLog, setDetailLog] = useState<LogEntry | null>(null)
   const [devices, setDevices] = useState<DeviceStats[]>([])
   const { user } = useAuth()
@@ -96,35 +98,61 @@ export default function DashboardViewPage() {
   const loadLogs = useCallback(async (reset: boolean) => {
     reset ? setTableLoading(true) : setLoadingMore(true)
     try {
-      const from = dateRange?.[0]?.toISOString() || ''
-      const to = dateRange?.[1]?.toISOString() || ''
-      const data = await getDashboardData(dashboardId, pageSize, reset ? '' : cursorRef.current, searchOverrideRef.current, severityRef.current, from, to)
+      const from = filters.from ? dayjs(filters.from).format() : ''
+      const to = filters.to ? dayjs(filters.to).format() : ''
+      const useCursor = sortSupportsCursor(filters.sort)
+      const data = await getDashboardData(
+        dashboardId, pageSize,
+        useCursor && !reset ? cursorRef.current : '',
+        filters.search, filters.severity, from, to,
+        filters.sort, !useCursor && !reset ? offsetRef.current : 0,
+      )
       setLogs(prev => (reset ? data.logs : [...prev, ...data.logs]))
       setHasMore(data.has_more)
       cursorRef.current = data.next_cursor
+      offsetRef.current = reset ? pageSize : offsetRef.current + pageSize
+      if (reset) {
+        getDashboardDataCount(dashboardId, filters.search, filters.severity, from, to)
+          .then(setTotalLogs).catch(() => {})
+      }
     } catch (e) {
       // error handled by API
     } finally {
       setTableLoading(false)
       setLoadingMore(false)
     }
-  }, [dashboardId, pageSize, dateRange])
+  }, [dashboardId, pageSize, filters])
 
   const handleLoadMore = () => loadLogs(false)
 
   const pollLogs = useCallback(async () => {
     if (!appendMode) return
     try {
-      const from = dateRange?.[0]?.toISOString() || ''
-      const to = dateRange?.[1]?.toISOString() || ''
-      const data = await getDashboardData(dashboardId, pageSize, '', searchOverrideRef.current, severityRef.current, from, to)
+      const from = filters.from ? dayjs(filters.from).format() : ''
+      const to = filters.to ? dayjs(filters.to).format() : ''
+      const data = await getDashboardData(dashboardId, pageSize, '', filters.search, filters.severity, from, to, filters.sort)
       setHasMore(data.has_more)
       cursorRef.current = data.next_cursor
+      offsetRef.current = pageSize
       setLogs(data.logs)
     } catch (e) {
       // error handled by API
     }
-  }, [dashboardId, pageSize, dateRange, appendMode])
+  }, [dashboardId, pageSize, filters, appendMode])
+
+  const handleExport = (format: 'csv' | 'html') => {
+    const from = filters.from ? dayjs(filters.from).format() : ''
+    const to = filters.to ? dayjs(filters.to).format() : ''
+    const params: Record<string, string> = {}
+    if (filters.severity) params.severity = filters.severity
+    if (filters.search) params.search = filters.search
+    if (from) params.from = from
+    if (to) params.to = to
+
+    if (format === 'csv') exportDashboardCSV(dashboardId, params)
+    else exportDashboardHTML(dashboardId, params)
+    message.success(`Exporting ${format.toUpperCase()}...`)
+  }
 
   useEffect(() => {
     loadDashboard()
@@ -201,6 +229,17 @@ export default function DashboardViewPage() {
 
   const fields = dashboard?.config?.fields || []
   const dashDevices = dashboard?.config?.devices || []
+  const dashFixedSeverity = dashboard?.config?.filters?.severity || ''
+
+  // Only offer sorting by a field the dashboard doesn't already pin to a
+  // single value - e.g. "By Device" is meaningless when the dashboard is
+  // scoped to exactly one device.
+  const sortOptions = [
+    { label: 'Newest First', value: 'timestamp_desc' },
+    { label: 'Oldest First', value: 'timestamp_asc' },
+    ...(dashFixedSeverity ? [] : [{ label: 'By Severity', value: 'severity' }]),
+    ...(dashDevices.length === 1 ? [] : [{ label: 'By Device', value: 'hostname' }]),
+  ]
 
   const buildCustomColumns = () => {
     const cols = []
@@ -228,8 +267,6 @@ export default function DashboardViewPage() {
       key: 'timestamp',
       width: 180,
       render: (v: string) => new Date(v).toLocaleString(),
-      sorter: (a: LogEntry, b: LogEntry) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-      defaultSortOrder: 'descend',
     },
     {
       title: 'Device',
@@ -237,8 +274,6 @@ export default function DashboardViewPage() {
       key: 'hostname',
       width: 150,
       render: (v: string, r: LogEntry) => <Tag color="blue">{resolveHostname(v, r.fromhost_ip, r.display_name)}</Tag>,
-      filters: Array.from(new Set(logs.map(l => l.hostname))).map(h => ({ text: h, value: h })),
-      onFilter: (v: string, record: LogEntry) => record.hostname === String(v),
     },
     {
       title: 'Severity',
@@ -246,8 +281,6 @@ export default function DashboardViewPage() {
       key: 'severity',
       width: 100,
       render: (v: string) => <SeverityTag severity={v} />,
-      filters: severities.map(s => ({ text: (SEVERITY_LABELS[s] || s).toUpperCase(), value: s })),
-      onFilter: (v: string, record: LogEntry) => record.severity === String(v),
     },
     {
       title: 'App',
@@ -351,9 +384,8 @@ export default function DashboardViewPage() {
           <Input
             ref={searchRef}
             placeholder="Search... (Ctrl+K)"
-            value={searchOverride}
-            onChange={e => setSearchOverride(e.target.value)}
-            onPressEnter={() => loadLogs(true)}
+            value={filters.search}
+            onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
             style={{ minWidth: 180, flex: '1 1 180px' }}
             prefix={<FilterOutlined />}
           />
@@ -361,17 +393,33 @@ export default function DashboardViewPage() {
             placeholder="Severity"
             allowClear
             style={{ minWidth: 140, flex: '1 1 140px' }}
-            value={severityFilter || undefined}
-            onChange={(v) => setSeverityFilter(v || '')}
+            value={filters.severity || undefined}
+            onChange={(v) => setFilters(f => ({ ...f, severity: v || '' }))}
             options={severities.map(s => ({ label: SEVERITY_LABELS[s] || s, value: s }))}
           />
           <RangePicker
             style={{ minWidth: 260, flex: '1 1 260px' }}
             showTime
-            value={dateRange}
-            onChange={(dates) => setDateRange(dates as [any, any] | null)}
+            value={filters.from && filters.to ? [dayjs(filters.from), dayjs(filters.to)] : null}
+            onChange={(dates) => setFilters(f => ({
+              ...f,
+              from: (dates as [Dayjs | null, Dayjs | null] | null)?.[0]?.toISOString() || '',
+              to: (dates as [Dayjs | null, Dayjs | null] | null)?.[1]?.toISOString() || '',
+            }))}
           />
-          <Button icon={<ReloadOutlined />} onClick={() => loadLogs(true)} loading={tableLoading}>Apply</Button>
+          <Select
+            placeholder="Sort"
+            style={{ minWidth: 130, flex: '1 1 130px' }}
+            value={filters.sort}
+            onChange={(v) => setFilters(f => ({ ...f, sort: v }))}
+            options={sortOptions}
+          />
+          <Popconfirm title="Export as CSV?" onConfirm={() => handleExport('csv')}>
+            <Button>CSV</Button>
+          </Popconfirm>
+          <Popconfirm title="Export as HTML?" onConfirm={() => handleExport('html')}>
+            <Button>HTML</Button>
+          </Popconfirm>
           <Select
             size="small"
             style={{ width: 100 }}
@@ -399,7 +447,7 @@ export default function DashboardViewPage() {
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col xs={24} sm={12} md={8} lg={6}>
           <Card>
-            <Statistic title="Loaded Logs" value={logs.length} />
+            <Statistic title="Total Logs" value={totalLogs} />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={8} lg={6}>

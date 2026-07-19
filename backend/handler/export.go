@@ -16,6 +16,26 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// exportFilterOptionsFromQuery builds LogFilterOptions from the query params
+// shared by the generic /export endpoints and the dashboard-scoped ones -
+// same filters the table view itself uses, so exports match what's on screen.
+func exportFilterOptionsFromQuery(c *gin.Context) LogFilterOptions {
+	opts := LogFilterOptions{
+		Hostname:   c.Query("hostname"),
+		FromHostIP: c.Query("fromhost_ip"),
+		Severity:   c.Query("severity"),
+		AppName:    c.Query("app_name"),
+		Search:     c.Query("search"),
+		From:       c.Query("from"),
+		To:         c.Query("to"),
+	}
+	if devices := c.Query("devices"); devices != "" {
+		opts.Devices = strings.Split(devices, ",")
+	}
+	opts.HasFields = c.Query("has_fields") == "1"
+	return opts
+}
+
 // csvSafe neutralizes leading characters that spreadsheet applications
 // (Excel, LibreOffice) interpret as the start of a formula, preventing
 // CSV/formula injection from attacker-influenced log content.
@@ -32,11 +52,6 @@ func csvSafe(s string) string {
 
 func ExportCSV(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		hostname := c.Query("hostname")
-		severity := c.Query("severity")
-		from := c.Query("from")
-		to := c.Query("to")
-		search := c.Query("search")
 		limitStr := c.DefaultQuery("limit", "100000")
 		limit, err := strconv.Atoi(limitStr)
 		if err != nil || limit <= 0 {
@@ -46,153 +61,93 @@ func ExportCSV(db *sql.DB) gin.HandlerFunc {
 			limit = MaxExportLimit
 		}
 
-		whereClauses := []string{}
-		args := []interface{}{}
-		argIdx := 1
-
-		if hostname != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("hostname = $%d", argIdx))
-			args = append(args, hostname)
-			argIdx++
-		}
-		if severity != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("severity = $%d", argIdx))
-			args = append(args, severity)
-			argIdx++
-		}
-		if from != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("timestamp >= $%d", argIdx))
-			args = append(args, from)
-			argIdx++
-		}
-		if to != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("timestamp <= $%d", argIdx))
-			args = append(args, to)
-			argIdx++
-		}
-		if search != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("search_vector @@ websearch_to_tsquery('english', $%d)", argIdx))
-			args = append(args, search)
-			argIdx++
-		}
-
-		whereSQL := ""
-		if len(whereClauses) > 0 {
-			whereSQL = "WHERE " + strings.Join(whereClauses, " AND ")
-		}
-
-		rows, err := db.Query(
-			"SELECT timestamp, hostname, app_name, severity, message FROM syslog_logs "+whereSQL+" ORDER BY timestamp DESC LIMIT $1",
-			append(args, limit)...,
-		)
-		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Query failed", err))
-			return
-		}
-		defer rows.Close()
-
-		c.Header("Content-Type", "text/csv")
-		c.Header("Content-Disposition", "attachment; filename=syslog_export_"+time.Now().Format("20060102_150405")+".csv")
-
-		w := csv.NewWriter(c.Writer)
-		w.Write([]string{"timestamp", "hostname", "app_name", "severity", "message"})
-
-		for rows.Next() {
-			var ts, hostname, severity, message string
-			var appName *string
-			if err := rows.Scan(&ts, &hostname, &appName, &severity, &message); err != nil {
-				continue
-			}
-			app := ""
-			if appName != nil {
-				app = *appName
-			}
-			w.Write([]string{ts, csvSafe(hostname), csvSafe(app), csvSafe(severity), csvSafe(message)})
-		}
-		w.Flush()
+		whereClauses, args, _ := buildLogWhereClauses(exportFilterOptionsFromQuery(c))
+		writeCSVExport(c, db, buildWhereSQL(whereClauses), args, limit)
 	}
 }
 
 func ExportHTML(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		hostname := c.Query("hostname")
-		severity := c.Query("severity")
-		from := c.Query("from")
-		to := c.Query("to")
-		search := c.Query("search")
-
-		whereClauses := []string{}
-		args := []interface{}{}
-		argIdx := 1
-
-		if hostname != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("hostname = $%d", argIdx))
-			args = append(args, hostname)
-			argIdx++
-		}
-		if severity != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("severity = $%d", argIdx))
-			args = append(args, severity)
-			argIdx++
-		}
-		if from != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("timestamp >= $%d", argIdx))
-			args = append(args, from)
-			argIdx++
-		}
-		if to != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("timestamp <= $%d", argIdx))
-			args = append(args, to)
-			argIdx++
-		}
-		if search != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("search_vector @@ websearch_to_tsquery('english', $%d)", argIdx))
-			args = append(args, search)
-			argIdx++
-		}
-
-		whereSQL := ""
-		if len(whereClauses) > 0 {
-			whereSQL = "WHERE " + strings.Join(whereClauses, " AND ")
-		}
-
-		rows, err := db.Query(
-			"SELECT timestamp, hostname, app_name, severity, message FROM syslog_logs "+whereSQL+" ORDER BY timestamp DESC LIMIT 5000",
-			args...,
-		)
-		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Query failed", err))
-			return
-		}
-		defer rows.Close()
-
-		var sb strings.Builder
-		sb.WriteString("<!DOCTYPE html><html><head><meta charset='utf-8'><title>Syslog Report</title>")
-		sb.WriteString("<style>body{font-family:monospace;font-size:10px;}table{border-collapse:collapse;width:100%;}th,td{border:1px solid #ccc;padding:4px;text-align:left;}th{background:#2980b9;color:white;}tr:nth-child(even){background:#f0f0f0;}</style>")
-		sb.WriteString("</head><body><h2>Syslog Report - " + time.Now().Format("2006-01-02 15:04:05") + "</h2>")
-		sb.WriteString("<table><tr><th>Timestamp</th><th>Hostname</th><th>App</th><th>Severity</th><th>Message</th></tr>")
-
-		for rows.Next() {
-			var ts, hn, sev, msg string
-			var app *string
-			if err := rows.Scan(&ts, &hn, &app, &sev, &msg); err != nil {
-				continue
-			}
-			a := ""
-			if app != nil {
-				a = *app
-			}
-			sb.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>",
-				html.EscapeString(ts), html.EscapeString(hn), html.EscapeString(a), html.EscapeString(sev), html.EscapeString(msg)))
-		}
-
-		sb.WriteString("</table></body></html>")
-
-		filename := "syslog_report_" + time.Now().Format("20060102_150405") + ".html"
-		c.Header("Content-Type", "text/html")
-		c.Header("Content-Disposition", "attachment; filename="+filename)
-		c.String(http.StatusOK, sb.String())
+		whereClauses, args, _ := buildLogWhereClauses(exportFilterOptionsFromQuery(c))
+		writeHTMLExport(c, db, buildWhereSQL(whereClauses), args, 5000)
 	}
+}
+
+// writeCSVExport streams the filtered rows as CSV. Shared by the generic
+// /export/csv endpoint and the dashboard-scoped export, which differ only in
+// how whereSQL/args were built (see exportFilterOptionsFromQuery vs.
+// resolveDashboardFilters).
+func writeCSVExport(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int) {
+	rows, err := db.Query(
+		fmt.Sprintf("SELECT timestamp, hostname, app_name, severity, message FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d", whereSQL, len(args)+1),
+		append(args, limit)...,
+	)
+	if err != nil {
+		middleware.HandleError(c, model.NewInternal("Query failed", err))
+		return
+	}
+	defer rows.Close()
+
+	c.Header("Content-Type", "text/csv")
+	c.Header("Content-Disposition", "attachment; filename=syslog_export_"+time.Now().Format("20060102_150405")+".csv")
+
+	w := csv.NewWriter(c.Writer)
+	w.Write([]string{"timestamp", "hostname", "app_name", "severity", "message"})
+
+	for rows.Next() {
+		var ts, hostname, severity, message string
+		var appName *string
+		if err := rows.Scan(&ts, &hostname, &appName, &severity, &message); err != nil {
+			continue
+		}
+		app := ""
+		if appName != nil {
+			app = *appName
+		}
+		w.Write([]string{ts, csvSafe(hostname), csvSafe(app), csvSafe(severity), csvSafe(message)})
+	}
+	w.Flush()
+}
+
+// writeHTMLExport streams the filtered rows as an HTML report. See
+// writeCSVExport for why this is shared between two callers.
+func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int) {
+	rows, err := db.Query(
+		fmt.Sprintf("SELECT timestamp, hostname, app_name, severity, message FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d", whereSQL, len(args)+1),
+		append(args, limit)...,
+	)
+	if err != nil {
+		middleware.HandleError(c, model.NewInternal("Query failed", err))
+		return
+	}
+	defer rows.Close()
+
+	var sb strings.Builder
+	sb.WriteString("<!DOCTYPE html><html><head><meta charset='utf-8'><title>Syslog Report</title>")
+	sb.WriteString("<style>body{font-family:monospace;font-size:10px;}table{border-collapse:collapse;width:100%;}th,td{border:1px solid #ccc;padding:4px;text-align:left;}th{background:#2980b9;color:white;}tr:nth-child(even){background:#f0f0f0;}</style>")
+	sb.WriteString("</head><body><h2>Syslog Report - " + time.Now().Format("2006-01-02 15:04:05") + "</h2>")
+	sb.WriteString("<table><tr><th>Timestamp</th><th>Hostname</th><th>App</th><th>Severity</th><th>Message</th></tr>")
+
+	for rows.Next() {
+		var ts, hn, sev, msg string
+		var app *string
+		if err := rows.Scan(&ts, &hn, &app, &sev, &msg); err != nil {
+			continue
+		}
+		a := ""
+		if app != nil {
+			a = *app
+		}
+		sb.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>",
+			html.EscapeString(ts), html.EscapeString(hn), html.EscapeString(a), html.EscapeString(sev), html.EscapeString(msg)))
+	}
+
+	sb.WriteString("</table></body></html>")
+
+	filename := "syslog_report_" + time.Now().Format("20060102_150405") + ".html"
+	c.Header("Content-Type", "text/html")
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+	c.String(http.StatusOK, sb.String())
 }
 
 func truncate(s string, max int) string {
