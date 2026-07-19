@@ -59,7 +59,7 @@ export default function DashboardsPage() {
   }
 
   const selectedDevices: string[] = Form.useWatch(['config', 'devices'], form) || []
-  const selectedParser: string | undefined = Form.useWatch(['config', 'parser'], form)
+  const selectedParsers: string[] = Form.useWatch(['config', 'parsers'], form) || []
 
   const parserOptions = (() => {
     if (selectedDevices.length === 0) return []
@@ -75,7 +75,7 @@ export default function DashboardsPage() {
   const fieldOptions = Array.from(
     new Map(
       parsedFields
-        .filter(f => !selectedParser || f.parser_name === selectedParser)
+        .filter(f => selectedParsers.length === 0 || selectedParsers.includes(f.parser_name))
         .map(f => [f.field_name, f]),
     ).values(),
   ).map(f => ({
@@ -345,12 +345,12 @@ export default function DashboardsPage() {
       const newDevices = allValues.config?.devices || []
       if (JSON.stringify(newDevices) !== JSON.stringify(prevDevices.current)) {
         prevDevices.current = newDevices
-        form.setFieldValue(['config', 'parser'], undefined)
+        form.setFieldValue(['config', 'parsers'], [])
         form.setFieldValue(['config', 'fields'], [])
         await loadFieldsForDevices(newDevices)
         return
       }
-      if (changed.config && Object.prototype.hasOwnProperty.call(changed.config, 'parser')) {
+      if (changed.config && Object.prototype.hasOwnProperty.call(changed.config, 'parsers')) {
         form.setFieldValue(['config', 'fields'], [])
       }
     }}>
@@ -373,11 +373,12 @@ export default function DashboardsPage() {
           </Form.Item>
 
           {selectedDevices.length > 0 && (
-            <Form.Item label="Parser">
-              <Form.Item name={['config', 'parser']} noStyle>
+            <Form.Item label="Parser(s)">
+              <Form.Item name={['config', 'parsers']} noStyle>
                 <Select
+                  mode="multiple"
                   allowClear
-                  placeholder="Select a parser used by the selected device(s) (leave empty for all)"
+                  placeholder="Select parser(s) used by the selected device(s) (leave empty for all)"
                   style={{ width: '100%' }}
                   options={parserOptions}
                   notFoundContent="No parsers matched for the selected device(s) yet"

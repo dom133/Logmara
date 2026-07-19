@@ -276,7 +276,7 @@ export interface DashboardFilters {
 
 export interface DashboardConfig {
   devices: string[]
-  parser?: string
+  parsers?: string[]
   fields: string[]
   filters: DashboardFilters
 }
