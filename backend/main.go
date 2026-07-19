@@ -84,7 +84,9 @@ func main() {
 	defer database.Close()
 
 	db.SetAppStarting(true)
+	migrationDone := make(chan struct{})
 	go func() {
+		defer close(migrationDone)
 		if err := db.Migrate(database); err != nil {
 			slog.Error("failed to migrate database", "error", err)
 			os.Exit(1)
@@ -98,7 +100,9 @@ func main() {
 	ctx, maintCancel := context.WithCancel(context.Background())
 	stopVacuum, stopMV := db.StartMaintenance(ctx, database)
 
-	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive
+	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive.
+	// RefreshMV itself skips while migration is in progress, so it's safe to
+	// start this ticker immediately.
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -113,6 +117,13 @@ func main() {
 			}
 		}
 	}()
+
+	// auth.Init/parser.NewEngine/the tailer all query tables that only exist
+	// once db.Migrate has run (users, parsers, syslog_logs) - on a brand new
+	// database these queries can otherwise race ahead of table creation and
+	// fail. Everything below this point already ran sequentially after
+	// auth.Init anyway, so waiting here doesn't add any new startup latency.
+	<-migrationDone
 
 	if err := auth.Init(database); err != nil {
 		slog.Error("auth initialization failed", "error", err)
