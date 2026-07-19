@@ -25,6 +25,7 @@ export default function Admin() {
   const [ldapEnabled, setLdapEnabled] = useState(false)
   const [ldapAutoProvision, setLdapAutoProvision] = useState(false)
   const [httpsEnabled, setHttpsEnabled] = useState(false)
+  const [httpsRedirect, setHttpsRedirect] = useState(false)
   const [testing, setTesting] = useState(false)
   const [purgeModalOpen, setPurgeModalOpen] = useState(false)
   const [pauseDuringPurge, setPauseDuringPurge] = useState(false)
@@ -75,12 +76,12 @@ export default function Admin() {
       if (data['jwt_expiry']) formValues['jwt_expiry'] = parseInt(data['jwt_expiry'], 10)
       if (data['session_timeout_min'] !== undefined && data['session_timeout_min'] !== '') formValues['session_timeout_min'] = parseInt(data['session_timeout_min'], 10)
       formValues['https_enabled'] = data['https_enabled'] === 'true'
-      if (data['https_port']) formValues['https_port'] = parseInt(data['https_port'], 10)
-      else formValues['https_port'] = 8443
+      formValues['https_redirect'] = data['https_redirect'] === 'true'
       settingsForm.setFieldsValue(formValues)
       setLdapEnabled(data['ldap_enabled'] === 'true')
       setLdapAutoProvision(data['ldap_auto_provision'] === 'true')
       setHttpsEnabled(data['https_enabled'] === 'true')
+      setHttpsRedirect(data['https_redirect'] === 'true')
     } catch {
       message.error('Failed to load settings')
     }
@@ -257,15 +258,12 @@ const handleSaveSettings = async () => {
     }
     try {
       const result = await updateSettings(strValues)
-      message.success('Settings saved')
-      if (result.restart_needed) {
-        message.warning('Server is restarting to apply HTTPS changes. Page will reload shortly.')
-        setTimeout(() => {
-          window.location.reload()
-        }, 3000)
+      if (result?.nginx_reload_error) {
+        message.warning(`Settings saved, but nginx reload failed: ${result.nginx_reload_error}`)
       } else {
-        loadSettings()
+        message.success('Settings saved')
       }
+      loadSettings()
     } catch (e: unknown) {
       const errMsg = getErrorMessage(e, 'Failed to save settings')
       message.error(errMsg)
@@ -419,11 +417,19 @@ const handleCleanup = async () => {
                    </Form.Item>
                    <Divider orientation="left">HTTPS</Divider>
                    <Form.Item label="Enable HTTPS" name="https_enabled" valuePropName="checked">
-                     <Switch checked={httpsEnabled} onChange={(v) => { setHttpsEnabled(v); settingsForm.setFieldValue('https_enabled', v); if (!v) { setCertInfo(null); setCertFile(null); setKeyFile(null); } }} />
+                     <Switch checked={httpsEnabled} onChange={(v) => {
+                       setHttpsEnabled(v)
+                       settingsForm.setFieldValue('https_enabled', v)
+                       if (!v) {
+                         setCertInfo(null); setCertFile(null); setKeyFile(null)
+                         setHttpsRedirect(false)
+                         settingsForm.setFieldValue('https_redirect', false)
+                       }
+                     }} />
                    </Form.Item>
-<Form.Item label="HTTPS Port" name="https_port">
-                      <InputNumber min={1} max={65535} style={{ width: '100%' }} disabled={!httpsEnabled} />
-                    </Form.Item>
+                   <Form.Item label="Redirect HTTP to HTTPS" name="https_redirect" valuePropName="checked">
+                     <Switch checked={httpsRedirect} disabled={!httpsEnabled} onChange={(v) => { setHttpsRedirect(v); settingsForm.setFieldValue('https_redirect', v) }} />
+                   </Form.Item>
                     <Form.Item label="Upload Certificate (.pem/.crt)">
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                         <input

@@ -18,8 +18,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var TriggerRestart chan struct{}
-
 type CreateUserRequest struct {
 	Username string `json:"username" binding:"required,max=100"`
 	Email    string `json:"email" binding:"required,email,max=256"`
@@ -235,10 +233,10 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 		}
 
 		oldHttpsEnabled := db.GetSetting(database, "https_enabled", "false")
-		oldPort := db.GetSetting(database, "https_port", "8443")
+		oldHttpsRedirect := db.GetSetting(database, "https_redirect", "false")
 
 		newHttpsEnabled := settings["https_enabled"]
-		newPort := settings["https_port"]
+		newHttpsRedirect := settings["https_redirect"]
 
 		if newHttpsEnabled == "true" && oldHttpsEnabled != "true" {
 			sslDir := os.Getenv("SSL_DIR")
@@ -264,20 +262,69 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 			}
 		}
 
-		httpsChanged := oldHttpsEnabled != newHttpsEnabled || oldPort != newPort
+		httpsChanged := oldHttpsEnabled != newHttpsEnabled || oldHttpsRedirect != newHttpsRedirect
 
 		if httpsChanged {
-			c.JSON(http.StatusOK, gin.H{
-				"message":        "Settings updated",
-				"restart_needed": true,
-			})
-			if TriggerRestart != nil {
-				go func() { TriggerRestart <- struct{}{} }()
+			if err := reloadNginx(newHttpsRedirect == "true"); err != nil {
+				slog.Warn("nginx reload failed after settings update", "error", err)
+				c.JSON(http.StatusOK, gin.H{
+					"message":             "Settings updated",
+					"nginx_reload_error": err.Error(),
+				})
+				return
 			}
-			return
 		}
 
 		c.JSON(http.StatusOK, gin.H{"message": "Settings updated"})
+	}
+}
+
+// reloadNginx writes the HTTP->HTTPS redirect config fragment consumed by
+// nginx and asks the frontend container's reload sidecar to apply it.
+func reloadNginx(redirectEnabled bool) error {
+	confDir := os.Getenv("NGINX_CONF_DIR")
+	if confDir == "" {
+		confDir = "/data/nginx"
+	}
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		return fmt.Errorf("create nginx conf dir: %w", err)
+	}
+
+	redirectConf := ""
+	if redirectEnabled {
+		redirectConf = "return 301 https://$host$request_uri;\n"
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "redirect.conf"), []byte(redirectConf), 0644); err != nil {
+		return fmt.Errorf("write redirect.conf: %w", err)
+	}
+
+	reloadURL := os.Getenv("NGINX_RELOAD_URL")
+	if reloadURL == "" {
+		reloadURL = "http://frontend:8081/cgi-bin/reload.sh"
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(reloadURL, "text/plain", nil)
+	if err != nil {
+		return fmt.Errorf("nginx reload request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("nginx reload returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// ReloadNginx re-applies the current HTTPS redirect setting and triggers an
+// nginx config reload via the frontend container's sidecar.
+func ReloadNginx(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		redirectEnabled := db.GetSetting(database, "https_redirect", "false") == "true"
+		if err := reloadNginx(redirectEnabled); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "nginx reloaded"})
 	}
 }
 

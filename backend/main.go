@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -207,6 +206,7 @@ func main() {
 			adminGroup.DELETE("/slow-queries", handler.ClearSlowQueriesHandler())
 			adminGroup.PUT("/devices/:ip/alias", handler.UpdateDeviceAlias(database))
 			adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(database))
+			adminGroup.POST("/nginx-reload", handler.ReloadNginx(database))
 		}
 	}
 
@@ -215,104 +215,20 @@ func main() {
 		port = "8080"
 	}
 
-	httpsEnabled := os.Getenv("HTTPS_ENABLED") == "true" || db.GetSetting(database, "https_enabled", "false") == "true"
-	httpsCert := os.Getenv("HTTPS_CERT_FILE")
-	if httpsCert == "" {
-		httpsCert = "/data/ssl/server.crt"
-	}
-	httpsKey := os.Getenv("HTTPS_KEY_FILE")
-	if httpsKey == "" {
-		httpsKey = "/data/ssl/server.key"
-	}
-	httpsPort := os.Getenv("HTTPS_PORT")
-	if httpsPort == "" {
-		httpsPort = "8443"
-	}
-
-	startHTTPS := httpsEnabled && httpsCert != "" && httpsKey != ""
-
-	srvPort := port
-	if startHTTPS {
-		srvPort = httpsPort
-	}
-
 	srv := &http.Server{
-		Addr:         ":" + srvPort,
+		Addr:         ":" + port,
 		Handler:      r,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
-	handler.TriggerRestart = make(chan struct{}, 1)
-
-	var httpSrv *http.Server
-
-	if startHTTPS {
-		slog.Info("starting HTTPS server", "port", httpsPort)
-		go func() {
-			if err := srv.ListenAndServeTLS(httpsCert, httpsKey); err != nil && err != http.ErrServerClosed {
-				slog.Error("https server failed", "error", err)
-				os.Exit(1)
-			}
-		}()
-
-		httpSrv = &http.Server{
-			Addr:         ":" + port,
-			Handler:      r,
-			ReadTimeout:  15 * time.Second,
-			WriteTimeout: 15 * time.Second,
-			IdleTimeout:  60 * time.Second,
-		}
-		slog.Info("starting HTTP server (internal proxy)", "port", port)
-		go func() {
-			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				slog.Error("http server failed", "error", err)
-			}
-		}()
-	} else {
-		go func() {
-			slog.Info("server starting", "port", port)
-			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				slog.Error("server failed", "error", err)
-				os.Exit(1)
-			}
-		}()
-	}
-
 	go func() {
-		<-handler.TriggerRestart
-		slog.Warn("restarting server due to HTTPS settings change")
-		maintCancel()
-		stopVacuum()
-		stopMV()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if httpSrv != nil {
-			if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-				slog.Error("forced shutdown http", "error", err)
-			}
-		}
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Error("forced shutdown", "error", err)
-		}
-		slog.Info("server stopped, restarting...")
-
-		executable, err := os.Executable()
-		if err != nil {
-			slog.Error("failed to get executable path", "error", err)
+		slog.Info("server starting", "port", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("server failed", "error", err)
 			os.Exit(1)
 		}
-
-		cmd := exec.Command(executable)
-		cmd.Env = os.Environ()
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Start(); err != nil {
-			slog.Error("failed to restart", "error", err)
-			os.Exit(1)
-		}
-		os.Exit(0)
 	}()
 
 	quit := make(chan os.Signal, 1)
@@ -326,11 +242,6 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if httpSrv != nil {
-		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-			slog.Error("forced shutdown http", "error", err)
-		}
-	}
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("forced shutdown", "error", err)
 	}
