@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lib/pq"
+
 	"syslog-gui/model"
 )
 
@@ -535,7 +537,7 @@ func (e *Engine) ReparseUnparsed(hostname, from, to string, limit int) (*model.R
 			continue
 		}
 
-		_, err = e.db.Exec(updateStmt, jsonData, result.Parsers, id)
+		_, err = e.db.Exec(updateStmt, jsonData, pq.StringArray(result.Parsers), id)
 		if err != nil {
 			slog.Error("reparse update error", "error", err)
 			continue
