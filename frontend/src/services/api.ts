@@ -547,6 +547,7 @@ export async function initialize(data: InitRequest) {
 }
 
 export interface DbConfig {
+	configured: boolean
 	host: string
 	port: number
 	name: string
@@ -557,6 +558,19 @@ export interface DbConfig {
 export async function getDbConfig() {
 	const res = await api.get('/init/db-config')
 	return res.data as DbConfig
+}
+
+export interface DatabaseSettings {
+	host: string
+	port: number
+	name: string
+	user: string
+	password: string
+}
+
+export async function testDbConfig(data: DatabaseSettings) {
+	const res = await api.post('/init/test-db', data)
+	return res.data as { message: string }
 }
 
 export interface SlowQueryRecord {

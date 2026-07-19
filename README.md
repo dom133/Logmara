@@ -41,7 +41,7 @@ Copy `.env.example` and adjust values:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | *(required)* | PostgreSQL connection string — **mandatory in production** |
+| `DATABASE_URL` | *(none)* | PostgreSQL connection string. In `docker-compose.yml` this is always set. If unset, the API serves only the setup wizard until it's submitted with database settings, then connects and continues booting on its own |
 | `JWT_SECRET` | *(auto-generated)* | JWT signing key — set explicitly in production |
 | `ENCRYPTION_KEY` | *(auto-generated)* | AES-256 key for encrypting sensitive settings |
 | `PORT` | `8080` | API server port |

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -69,17 +68,24 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
-	if err := validateEnv(); err != nil {
-		slog.Error("environment validation failed", "error", err)
-		os.Exit(1)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
 	}
 
 	dsn := os.Getenv("DATABASE_URL")
 
-	database, err := db.Connect(dsn)
-	if err != nil {
-		slog.Error("failed to connect to database", "error", err)
-		os.Exit(1)
+	var database *sql.DB
+	if dsn != "" {
+		d, err := db.Connect(dsn)
+		if err != nil {
+			slog.Error("failed to connect to database", "error", err)
+			os.Exit(1)
+		}
+		database = d
+	} else {
+		slog.Info("DATABASE_URL not set; serving the setup wizard until database settings are submitted")
+		database = waitForWizardDatabase(port)
 	}
 	defer database.Close()
 
@@ -245,11 +251,6 @@ func main() {
 		}
 	}
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
 	srv := &http.Server{
 		Addr:         ":" + port,
 		Handler:      r,
@@ -284,14 +285,71 @@ func main() {
 	slog.Info("server stopped")
 }
 
-func validateEnv() error {
-	required := []string{"DATABASE_URL"}
-	for _, env := range required {
-		if os.Getenv(env) == "" {
-			return fmt.Errorf("%s environment variable is required", env)
-		}
+// waitForWizardDatabase runs a minimal, database-less HTTP server exposing
+// only the setup wizard's endpoints, and blocks until the wizard submits
+// working database settings. It returns the resulting live connection so
+// main() can continue its normal startup sequence on it.
+func waitForWizardDatabase(port string) *sql.DB {
+	ready := make(chan *sql.DB, 1)
+
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(middleware.ErrorHandler())
+	r.Use(middleware.SecurityHeaders())
+	r.Use(middleware.GzipCompress())
+	r.Use(bootstrapCorsMiddleware())
+
+	initLimiter := newRateLimiter(3, time.Hour)
+	testDbLimiter := newRateLimiter(20, 10*time.Minute)
+	r.GET("/api/health", handler.HealthCheckStandalone())
+	r.GET("/api/status/initialized", handler.CheckInitializedStandalone())
+	r.GET("/api/init/generate-keys", handler.GenerateKeys())
+	r.GET("/api/init/db-config", handler.GetDbConfig())
+	r.POST("/api/init/test-db", rateLimitMiddleware(testDbLimiter), handler.TestDatabaseConfig())
+	r.POST("/api/init", rateLimitMiddleware(initLimiter), handler.InitializeStandalone(ready))
+
+	srv := &http.Server{
+		Addr:         ":" + port,
+		Handler:      r,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
-	return nil
+
+	go func() {
+		slog.Info("setup wizard server starting", "port", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("setup wizard server failed", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	database := <-ready
+	slog.Info("database settings received from setup wizard, handing off to the main server")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Warn("setup wizard server did not shut down cleanly", "error", err)
+	}
+
+	return database
+}
+
+// bootstrapCorsMiddleware mirrors corsMiddleware's no-origins-configured
+// branch, since app_settings (and thus a configured origins list) don't
+// exist yet before a database connection is established.
+func bootstrapCorsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "http://"+c.Request.Host)
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
 }
 
 func corsMiddleware(database *sql.DB) gin.HandlerFunc {

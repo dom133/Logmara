@@ -24,3 +24,14 @@ func HealthCheck(database *sql.DB) gin.HandlerFunc {
 		})
 	}
 }
+
+// HealthCheckStandalone reports the process as up while it waits for the
+// setup wizard to supply database settings (no DATABASE_URL at startup).
+func HealthCheckStandalone() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status": "awaiting_setup",
+			"db":     "not_configured",
+		})
+	}
+}

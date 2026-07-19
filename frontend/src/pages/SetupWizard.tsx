@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Layout, Card, Form, Input, Button, message, Typography, Steps, Space, Divider, Switch, Checkbox } from 'antd'
-import { UploadOutlined } from '@ant-design/icons'
-import { generateKeys, initialize, getDbConfig, InitRequest } from '../services/api'
+import { Layout, Card, Form, Input, Button, message, Typography, Steps, Space, Divider, Switch, Checkbox, Spin } from 'antd'
+import { UploadOutlined, CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons'
+import { generateKeys, initialize, getDbConfig, testDbConfig, InitRequest } from '../services/api'
 import { getErrorMessage } from '../utils/error'
 
 const { Title, Text } = Typography
@@ -12,6 +12,10 @@ export default function SetupWizard() {
   const [form] = Form.useForm()
   const [current, setCurrent] = useState(0)
   const [loading, setLoading] = useState(false)
+  const [configLoaded, setConfigLoaded] = useState(false)
+  const [dbConfigured, setDbConfigured] = useState(false)
+  const [dbTestStatus, setDbTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle')
+  const [dbTestMessage, setDbTestMessage] = useState('')
   const [collectedData, setCollectedData] = useState({
     username: '',
     email: '',
@@ -38,7 +42,7 @@ export default function SetupWizard() {
 
   useEffect(() => {
     getDbConfig().then((dbConfig) => {
-      if (dbConfig.host || dbConfig.name || dbConfig.user) {
+      if (!dbConfig.configured && (dbConfig.host || dbConfig.name || dbConfig.user)) {
         form.setFieldsValue({
           db_host: dbConfig.host,
           db_port: dbConfig.port,
@@ -55,16 +59,21 @@ export default function SetupWizard() {
           db_password: dbConfig.password || '',
         }))
       }
-    }).catch(() => { /* ignore db config errors */ })
+      setDbConfigured(dbConfig.configured)
+      setConfigLoaded(true)
+    }).catch(() => { setConfigLoaded(true) })
   }, [])
 
-  const steps = [
-    { title: 'Admin Account', description: 'Create administrator account' },
-    { title: 'Database', description: 'Database connection settings' },
-    { title: 'Security Keys', description: 'JWT & encryption keys' },
-    { title: 'Optional Settings', description: 'LDAP & CORS configuration' },
-    { title: 'Review & Submit', description: 'Confirm and initialize' },
+  const allSteps = [
+    { key: 'admin', title: 'Admin Account', description: 'Create administrator account' },
+    { key: 'database', title: 'Database', description: 'Database connection settings' },
+    { key: 'security', title: 'Security Keys', description: 'JWT & encryption keys' },
+    { key: 'optional', title: 'Optional Settings', description: 'LDAP & CORS configuration' },
+    { key: 'review', title: 'Review & Submit', description: 'Confirm and initialize' },
   ]
+  const steps = dbConfigured ? allSteps.filter(s => s.key !== 'database') : allSteps
+  const stepKey = steps[current]?.key
+  const lastStep = steps.length - 1
 
   const handleGenerateKeys = async () => {
     setLoading(true)
@@ -80,6 +89,33 @@ export default function SetupWizard() {
       message.error('Failed to generate keys')
     }
     setLoading(false)
+  }
+
+  const handleTestDb = async () => {
+    try {
+      await form.validateFields(['db_host', 'db_port', 'db_name', 'db_user', 'db_password'])
+    } catch {
+      message.error('Please fill in all required fields')
+      return
+    }
+    const values = form.getFieldsValue(['db_host', 'db_port', 'db_name', 'db_user', 'db_password'])
+    setDbTestStatus('testing')
+    setDbTestMessage('')
+    try {
+      await testDbConfig({
+        host: values.db_host,
+        port: values.db_port || 0,
+        name: values.db_name,
+        user: values.db_user,
+        password: values.db_password,
+      })
+      setDbTestStatus('success')
+      message.success('Connection successful')
+    } catch (e: unknown) {
+      setDbTestStatus('failed')
+      setDbTestMessage(getErrorMessage(e, 'Connection failed'))
+      message.error(getErrorMessage(e, 'Connection failed'))
+    }
   }
 
   const handleSubmit = async () => {
@@ -123,7 +159,7 @@ export default function SetupWizard() {
   }
 
   const next = async () => {
-    if (current === 0) {
+    if (stepKey === 'admin') {
       try {
         await form.validateFields(['username', 'email', 'password', 'confirm'])
         const values = form.getFieldsValue(['username', 'email', 'password'])
@@ -132,16 +168,20 @@ export default function SetupWizard() {
       } catch {
         message.error('Please fill in all required fields')
       }
-    } else if (current === 1) {
+    } else if (stepKey === 'database') {
       try {
         await form.validateFields(['db_host', 'db_port', 'db_name', 'db_user', 'db_password'])
+        if (dbTestStatus !== 'success') {
+          message.error('Please test the database connection first')
+          return
+        }
         const values = form.getFieldsValue(['db_host', 'db_port', 'db_name', 'db_user', 'db_password'])
         setCollectedData(prev => ({ ...prev, ...values, db_port: values.db_port || 0 }))
         setCurrent(current + 1)
       } catch {
         message.error('Please fill in all required fields')
       }
-    } else if (current === 2) {
+    } else if (stepKey === 'security') {
       try {
         await form.validateFields(['jwt_secret', 'encryption_key'])
         const values = form.getFieldsValue(['jwt_secret', 'encryption_key'])
@@ -150,7 +190,7 @@ export default function SetupWizard() {
       } catch {
         message.error('Please fill in all required fields')
       }
-    } else if (current === 3) {
+    } else if (stepKey === 'optional') {
       const values = form.getFieldsValue([
         'cors_origins', 'ldap_enabled', 'ldap_server', 'ldap_port',
         'ldap_use_tls', 'ldap_verify_cert', 'ldap_ca_cert',
@@ -158,7 +198,7 @@ export default function SetupWizard() {
       ])
       setCollectedData(prev => ({ ...prev, ...values }))
       setCurrent(current + 1)
-    } else if (current === 4) {
+    } else if (stepKey === 'review') {
       handleSubmit()
     }
   }
@@ -170,8 +210,8 @@ export default function SetupWizard() {
   }
 
   const renderStepContent = () => {
-    switch (current) {
-      case 0:
+    switch (stepKey) {
+      case 'admin':
         return (
           <>
             <Form.Item name="username" label="Username" rules={[{ required: true, min: 3 }]}>
@@ -203,7 +243,7 @@ export default function SetupWizard() {
             </Form.Item>
           </>
         )
-      case 1:
+      case 'database':
         return (
           <>
             <Form.Item name="db_host" label="Host" rules={[{ required: true, message: 'Host is required' }]}>
@@ -221,9 +261,26 @@ export default function SetupWizard() {
             <Form.Item name="db_password" label="Password" rules={[{ required: true, message: 'Password is required' }]}>
               <Input.Password size="large" placeholder="syslogpass" />
             </Form.Item>
+            <Button
+              onClick={handleTestDb}
+              loading={dbTestStatus === 'testing'}
+              style={{ marginBottom: 8, width: '100%' }}
+            >
+              Test Connection
+            </Button>
+            {dbTestStatus === 'success' && (
+              <Text type="success" style={{ display: 'block', marginBottom: 16 }}>
+                <CheckCircleFilled /> Connection successful
+              </Text>
+            )}
+            {dbTestStatus === 'failed' && (
+              <Text type="danger" style={{ display: 'block', marginBottom: 16 }}>
+                <CloseCircleFilled /> {dbTestMessage || 'Connection failed'}
+              </Text>
+            )}
           </>
         )
-      case 2:
+      case 'security':
         return (
           <>
             <Form.Item name="jwt_secret" label="JWT Secret" rules={[{ required: true, min: 16 }]}>
@@ -242,7 +299,7 @@ export default function SetupWizard() {
             </Button>
           </>
         )
-      case 3:
+      case 'optional':
         return (
           <>
             <Form.Item name="cors_origins" label="CORS Origins" tooltip="Comma-separated allowed origins (e.g., http://localhost:3000)">
@@ -306,7 +363,7 @@ export default function SetupWizard() {
             </Form.Item>
           </>
         )
-      case 4:
+      case 'review':
         return (
           <Card size="small" style={{ marginBottom: 16 }}>
             <Title level={5}>Admin Account</Title>
@@ -355,27 +412,44 @@ export default function SetupWizard() {
           <Text type="secondary">First-time setup wizard</Text>
         </div>
 
-        <div style={{ overflowX: 'auto', paddingBottom: 8 }}>
-          <Steps current={current} style={{ marginBottom: 32 }} items={steps.map(s => ({ title: s.title, description: s.description }))} />
-        </div>
-
-        <Form form={form} layout="vertical">
-          {renderStepContent()}
-
-          <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-            <Button disabled={current === 0} onClick={prev} size="large">
-              {current === 4 ? 'Back' : 'Previous'}
-            </Button>
-            <Button
-              type="primary"
-              size="large"
-              loading={loading}
-              onClick={next}
-            >
-              {current === 4 ? 'Initialize' : current === 3 ? 'Review' : 'Next'}
-            </Button>
+        {!configLoaded ? (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: '40px 0' }}>
+            <Spin size="large" />
           </div>
-        </Form>
+        ) : (
+          <>
+            <div style={{ overflowX: 'auto', paddingBottom: 8 }}>
+              <Steps current={current} style={{ marginBottom: 32 }} items={steps.map(s => ({ title: s.title, description: s.description }))} />
+            </div>
+
+            <Form
+              form={form}
+              layout="vertical"
+              onValuesChange={(changed) => {
+                if (Object.keys(changed).some(k => k.startsWith('db_'))) {
+                  setDbTestStatus('idle')
+                }
+              }}
+            >
+              {renderStepContent()}
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                <Button disabled={current === 0} onClick={prev} size="large">
+                  {current === lastStep ? 'Back' : 'Previous'}
+                </Button>
+                <Button
+                  type="primary"
+                  size="large"
+                  loading={loading}
+                  disabled={stepKey === 'database' && dbTestStatus !== 'success'}
+                  onClick={next}
+                >
+                  {current === lastStep ? 'Initialize' : current === lastStep - 1 ? 'Review' : 'Next'}
+                </Button>
+              </div>
+            </Form>
+          </>
+        )}
       </Card>
     </Layout>
   )
