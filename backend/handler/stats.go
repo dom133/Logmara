@@ -106,7 +106,7 @@ func queryFilteredAggregates(db *sql.DB, whereBase string, args []interface{}, i
 			"SELECT 'scalar'::text AS kind, 'total_logs'::text AS key1, NULL::text AS key2, NULL::text AS key3, COUNT(*)::bigint AS cnt FROM filtered",
 			"SELECT 'scalar'::text, 'logs_last_hour'::text, NULL::text, NULL::text, COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour')::bigint FROM filtered",
 			"SELECT 'scalar'::text, 'logs_last_day'::text, NULL::text, NULL::text, COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 day')::bigint FROM filtered",
-			"SELECT 'scalar'::text, 'unique_devices'::text, NULL::text, NULL::text, COUNT(DISTINCT hostname)::bigint FROM filtered",
+			"SELECT 'scalar'::text, 'unique_devices'::text, NULL::text, NULL::text, COUNT(DISTINCT fromhost_ip)::bigint FROM filtered",
 			"SELECT 'severity'::text, severity::text, NULL::text, NULL::text, COUNT(*)::bigint FROM filtered GROUP BY severity",
 		)
 	}
@@ -199,12 +199,16 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 		})
 		err := timedQuery("dashboard_stats_scalar_mv", func() error {
 			var refreshedAt pq.NullTime
-			row := db.QueryRow("SELECT total_logs, logs_last_hour, logs_last_day, unique_devices, refreshed_at FROM mv_dashboard_summary LIMIT 1")
+			// unique_ips (COUNT DISTINCT fromhost_ip) is used as the device count
+			// so it agrees with mv_device_stats (grouped by fromhost_ip) - the
+			// Admin Devices tab and Top Devices both key on fromhost_ip, not
+			// hostname, which isn't guaranteed unique per device.
+			row := db.QueryRow("SELECT total_logs, logs_last_hour, logs_last_day, unique_ips, refreshed_at FROM mv_dashboard_summary LIMIT 1")
 			return row.Scan(&stats.TotalLogs, &stats.LogsLastHour, &stats.LogsLastDay, &stats.UniqueDevices, &refreshedAt)
 		})
 		if err != nil {
 			_ = timedQuery("dashboard_stats_scalar_fallback", func() error {
-				row := db.QueryRow("SELECT COUNT(*), COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour'), COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 day'), COUNT(DISTINCT hostname) FROM syslog_logs")
+				row := db.QueryRow("SELECT COUNT(*), COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour'), COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 day'), COUNT(DISTINCT fromhost_ip) FROM syslog_logs")
 				return row.Scan(&stats.TotalLogs, &stats.LogsLastHour, &stats.LogsLastDay, &stats.UniqueDevices)
 			})
 		}
@@ -239,6 +243,31 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 		stats.SeverityCounts = agg.Severity
 	}
 	stats.TopDevices = agg.TopDevices
+	if useMV {
+		// whereBase restricts the "filtered" CTE to the last 7 days even on the
+		// unfiltered dashboard load (see above), so agg.TopDevices would miss
+		// devices quiet for longer than that. Read the same all-time,
+		// fromhost_ip-grouped rollup the Admin Devices tab uses instead, so the
+		// two lists always agree when no custom date range is requested.
+		_ = timedQuery("dashboard_stats_top_devices_mv", func() error {
+			rows, err := db.Query(
+				`SELECT fromhost_ip, hostname, total_logs FROM mv_device_stats ORDER BY total_logs DESC LIMIT 10`,
+			)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			topDevices := []model.DeviceCount{}
+			for rows.Next() {
+				var d model.DeviceCount
+				if rows.Scan(&d.FromHostIP, &d.Hostname, &d.Count) == nil {
+					topDevices = append(topDevices, d)
+				}
+			}
+			stats.TopDevices = topDevices
+			return nil
+		})
+	}
 	stats.TopErrors = agg.TopErrors
 
 	if stats.TopDevices == nil {
