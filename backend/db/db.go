@@ -129,7 +129,7 @@ func Migrate(db *sql.DB) error {
 		`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_severity_key ON mv_dashboard_severity (severity)`,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
-		`DO $$ BEGIN CREATE INDEX idx_syslog_app_name_trgm ON syslog_logs USING GIN (app_name gin_trgm_ops); EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_object THEN NULL; END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_app_name_trgm ON syslog_logs USING GIN (app_name gin_trgm_ops)`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_device_stats AS
 			WITH dev_stats AS (
 				SELECT COALESCE(fromhost_ip, '') as fromhost_ip, MIN(hostname) as hostname,
