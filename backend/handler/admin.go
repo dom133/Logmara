@@ -265,7 +265,7 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 		httpsChanged := oldHttpsEnabled != newHttpsEnabled || oldHttpsRedirect != newHttpsRedirect
 
 		if httpsChanged {
-			if err := reloadNginx(newHttpsRedirect == "true"); err != nil {
+			if err := reloadNginx(newHttpsEnabled == "true", newHttpsRedirect == "true"); err != nil {
 				slog.Warn("nginx reload failed after settings update", "error", err)
 				c.JSON(http.StatusOK, gin.H{
 					"message":             "Settings updated",
@@ -279,9 +279,51 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// reloadNginx writes the HTTP->HTTPS redirect config fragment consumed by
-// nginx and asks the frontend container's reload sidecar to apply it.
-func reloadNginx(redirectEnabled bool) error {
+// httpsServerBlock is the nginx 443 server block, written verbatim to
+// https.conf whenever https_enabled is on. It mirrors the :80 server block
+// in frontend/nginx.conf.
+const httpsServerBlock = `server {
+    listen 443 ssl;
+    server_name localhost;
+
+    ssl_certificate /data/ssl/server.crt;
+    ssl_certificate_key /data/ssl/server.key;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/logs/stream {
+        proxy_pass http://api:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+        proxy_http_version 1.1;
+    }
+
+    location /api/ {
+        proxy_pass http://api:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+`
+
+// reloadNginx writes the https.conf (443 server block, present only when
+// httpsEnabled) and redirect.conf (HTTP->HTTPS redirect, only meaningful
+// when https is actually enabled) fragments consumed by nginx, then asks
+// the frontend container's reload sidecar to apply them.
+func reloadNginx(httpsEnabled, redirectEnabled bool) error {
 	confDir := os.Getenv("NGINX_CONF_DIR")
 	if confDir == "" {
 		confDir = "/data/nginx"
@@ -290,8 +332,16 @@ func reloadNginx(redirectEnabled bool) error {
 		return fmt.Errorf("create nginx conf dir: %w", err)
 	}
 
+	httpsConf := ""
+	if httpsEnabled {
+		httpsConf = httpsServerBlock
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "https.conf"), []byte(httpsConf), 0644); err != nil {
+		return fmt.Errorf("write https.conf: %w", err)
+	}
+
 	redirectConf := ""
-	if redirectEnabled {
+	if httpsEnabled && redirectEnabled {
 		redirectConf = "return 301 https://$host$request_uri;\n"
 	}
 	if err := os.WriteFile(filepath.Join(confDir, "redirect.conf"), []byte(redirectConf), 0644); err != nil {
@@ -315,17 +365,27 @@ func reloadNginx(redirectEnabled bool) error {
 	return nil
 }
 
-// ReloadNginx re-applies the current HTTPS redirect setting and triggers an
+// ReloadNginx re-applies the current HTTPS/redirect settings and triggers an
 // nginx config reload via the frontend container's sidecar.
 func ReloadNginx(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		redirectEnabled := db.GetSetting(database, "https_redirect", "false") == "true"
-		if err := reloadNginx(redirectEnabled); err != nil {
+		if err := SyncNginxHTTPS(database); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "nginx reloaded"})
 	}
+}
+
+// SyncNginxHTTPS applies the persisted https_enabled/https_redirect settings
+// to the frontend's nginx config. Call this at backend startup (after
+// migration/env overrides) so a container restart converges nginx to the
+// stored setting instead of leaving whatever was baked into the image or
+// left over from a previous state.
+func SyncNginxHTTPS(database *sql.DB) error {
+	httpsEnabled := db.GetSetting(database, "https_enabled", "false") == "true"
+	redirectEnabled := db.GetSetting(database, "https_redirect", "false") == "true"
+	return reloadNginx(httpsEnabled, redirectEnabled)
 }
 
 func CleanupLogs(database *sql.DB) gin.HandlerFunc {

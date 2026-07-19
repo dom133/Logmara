@@ -93,6 +93,9 @@ func main() {
 		}
 		db.RefreshMaterializedViews(database)
 		db.ApplyEnvSettingOverrides(database)
+		if err := handler.SyncNginxHTTPS(database); err != nil {
+			slog.Warn("failed to sync nginx HTTPS config at startup", "error", err)
+		}
 		db.SetAppStarting(false)
 		slog.Info("database migration and initialization complete")
 	}()

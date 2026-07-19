@@ -20,6 +20,12 @@ if [ ! -f "$NGINX_CONF_DIR/redirect.conf" ]; then
     touch "$NGINX_CONF_DIR/redirect.conf"
 fi
 
+if [ ! -f "$NGINX_CONF_DIR/https.conf" ]; then
+    # HTTPS is disabled by default; the backend writes the real 443 server
+    # block here once https_enabled is turned on (via settings or env).
+    touch "$NGINX_CONF_DIR/https.conf"
+fi
+
 busybox httpd -f -p 8081 -h /srv/reload-sidecar &
 
 exec /docker-entrypoint.sh nginx -g "daemon off;"
