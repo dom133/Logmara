@@ -300,148 +300,51 @@ func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.Parsed
 		return e.GetParsedFieldRegistry()
 	}
 
+	// Use the actual per-message match history (matched_parsers, populated at
+	// ingest time) rather than re-matching a sample of messages live: a live
+	// sample can miss infrequent message types (e.g. a WiFi-connect event
+	// among thousands of other log lines) and wrongly report zero fields for
+	// a parser the device genuinely has logs for.
 	rows, err := e.db.Query(`
-		SELECT id, name, description, device_type, match_type, match_value, regex, enabled, is_builtin, created_at, updated_at
-		FROM parsers
-	`)
+		SELECT DISTINCT elem
+		FROM syslog_logs, unnest(matched_parsers) as elem
+		WHERE COALESCE(fromhost_ip, '') = ANY($1)
+	`, pq.Array(hostnames))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var parsers []model.Parser
+	var parserNames []string
 	for rows.Next() {
-		var p model.Parser
-		err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.DeviceType,
-			&p.MatchType, &p.MatchValue, &p.Regex, &p.Enabled, &p.IsBuiltin, &p.CreatedAt, &p.UpdatedAt)
-		if err != nil {
+		var name string
+		if err := rows.Scan(&name); err != nil {
 			continue
 		}
-		parsers = append(parsers, p)
+		parserNames = append(parserNames, name)
 	}
 
-	parserIDs := make(map[int64]bool)
-
-	for _, fromHostIP := range hostnames {
-		appRows, err := e.db.Query(`SELECT DISTINCT app_name FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1`, fromHostIP)
-		if err != nil {
-			continue
-		}
-
-		var appNames []string
-		hasLogs := false
-		for appRows.Next() {
-			var appName sql.NullString
-			if err := appRows.Scan(&appName); err != nil {
-				continue
-			}
-			if appName.Valid {
-				appNames = append(appNames, appName.String)
-				hasLogs = true
-			}
-		}
-		appRows.Close()
-
-		if !hasLogs {
-			continue
-		}
-
-		// Collect sample messages for message-type parser matching
-		var messages []string
-		msgRows, err := e.db.Query(`SELECT message FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1 LIMIT 100`, fromHostIP)
-		if err == nil {
-			for msgRows.Next() {
-				var msg sql.NullString
-				if err := msgRows.Scan(&msg); err == nil && msg.Valid {
-					messages = append(messages, msg.String)
-				}
-			}
-			msgRows.Close()
-		}
-
-		// Collect hostnames for hostname-type parser matching
-		var hostnamesFromDevice []string
-		hnRows, err := e.db.Query(`SELECT DISTINCT hostname FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1`, fromHostIP)
-		if err == nil {
-			for hnRows.Next() {
-				var hn sql.NullString
-				if err := hnRows.Scan(&hn); err == nil && hn.Valid {
-					hostnamesFromDevice = append(hostnamesFromDevice, hn.String)
-				}
-			}
-			hnRows.Close()
-		}
-
-		for _, p := range parsers {
-			switch p.MatchType {
-			case "all":
-				parserIDs[p.ID] = true
-			case "hostname":
-				if p.MatchValue != nil && *p.MatchValue != "" {
-					for _, hn := range hostnamesFromDevice {
-						if matchGlob(*p.MatchValue, hn) {
-							parserIDs[p.ID] = true
-							break
-						}
-					}
-				}
-			case "app_name":
-				if p.MatchValue != nil && *p.MatchValue != "" {
-					for _, appName := range appNames {
-						if matchGlob(*p.MatchValue, appName) {
-							parserIDs[p.ID] = true
-							break
-						}
-					}
-				}
-			case "message":
-				if p.MatchValue != nil && *p.MatchValue != "" {
-					for _, msg := range messages {
-						if strings.Contains(msg, *p.MatchValue) {
-							parserIDs[p.ID] = true
-							break
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if len(parserIDs) == 0 {
+	if len(parserNames) == 0 {
 		return []model.ParsedField{}, nil
 	}
 
-	ids := make([]int64, 0, len(parserIDs))
-	for id := range parserIDs {
-		ids = append(ids, id)
-	}
-
-	placeholders := make([]string, len(ids))
-	args := make([]interface{}, len(ids))
-	for i, id := range ids {
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
-		args[i] = id
-	}
-
-	query := fmt.Sprintf(`
+	fieldRows, err := e.db.Query(`
 		SELECT f.id, f.parser_id, f.field_name, f.field_label, f.field_type, p.name as parser_name
 		FROM parsed_fields_registry f
 		JOIN parsers p ON f.parser_id = p.id
-		WHERE f.parser_id IN (%s)
+		WHERE p.name = ANY($1)
 		ORDER BY p.device_type, f.field_name
-	`, strings.Join(placeholders, ", "))
-
-	rows, err = e.db.Query(query, args...)
+	`, pq.Array(parserNames))
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer fieldRows.Close()
 
 	var fields []model.ParsedField
 	seen := make(map[string]bool)
-	for rows.Next() {
+	for fieldRows.Next() {
 		var f model.ParsedField
-		if err := rows.Scan(&f.ID, &f.ParserID, &f.Name, &f.Label, &f.Type, &f.ParserName); err != nil {
+		if err := fieldRows.Scan(&f.ID, &f.ParserID, &f.Name, &f.Label, &f.Type, &f.ParserName); err != nil {
 			continue
 		}
 		if !seen[f.Name] {
