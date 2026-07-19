@@ -400,14 +400,14 @@ export async function deleteDashboard(id: number) {
   return res.data
 }
 
-export async function getDashboardData(id: number, limit = 100, cursor = '', search = '', severity = '', from = '', to = '', sort = 'timestamp_desc', offset = 0) {
-	const res = await api.get(`/dashboards/${id}/data`, { params: { limit, cursor: cursor || undefined, search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined, sort: sort || undefined, offset: (!sortSupportsCursor(sort) && offset) || undefined } })
+export async function getDashboardData(id: number, limit = 100, cursor = '', search = '', severity = '', from = '', to = '', sort = 'timestamp_desc', offset = 0, fromHostIp = '') {
+	const res = await api.get(`/dashboards/${id}/data`, { params: { limit, cursor: cursor || undefined, search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined, sort: sort || undefined, offset: (!sortSupportsCursor(sort) && offset) || undefined, fromhost_ip: fromHostIp || undefined } })
 	const d = res.data || {}
 	return { logs: d.logs || [], has_more: d.has_more || false, next_cursor: d.next_cursor || '', fields: d.fields || [], devices: d.devices || [] } as DashboardDataResponse
 }
 
-export async function getDashboardDataCount(id: number, search = '', severity = '', from = '', to = ''): Promise<number> {
-	const res = await api.get(`/dashboards/${id}/count`, { params: { search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined } })
+export async function getDashboardDataCount(id: number, search = '', severity = '', from = '', to = '', fromHostIp = ''): Promise<number> {
+	const res = await api.get(`/dashboards/${id}/count`, { params: { search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined, fromhost_ip: fromHostIp || undefined } })
 	return res.data?.total || 0
 }
 

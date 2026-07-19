@@ -33,6 +33,7 @@ export default function DashboardViewPage() {
   const [filters, setFilters] = useState({
     search: '',
     severity: '',
+    fromhost_ip: '',
     from: '',
     to: '',
     sort: 'timestamp_desc',
@@ -106,13 +107,14 @@ export default function DashboardViewPage() {
         useCursor && !reset ? cursorRef.current : '',
         filters.search, filters.severity, from, to,
         filters.sort, !useCursor && !reset ? offsetRef.current : 0,
+        filters.fromhost_ip,
       )
       setLogs(prev => (reset ? data.logs : [...prev, ...data.logs]))
       setHasMore(data.has_more)
       cursorRef.current = data.next_cursor
       offsetRef.current = reset ? pageSize : offsetRef.current + pageSize
       if (reset) {
-        getDashboardDataCount(dashboardId, filters.search, filters.severity, from, to)
+        getDashboardDataCount(dashboardId, filters.search, filters.severity, from, to, filters.fromhost_ip)
           .then(setTotalLogs).catch(() => {})
       }
     } catch (e) {
@@ -130,7 +132,7 @@ export default function DashboardViewPage() {
     try {
       const from = filters.from ? dayjs(filters.from).format() : ''
       const to = filters.to ? dayjs(filters.to).format() : ''
-      const data = await getDashboardData(dashboardId, pageSize, '', filters.search, filters.severity, from, to, filters.sort)
+      const data = await getDashboardData(dashboardId, pageSize, '', filters.search, filters.severity, from, to, filters.sort, 0, filters.fromhost_ip)
       setHasMore(data.has_more)
       cursorRef.current = data.next_cursor
       offsetRef.current = pageSize
@@ -145,6 +147,7 @@ export default function DashboardViewPage() {
     const to = filters.to ? dayjs(filters.to).format() : ''
     const params: Record<string, string> = {}
     if (filters.severity) params.severity = filters.severity
+    if (filters.fromhost_ip) params.fromhost_ip = filters.fromhost_ip
     if (filters.search) params.search = filters.search
     if (from) params.from = from
     if (to) params.to = to
@@ -230,6 +233,13 @@ export default function DashboardViewPage() {
   const fields = dashboard?.config?.fields || []
   const dashDevices = dashboard?.config?.devices || []
   const dashFixedSeverity = dashboard?.config?.filters?.severity || ''
+
+  // Device filter options limited to the dashboard's own device scope -
+  // narrowing to a device outside that scope wouldn't return anything
+  // anyway (see resolveDashboardFilters on the backend).
+  const dashDeviceOptions = devices
+    .filter(d => dashDevices.includes(d.fromhost_ip))
+    .map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))
 
   // Only offer sorting by a field the dashboard doesn't already pin to a
   // single value - "By Device" is meaningless when the dashboard is scoped
@@ -397,6 +407,16 @@ export default function DashboardViewPage() {
             onChange={(v) => setFilters(f => ({ ...f, severity: v || '' }))}
             options={severities.map(s => ({ label: SEVERITY_LABELS[s] || s, value: s }))}
           />
+          {dashDevices.length > 1 && (
+            <Select
+              placeholder="Device"
+              allowClear
+              style={{ minWidth: 140, flex: '1 1 140px' }}
+              value={filters.fromhost_ip || undefined}
+              onChange={(v) => setFilters(f => ({ ...f, fromhost_ip: v || '' }))}
+              options={dashDeviceOptions}
+            />
+          )}
           <RangePicker
             style={{ minWidth: 260, flex: '1 1 260px' }}
             showTime

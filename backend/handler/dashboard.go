@@ -317,7 +317,27 @@ func resolveDashboardFilters(db *sql.DB, c *gin.Context) (*model.DashboardConfig
 		Devices:   cfg.Devices,
 		HasFields: len(cfg.Fields) > 0,
 	}
+
+	// A device narrowed down via the live filter must stay within the
+	// dashboard's own device scope - otherwise a viewer of a public,
+	// multi-device dashboard could pass an arbitrary fromhost_ip and see
+	// logs from a device the dashboard was never scoped to.
+	if fromHostIP := c.Query("fromhost_ip"); fromHostIP != "" {
+		if len(cfg.Devices) == 0 || containsString(cfg.Devices, fromHostIP) {
+			opts.Devices = []string{fromHostIP}
+		}
+	}
+
 	return cfg, opts, nil
+}
+
+func containsString(list []string, target string) bool {
+	for _, v := range list {
+		if v == target {
+			return true
+		}
+	}
+	return false
 }
 
 func GetDashboardData(db *sql.DB) gin.HandlerFunc {
