@@ -58,7 +58,27 @@ export default function DashboardsPage() {
     }
   }
 
-  const fieldOptions = Array.from(new Map(parsedFields.map(f => [f.field_name, f])).values()).map(f => ({
+  const selectedDevices: string[] = Form.useWatch(['config', 'devices'], form) || []
+  const selectedParser: string | undefined = Form.useWatch(['config', 'parser'], form)
+
+  const parserOptions = (() => {
+    if (selectedDevices.length === 0) return []
+    const names = new Set<string>()
+    devices.forEach(d => {
+      if (selectedDevices.includes(d.fromhost_ip)) {
+        (d.matched_parsers || []).forEach(p => names.add(p))
+      }
+    })
+    return Array.from(names).sort().map(p => ({ label: p, value: p }))
+  })()
+
+  const fieldOptions = Array.from(
+    new Map(
+      parsedFields
+        .filter(f => !selectedParser || f.parser_name === selectedParser)
+        .map(f => [f.field_name, f]),
+    ).values(),
+  ).map(f => ({
     label: f.field_label || f.field_name,
     value: f.field_name,
   }))
@@ -325,8 +345,13 @@ export default function DashboardsPage() {
       const newDevices = allValues.config?.devices || []
       if (JSON.stringify(newDevices) !== JSON.stringify(prevDevices.current)) {
         prevDevices.current = newDevices
+        form.setFieldValue(['config', 'parser'], undefined)
         form.setFieldValue(['config', 'fields'], [])
         await loadFieldsForDevices(newDevices)
+        return
+      }
+      if (changed.config && Object.prototype.hasOwnProperty.call(changed.config, 'parser')) {
+        form.setFieldValue(['config', 'fields'], [])
       }
     }}>
           <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Name is required' }, { max: 50, message: 'Name must be 50 characters or less' }]}>
@@ -346,6 +371,20 @@ export default function DashboardsPage() {
               />
             </Form.Item>
           </Form.Item>
+
+          {selectedDevices.length > 0 && (
+            <Form.Item label="Parser">
+              <Form.Item name={['config', 'parser']} noStyle>
+                <Select
+                  allowClear
+                  placeholder="Select a parser used by the selected device(s) (leave empty for all)"
+                  style={{ width: '100%' }}
+                  options={parserOptions}
+                  notFoundContent="No parsers matched for the selected device(s) yet"
+                />
+              </Form.Item>
+            </Form.Item>
+          )}
 
           <Form.Item label="Parsed Fields to Show">
             <Form.Item name={['config', 'fields']} noStyle>
