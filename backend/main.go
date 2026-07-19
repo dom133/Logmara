@@ -113,7 +113,10 @@ func main() {
 		}
 	}()
 
-	auth.Init(database)
+	if err := auth.Init(database); err != nil {
+		slog.Error("auth initialization failed", "error", err)
+		os.Exit(1)
+	}
 
 	engine := parser.NewEngine(database)
 	ic := control.NewIngestionController()
@@ -140,7 +143,6 @@ func main() {
 	r.POST("/api/auth/login", rateLimitMiddleware(loginLimiter), handler.Login(database))
 	r.POST("/api/auth/refresh", rateLimitMiddleware(refreshLimiter), handler.Refresh(database))
 	r.POST("/api/auth/logout", handler.Logout(database))
-	r.POST("/api/ingest/batch", handler.IngestBatch(database, engine, ic))
 	r.GET("/api/status/initialized", handler.CheckInitialized(database))
 	r.POST("/api/init", rateLimitMiddleware(initLimiter), handler.Initialize(database))
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())

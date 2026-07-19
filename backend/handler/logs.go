@@ -2,20 +2,14 @@ package handler
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"io"
-	"log/slog"
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"sync"
 	"time"
 
-	"syslog-gui/control"
 	"syslog-gui/middleware"
 	"syslog-gui/model"
-	"syslog-gui/parser"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
@@ -35,96 +29,6 @@ func InvalidateAllCaches() {
 	devicesCacheMu.Unlock()
 
 	statsInvalidateAll()
-}
-
-func IngestBatch(db *sql.DB, engine *parser.Engine, ic *control.IngestionController) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if ic.IsPaused() {
-			middleware.HandleError(c, model.NewServiceUnavailable("Ingestion is paused", nil))
-			return
-		}
-		body, err := io.ReadAll(c.Request.Body)
-		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Could not read body", err))
-			return
-		}
-
-		var entries []model.IngestEntry
-		if err := json.Unmarshal(body, &entries); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid JSON", err))
-			return
-		}
-
-		if len(entries) == 0 {
-			c.JSON(http.StatusOK, gin.H{"ingested": 0})
-			return
-		}
-
-		tx, err := db.Begin()
-		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Could not begin transaction", err))
-			return
-		}
-		defer tx.Rollback()
-
-		query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers)
-		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
-		stmt, err := tx.Prepare(query)
-		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Could not prepare statement", err))
-			return
-		}
-		defer stmt.Close()
-
-		ingested := 0
-		for _, entry := range entries {
-			ts, err := parseTimestamp(entry.Timestamp)
-			if err != nil {
-				slog.Warn("invalid timestamp, using now", "value", entry.Timestamp)
-				ts = time.Now()
-			}
-
-			fromHostIP := nullStr(entry.FromHostIP)
-			appName := nullStr(entry.AppName)
-			processID := nullStr(entry.ProcessID)
-			msgID := nullStr(entry.MsgID)
-			facility := nullStr(entry.Facility)
-			rawMsg := nullStr(entry.RawMessage)
-
-			result := engine.Parse(entry.Hostname, entry.AppName, entry.Message)
-			if result == nil {
-				parsedJSON := []byte("null")
-				_, err = stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
-					entry.Severity, facility, entry.Message, rawMsg, parsedJSON, pq.StringArray(nil))
-				if err != nil {
-					slog.Error("insert error", "error", err)
-				}
-				ingested++
-				continue
-			}
-			parsedJSON, marshalErr := json.Marshal(result.Fields)
-			if marshalErr != nil {
-				parsedJSON = []byte("null")
-			}
-
-			_, err = stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
-				entry.Severity, facility, entry.Message, rawMsg, parsedJSON, pq.StringArray(result.Parsers))
-			if err != nil {
-				slog.Error("insert error", "error", err)
-				continue
-			}
-			ingested++
-		}
-
-		if err := tx.Commit(); err != nil {
-			slog.Error("commit error", "error", err)
-			middleware.HandleError(c, model.NewInternal("Transaction commit failed", err))
-			return
-		}
-
-		InvalidateAllCaches()
-		c.JSON(http.StatusOK, gin.H{"ingested": ingested})
-	}
 }
 
 type LogQueryRequest struct {
@@ -335,42 +239,10 @@ func UpdateDeviceAlias(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func parseTimestamp(s string) (time.Time, error) {
-	formats := []string{
-		time.RFC3339,
-		time.RFC3339Nano,
-		"2006-01-02T15:04:05",
-		"2006-01-02 15:04:05",
-		"Jan 2 15:04:05",
-		time.UnixDate,
-	}
-
-	for _, format := range formats {
-		t, err := time.Parse(format, s)
-		if err == nil {
-			return t, nil
-		}
-	}
-
-	// Try unix timestamp
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return time.Unix(int64(f), 0), nil
-	}
-
-	return time.Now(), fmt.Errorf("unparseable timestamp: %s", s)
-}
-
 func matchGlob(pattern, value string) bool {
 	if pattern == "" || pattern == "*" {
 		return true
 	}
 	matched, _ := filepath.Match(pattern, value)
 	return matched
-}
-
-func nullStr(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
 }
