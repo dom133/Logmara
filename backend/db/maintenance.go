@@ -10,15 +10,16 @@ import (
 	"time"
 )
 
-func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func()) {
+func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func()) {
 	vacuumInterval := getIntervalHours("VACUUM_INTERVAL_HOURS", "vacuum_interval_hours", 24)
 	mvInterval := getIntervalMinutes("MV_REFRESH_INTERVAL_MIN", "mv_refresh_interval_min", 30)
 
 	createPartitions(db)
 	stopVacuum := startVacuumScheduler(ctx, db, vacuumInterval)
 	stopMV := startMVScheduler(ctx, db, mvInterval)
+	stopTokenCleanup := startRefreshTokenCleanupScheduler(ctx, db, 1*time.Hour)
 
-	return stopVacuum, stopMV
+	return stopVacuum, stopMV, stopTokenCleanup
 }
 
 func startVacuumScheduler(ctx context.Context, db *sql.DB, interval time.Duration) func() {
@@ -62,6 +63,47 @@ func startMVScheduler(ctx context.Context, db *sql.DB, interval time.Duration) f
 	}()
 	return func() {
 		<-done
+	}
+}
+
+func startRefreshTokenCleanupScheduler(ctx context.Context, db *sql.DB, interval time.Duration) func() {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		slog.Info("refresh token cleanup scheduler started", "interval_hours", interval.Hours())
+		cleanupExpiredRefreshTokens(db)
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("refresh token cleanup scheduler stopped")
+				close(done)
+				return
+			case <-ticker.C:
+				cleanupExpiredRefreshTokens(db)
+			}
+		}
+	}()
+	return func() {
+		<-done
+	}
+}
+
+// cleanupExpiredRefreshTokens prunes rows that can no longer be used to
+// refresh a session: naturally expired tokens, and tokens already consumed
+// by rotation (used=true) once they're well past the race-recovery grace
+// window. Without this the refresh_tokens table grows forever, since every
+// login and every refresh only ever inserts a new row.
+func cleanupExpiredRefreshTokens(db *sql.DB) {
+	res, err := db.Exec(
+		"DELETE FROM refresh_tokens WHERE expires_at < NOW() OR (used = true AND used_at < NOW() - INTERVAL '1 day')",
+	)
+	if err != nil {
+		slog.Error("refresh token cleanup failed", "err", err)
+		return
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		slog.Info("refresh token cleanup completed", "rows_deleted", n)
 	}
 }
 

@@ -115,7 +115,7 @@ func main() {
 	}()
 
 	ctx, maintCancel := context.WithCancel(context.Background())
-	stopVacuum, stopMV := db.StartMaintenance(ctx, database)
+	stopVacuum, stopMV, stopTokenCleanup := db.StartMaintenance(ctx, database)
 
 	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive.
 	// RefreshMV itself skips while migration is in progress, so it's safe to
@@ -270,6 +270,7 @@ func main() {
 	maintCancel()
 	stopVacuum()
 	stopMV()
+	stopTokenCleanup()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

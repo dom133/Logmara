@@ -128,6 +128,14 @@ func ptrTime(t time.Time) *time.Time {
 	return &t
 }
 
+// refreshReuseGraceWindow tolerates a refresh token being presented twice in
+// quick succession (e.g. two open tabs racing to refresh the same stored
+// token). The first request rotates the token atomically; a second request
+// arriving within this window is handed the token that already won the race
+// instead of being logged out. Reuse outside this window is treated as a
+// real replay and rejected.
+const refreshReuseGraceWindow = 10 * time.Second
+
 func Refresh(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req RefreshRequest
@@ -137,24 +145,27 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 		}
 
 		var userID int
-		var expiresAt time.Time
-		err := database.QueryRow(
-			"SELECT user_id, expires_at FROM refresh_tokens WHERE token = $1 AND expires_at > NOW() AND used = false",
+		claimErr := database.QueryRow(
+			`UPDATE refresh_tokens SET used = true, used_at = NOW()
+			 WHERE token = $1 AND used = false AND expires_at > NOW()
+			 RETURNING user_id`,
 			req.RefreshToken,
-		).Scan(&userID, &expiresAt)
+		).Scan(&userID)
 
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
-			return
+		var replacementToken string
+		if claimErr != nil {
+			recoveredUserID, recoveredToken, recovered := recoverRacedRefresh(database, req.RefreshToken)
+			if !recovered {
+				logAudit(database, 0, "", "refresh_failed", c.ClientIP(), "invalid, expired, or reused refresh token")
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
+				return
+			}
+			userID = recoveredUserID
+			replacementToken = recoveredToken
 		}
 
-		database.Exec("UPDATE refresh_tokens SET used = true WHERE token = $1", req.RefreshToken)
-
-		var user db.User
-		if err := database.QueryRow(
-			"SELECT id, username, email, password_hash, role, is_admin, is_active, created_at, last_login_at FROM users WHERE id = $1",
-			userID,
-		).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.Role, &user.IsAdmin, &user.IsActive, &user.CreatedAt, &user.LastLoginAt); err != nil {
+		user, err := getUserByID(database, userID)
+		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
 			return
 		}
@@ -165,16 +176,69 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		if replacementToken != "" {
+			logAudit(database, user.ID, user.Username, "refresh_race_recovered", c.ClientIP(), "")
+			c.JSON(http.StatusOK, gin.H{
+				"token":         token,
+				"refresh_token": replacementToken,
+			})
+			return
+		}
+
 		newRefreshToken, newExpiresAt := auth.GenerateRefreshToken(userID)
 		if err := insertRefreshToken(database, userID, newRefreshToken, newExpiresAt); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
+		if _, err := database.Exec("UPDATE refresh_tokens SET replaced_by = $1 WHERE token = $2", newRefreshToken, req.RefreshToken); err != nil {
+			slog.Error("failed to link rotated refresh token", "error", err)
+		}
+
+		logAudit(database, user.ID, user.Username, "refresh_success", c.ClientIP(), "")
 
 		c.JSON(http.StatusOK, gin.H{
 			"token":         token,
 			"refresh_token": newRefreshToken,
 		})
 	}
+}
+
+// recoverRacedRefresh checks whether the presented token was already
+// rotated moments ago (used=true, linked to a replacement) and, if so,
+// within the grace window, hands back the replacement token instead of
+// treating this as a stale/replayed refresh token.
+func recoverRacedRefresh(database *sql.DB, token string) (userID int, replacementToken string, ok bool) {
+	var replacedBy sql.NullString
+	var usedAt sql.NullTime
+	err := database.QueryRow(
+		"SELECT user_id, used_at, replaced_by FROM refresh_tokens WHERE token = $1 AND used = true",
+		token,
+	).Scan(&userID, &usedAt, &replacedBy)
+	if err != nil || !replacedBy.Valid || !usedAt.Valid {
+		return 0, "", false
+	}
+	if time.Since(usedAt.Time) > refreshReuseGraceWindow {
+		return 0, "", false
+	}
+
+	var stillValid bool
+	err = database.QueryRow(
+		"SELECT expires_at > NOW() FROM refresh_tokens WHERE token = $1",
+		replacedBy.String,
+	).Scan(&stillValid)
+	if err != nil || !stillValid {
+		return 0, "", false
+	}
+
+	return userID, replacedBy.String, true
+}
+
+func getUserByID(database *sql.DB, userID int) (*db.User, error) {
+	var user db.User
+	err := database.QueryRow(
+		"SELECT id, username, email, password_hash, role, is_admin, is_active, created_at, last_login_at FROM users WHERE id = $1",
+		userID,
+	).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.Role, &user.IsAdmin, &user.IsActive, &user.CreatedAt, &user.LastLoginAt)
+	return &user, err
 }
 
 func Logout(database *sql.DB) gin.HandlerFunc {

@@ -190,6 +190,9 @@ func Migrate(db *sql.DB) error {
 			updated_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='device_aliases' AND column_name='old_hostname') THEN ALTER TABLE device_aliases ADD COLUMN old_hostname VARCHAR(255); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='used_at') THEN ALTER TABLE refresh_tokens ADD COLUMN used_at TIMESTAMPTZ; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='replaced_by') THEN ALTER TABLE refresh_tokens ADD COLUMN replaced_by VARCHAR(255); END IF; END $$`,
+		`DELETE FROM app_settings WHERE key = 'jwt_expiry'`,
 	}
 
 	for _, stmt := range statements {
@@ -439,7 +442,6 @@ func nullStrPtr(s string) *string {
 func seedSettings(db *sql.DB) error {
 	settings := map[string]string{
 		"retention_days":      "30",
-		"jwt_expiry":          "24",
 		"session_timeout_min": "15",
 		"is_initialized":      "false",
 		"ldap_enabled":        "false",
@@ -470,8 +472,6 @@ func seedSettings(db *sql.DB) error {
 		switch k {
 		case "retention_days":
 			desc = "Days to keep logs before auto-deletion"
-		case "jwt_expiry":
-			desc = "JWT token expiry in hours"
 		case "session_timeout_min":
 			desc = "Session timeout in minutes"
 		case "is_initialized":
