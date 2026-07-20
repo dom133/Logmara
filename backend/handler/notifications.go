@@ -202,6 +202,14 @@ func StreamNotifications(hub *notifyhub.Hub) gin.HandlerFunc {
 			return
 		}
 
+		// The server's WriteTimeout (15s, see main.go) exists to bound normal
+		// request/response cycles and would otherwise kill this connection
+		// out from under us shortly after it opens, well before the client
+		// ever sees a second event - nginx logs that as "upstream
+		// prematurely closed connection". Disable it for just this
+		// connection; every other route keeps the 15s limit.
+		_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
+
 		c.Writer.Header().Set("Content-Type", "text/event-stream")
 		c.Writer.Header().Set("Cache-Control", "no-cache")
 		c.Writer.Header().Set("Connection", "keep-alive")
