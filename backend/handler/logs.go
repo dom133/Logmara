@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"syslog-gui/middleware"
 	"syslog-gui/model"
+	"syslog-gui/sharedstate"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
@@ -22,7 +24,38 @@ var (
 	devicesTTL       = 60 * time.Second
 )
 
+// cacheBroadcaster is nil by default (single-server / Redis not
+// configured), in which case cache invalidation stays exactly as it always
+// was: local to this process only. SetCacheBroadcaster is called from
+// main.go when Redis is configured, so that a purge/alias update on one
+// replica invalidates every replica's cache instead of just its own.
+var cacheBroadcaster *sharedstate.Broadcaster
+
+const cacheInvalidateChannel = "cache:invalidate"
+
+func SetCacheBroadcaster(b *sharedstate.Broadcaster) {
+	cacheBroadcaster = b
+}
+
+// StartCacheInvalidationSubscriber blocks until ctx is done, applying
+// invalidation events published by other replicas to this process's local
+// caches. Call in its own goroutine, only after SetCacheBroadcaster.
+func StartCacheInvalidationSubscriber(ctx context.Context, b *sharedstate.Broadcaster) {
+	b.Subscribe(ctx, cacheInvalidateChannel, func(string) {
+		invalidateAllCachesLocal()
+	})
+}
+
+// InvalidateAllCaches clears this process's caches and, if Redis is
+// configured, broadcasts the same invalidation to every other replica.
 func InvalidateAllCaches() {
+	invalidateAllCachesLocal()
+	if cacheBroadcaster != nil {
+		_ = cacheBroadcaster.Publish(context.Background(), cacheInvalidateChannel, "")
+	}
+}
+
+func invalidateAllCachesLocal() {
 	devicesCacheMu.Lock()
 	devicesCache = nil
 	devicesCacheTime = time.Time{}

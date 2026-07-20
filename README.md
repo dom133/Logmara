@@ -23,16 +23,75 @@ Web-based syslog monitoring, parsing, and visualization platform with Docker Com
 | rsyslog | 514 (TCP/UDP) | Syslog ingestion daemon |
 | PostgreSQL | 5432 | Persistent log storage |
 
-## Quick Start
+## Quick Start (Single Server)
+
+This is the default, fully-supported deployment path: **one server, one command, everything included** — frontend, API, rsyslog ingestion, and PostgreSQL all start together from `docker-compose.yml` (see the Architecture diagram above), nothing to set up separately. It is unaffected by the optional High Availability path below; skip that section entirely unless you specifically need to survive losing an entire server.
+
+### Requirements
+
+- One Linux server (any distro with a current kernel), reachable from wherever your browser and syslog senders are.
+- Nothing else needs to be pre-installed — the steps below install Docker for you.
+
+### 1. Install Docker
 
 ```bash
-# Clone and start all services
+curl -fsSL https://get.docker.com | sh
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"   # log out/in for this to take effect
+```
+
+### 2. Open firewall ports
+
+Only two things need to be reachable from outside the server:
+- `80/tcp` (and `443/tcp` if you enable HTTPS later from the admin Settings UI) — the web UI/API, reverse-proxied through nginx.
+- `514/tcp` and `514/udp` — syslog ingestion, from whatever devices will send logs here.
+
+```bash
+# Example using ufw - adjust to your actual firewall/security group
+sudo ufw allow 80,443/tcp
+sudo ufw allow 514/tcp
+sudo ufw allow 514/udp
+```
+
+`8080/tcp` (the API) is also published by `docker-compose.yml`, but only needed if you want to hit the API directly instead of through nginx on 80/443 — leave it firewalled off unless you have a specific reason to open it.
+
+### 3. Clone the repo and configure
+
+```bash
 git clone https://gitlab.dom133.xyz/dominik.kruszewski/syslog_gui.git
 cd syslog_gui
-docker compose up --build
+cp .env.example .env
+```
 
-# First launch: complete the Setup Wizard at http://localhost
-# Subsequent launches: login with configured credentials
+Edit `.env` and set at least these before going anywhere near production — the defaults in `.env.example` are placeholders, not secrets:
+- `POSTGRES_PASSWORD`
+- `JWT_SECRET` (e.g. `openssl rand -base64 48`)
+- `ADMIN_PASSWORD` — not actually used to create the account (see step 5), but still worth setting since it's passed to the container regardless
+- `TZ` if `Europe/Warsaw` isn't your timezone
+
+### 4. Start it
+
+```bash
+docker compose up -d --build
+```
+
+`-d` runs it in the background so it survives you logging out. Every service already has `restart: unless-stopped` in `docker-compose.yml`, and `systemctl enable docker` from step 1 means Docker itself starts on boot — so the stack comes back up automatically after a server reboot, no extra systemd unit needed.
+
+Check it actually came up:
+```bash
+docker compose ps          # all services should show "healthy" or "running"
+docker compose logs -f     # follow logs if something looks wrong
+```
+
+### 5. First login
+
+Open `http://<server-ip>` in a browser and complete the Setup Wizard (creates the admin account and finalizes database/security settings). On subsequent launches, log in with the account you created there.
+
+### Updating later
+
+```bash
+git pull
+docker compose up -d --build
 ```
 
 ## Configuration
@@ -55,6 +114,259 @@ Copy `.env.example` and adjust values:
 | `LDAP_BASE_DN` | *(none)* | Base DN for user search |
 | `LDAP_BIND_DN` | *(none)* | Bind DN for LDAP queries |
 | `LDAP_BIND_PASSWORD` | *(none)* | Bind password for LDAP queries |
+
+## High Availability Deployment (Multi-Node, Optional)
+
+An additional, opt-in deployment path for surviving the loss of an entire server, not just a container. It does not replace or modify the single-server `docker-compose.yml` path above — that keeps working exactly as documented whether or not you ever use this section.
+
+**Scope**: this gives *true* horizontal scale-out for `api`/`frontend` (multiple replicas serving traffic concurrently, not just failover) and *true* HA for PostgreSQL (automatic leader election/failover via Patroni) and Redis (automatic leader election/failover via Sentinel). `rsyslog` remains single-active-writer by design (see below), which is a correctness requirement, not a current limitation.
+
+Getting here required backend code changes (not just Docker config) — see "How multi-replica safety works" below for what changed and why.
+
+### Requirements
+
+- **4+ Linux servers**, Docker installed, all mutually reachable. Recommended minimum split: 3 dedicated to Postgres, 3 for Redis Sentinel (can overlap with the app tier on small clusters), 2+ for the app tier (`api`/`frontend`/`rsyslog`/`haproxy`) so that tier also survives a single node failure.
+- A container image registry every node can pull from (e.g. a private registry, GHCR, ECR).
+- An NFS export (or equivalent shared filesystem — Ceph, GlusterFS, etc. if you already run one) reachable from every app/edge node, for the shared `/data` (raw logs, TLS certs, nginx conf snippets).
+- Two or more externally-routable IPs on the edge nodes for the keepalived VIP.
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| [`docker-stack.postgres.yml`](docker-stack.postgres.yml) | etcd (3-node DCS) + Patroni-managed Postgres (3 nodes) + HAProxy routing writes to the current leader |
+| [`Dockerfile.patroni`](Dockerfile.patroni), [`patroni/`](patroni/) | Patroni on top of the same `postgres:16-alpine` base as `docker-compose.yml` |
+| [`haproxy/haproxy.cfg`](haproxy/haproxy.cfg) | Routes `:5000` to whichever Postgres node's Patroni REST API reports itself as primary |
+| [`docker-stack.redis.yml`](docker-stack.redis.yml) | 3-node Redis + 3-node Sentinel, backing `backend/sharedstate` (rate limiting, cache invalidation, tailer leader election, ingestion control, slow-query log) |
+| [`redis/sentinel.conf.tpl`](redis/sentinel.conf.tpl) | Sentinel config template loaded as a Swarm config at deploy time |
+| [`docker-stack.app.yml`](docker-stack.app.yml) | `api`, `rsyslog`, `frontend` as Swarm services with real `deploy:` (placement, restart, update policy, `api`/`frontend` at `${API_REPLICAS:-2}`/`${FRONTEND_REPLICAS:-2}`) |
+| [`keepalived/`](keepalived/) | VRRP config template + health-check script for the floating syslog ingress VIP |
+| [`scripts/swarm-bootstrap.sh`](scripts/swarm-bootstrap.sh) | Guided commands for swarm init/join, node labeling, network/secret/config creation |
+
+### How multi-replica safety works
+
+Running more than one `api`/`frontend` replica used to be unsafe: an in-memory rate limiter and stat caches would silently diverge per replica, the log-file tailer would double-ingest if two instances tailed the same file, and nginx config pushes only ever reached one frontend replica. `backend/sharedstate` (backed by the Redis/Sentinel stack above) fixes all of it:
+
+- **Rate limiting** (`backend/main.go`) — a Lua script does an atomic sliding-window check against Redis instead of an in-process map, so limits are shared across every replica.
+- **Tailer leader election** (`backend/tailer/tailer.go`) — a Redis lock (`SET NX PX` + periodic renew, the standard Redis distributed-lock pattern) ensures exactly one `api` replica is ever actively tailing/flushing/compacting `logs.jsonl` at a time; losing the lock (crash, node loss) lets another replica take over within a few seconds.
+- **Cache invalidation** (`backend/handler/stats.go`, `logs.go`) — a purge or alias update now publishes over Redis pub/sub so every replica's local cache clears, not just the one that handled the request.
+- **Ingestion pause/resume** (`backend/control/ingestion.go`) — the pause flag lives in Redis with a local cached copy kept current via pub/sub, so `GET /admin/ingestion/status` is consistent no matter which replica answers.
+- **Slow-query log** (`backend/handler/slow_query_logger.go`) — moved from a per-process in-memory ring buffer to a Redis list, so the admin view is consistent across replicas.
+- **Migration safety** (`backend/db/db.go`'s `MigrateWithLock`) — a Postgres advisory lock serializes concurrent replicas' schema migrations on startup/rolling deploy, independent of Redis.
+- **Nginx reload fan-out** (`backend/handler/admin.go`) — resolves `NGINX_RELOAD_TARGETS_HOST` (Swarm's `tasks.frontend`, which returns every replica's task IP) and reloads each one in parallel instead of hitting a single fixed URL.
+
+**All of this is opt-in and additive**: none of it activates unless `REDIS_SENTINEL_ADDRS` (or `REDIS_ADDR`) is set. Without it — the single-server `docker-compose.yml` path, and any deployment that simply doesn't set those vars — every one of the above falls back to exactly its original single-process, in-memory behavior. See `backend/sharedstate/client.go`'s `Connect()` doc comment for details.
+
+`rsyslog` is deliberately **not** part of this scale-out: it stays `mode: global` on `edge=true` nodes behind the keepalived VIP (only the node currently holding the VIP receives traffic, so there's still only one active writer to `logs.jsonl` at any time) — this is what keeps the real sender IP intact for `fromhost_ip` parser matching, which a load-balanced/scaled ingestion tier would lose.
+
+### Deployment steps (from scratch)
+
+This walks through everything from bare servers to a working cluster, using a concrete 6-machine example. Substitute your own hostnames/IPs throughout.
+
+#### 0. Example topology
+
+| Node | Example IP | Swarm role | Labels | Runs |
+|---|---|---|---|---|
+| `pg1` | 10.0.0.11 | manager | `pg_id=1`, `cache_id=1` | Postgres (Patroni), etcd, Redis, Sentinel |
+| `pg2` | 10.0.0.12 | manager | `pg_id=2`, `cache_id=2` | Postgres (Patroni), etcd, Redis, Sentinel |
+| `pg3` | 10.0.0.13 | manager | `pg_id=3`, `cache_id=3` | Postgres (Patroni), etcd, Redis, Sentinel |
+| `app1` | 10.0.0.21 | worker | `app=true`, `edge=true` | api, frontend, haproxy, rsyslog, keepalived |
+| `app2` | 10.0.0.22 | worker | `app=true`, `edge=true` | api, frontend, haproxy, rsyslog, keepalived |
+| `nfs1` | 10.0.0.30 | *(not in the swarm)* | — | NFS server for `/data` |
+
+Managers double as the 3 Postgres + 3 Redis nodes (odd number, needed for etcd/Sentinel quorum either way) — this keeps the example to 6 machines total. Workers run everything that needs `app=true`/`edge=true`; with 2 of them, both `api`/`frontend` replicas and rsyslog/keepalived survive losing either one. Scale any tier up by adding more nodes with the matching label instead of changing this topology.
+
+`nfs1` is a plain Linux box outside the swarm — it only needs to be network-reachable from `app1`/`app2`. You can reuse an existing NFS/Ceph/GlusterFS server instead of standing up a new one; adjust step 2 accordingly.
+
+#### 1. Install Docker on every swarm node (`pg1`-`pg3`, `app1`-`app2`)
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"   # log out/in for this to take effect
+```
+
+#### 2. Open firewall ports between nodes
+
+Swarm itself needs, between every swarm node (`pg1`-`pg3`, `app1`-`app2`):
+- `2377/tcp` — cluster management (managers only need to accept this)
+- `7946/tcp` and `7946/udp` — node gossip
+- `4789/udp` — overlay network data (VXLAN)
+
+Everything else (Postgres 5432, Patroni's REST API 8008, etcd 2379/2380, Redis 6379, Sentinel 26379) travels over the `syslog_net` overlay network via that same VXLAN tunnel — you do **not** need to open those ports individually between nodes.
+
+What *does* need opening beyond the swarm nodes themselves:
+- `app1`/`app2`: `80/tcp`, `443/tcp` (frontend, published with `mode: host`) and `514/tcp`+`514/udp` (rsyslog, also `mode: host`) to whatever network your users/log senders are on.
+- `nfs1`: `2049/tcp` (NFS) and `111/tcp`+`111/udp` (portmapper), open to `app1`/`app2` specifically.
+
+```bash
+# Example using ufw on app1/app2 - adjust to your actual firewall/security groups
+sudo ufw allow from 10.0.0.0/24 to any port 2377,7946 proto tcp
+sudo ufw allow from 10.0.0.0/24 to any port 7946,4789 proto udp
+sudo ufw allow 80,443,514/tcp
+sudo ufw allow 514/udp
+```
+
+#### 3. Set up the NFS export (`nfs1`)
+
+```bash
+sudo apt-get install -y nfs-kernel-server
+sudo mkdir -p /srv/syslog-ha/nfs/log_data /srv/syslog-ha/nfs/log_spool
+sudo chown -R nobody:nogroup /srv/syslog-ha/nfs
+echo '/srv/syslog-ha/nfs/log_data  10.0.0.21(rw,sync,no_subtree_check) 10.0.0.22(rw,sync,no_subtree_check)' | sudo tee -a /etc/exports
+echo '/srv/syslog-ha/nfs/log_spool 10.0.0.21(rw,sync,no_subtree_check) 10.0.0.22(rw,sync,no_subtree_check)' | sudo tee -a /etc/exports
+sudo exportfs -ra
+sudo systemctl enable --now nfs-kernel-server
+```
+
+On `app1`/`app2`, install the NFS client (Docker's `local` volume driver shells out to it for `type: nfs` volumes — see `docker-stack.app.yml`):
+
+```bash
+sudo apt-get install -y nfs-common
+```
+
+#### 4. Clone the repo and build/push images
+
+Pick one manager (`pg1` here) as your "control" node — everywhere below that says "run on a manager", run it there, over SSH, against `pg1`'s local Docker socket. You'll also need a container registry every node can pull from (private registry, GHCR, ECR, etc.).
+
+```bash
+ssh pg1
+git clone https://gitlab.dom133.xyz/dominik.kruszewski/syslog_gui.git
+cd syslog_gui
+
+export REGISTRY=registry.example.com/syslog-gui TAG=v1
+docker build -f Dockerfile.backend  -t $REGISTRY/syslog-gui-api:$TAG .
+docker build -f Dockerfile.rsyslog  -t $REGISTRY/syslog-gui-rsyslog:$TAG .
+docker build -f Dockerfile.frontend -t $REGISTRY/syslog-gui-frontend:$TAG .
+docker build -f Dockerfile.patroni  -t $REGISTRY/syslog-gui-patroni:$TAG .
+docker push $REGISTRY/syslog-gui-api:$TAG
+docker push $REGISTRY/syslog-gui-rsyslog:$TAG
+docker push $REGISTRY/syslog-gui-frontend:$TAG
+docker push $REGISTRY/syslog-gui-patroni:$TAG
+```
+
+#### 5. Initialize the swarm and join the other nodes
+
+On `pg1`:
+```bash
+./scripts/swarm-bootstrap.sh init-manager 10.0.0.11
+# prints a manager join token and a worker join token - copy both
+```
+
+On `pg2` and `pg3` (as additional managers, for etcd/Sentinel quorum):
+```bash
+docker swarm join --token <manager-token> 10.0.0.11:2377
+```
+
+On `app1` and `app2` (as workers):
+```bash
+docker swarm join --token <worker-token> 10.0.0.11:2377
+```
+
+Verify from `pg1`: `docker node ls` should list all 5 nodes as `Ready`.
+
+#### 6. Label the nodes
+
+Back on `pg1`:
+```bash
+./scripts/swarm-bootstrap.sh label-pg pg1 1
+./scripts/swarm-bootstrap.sh label-pg pg2 2
+./scripts/swarm-bootstrap.sh label-pg pg3 3
+./scripts/swarm-bootstrap.sh label-cache pg1 1
+./scripts/swarm-bootstrap.sh label-cache pg2 2
+./scripts/swarm-bootstrap.sh label-cache pg3 3
+./scripts/swarm-bootstrap.sh label-app app1
+./scripts/swarm-bootstrap.sh label-app app2
+./scripts/swarm-bootstrap.sh label-edge app1
+./scripts/swarm-bootstrap.sh label-edge app2
+```
+
+#### 7. Create the shared network, secrets, and configs
+
+Still on `pg1`:
+```bash
+./scripts/swarm-bootstrap.sh network
+
+PG_SUPERUSER_PASS=$(openssl rand -base64 32)
+PG_REPLICATION_PASS=$(openssl rand -base64 32)
+PG_APP_PASS=$(openssl rand -base64 32)
+REDIS_PASS=$(openssl rand -base64 32)
+# Save these somewhere safe (e.g. a password manager) - you'll need
+# PG_APP_PASS and REDIS_PASS again in step 10.
+
+./scripts/swarm-bootstrap.sh secrets "$PG_SUPERUSER_PASS" "$PG_REPLICATION_PASS" "$PG_APP_PASS"
+./scripts/swarm-bootstrap.sh redis-secret "$REDIS_PASS"
+./scripts/swarm-bootstrap.sh haproxy-config
+./scripts/swarm-bootstrap.sh redis-sentinel-config
+```
+
+#### 8. Create local data directories on the Postgres nodes
+
+On each of `pg1`, `pg2`, `pg3`:
+```bash
+sudo mkdir -p /srv/syslog-ha/pg /srv/syslog-ha/etcd
+```
+These are node-local bind mounts, deliberately *not* on the shared NFS — Patroni replicates via WAL streaming, not a shared filesystem, and two Postgres instances sharing one data directory would corrupt it. Ownership is fixed up automatically by the Patroni container's entrypoint on first start. Redis needs no data directories at all (deliberately non-persistent — see `docker-stack.redis.yml`'s comments).
+
+#### 9. Deploy Postgres, then Redis
+
+On `pg1`:
+```bash
+docker stack deploy -c docker-stack.postgres.yml syslog-pg
+watch docker service ls   # wait for postgres1/2/3 and etcd1/2/3 at 1/1, haproxy at 2/2
+```
+
+Once that's healthy:
+```bash
+docker stack deploy -c docker-stack.redis.yml syslog-redis
+watch docker service ls   # wait for redis1/2/3 and sentinel1/2/3 at 1/1
+```
+
+Sanity-check leader election worked: `docker exec -it $(docker ps -qf name=syslog-pg_postgres1) curl -s localhost:8008/` should show `"role": "master"` on exactly one of `postgres1/2/3`.
+
+#### 10. Deploy the app tier
+
+Still on `pg1` (or wherever you're driving `docker stack deploy` from), export the values from step 7:
+
+```bash
+export REGISTRY=registry.example.com/syslog-gui TAG=v1
+export NFS_SERVER=10.0.0.30
+export JWT_SECRET=$(openssl rand -base64 48)
+export ADMIN_PASSWORD=$(openssl rand -base64 16)
+export POSTGRES_PASSWORD="$PG_APP_PASS"      # from step 7
+export REDIS_PASSWORD="$REDIS_PASS"          # from step 7
+
+docker stack deploy -c docker-stack.app.yml syslog-app
+watch docker service ls   # wait for api and frontend at 2/2, rsyslog global at 2/2
+```
+
+#### 11. Set up keepalived on the edge nodes
+
+On each of `app1` and `app2` (outside Swarm — VRRP needs direct L2 access the overlay network doesn't provide):
+
+```bash
+sudo apt-get install -y keepalived
+```
+
+Render `keepalived/keepalived.conf.tpl` for this node (see the template's own comments for each placeholder) and write it to `/etc/keepalived/keepalived.conf`. On `app1` (`STATE=MASTER`, higher `PRIORITY`) and `app2` (`STATE=BACKUP`, lower `PRIORITY`), pointing `unicast_peer` at each other's real IP and both at the same floating `VIP` (e.g. `10.0.0.100`). Also copy `keepalived/check_rsyslog.sh` to `/etc/keepalived/check_rsyslog.sh` and `chmod +x` it.
+
+```bash
+sudo systemctl enable --now keepalived
+```
+
+Point syslog senders at the VIP (`10.0.0.100:514`, tcp or udp) and, if you're routing browser/API traffic through it too, point clients/DNS at the same VIP for `80`/`443`.
+
+#### 12. First login
+
+Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizard (creates the admin account) — same first-run flow as the single-server Quick Start. From then on, log in with the account you just created.
+
+### Testing failover
+
+- Kill the Patroni leader's node → `docker service logs syslog-pg_haproxy` and the Patroni REST API (`curl http://<any-pg-node>:8008/`) should show a new leader within a few seconds, with no manual steps.
+- Kill the Redis node currently acting as Sentinel's master → the other two Sentinels should promote a replica within a few seconds (`docker service logs syslog-redis_sentinel1` shows the failover); `api` replicas using `go-redis`'s Sentinel-aware client should reconnect to the new master automatically, and exactly one of them should log `"tailer: acquired leader lock"` shortly after.
+- Kill the node running one `api`/`frontend` replica → the other replica(s) keep serving without interruption; `docker service ps syslog-app_api` should show the lost one rescheduled onto the other `app=true` node.
+- Kill the edge node currently holding the VIP → keepalived should fail over in 1-3s; confirm with `ip addr` on the new holder and by sending a test syslog message during the cutover.
+- Send syslog messages throughout each test and confirm no duplicates or gaps in the logs table, and that `/admin/slow-queries` and dashboard stats look the same regardless of which `api` replica answers the request.
 
 ## Features
 

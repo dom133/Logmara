@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -68,6 +69,42 @@ func Connect(dsn string) (*sql.DB, error) {
 	}
 
 	return nil, fmt.Errorf("could not connect to database after 5 attempts")
+}
+
+// migrationLockKey is an arbitrary constant used as a Postgres advisory
+// lock key, scoping the lock to "this application's migration" so it can't
+// collide with an advisory lock taken by something unrelated sharing the
+// same database.
+const migrationLockKey = 8743011
+
+// MigrateWithLock runs Migrate() under a session-level Postgres advisory
+// lock, so that multiple api replicas starting concurrently (normal during
+// a rolling Swarm deploy or a simple restart race) serialize against each
+// other instead of racing on schema DDL - in particular the one-time
+// partitioning migration inside Migrate, which drops and recreates
+// syslog_logs and is not safe to run twice concurrently. pg_advisory_lock
+// blocks until acquired rather than failing, so a losing replica simply
+// waits its turn; once it acquires the lock, Migrate's own
+// CREATE-IF-NOT-EXISTS/guarded-ALTER statements make its run a fast no-op.
+func MigrateWithLock(db *sql.DB) error {
+	ctx := context.Background()
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection for migration lock: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", migrationLockKey); err != nil {
+		return fmt.Errorf("acquire migration advisory lock: %w", err)
+	}
+	defer func() {
+		if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", migrationLockKey); err != nil {
+			slog.Warn("failed to release migration advisory lock", "error", err)
+		}
+	}()
+
+	return Migrate(db)
 }
 
 func Migrate(db *sql.DB) error {

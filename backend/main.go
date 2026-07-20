@@ -17,10 +17,30 @@ import (
 	"syslog-gui/handler"
 	"syslog-gui/middleware"
 	"syslog-gui/parser"
+	"syslog-gui/sharedstate"
 	"syslog-gui/tailer"
 
 	"github.com/gin-gonic/gin"
 )
+
+// RateLimiter is satisfied by both the local, in-memory limiter (default,
+// single-server/single-replica) and sharedstate.RedisRateLimiter (used
+// instead when Redis is configured, so limits are shared across every api
+// replica rather than reset per-process).
+type RateLimiter interface {
+	Allow(ip string) bool
+}
+
+// newLimiter picks the local or Redis-backed limiter based on whether
+// Redis is configured. bucket namespaces the limiter's counters in Redis
+// (irrelevant for the local implementation, which is only ever used by one
+// process anyway).
+func newLimiter(client *sharedstate.Client, bucket string, limit int, window time.Duration) RateLimiter {
+	if client != nil {
+		return sharedstate.NewRedisRateLimiter(client, bucket, limit, window)
+	}
+	return newRateLimiter(limit, window)
+}
 
 type rateLimiter struct {
 	mu       sync.Mutex
@@ -37,7 +57,7 @@ func newRateLimiter(limit int, window time.Duration) *rateLimiter {
 	}
 }
 
-func (rl *rateLimiter) allow(ip string) bool {
+func (rl *rateLimiter) Allow(ip string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
@@ -72,6 +92,23 @@ func main() {
 		port = "8080"
 	}
 
+	// sharedClient is nil unless REDIS_SENTINEL_ADDRS/REDIS_ADDR are set -
+	// that's the expected, fully-supported single-server path, where every
+	// piece of shared state below falls back to its original in-memory/
+	// single-process behavior. A non-nil error here means Redis *is*
+	// configured but unreachable, which is fatal: running multiple api
+	// replicas without working coordination (rate limits, tailer leader
+	// election) is unsafe, so fail fast rather than silently degrade.
+	sharedClient, err := sharedstate.Connect()
+	if err != nil {
+		slog.Error("redis configured but unreachable", "error", err)
+		os.Exit(1)
+	}
+	if sharedClient != nil {
+		defer sharedClient.Close()
+		slog.Info("redis shared state enabled")
+	}
+
 	dsn := os.Getenv("DATABASE_URL")
 
 	var database *sql.DB
@@ -84,7 +121,7 @@ func main() {
 		database = d
 	} else {
 		slog.Info("DATABASE_URL not set; serving the setup wizard until database settings are submitted")
-		database = waitForWizardDatabase(port)
+		database = waitForWizardDatabase(port, sharedClient)
 	}
 	defer database.Close()
 
@@ -92,7 +129,7 @@ func main() {
 	migrationDone := make(chan struct{})
 	go func() {
 		defer close(migrationDone)
-		if err := db.Migrate(database); err != nil {
+		if err := db.MigrateWithLock(database); err != nil {
 			slog.Error("failed to migrate database", "error", err)
 			os.Exit(1)
 		}
@@ -153,13 +190,27 @@ func main() {
 	}
 
 	engine := parser.NewEngine(database)
-	ic := control.NewIngestionController()
+	ic := control.New(ctx, sharedClient)
+
+	// With Redis configured, cache invalidation and the slow-query log get
+	// shared across replicas instead of staying local to whichever replica
+	// handled the triggering request; the tailer gets a leader elector so
+	// exactly one replica actively ingests at a time. All of this is a
+	// no-op when sharedClient is nil.
+	var elector *sharedstate.LeaderElector
+	if sharedClient != nil {
+		broadcaster := sharedstate.NewBroadcaster(sharedClient)
+		handler.SetCacheBroadcaster(broadcaster)
+		go handler.StartCacheInvalidationSubscriber(ctx, broadcaster)
+		handler.SetSlowQueryStore(sharedClient)
+		elector = sharedstate.NewLeaderElector(sharedClient, "tailer", 15*time.Second)
+	}
 
 	logFilePath := os.Getenv("LOG_FILE_PATH")
 	if logFilePath == "" {
 		logFilePath = "/data/logs.jsonl"
 	}
-	go tailer.Start(database, logFilePath, engine, ic)
+	go tailer.Run(ctx, database, logFilePath, engine, ic, elector)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -171,9 +222,9 @@ func main() {
 	// frontend/nginx.conf and handler.reloadNginx) - clients only ever reach
 	// this API through it, so there's no CORS handling here.
 
-	loginLimiter := newRateLimiter(5, time.Minute)
-	refreshLimiter := newRateLimiter(10, time.Minute)
-	initLimiter := newRateLimiter(3, time.Hour)
+	loginLimiter := newLimiter(sharedClient, "login", 5, time.Minute)
+	refreshLimiter := newLimiter(sharedClient, "refresh", 10, time.Minute)
+	initLimiter := newLimiter(sharedClient, "init", 3, time.Hour)
 
 	r.GET("/api/health", handler.HealthCheck(database))
 	r.POST("/api/auth/login", rateLimitMiddleware(loginLimiter), handler.Login(database))
@@ -198,7 +249,7 @@ func main() {
 		authGroup.GET("/export/csv", handler.ExportCSV(database))
 		authGroup.GET("/export/html", handler.ExportHTML(database))
 		authGroup.GET("/auth/me", handler.GetMe(database))
-		changePasswordLimiter := newRateLimiter(5, time.Minute)
+		changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute)
 		authGroup.POST("/auth/change-password", rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
 
 		authGroup.GET("/parsers", handler.ListParsers(engine))
@@ -290,7 +341,7 @@ func main() {
 // only the setup wizard's endpoints, and blocks until the wizard submits
 // working database settings. It returns the resulting live connection so
 // main() can continue its normal startup sequence on it.
-func waitForWizardDatabase(port string) *sql.DB {
+func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.DB {
 	ready := make(chan *sql.DB, 1)
 
 	r := gin.New()
@@ -299,8 +350,8 @@ func waitForWizardDatabase(port string) *sql.DB {
 	r.Use(middleware.SecurityHeaders())
 	r.Use(middleware.GzipCompress())
 
-	initLimiter := newRateLimiter(3, time.Hour)
-	testDbLimiter := newRateLimiter(20, 10*time.Minute)
+	initLimiter := newLimiter(sharedClient, "wizard-init", 3, time.Hour)
+	testDbLimiter := newLimiter(sharedClient, "wizard-test-db", 20, 10*time.Minute)
 	r.GET("/api/health", handler.HealthCheckStandalone())
 	r.GET("/api/status/initialized", handler.CheckInitializedStandalone())
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
@@ -337,10 +388,10 @@ func waitForWizardDatabase(port string) *sql.DB {
 }
 
 
-func rateLimitMiddleware(rl *rateLimiter) gin.HandlerFunc {
+func rateLimitMiddleware(rl RateLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ip := c.ClientIP()
-		if !rl.allow(ip) {
+		if !rl.Allow(ip) {
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "Too many login attempts, try again later"})
 			c.Abort()
 			return

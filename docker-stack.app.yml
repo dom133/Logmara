@@ -1,0 +1,211 @@
+# HA application tier (api, rsyslog, frontend) for Docker Swarm.
+#
+# OPTIONAL, additive stack for multi-node deployments — does not replace or
+# modify docker-compose.yml (the supported single-server path, see README
+# "Quick Start"). Deploy alongside docker-stack.postgres.yml.
+#
+# Swarm `docker stack deploy` does NOT build images (no `build:` support),
+# so images must be built and pushed to a registry every node can pull from
+# first:
+#   docker build -f Dockerfile.backend  -t ${REGISTRY:?}/syslog-gui-api:${TAG:-latest} .
+#   docker build -f Dockerfile.rsyslog  -t ${REGISTRY:?}/syslog-gui-rsyslog:${TAG:-latest} .
+#   docker build -f Dockerfile.frontend -t ${REGISTRY:?}/syslog-gui-frontend:${TAG:-latest} .
+#   docker push ${REGISTRY:?}/syslog-gui-api:${TAG:-latest}   (repeat for the other two)
+#
+# `api` and `frontend` run 2 replicas each (see API_REPLICAS/FRONTEND_
+# REPLICAS below to change that). This requires docker-stack.redis.yml to
+# already be deployed: it's what makes running >1 replica safe (Redis-backed
+# rate limiting/cache invalidation/tailer leader election/ingestion control
+# in backend/sharedstate, replacing what used to be in-memory, single-
+# process-only state - see backend/control/ingestion.go, backend/tailer/
+# tailer.go, backend/handler/stats.go+logs.go+slow_query_logger.go). Without
+# REDIS_SENTINEL_ADDRS set, all of that transparently falls back to the
+# original single-process behavior instead - safe, but only correct at
+# replicas: 1.
+#
+# `rsyslog` uses `mode: global` on role==edge nodes with `mode: host` port
+# publishing instead: this bypasses the Swarm ingress routing mesh, which
+# otherwise SNATs UDP/TCP syslog traffic and would break the app's
+# fromhost_ip-based parser matching (rsyslog needs the real sender IP). Only
+# the edge node currently holding the keepalived VIP (see keepalived/)
+# actually receives traffic, so despite N containers running there is still
+# only one active writer to logs.jsonl at a time - it is not affected by the
+# api/frontend replica count above.
+#
+# Prerequisites (see README "High Availability Deployment"):
+#   - docker-stack.postgres.yml already deployed (provides haproxy:5000)
+#   - docker-stack.redis.yml already deployed (provides sentinel1/2/3:26379)
+#   - Nodes labeled app=true (api/frontend/haproxy) and edge=true (rsyslog).
+#     These are independent boolean labels (not a single "role" value), so a
+#     small cluster can freely put both on the same nodes.
+#   - NFS export mounted at the same path on every app=true / edge=true node,
+#     e.g. /mnt/syslog-nfs, exporting what were log_data/log_spool
+#   - JWT_SECRET, ADMIN_PASSWORD, POSTGRES_USER, POSTGRES_PASSWORD,
+#     POSTGRES_DB set in your shell/.env before deploying. POSTGRES_PASSWORD
+#     here MUST equal the content of the pg_app_password secret used by
+#     docker-stack.postgres.yml — that secret is what actually sets the
+#     role's password in Postgres (see README). Likewise REDIS_PASSWORD here
+#     must equal the redis_password secret used by docker-stack.redis.yml.
+#
+# Deploy with: docker stack deploy -c docker-stack.app.yml syslog-app
+
+version: "3.8"
+
+# Note: unlike `docker compose up`, Swarm's `docker stack deploy` does not
+# honor `depends_on` health-gated ordering (docker-compose.yml uses
+# `depends_on.condition: service_healthy` for this) — all services start in
+# parallel and rely on their own retry/backoff (e.g. the API's DB connection
+# retry, rsyslog's independent startup) to come up cleanly regardless of
+# start order. `depends_on` below is kept only for documentation/DNS-resolve
+# ordering, not as a readiness gate.
+
+services:
+  rsyslog:
+    image: ${REGISTRY:?set REGISTRY to your image registry}/syslog-gui-rsyslog:${TAG:-latest}
+    environment:
+      - TZ=${TZ:-Europe/Warsaw}
+    volumes:
+      - log_data:/data
+      - log_spool:/spool
+    ports:
+      - target: 514
+        published: 514
+        protocol: tcp
+        mode: host
+      - target: 514
+        published: 514
+        protocol: udp
+        mode: host
+    networks:
+      - syslog_net
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "rsyslogd"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      mode: global
+      placement:
+        constraints: [node.labels.edge == true]
+      restart_policy:
+        condition: on-failure
+
+  api:
+    image: ${REGISTRY:?set REGISTRY to your image registry}/syslog-gui-api:${TAG:-latest}
+    environment:
+      # api reads these directly via os.Getenv (backend/auth/auth.go:29 etc.)
+      # — unlike the spilo Postgres image, this backend has no _FILE/Docker-
+      # secrets convention today (Phase 2 backlog item), so these stay plain
+      # env vars, sourced from your shell/.env at `docker stack deploy` time,
+      # same as docker-compose.yml.
+      # POSTGRES_PASSWORD must match the pg_app_password secret content used
+      # by docker-stack.postgres.yml (see prerequisites comment above).
+      DATABASE_URL: postgres://${POSTGRES_USER:-syslog}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, matching the pg_app_password secret}@haproxy:5000/${POSTGRES_DB:-syslog_db}?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET before deploying}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD before deploying}
+      PORT: "8080"
+      LOG_FILE_PATH: /data/logs.jsonl
+      # tasks.frontend (not plain "frontend") resolves to every frontend
+      # replica's task IP, not just one behind the Swarm VIP - see
+      # backend/handler/admin.go's postReloadRequests.
+      NGINX_RELOAD_TARGETS_HOST: tasks.frontend
+      NGINX_RELOAD_PORT: "8081"
+      NGINX_CONF_DIR: /data/nginx
+      HTTPS_ENABLED: ${HTTPS_ENABLED:-}
+      HTTPS_REDIRECT: ${HTTPS_REDIRECT:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Must match the redis_password secret used by docker-stack.redis.yml.
+      REDIS_SENTINEL_ADDRS: sentinel1:26379,sentinel2:26379,sentinel3:26379
+      REDIS_MASTER_NAME: mymaster
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD, matching the redis_password secret}
+    volumes:
+      - log_data:/data
+    networks:
+      - syslog_net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      replicas: ${API_REPLICAS:-2}
+      placement:
+        constraints: [node.labels.app == true]
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2048M
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  frontend:
+    image: ${REGISTRY:?set REGISTRY to your image registry}/syslog-gui-frontend:${TAG:-latest}
+    volumes:
+      - log_data:/data
+    ports:
+      - target: 80
+        published: ${FRONTEND_PORT:-80}
+        mode: host
+      - target: 443
+        published: ${FRONTEND_HTTPS_PORT:-443}
+        mode: host
+    networks:
+      - syslog_net
+    depends_on:
+      - api
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      replicas: ${FRONTEND_REPLICAS:-2}
+      placement:
+        constraints: [node.labels.app == true]
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        order: start-first
+        parallelism: 1
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+networks:
+  syslog_net:
+    external: true
+
+volumes:
+  log_data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_SERVER:?set NFS_SERVER to your NFS host},rw,nfsvers=4
+      device: ":${NFS_LOG_DATA_PATH:-/srv/syslog-ha/nfs/log_data}"
+  log_spool:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_SERVER:?set NFS_SERVER to your NFS host},rw,nfsvers=4
+      device: ":${NFS_LOG_SPOOL_PATH:-/srv/syslog-ha/nfs/log_spool}"
