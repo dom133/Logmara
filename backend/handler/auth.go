@@ -343,4 +343,3 @@ func getUserID(db *sql.DB, username string) int64 {
 	db.QueryRow("SELECT id FROM users WHERE username = $1", username).Scan(&id)
 	return id
 }
-

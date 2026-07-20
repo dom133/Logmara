@@ -433,7 +433,6 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	return database
 }
 
-
 func rateLimitMiddleware(rl RateLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ip := c.ClientIP()

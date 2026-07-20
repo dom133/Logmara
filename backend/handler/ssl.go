@@ -38,7 +38,7 @@ func UploadSSLCerts(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-sslDir := os.Getenv("SSL_DIR")
+		sslDir := os.Getenv("SSL_DIR")
 		if sslDir == "" {
 			sslDir = "/data/ssl"
 		}

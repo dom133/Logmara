@@ -185,16 +185,16 @@ func ResetPassword(database *sql.DB) gin.HandlerFunc {
 		}
 
 		var req ResetPasswordRequest
-if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	if err := auth.ValidatePassword(req.Password); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := auth.ValidatePassword(req.Password); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 
-	var authType string
+		var authType string
 		if err := database.QueryRow("SELECT auth_type FROM users WHERE id = $1", id).Scan(&authType); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "User not found"})
 			return
@@ -297,7 +297,7 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 			if err := reloadNginxWithRetry(newHttpsEnabled == "true", newHttpsRedirect == "true", newCorsOrigins, 5, 2*time.Second); err != nil {
 				slog.Warn("nginx reload failed after settings update", "error", err)
 				c.JSON(http.StatusOK, gin.H{
-					"message":             "Settings updated",
+					"message":            "Settings updated",
 					"nginx_reload_error": err.Error(),
 				})
 				return
