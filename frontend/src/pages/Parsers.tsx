@@ -171,12 +171,15 @@ export default function ParsersPage() {
     {
       title: 'Match',
       key: 'match',
+      width: 180,
+      ellipsis: true,
       render: (_v: unknown, r: Parser) => `${r.match_type}: ${r.match_value || '-'}`,
     },
     {
       title: 'Regex',
       dataIndex: 'regex',
       key: 'regex',
+      width: 250,
       ellipsis: true,
       render: (v: string) => <Text code style={{ fontSize: 11 }}>{v}</Text>,
     },
@@ -246,6 +249,7 @@ export default function ParsersPage() {
         rowKey="id"
         loading={loading}
         size="small"
+        tableLayout="fixed"
         pagination={{ pageSize: 20 }}
         scroll={{ x: 'max-content' }}
       />
@@ -331,7 +335,9 @@ export default function ParsersPage() {
             {testResult.fields && Object.keys(testResult.fields).length > 0 && (
               <Descriptions column={2} size="small">
                 {Object.entries(testResult.fields).map(([k, v]) => (
-                  <Descriptions.Item key={k} label={k}>{v}</Descriptions.Item>
+                  <Descriptions.Item key={k} label={k}>
+                    <span style={{ wordBreak: 'break-all' }}>{v}</span>
+                  </Descriptions.Item>
                 ))}
               </Descriptions>
             )}

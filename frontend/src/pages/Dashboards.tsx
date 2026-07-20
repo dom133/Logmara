@@ -182,7 +182,11 @@ export default function DashboardsPage() {
           <Tag color="cyan">{v}</Tag>
           {r.pinned && <Tag color="gold">📌 Pinned</Tag>}
           {r.is_public && <Tag color="green">Public</Tag>}
-          {r.description && <Tag>{r.description}</Tag>}
+          {r.description && (
+            <Tag style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.description}>
+              {r.description}
+            </Tag>
+          )}
         </Space>
       ),
     },
@@ -294,6 +298,7 @@ export default function DashboardsPage() {
                 rowKey="id"
                 loading={loading}
                 size="small"
+                tableLayout="fixed"
                 scroll={{ x: 'max-content' }}
               />
             </div>

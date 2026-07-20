@@ -398,6 +398,7 @@ const handleCleanup = async () => {
                   columns={enhanceColumns(userColumns)}
                   dataSource={users}
                   loading={loading}
+                  tableLayout="fixed"
                   scroll={{ x: 'max-content' }}
                 />
               </Card>
@@ -488,12 +489,12 @@ const handleCleanup = async () => {
                         subTitle={certInfo.subject}
                       >
                         <Descriptions bordered column={1} size="small">
-                          <Descriptions.Item label="Subject">{certInfo.subject || '-'}</Descriptions.Item>
-                          <Descriptions.Item label="Issuer">{certInfo.issuer || '-'}</Descriptions.Item>
+                          <Descriptions.Item label="Subject"><span style={{ wordBreak: 'break-all' }}>{certInfo.subject || '-'}</span></Descriptions.Item>
+                          <Descriptions.Item label="Issuer"><span style={{ wordBreak: 'break-all' }}>{certInfo.issuer || '-'}</span></Descriptions.Item>
                           <Descriptions.Item label="Valid From">{certInfo.valid_from || '-'}</Descriptions.Item>
                           <Descriptions.Item label="Valid To">{certInfo.valid_to || '-'}</Descriptions.Item>
-                          <Descriptions.Item label="DNS Names">{Array.isArray(certInfo.dns_names) && certInfo.dns_names.length > 0 ? certInfo.dns_names.join(', ') : '-'}</Descriptions.Item>
-                          {certInfo.error && <Descriptions.Item label="Error">{certInfo.error}</Descriptions.Item>}
+                          <Descriptions.Item label="DNS Names"><span style={{ wordBreak: 'break-all' }}>{Array.isArray(certInfo.dns_names) && certInfo.dns_names.length > 0 ? certInfo.dns_names.join(', ') : '-'}</span></Descriptions.Item>
+                          {certInfo.error && <Descriptions.Item label="Error"><span style={{ wordBreak: 'break-all' }}>{certInfo.error}</span></Descriptions.Item>}
                         </Descriptions>
                       </Result>
                     )}
@@ -654,18 +655,22 @@ const handleCleanup = async () => {
                   rowKey="fromhost_ip"
                   dataSource={devices}
                   pagination={false}
+                  tableLayout="fixed"
                   scroll={{ x: 'max-content' }}
                   columns={[
                     {
                       title: 'Source IP',
                       dataIndex: 'fromhost_ip',
                       key: 'fromhost_ip',
+                      width: 140,
                       render: (ip: string) => ip || '-',
                     },
                     {
                       title: 'Hostname',
                       dataIndex: 'hostname',
                       key: 'hostname',
+                      width: 180,
+                      ellipsis: true,
                       render: (hostname: string, record: DeviceStats) => {
                         const name = record.display_name || hostname || record.hostname || '-';
                         return (
@@ -679,6 +684,7 @@ const handleCleanup = async () => {
                       title: 'Total Logs',
                       dataIndex: 'total_logs',
                       key: 'total_logs',
+                      width: 100,
                       sorter: (a: DeviceStats, b: DeviceStats) => a.total_logs - b.total_logs,
                       render: (v: number) => typeof v === 'number' ? v : 0,
                     },
@@ -686,6 +692,7 @@ const handleCleanup = async () => {
                       title: 'Last Seen',
                       dataIndex: 'last_seen',
                       key: 'last_seen',
+                      width: 170,
                       render: (date: string) => date ? new Date(date).toLocaleString() : '-',
                       sorter: (a: DeviceStats, b: DeviceStats) => new Date(a.last_seen).getTime() - new Date(b.last_seen).getTime(),
                     },
@@ -693,6 +700,7 @@ const handleCleanup = async () => {
                       title: 'Severity',
                       dataIndex: 'severity_count',
                       key: 'severity_count',
+                      width: 220,
                       render: (sc: Record<string, number>) => {
                         if (!sc || typeof sc !== 'object') return '-';
                         const entries = Object.entries(sc).filter(([, count]) => count > 0);
@@ -712,6 +720,7 @@ const handleCleanup = async () => {
                       title: 'Matched Parsers',
                       dataIndex: 'matched_parsers',
                       key: 'matched_parsers',
+                      width: 200,
                       render: (parsers: string[]) => {
                         if (!Array.isArray(parsers) || parsers.length === 0) return <span>-</span>;
                         return (
@@ -727,6 +736,7 @@ const handleCleanup = async () => {
                       title: 'Parsed',
                       dataIndex: 'has_parsed',
                       key: 'has_parsed',
+                      width: 90,
                       render: (parsed: boolean) => (
                         <Tag color={parsed ? 'green' : 'orange'}>
                           {parsed ? 'Yes' : 'No'}
@@ -736,6 +746,7 @@ const handleCleanup = async () => {
                     {
                       title: 'Actions',
                       key: 'actions',
+                      width: 130,
                       render: (_v, record: DeviceStats) => (
                         <Button
                           type="link"
@@ -776,18 +787,23 @@ const handleCleanup = async () => {
                   rowKey={(record, i) => String(i)}
                   dataSource={slowQueries}
                   pagination={{ pageSize: 50 }}
+                  tableLayout="fixed"
                   scroll={{ x: 'max-content' }}
                   columns={[
                     {
                       title: 'Query',
                       dataIndex: 'name',
                       key: 'name',
-                      render: (name: string) => <Tag color="orange">{name}</Tag>,
+                      width: 400,
+                      render: (name: string) => (
+                        <Tag color="orange" style={{ whiteSpace: 'normal', wordBreak: 'break-all', maxWidth: '100%' }}>{name}</Tag>
+                      ),
                     },
                     {
                       title: 'Duration',
                       dataIndex: 'duration_ms',
                       key: 'duration_ms',
+                      width: 120,
                       sorter: (a: SlowQueryRecord, b: SlowQueryRecord) => a.duration_ms - b.duration_ms,
                       render: (ms: number) => {
                         const color = ms > 5000 ? 'red' : ms > 1000 ? 'orange' : 'green'
@@ -798,6 +814,7 @@ const handleCleanup = async () => {
                       title: 'Timestamp',
                       dataIndex: 'timestamp',
                       key: 'timestamp',
+                      width: 180,
                       render: (ts: string) => new Date(ts).toLocaleString(),
                     },
                   ]}
