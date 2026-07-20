@@ -230,6 +230,58 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='used_at') THEN ALTER TABLE refresh_tokens ADD COLUMN used_at TIMESTAMPTZ; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='replaced_by') THEN ALTER TABLE refresh_tokens ADD COLUMN replaced_by VARCHAR(255); END IF; END $$`,
 		`DELETE FROM app_settings WHERE key = 'jwt_expiry'`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='rule_type') THEN ALTER TABLE alerts ADD COLUMN rule_type VARCHAR(30) NOT NULL DEFAULT 'log_threshold'; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='severity') THEN ALTER TABLE alerts ADD COLUMN severity VARCHAR(20); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='hostname_pattern') THEN ALTER TABLE alerts ADD COLUMN hostname_pattern VARCHAR(255); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='app_name_pattern') THEN ALTER TABLE alerts ADD COLUMN app_name_pattern VARCHAR(255); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='message_pattern') THEN ALTER TABLE alerts ADD COLUMN message_pattern VARCHAR(500); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='cooldown_minutes') THEN ALTER TABLE alerts ADD COLUMN cooldown_minutes INTEGER NOT NULL DEFAULT 15; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='audit_action_filter') THEN ALTER TABLE alerts ADD COLUMN audit_action_filter VARCHAR(100); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='created_by') THEN ALTER TABLE alerts ADD COLUMN created_by INTEGER REFERENCES users(id) ON DELETE SET NULL; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='updated_at') THEN ALTER TABLE alerts ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW(); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='last_fired_at') THEN ALTER TABLE alerts ADD COLUMN last_fired_at TIMESTAMPTZ; END IF; END $$`,
+		`ALTER TABLE alerts ALTER COLUMN condition DROP NOT NULL`,
+		`ALTER TABLE alerts ALTER COLUMN threshold DROP NOT NULL`,
+		`CREATE TABLE IF NOT EXISTS notification_channels (
+			id SERIAL PRIMARY KEY,
+			name VARCHAR(255) NOT NULL,
+			type VARCHAR(20) NOT NULL,
+			config JSONB NOT NULL DEFAULT '{}',
+			secret TEXT,
+			enabled BOOLEAN DEFAULT TRUE,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS alert_channels (
+			alert_id INTEGER REFERENCES alerts(id) ON DELETE CASCADE,
+			channel_id INTEGER REFERENCES notification_channels(id) ON DELETE CASCADE,
+			PRIMARY KEY (alert_id, channel_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS notification_log (
+			id BIGSERIAL PRIMARY KEY,
+			alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
+			alert_name VARCHAR(255),
+			channel_id INTEGER REFERENCES notification_channels(id) ON DELETE SET NULL,
+			channel_name VARCHAR(255),
+			channel_type VARCHAR(20),
+			status VARCHAR(20) NOT NULL,
+			detail TEXT,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_notification_log_created ON notification_log (created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS in_app_notifications (
+			id BIGSERIAL PRIMARY KEY,
+			alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
+			title VARCHAR(255) NOT NULL,
+			message TEXT NOT NULL,
+			severity VARCHAR(20) DEFAULT 'info',
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_in_app_notifications_created ON in_app_notifications (created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS user_notification_state (
+			user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			last_read_id BIGINT NOT NULL DEFAULT 0
+		)`,
 	}
 
 	for _, stmt := range statements {
@@ -504,6 +556,14 @@ func seedSettings(db *sql.DB) error {
 		"cors_origins":        strings.TrimSpace(os.Getenv("CORS_ORIGINS")),
 		"https_enabled":       "false",
 		"https_redirect":      "false",
+		"notifications_enabled":        "true",
+		"smtp_host":                    "",
+		"smtp_port":                    "587",
+		"smtp_username":                "",
+		"smtp_password":                "",
+		"smtp_from":                    "",
+		"smtp_use_tls":                 "true",
+		"device_silence_check_minutes": "5",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -554,6 +614,22 @@ func seedSettings(db *sql.DB) error {
 			desc = "Enable HTTPS on the reverse proxy"
 		case "https_redirect":
 			desc = "Redirect HTTP traffic to HTTPS"
+		case "notifications_enabled":
+			desc = "Enable the alert notification system"
+		case "smtp_host":
+			desc = "SMTP server hostname for email notifications"
+		case "smtp_port":
+			desc = "SMTP server port"
+		case "smtp_username":
+			desc = "SMTP authentication username"
+		case "smtp_password":
+			desc = "SMTP authentication password"
+		case "smtp_from":
+			desc = "From address for notification emails"
+		case "smtp_use_tls":
+			desc = "Use STARTTLS for the SMTP connection"
+		case "device_silence_check_minutes":
+			desc = "How often to check for silent devices (minutes)"
 		}
 		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
 			return fmt.Errorf("seed setting %s: %w", k, err)
@@ -570,7 +646,7 @@ func GetSetting(db *sql.DB, key, defaultValue string) string {
 	if err != nil {
 		return defaultValue
 	}
-	if key == "ldap_bind_password" && val != "" {
+	if (key == "ldap_bind_password" || key == "smtp_password") && val != "" {
 		encKey := os.Getenv("ENCRYPTION_KEY")
 		if encKey == "" {
 			encKey = getSettingRaw(db, "encryption_key")
@@ -587,7 +663,7 @@ func GetSetting(db *sql.DB, key, defaultValue string) string {
 
 // UpdateSetting updates a setting value, encrypting sensitive fields
 func UpdateSetting(db *sql.DB, key, value string) error {
-	if key == "ldap_bind_password" && value != "" {
+	if (key == "ldap_bind_password" || key == "smtp_password") && value != "" {
 		encKey := os.Getenv("ENCRYPTION_KEY")
 		if encKey == "" {
 			encKey = getSettingRaw(db, "encryption_key")

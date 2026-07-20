@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"syslog-gui/audit"
 	"syslog-gui/auth"
 	"syslog-gui/db"
 	"syslog-gui/ldap"
@@ -77,13 +78,13 @@ func Login(database *sql.DB) gin.HandlerFunc {
 							u, err := db.CreateLDAPUser(database, username, email, ldapCfg.DefaultRole, ldapCfg.DefaultRole == RoleAdmin)
 							if err != nil {
 								slog.Error("ldap auto-provision failed", "error", err)
-								logAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "auto-provision failed")
+								audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "auto-provision failed")
 								c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 								return
 							}
 							user = u
 						} else {
-							logAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "user not found locally")
+							audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "user not found locally")
 							c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 							return
 						}
@@ -94,7 +95,7 @@ func Login(database *sql.DB) gin.HandlerFunc {
 			}
 
 			if user == nil {
-				logAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "invalid user or inactive")
+				audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "invalid user or inactive")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 				return
 			}
@@ -114,7 +115,7 @@ func Login(database *sql.DB) gin.HandlerFunc {
 			slog.Error("failed to store refresh token", "error", err)
 		}
 
-		logAudit(database, user.ID, user.Username, "login_success", c.ClientIP(), "")
+		audit.LogAudit(database, user.ID, user.Username, "login_success", c.ClientIP(), "")
 
 		c.JSON(http.StatusOK, LoginResponse{
 			Token:        token,
@@ -156,7 +157,7 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 		if claimErr != nil {
 			recoveredUserID, recoveredToken, recovered := recoverRacedRefresh(database, req.RefreshToken)
 			if !recovered {
-				logAudit(database, 0, "", "refresh_failed", c.ClientIP(), "invalid, expired, or reused refresh token")
+				audit.LogAudit(database, 0, "", "refresh_failed", c.ClientIP(), "invalid, expired, or reused refresh token")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
 				return
 			}
@@ -177,7 +178,7 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 		}
 
 		if replacementToken != "" {
-			logAudit(database, user.ID, user.Username, "refresh_race_recovered", c.ClientIP(), "")
+			audit.LogAudit(database, user.ID, user.Username, "refresh_race_recovered", c.ClientIP(), "")
 			c.JSON(http.StatusOK, gin.H{
 				"token":         token,
 				"refresh_token": replacementToken,
@@ -193,7 +194,7 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 			slog.Error("failed to link rotated refresh token", "error", err)
 		}
 
-		logAudit(database, user.ID, user.Username, "refresh_success", c.ClientIP(), "")
+		audit.LogAudit(database, user.ID, user.Username, "refresh_success", c.ClientIP(), "")
 
 		c.JSON(http.StatusOK, gin.H{
 			"token":         token,
@@ -324,7 +325,7 @@ func ChangePassword(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		logAudit(database, getUserID(database, username), username, "password_changed", c.ClientIP(), "")
+		audit.LogAudit(database, getUserID(database, username), username, "password_changed", c.ClientIP(), "")
 		c.JSON(http.StatusOK, gin.H{"message": "Password updated"})
 	}
 }
@@ -343,12 +344,3 @@ func getUserID(db *sql.DB, username string) int64 {
 	return id
 }
 
-func logAudit(db *sql.DB, userID int64, username, action, ip, details string) {
-	_, err := db.Exec(
-		"INSERT INTO audit_log (user_id, username, action, ip, details, created_at) VALUES ($1, $2, $3, $4, $5, NOW())",
-		userID, username, action, ip, details,
-	)
-	if err != nil {
-		slog.Error("audit log error", "error", err)
-	}
-}

@@ -7,15 +7,19 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
+	"syslog-gui/alertengine"
+	"syslog-gui/audit"
 	"syslog-gui/auth"
 	"syslog-gui/control"
 	"syslog-gui/db"
 	"syslog-gui/handler"
 	"syslog-gui/middleware"
+	"syslog-gui/notifyhub"
 	"syslog-gui/parser"
 	"syslog-gui/sharedstate"
 	"syslog-gui/tailer"
@@ -210,7 +214,33 @@ func main() {
 	if logFilePath == "" {
 		logFilePath = "/data/logs.jsonl"
 	}
-	go tailer.Run(ctx, database, logFilePath, engine, ic, elector)
+	alertEngine := alertengine.NewEngine(database, sharedClient)
+	audit.SetAlertEngine(alertEngine)
+	notifHub := notifyhub.NewHub(ctx, sharedClient)
+	alertEngine.SetOnInApp(notifHub.Publish)
+	go tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine)
+
+	// Device silence checks run independently on every replica: the read
+	// (mv_device_stats) is cheap and the per-rule-per-device cooldown key in
+	// alertEngine's counter store (Redis-backed when configured) already
+	// dedupes duplicate fires, the same way vacuum/MV refresh above already
+	// run redundantly on every replica without an elector.
+	silenceCheckMin := 5
+	if v, err := strconv.Atoi(db.GetSetting(database, "device_silence_check_minutes", "5")); err == nil && v > 0 {
+		silenceCheckMin = v
+	}
+	go func() {
+		ticker := time.NewTicker(time.Duration(silenceCheckMin) * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				alertEngine.CheckDeviceSilence(database)
+			}
+		}
+	}()
 
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -252,6 +282,10 @@ func main() {
 		changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute)
 		authGroup.POST("/auth/change-password", rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
 
+		authGroup.GET("/notifications", handler.GetNotifications(database))
+		authGroup.POST("/notifications/mark-read", handler.MarkNotificationsRead(database))
+		authGroup.GET("/notifications/stream", handler.StreamNotifications(notifHub))
+
 		authGroup.GET("/parsers", handler.ListParsers(engine))
 		authGroup.GET("/parsers/fields", handler.ListParsedFields(engine))
 		authGroup.GET("/dashboards", handler.ListDashboards(database))
@@ -276,6 +310,11 @@ func main() {
 			editorGroup.PUT("/dashboards/:id", handler.UpdateDashboard(database))
 			editorGroup.DELETE("/dashboards/:id", handler.DeleteDashboard(database))
 			editorGroup.PATCH("/dashboards/:id/public", handler.TogglePublicDashboard(database))
+
+			editorGroup.GET("/alerts", handler.ListAlerts(database))
+			editorGroup.POST("/alerts", handler.CreateAlert(database))
+			editorGroup.PUT("/alerts/:id", handler.UpdateAlert(database))
+			editorGroup.DELETE("/alerts/:id", handler.DeleteAlert(database))
 		}
 
 		adminGroup := authGroup.Group("/admin")
@@ -300,6 +339,13 @@ func main() {
 			adminGroup.PUT("/devices/:ip/alias", handler.UpdateDeviceAlias(database))
 			adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(database))
 			adminGroup.POST("/nginx-reload", handler.ReloadNginx(database))
+
+			adminGroup.GET("/notification-channels", handler.ListNotificationChannels(database))
+			adminGroup.POST("/notification-channels", handler.CreateNotificationChannel(database))
+			adminGroup.PUT("/notification-channels/:id", handler.UpdateNotificationChannel(database))
+			adminGroup.DELETE("/notification-channels/:id", handler.DeleteNotificationChannel(database))
+			adminGroup.POST("/notification-channels/:id/test", handler.TestNotificationChannel(database))
+			adminGroup.GET("/notifications/history", handler.GetNotificationHistory(database))
 		}
 	}
 

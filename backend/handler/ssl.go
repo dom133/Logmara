@@ -12,6 +12,8 @@ import (
 
 	"database/sql"
 
+	"syslog-gui/audit"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -66,6 +68,9 @@ sslDir := os.Getenv("SSL_DIR")
 		os.Chmod(keyPath, 0600)
 
 		slog.Info("SSL certificates uploaded", "cert", certPath, "key", keyPath)
+
+		actorID, actorName := actorFromContext(c)
+		audit.LogAudit(database, actorID, actorName, "ssl_cert_uploaded", c.ClientIP(), "")
 
 		certMeta := parseCertMetadata(certPath)
 

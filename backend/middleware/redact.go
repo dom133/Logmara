@@ -10,13 +10,13 @@ import (
 )
 
 var sensitiveFields = map[string]bool{
-	"password":       true,
+	"password":         true,
 	"current_password": true,
-	"new_password":   true,
-	"bind_password":  true,
-	"bind_pass":      true,
-	"jwt_secret":     true,
-	"encryption_key": true,
+	"new_password":     true,
+	"bind_password":    true,
+	"bind_pass":        true,
+	"jwt_secret":       true,
+	"encryption_key":   true,
 }
 
 func RedactSensitive() gin.HandlerFunc {

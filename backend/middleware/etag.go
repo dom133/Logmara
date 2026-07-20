@@ -29,8 +29,6 @@ func ETag() gin.HandlerFunc {
 			return
 		}
 
-		
-
 		if c.Writer.Status() != 0 && c.Writer.Status() != http.StatusOK {
 			c.Next()
 			return

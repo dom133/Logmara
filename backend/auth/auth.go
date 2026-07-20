@@ -117,9 +117,9 @@ func CheckPassword(password, hash string) bool {
 }
 
 var (
-	hasUpper  = regexp.MustCompile(`[A-Z]`)
-	hasLower  = regexp.MustCompile(`[a-z]`)
-	hasDigit  = regexp.MustCompile(`[0-9]`)
+	hasUpper   = regexp.MustCompile(`[A-Z]`)
+	hasLower   = regexp.MustCompile(`[a-z]`)
+	hasDigit   = regexp.MustCompile(`[0-9]`)
 	hasSpecial = regexp.MustCompile(`[^A-Za-z0-9]`)
 )
 
