@@ -88,7 +88,7 @@ func DeleteNotificationChannel(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func TestNotificationChannel(database *sql.DB) gin.HandlerFunc {
+func TestNotificationChannel(database *sql.DB, hub *notifyhub.Hub) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
@@ -106,7 +106,7 @@ func TestNotificationChannel(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		if err := notify.TestChannel(database, *channel); err != nil {
+		if err := notify.TestChannel(database, *channel, hub.Publish); err != nil {
 			middleware.HandleError(c, model.NewBadRequest("Test notification failed: "+err.Error(), err))
 			return
 		}
@@ -161,6 +161,7 @@ func GetNotifications(database *sql.DB) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, gin.H{
+			"enabled":       db.GetSetting(database, "notifications_enabled", "true") == "true",
 			"unread_count":  count,
 			"last_id":       lastID,
 			"notifications": items,

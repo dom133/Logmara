@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Badge, Button, Dropdown, Empty, List, Tag, Typography } from 'antd'
+import { Badge, Button, Dropdown, Empty, List, Tag, Typography, theme } from 'antd'
 import { BellOutlined } from '@ant-design/icons'
 import { getNotifications, markNotificationsRead, streamNotifications, InAppNotification } from '../services/api'
 
@@ -17,6 +17,8 @@ function formatTime(iso: string) {
 }
 
 export function NotificationBell() {
+  const { token } = theme.useToken()
+  const [enabled, setEnabled] = useState(false)
   const [items, setItems] = useState<InAppNotification[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
   const [open, setOpen] = useState(false)
@@ -24,24 +26,30 @@ export function NotificationBell() {
 
   useEffect(() => {
     let cancelled = false
+    let stopStream: (() => void) | null = null
 
     getNotifications().then(res => {
       if (cancelled) return
+      setEnabled(res.enabled !== false)
       setItems(res.notifications || [])
       setUnreadCount(res.unread_count || 0)
       lastIdRef.current = res.last_id || 0
-    }).catch(() => { /* ignore */ })
 
-    const stop = streamNotifications((n) => {
-      setItems(prev => [n, ...prev].slice(0, 50))
-      setUnreadCount(prev => prev + 1)
-    })
+      if (res.enabled !== false) {
+        stopStream = streamNotifications((n) => {
+          setItems(prev => [n, ...prev].slice(0, 50))
+          setUnreadCount(prev => prev + 1)
+        })
+      }
+    }).catch(() => { /* ignore */ })
 
     return () => {
       cancelled = true
-      stop()
+      stopStream?.()
     }
   }, [])
+
+  if (!enabled) return null
 
   const handleOpenChange = (nextOpen: boolean) => {
     setOpen(nextOpen)
@@ -60,8 +68,15 @@ export function NotificationBell() {
   }
 
   const renderDropdown = () => (
-    <div style={{ width: 360, maxHeight: 420, overflowY: 'auto', background: 'var(--ant-color-bg-elevated, #fff)', borderRadius: 8, boxShadow: '0 6px 16px rgba(0,0,0,0.12)' }}>
-      <div style={{ padding: '10px 16px', borderBottom: '1px solid rgba(0,0,0,0.06)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+    <div style={{
+      width: 'min(360px, calc(100vw - 32px))',
+      maxHeight: 420,
+      overflowY: 'auto',
+      background: token.colorBgElevated,
+      borderRadius: token.borderRadiusLG,
+      boxShadow: token.boxShadowSecondary,
+    }}>
+      <div style={{ padding: '10px 16px', borderBottom: `1px solid ${token.colorBorderSecondary}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Typography.Text strong>Notifications</Typography.Text>
         {items.length > 0 && <Button type="link" size="small" style={{ padding: 0 }} onClick={handleClearAll}>Clear all</Button>}
       </div>
@@ -76,8 +91,8 @@ export function NotificationBell() {
                 <Typography.Text strong style={{ fontSize: 13 }}>{n.title}</Typography.Text>
                 <Tag color={severityColor[n.severity] || 'default'} style={{ marginRight: 0 }}>{n.severity}</Tag>
               </div>
-              <div style={{ fontSize: 13, color: 'rgba(0,0,0,0.65)', marginTop: 2 }}>{n.message}</div>
-              <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)', marginTop: 4 }}>{formatTime(n.created_at)}</div>
+              <div style={{ fontSize: 13, color: token.colorTextSecondary, marginTop: 2 }}>{n.message}</div>
+              <div style={{ fontSize: 11, color: token.colorTextTertiary, marginTop: 4 }}>{formatTime(n.created_at)}</div>
             </List.Item>
           )}
         />
@@ -90,6 +105,7 @@ export function NotificationBell() {
       open={open}
       onOpenChange={handleOpenChange}
       trigger={['click']}
+      placement="bottomRight"
       dropdownRender={renderDropdown}
     >
       <Button type="text" icon={

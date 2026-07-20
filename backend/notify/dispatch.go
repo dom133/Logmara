@@ -141,8 +141,11 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName string, ch model.Noti
 
 // TestChannel sends a fixed test payload directly to a single channel,
 // bypassing alert association and notification_log - used by the "Test"
-// button in the admin UI.
-func TestChannel(database *sql.DB, channel model.NotificationChannel) error {
+// button in the admin UI. onInApp, if set, is called for an in_app channel
+// so the caller can fan the test notification out over SSE the same way a
+// real alert firing would - otherwise it would only ever show up after the
+// browser reloads and re-fetches the recent list.
+func TestChannel(database *sql.DB, channel model.NotificationChannel, onInApp func(model.InAppNotification)) error {
 	payload := Payload{
 		Title:    "Test notification",
 		Message:  "This is a test notification from SysLog GUI.",
@@ -150,8 +153,14 @@ func TestChannel(database *sql.DB, channel model.NotificationChannel) error {
 	}
 
 	if channel.Type == model.ChannelTypeInApp {
-		_, err := db.CreateInAppNotification(database, nil, payload.Title, payload.Message, payload.Severity)
-		return err
+		id, err := db.CreateInAppNotification(database, nil, payload.Title, payload.Message, payload.Severity)
+		if err != nil {
+			return err
+		}
+		if onInApp != nil {
+			onInApp(model.InAppNotification{ID: id, Title: payload.Title, Message: payload.Message, Severity: payload.Severity})
+		}
+		return nil
 	}
 
 	secret, err := db.DecryptChannelSecret(database, channel.ID)

@@ -343,7 +343,7 @@ func main() {
 			adminGroup.POST("/notification-channels", handler.CreateNotificationChannel(database))
 			adminGroup.PUT("/notification-channels/:id", handler.UpdateNotificationChannel(database))
 			adminGroup.DELETE("/notification-channels/:id", handler.DeleteNotificationChannel(database))
-			adminGroup.POST("/notification-channels/:id/test", handler.TestNotificationChannel(database))
+			adminGroup.POST("/notification-channels/:id/test", handler.TestNotificationChannel(database, notifHub))
 			adminGroup.DELETE("/notifications/history", handler.ClearNotificationHistory(database))
 		}
 

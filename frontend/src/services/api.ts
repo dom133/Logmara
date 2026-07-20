@@ -750,7 +750,7 @@ export interface InAppNotification {
 
 export async function getNotifications() {
 	const res = await api.get('/notifications')
-	return res.data as { unread_count: number; last_id: number; notifications: InAppNotification[] }
+	return res.data as { enabled: boolean; unread_count: number; last_id: number; notifications: InAppNotification[] }
 }
 
 export async function markNotificationsRead(lastReadId: number) {
