@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/lib/pq"
+
 	"syslog-gui/model"
 	"syslog-gui/util"
 )
@@ -32,10 +34,10 @@ func CreateAlert(db *sql.DB, req model.AlertRequest, createdBy int64) (*model.Al
 
 	var id int64
 	err := db.QueryRow(
-		`INSERT INTO alerts (name, description, rule_type, severity, hostname_pattern, app_name_pattern, message_pattern, threshold, window_minutes, cooldown_minutes, audit_action_filter, is_active, created_by, updated_at)
-		 VALUES ($1, $2, $3, NULLIF($4,''), NULLIF($5,''), NULLIF($6,''), NULLIF($7,''), $8, $9, $10, NULLIF($11,''), $12, $13, NOW())
+		`INSERT INTO alerts (name, description, rule_type, severity, device_ips, parser_names, message_pattern, threshold, window_minutes, cooldown_minutes, audit_action_filter, is_active, created_by, updated_at)
+		 VALUES ($1, $2, $3, NULLIF($4,''), $5, $6, NULLIF($7,''), $8, $9, $10, NULLIF($11,''), $12, $13, NOW())
 		 RETURNING id`,
-		req.Name, req.Description, req.RuleType, req.Severity, req.HostnamePattern, req.AppNamePattern, req.MessagePattern,
+		req.Name, req.Description, req.RuleType, req.Severity, pq.Array(req.DeviceIPs), pq.Array(req.ParserNames), req.MessagePattern,
 		req.Threshold, req.WindowMinutes, req.CooldownMinutes, req.AuditActionFilter, isActive, createdBy,
 	).Scan(&id)
 	if err != nil {
@@ -43,6 +45,9 @@ func CreateAlert(db *sql.DB, req model.AlertRequest, createdBy int64) (*model.Al
 	}
 
 	if err := SetAlertChannels(db, id, req.ChannelIDs); err != nil {
+		return nil, err
+	}
+	if err := SetAlertFieldConditions(db, id, req.FieldConditions); err != nil {
 		return nil, err
 	}
 
@@ -62,10 +67,10 @@ func UpdateAlert(db *sql.DB, id int64, req model.AlertRequest) (*model.Alert, er
 	}
 
 	_, err := db.Exec(
-		`UPDATE alerts SET name=$1, description=$2, rule_type=$3, severity=NULLIF($4,''), hostname_pattern=NULLIF($5,''),
-		 app_name_pattern=NULLIF($6,''), message_pattern=NULLIF($7,''), threshold=$8, window_minutes=$9, cooldown_minutes=$10,
+		`UPDATE alerts SET name=$1, description=$2, rule_type=$3, severity=NULLIF($4,''), device_ips=$5,
+		 parser_names=$6, message_pattern=NULLIF($7,''), threshold=$8, window_minutes=$9, cooldown_minutes=$10,
 		 audit_action_filter=NULLIF($11,''), is_active=$12, updated_at=NOW() WHERE id=$13`,
-		req.Name, req.Description, req.RuleType, req.Severity, req.HostnamePattern, req.AppNamePattern, req.MessagePattern,
+		req.Name, req.Description, req.RuleType, req.Severity, pq.Array(req.DeviceIPs), pq.Array(req.ParserNames), req.MessagePattern,
 		req.Threshold, req.WindowMinutes, req.CooldownMinutes, req.AuditActionFilter, isActive, id,
 	)
 	if err != nil {
@@ -73,6 +78,9 @@ func UpdateAlert(db *sql.DB, id int64, req model.AlertRequest) (*model.Alert, er
 	}
 
 	if err := SetAlertChannels(db, id, req.ChannelIDs); err != nil {
+		return nil, err
+	}
+	if err := SetAlertFieldConditions(db, id, req.FieldConditions); err != nil {
 		return nil, err
 	}
 
@@ -104,22 +112,26 @@ func SetAlertChannels(db *sql.DB, alertID int64, channelIDs []int64) error {
 
 func scanAlert(row *sql.Rows) (model.Alert, error) {
 	var a model.Alert
-	var description, severity, hostnamePattern, appNamePattern, messagePattern, auditActionFilter sql.NullString
+	var description, severity, messagePattern, auditActionFilter sql.NullString
 	var threshold sql.NullInt64
 	var createdBy sql.NullInt64
 	var lastFiredAt sql.NullTime
-	err := row.Scan(&a.ID, &a.Name, &description, &a.RuleType, &severity, &hostnamePattern, &appNamePattern, &messagePattern,
+	err := row.Scan(&a.ID, &a.Name, &description, &a.RuleType, &severity, pq.Array(&a.DeviceIPs), pq.Array(&a.ParserNames), &messagePattern,
 		&threshold, &a.WindowMinutes, &a.CooldownMinutes, &auditActionFilter, &a.IsActive, &createdBy, &a.CreatedAt, &a.UpdatedAt, &lastFiredAt)
 	if err != nil {
 		return a, err
 	}
 	a.Description = description.String
 	a.Severity = severity.String
-	a.HostnamePattern = hostnamePattern.String
-	a.AppNamePattern = appNamePattern.String
 	a.MessagePattern = messagePattern.String
 	a.Threshold = int(threshold.Int64)
 	a.AuditActionFilter = auditActionFilter.String
+	if a.DeviceIPs == nil {
+		a.DeviceIPs = []string{}
+	}
+	if a.ParserNames == nil {
+		a.ParserNames = []string{}
+	}
 	if createdBy.Valid {
 		a.CreatedBy = &createdBy.Int64
 	}
@@ -129,7 +141,7 @@ func scanAlert(row *sql.Rows) (model.Alert, error) {
 	return a, nil
 }
 
-const alertColumns = `id, name, description, rule_type, severity, hostname_pattern, app_name_pattern, message_pattern,
+const alertColumns = `id, name, description, rule_type, severity, device_ips, parser_names, message_pattern,
 	threshold, window_minutes, cooldown_minutes, audit_action_filter, is_active, created_by, created_at, updated_at, last_fired_at`
 
 func GetAllAlerts(db *sql.DB) ([]model.Alert, error) {
@@ -151,6 +163,9 @@ func GetAllAlerts(db *sql.DB) ([]model.Alert, error) {
 	if err := attachChannelIDs(db, alerts); err != nil {
 		return nil, err
 	}
+	if err := attachFieldConditions(db, alerts); err != nil {
+		return nil, err
+	}
 	return alerts, nil
 }
 
@@ -168,6 +183,9 @@ func GetActiveAlertsByType(db *sql.DB, ruleType string) ([]model.Alert, error) {
 			return nil, fmt.Errorf("scan alert: %w", err)
 		}
 		alerts = append(alerts, a)
+	}
+	if err := attachFieldConditions(db, alerts); err != nil {
+		return nil, err
 	}
 	return alerts, nil
 }
@@ -191,7 +209,70 @@ func GetAlert(db *sql.DB, id int64) (*model.Alert, error) {
 	if err := attachChannelIDs(db, alerts); err != nil {
 		return nil, err
 	}
+	if err := attachFieldConditions(db, alerts); err != nil {
+		return nil, err
+	}
 	return &alerts[0], nil
+}
+
+// SetAlertFieldConditions replaces alertID's field conditions with
+// conditions, in a single transaction (same delete-then-insert pattern as
+// SetAlertChannels).
+func SetAlertFieldConditions(db *sql.DB, alertID int64, conditions []model.AlertFieldCondition) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin field conditions tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DELETE FROM alert_field_conditions WHERE alert_id=$1", alertID); err != nil {
+		return fmt.Errorf("clear field conditions: %w", err)
+	}
+	for _, cond := range conditions {
+		if cond.FieldName == "" || cond.Value == "" {
+			continue
+		}
+		operator := cond.Operator
+		if operator == "" {
+			operator = model.FieldOpEquals
+		}
+		if _, err := tx.Exec(
+			"INSERT INTO alert_field_conditions (alert_id, field_name, operator, value) VALUES ($1, $2, $3, $4)",
+			alertID, cond.FieldName, operator, cond.Value,
+		); err != nil {
+			return fmt.Errorf("insert field condition for alert %d: %w", alertID, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func attachFieldConditions(db *sql.DB, alerts []model.Alert) error {
+	if len(alerts) == 0 {
+		return nil
+	}
+	byID := make(map[int64]*model.Alert, len(alerts))
+	for i := range alerts {
+		alerts[i].FieldConditions = []model.AlertFieldCondition{}
+		byID[alerts[i].ID] = &alerts[i]
+	}
+
+	rows, err := db.Query("SELECT id, alert_id, field_name, operator, value FROM alert_field_conditions ORDER BY id")
+	if err != nil {
+		return fmt.Errorf("list alert field conditions: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var alertID int64
+		var cond model.AlertFieldCondition
+		if err := rows.Scan(&cond.ID, &alertID, &cond.FieldName, &cond.Operator, &cond.Value); err != nil {
+			return fmt.Errorf("scan alert field condition: %w", err)
+		}
+		if a, ok := byID[alertID]; ok {
+			a.FieldConditions = append(a.FieldConditions, cond)
+		}
+	}
+	return nil
 }
 
 func attachChannelIDs(db *sql.DB, alerts []model.Alert) error {
@@ -423,6 +504,11 @@ func GetNotificationHistory(db *sql.DB, limit int) ([]model.NotificationLogEntry
 		entries = append(entries, e)
 	}
 	return entries, nil
+}
+
+func ClearNotificationHistory(db *sql.DB) error {
+	_, err := db.Exec("TRUNCATE TABLE notification_log")
+	return err
 }
 
 // ---- In-app notifications ----

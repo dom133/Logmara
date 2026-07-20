@@ -16,6 +16,9 @@ import (
 func BuildNotifier(database *sql.DB, channel model.NotificationChannel, secret string) (Notifier, error) {
 	switch channel.Type {
 	case model.ChannelTypeEmail:
+		if db.GetSetting(database, "smtp_enabled", "false") != "true" {
+			return nil, fmt.Errorf("SMTP is disabled (enable it under Admin > Settings)")
+		}
 		var cfg struct {
 			To []string `json:"to"`
 		}
@@ -93,6 +96,17 @@ func (d *Dispatcher) DispatchAlert(alert model.Alert, payload Payload) {
 		return
 	}
 	alertID := alert.ID
+
+	if len(channels) == 0 {
+		// The rule fired but has nothing to deliver to - record that it fired
+		// at all, otherwise there is no trace of it anywhere in the history.
+		_ = db.LogNotification(d.DB, model.NotificationLogEntry{
+			AlertID: &alertID, AlertName: alert.Name,
+			ChannelName: "(none)", Status: "no_channel", Detail: "Rule fired but has no notification channels attached",
+		})
+		return
+	}
+
 	for _, ch := range channels {
 		d.dispatchOne(&alertID, alert.Name, ch, payload)
 	}

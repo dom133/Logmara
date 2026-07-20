@@ -70,7 +70,7 @@ func (e *Engine) CheckDeviceSilence(database *sql.DB) {
 		cooldown := time.Duration(rule.CooldownMinutes) * time.Minute
 
 		for _, dev := range devices {
-			if !matchPattern(rule.HostnamePattern, dev.Hostname) {
+			if !matchDevice(rule.DeviceIPs, dev.FromHostIP) {
 				continue
 			}
 			if now.Sub(dev.LastSeen) < time.Duration(silentAfterMin)*time.Minute {

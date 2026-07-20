@@ -605,6 +605,14 @@ export async function uploadSSLCerts(certFile: File, keyFile: File) {
 
 export type AlertRuleType = 'log_threshold' | 'device_silence' | 'config_change'
 export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app'
+export type FieldConditionOperator = 'equals' | 'contains' | 'not_equals' | 'regex'
+
+export interface AlertFieldCondition {
+	id?: number
+	field_name: string
+	operator: FieldConditionOperator
+	value: string
+}
 
 export interface Alert {
 	id: number
@@ -612,8 +620,9 @@ export interface Alert {
 	description: string
 	rule_type: AlertRuleType
 	severity?: string
-	hostname_pattern?: string
-	app_name_pattern?: string
+	device_ips: string[]
+	parser_names: string[]
+	field_conditions: AlertFieldCondition[]
 	message_pattern?: string
 	threshold: number
 	window_minutes: number
@@ -632,8 +641,9 @@ export interface AlertRequest {
 	description?: string
 	rule_type: AlertRuleType
 	severity?: string
-	hostname_pattern?: string
-	app_name_pattern?: string
+	device_ips?: string[]
+	parser_names?: string[]
+	field_conditions?: AlertFieldCondition[]
 	message_pattern?: string
 	threshold?: number
 	window_minutes?: number
@@ -722,6 +732,11 @@ export interface NotificationLogEntry {
 export async function getNotificationHistory(limit = 100) {
 	const res = await api.get('/admin/notifications/history', { params: { limit } })
 	return (res.data || []) as NotificationLogEntry[]
+}
+
+export async function clearNotificationHistory() {
+	const res = await api.delete('/admin/notifications/history')
+	return res.data
 }
 
 export interface InAppNotification {

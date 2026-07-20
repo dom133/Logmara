@@ -340,12 +340,22 @@ func main() {
 			adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(database))
 			adminGroup.POST("/nginx-reload", handler.ReloadNginx(database))
 
-			adminGroup.GET("/notification-channels", handler.ListNotificationChannels(database))
 			adminGroup.POST("/notification-channels", handler.CreateNotificationChannel(database))
 			adminGroup.PUT("/notification-channels/:id", handler.UpdateNotificationChannel(database))
 			adminGroup.DELETE("/notification-channels/:id", handler.DeleteNotificationChannel(database))
 			adminGroup.POST("/notification-channels/:id/test", handler.TestNotificationChannel(database))
-			adminGroup.GET("/notifications/history", handler.GetNotificationHistory(database))
+			adminGroup.DELETE("/notifications/history", handler.ClearNotificationHistory(database))
+		}
+
+		// Same /admin path prefix as adminGroup above, but readable by editors
+		// too - they can already create alert rules (editorGroup), so they
+		// need to see which channels exist to assign and whether their rules
+		// actually fired. Channel secrets and mutations stay admin-only.
+		adminReadGroup := authGroup.Group("/admin")
+		adminReadGroup.Use(auth.RoleRequired("admin", "editor"))
+		{
+			adminReadGroup.GET("/notification-channels", handler.ListNotificationChannels(database))
+			adminReadGroup.GET("/notifications/history", handler.GetNotificationHistory(database))
 		}
 	}
 

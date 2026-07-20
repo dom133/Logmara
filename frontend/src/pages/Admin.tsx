@@ -28,6 +28,7 @@ export default function Admin() {
   const [ldapVerifyCert, setLdapVerifyCert] = useState(true)
   const [httpsEnabled, setHttpsEnabled] = useState(false)
   const [httpsRedirect, setHttpsRedirect] = useState(false)
+  const [smtpEnabled, setSmtpEnabled] = useState(false)
   const [testing, setTesting] = useState(false)
   const [purgeModalOpen, setPurgeModalOpen] = useState(false)
   const [pauseDuringPurge, setPauseDuringPurge] = useState(false)
@@ -79,6 +80,7 @@ export default function Admin() {
       formValues['https_enabled'] = data['https_enabled'] === 'true'
       formValues['https_redirect'] = data['https_redirect'] === 'true'
       formValues['notifications_enabled'] = data['notifications_enabled'] === 'true'
+      formValues['smtp_enabled'] = data['smtp_enabled'] === 'true'
       formValues['smtp_use_tls'] = data['smtp_use_tls'] === 'true'
       if (data['smtp_port']) formValues['smtp_port'] = parseInt(data['smtp_port'], 10)
       settingsForm.setFieldsValue(formValues)
@@ -88,6 +90,7 @@ export default function Admin() {
       setLdapVerifyCert(data['ldap_verify_cert'] !== 'false')
       setHttpsEnabled(data['https_enabled'] === 'true')
       setHttpsRedirect(data['https_redirect'] === 'true')
+      setSmtpEnabled(data['smtp_enabled'] === 'true')
     } catch {
       message.error('Failed to load settings')
     }
@@ -492,27 +495,30 @@ const handleCleanup = async () => {
                         {sslUploading ? 'Uploading...' : 'Upload Certificates'}
                       </Button>
                     </Form.Item>
-                    <Divider orientation="left">Notifications (SMTP)</Divider>
-                    <Form.Item label="Enable Notifications" name="notifications_enabled" valuePropName="checked">
+                    <Divider orientation="left">Notifications</Divider>
+                    <Form.Item label="Enable Notifications" name="notifications_enabled" valuePropName="checked" tooltip="Master switch for alert rule evaluation and delivery through any channel">
                       <Switch />
+                    </Form.Item>
+                    <Form.Item label="Enable SMTP" name="smtp_enabled" valuePropName="checked" tooltip="Required for email notification channels">
+                      <Switch checked={smtpEnabled} onChange={(v) => { setSmtpEnabled(v); settingsForm.setFieldValue('smtp_enabled', v) }} />
                     </Form.Item>
                     <Form.Item label="SMTP Host" name="smtp_host">
-                      <Input placeholder="smtp.example.com" />
+                      <Input placeholder="smtp.example.com" disabled={!smtpEnabled} />
                     </Form.Item>
                     <Form.Item label="SMTP Port" name="smtp_port">
-                      <InputNumber min={1} max={65535} style={{ width: '100%' }} />
+                      <InputNumber min={1} max={65535} style={{ width: '100%' }} disabled={!smtpEnabled} />
                     </Form.Item>
                     <Form.Item label="SMTP Username" name="smtp_username">
-                      <Input placeholder="notifications@example.com" />
+                      <Input placeholder="notifications@example.com" disabled={!smtpEnabled} />
                     </Form.Item>
                     <Form.Item label="SMTP Password" name="smtp_password">
-                      <Input.Password />
+                      <Input.Password disabled={!smtpEnabled} />
                     </Form.Item>
                     <Form.Item label="From Address" name="smtp_from">
-                      <Input placeholder="syslog-gui@example.com" />
+                      <Input placeholder="syslog-gui@example.com" disabled={!smtpEnabled} />
                     </Form.Item>
                     <Form.Item label="Use STARTTLS" name="smtp_use_tls" valuePropName="checked">
-                      <Switch />
+                      <Switch disabled={!smtpEnabled} />
                     </Form.Item>
                     {certInfo && (
                       <Result

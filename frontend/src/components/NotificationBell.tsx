@@ -53,10 +53,17 @@ export function NotificationBell() {
     }
   }
 
+  const handleClearAll = () => {
+    markNotificationsRead(lastIdRef.current).catch(() => { /* ignore */ })
+    setItems([])
+    setUnreadCount(0)
+  }
+
   const renderDropdown = () => (
     <div style={{ width: 360, maxHeight: 420, overflowY: 'auto', background: 'var(--ant-color-bg-elevated, #fff)', borderRadius: 8, boxShadow: '0 6px 16px rgba(0,0,0,0.12)' }}>
       <div style={{ padding: '10px 16px', borderBottom: '1px solid rgba(0,0,0,0.06)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Typography.Text strong>Notifications</Typography.Text>
+        {items.length > 0 && <Button type="link" size="small" style={{ padding: 0 }} onClick={handleClearAll}>Clear all</Button>}
       </div>
       {items.length === 0 ? (
         <Empty description="No notifications" style={{ padding: 24 }} />

@@ -132,6 +132,16 @@ func GetNotificationHistory(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
+func ClearNotificationHistory(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := db.ClearNotificationHistory(database); err != nil {
+			middleware.HandleError(c, model.NewInternal("Failed to clear notification history", err))
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "notification history cleared"})
+	}
+}
+
 // GetNotifications returns the signed-in user's unread count plus the most
 // recent in-app notifications, for the bell dropdown's initial load (the
 // live stream in StreamNotifications handles updates after that).

@@ -29,6 +29,16 @@ func ETag() gin.HandlerFunc {
 			return
 		}
 
+		// SSE (and any other long-lived streaming) endpoint: this middleware
+		// buffers the entire response in memory and only writes it once the
+		// handler returns, which for a stream that stays open for the life of
+		// the connection means nothing ever reaches the client until it
+		// disconnects. Bypass it entirely for those routes.
+		if strings.HasPrefix(c.Request.URL.Path, "/api/notifications/stream") {
+			c.Next()
+			return
+		}
+
 		if c.Writer.Status() != 0 && c.Writer.Status() != http.StatusOK {
 			c.Next()
 			return

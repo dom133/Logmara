@@ -135,13 +135,16 @@ func (e *Engine) EvaluateBatch(database *sql.DB, entries []model.IngestEntry) {
 			if !meetsSeverity(entry.Severity, rule.Severity) {
 				continue
 			}
-			if !matchPattern(rule.HostnamePattern, entry.Hostname) {
+			if !matchDevice(rule.DeviceIPs, entry.FromHostIP) {
 				continue
 			}
-			if !matchPattern(rule.AppNamePattern, entry.AppName) {
+			if !matchParsers(rule.ParserNames, entry.MatchedParsers) {
 				continue
 			}
 			if !matchPattern(rule.MessagePattern, entry.Message) {
+				continue
+			}
+			if len(rule.FieldConditions) > 0 && !matchFieldConditions(rule.FieldConditions, decodeParsedFields(entry.ParsedFields)) {
 				continue
 			}
 			matched++
