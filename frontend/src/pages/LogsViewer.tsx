@@ -249,14 +249,17 @@ export default function LogsViewer() {
       title: 'Message',
       dataIndex: 'message',
       key: 'message',
+      width: 300,
       ellipsis: { showTitle: true },
       render: (v: string, record: LogEntry) => {
         const display = record.raw_message || v
         return (
           <pre style={{
             margin: 0,
+            width: '100%',
+            maxWidth: '100%',
             whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
+            wordBreak: 'break-all',
             fontFamily: 'Consolas, Monaco, monospace',
             fontSize: 12,
             lineHeight: 1.4,
@@ -375,6 +378,7 @@ export default function LogsViewer() {
             dataSource={logs}
             rowKey="id"
             loading={loading}
+            tableLayout="fixed"
             scroll={{ x: 'max-content' }}
             pagination={false}
             size="small"
@@ -414,13 +418,13 @@ export default function LogsViewer() {
                 {selectedLog.fromhost_ip && <Descriptions.Item label="Source IP"><Tag color="green">{selectedLog.fromhost_ip}</Tag></Descriptions.Item>}
                 {selectedLog.app_name && <Descriptions.Item label="App">{selectedLog.app_name}</Descriptions.Item>}
                 <Descriptions.Item label="Message">
-                  <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'Consolas, Monaco, monospace', fontSize: 12, lineHeight: 1.4 }}>
+                  <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', width: '100%', maxWidth: '100%', fontFamily: 'Consolas, Monaco, monospace', fontSize: 12, lineHeight: 1.4 }}>
                     {selectedLog.raw_message || selectedLog.message}
                   </pre>
                 </Descriptions.Item>
                 {selectedLog.raw_message && selectedLog.raw_message !== selectedLog.message && (
                   <Descriptions.Item label="Raw Message">
-                    <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'Consolas, Monaco, monospace', fontSize: 12, lineHeight: 1.4 }}>
+                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', width: '100%', maxWidth: '100%', fontFamily: 'Consolas, Monaco, monospace', fontSize: 12, lineHeight: 1.4 }}>
                       {selectedLog.raw_message}
                     </pre>
                   </Descriptions.Item>

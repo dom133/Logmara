@@ -44,8 +44,8 @@ export function useColumnWidths(storageKey: string, defaultCols: ColumnDef[]): U
   }, [storageKey]);
 
   const getEffectiveWidth = useCallback(
-    (col: ColumnDef) => widths[col.key] ?? col.width,
-    [widths],
+    (col: ColumnDef) => widths[col.key] ?? col.width ?? defaults[col.key],
+    [widths, defaults],
   );
 
   const onMouseDown = useCallback(

@@ -303,14 +303,17 @@ export default function DashboardViewPage() {
       title: 'Message',
       dataIndex: 'message',
       key: 'message',
+      width: 300,
       ellipsis: { showTitle: true },
       render: (v: string, record: LogEntry) => {
         const display = record.raw_message || v
         return (
           <pre style={{
             margin: 0,
+            width: '100%',
+            maxWidth: '100%',
             whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
+            wordBreak: 'break-all',
             fontFamily: 'Consolas, Monaco, monospace',
             fontSize: 12,
             lineHeight: 1.4,
@@ -513,6 +516,7 @@ export default function DashboardViewPage() {
         rowKey="id"
         loading={tableLoading}
         size="small"
+        tableLayout="fixed"
         scroll={{ x: 'max-content' }}
         onRow={(record) => ({
           onClick: () => setDetailLog(record),
@@ -557,7 +561,9 @@ export default function DashboardViewPage() {
               <Descriptions.Item label="Full Message">
                 <pre style={{
                   whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
+                  wordBreak: 'break-all',
+                  width: '100%',
+                  maxWidth: '100%',
                   fontFamily: 'Consolas, Monaco, monospace',
                   fontSize: 12,
                   lineHeight: 1.4,
