@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -168,7 +167,9 @@ func main() {
 	r.Use(middleware.SecurityHeaders())
 	r.Use(middleware.GzipCompress())
 	r.Use(middleware.ETag())
-	r.Use(corsMiddleware(database))
+	// CORS is handled entirely by the frontend's nginx reverse proxy (see
+	// frontend/nginx.conf and handler.reloadNginx) - clients only ever reach
+	// this API through it, so there's no CORS handling here.
 
 	loginLimiter := newRateLimiter(5, time.Minute)
 	refreshLimiter := newRateLimiter(10, time.Minute)
@@ -297,7 +298,6 @@ func waitForWizardDatabase(port string) *sql.DB {
 	r.Use(middleware.ErrorHandler())
 	r.Use(middleware.SecurityHeaders())
 	r.Use(middleware.GzipCompress())
-	r.Use(bootstrapCorsMiddleware())
 
 	initLimiter := newRateLimiter(3, time.Hour)
 	testDbLimiter := newRateLimiter(20, 10*time.Minute)
@@ -336,47 +336,6 @@ func waitForWizardDatabase(port string) *sql.DB {
 	return database
 }
 
-// bootstrapCorsMiddleware mirrors corsMiddleware's no-origins-configured
-// branch, since app_settings (and thus a configured origins list) don't
-// exist yet before a database connection is established.
-func bootstrapCorsMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "http://"+c.Request.Host)
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(http.StatusNoContent)
-			return
-		}
-		c.Next()
-	}
-}
-
-func corsMiddleware(database *sql.DB) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		origins := db.GetSetting(database, "cors_origins", "")
-		if origins == "" {
-			host := c.Request.Host
-			c.Writer.Header().Set("Access-Control-Allow-Origin", "http://"+host)
-		} else {
-			origin := c.GetHeader("Origin")
-			for _, allowed := range strings.Split(origins, ",") {
-				allowed = strings.TrimSpace(allowed)
-				if allowed == origin || allowed == "*" {
-					c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
-					break
-				}
-			}
-		}
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(http.StatusNoContent)
-			return
-		}
-		c.Next()
-	}
-}
 
 func rateLimitMiddleware(rl *rateLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {

@@ -91,6 +91,11 @@ services:
       # app_settings so it shows up under Settings.
       HTTPS_ENABLED: ${HTTPS_ENABLED:-}
       HTTPS_REDIRECT: ${HTTPS_REDIRECT:-}
+      # Optional: seeds the initial allowed CORS origin(s) for the frontend
+      # (comma-separated) the first time the database is initialized. After
+      # that, it's managed from the admin Settings UI and this env var is
+      # ignored on subsequent restarts.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
     volumes:
       - log_data:/data
     ports:

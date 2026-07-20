@@ -46,7 +46,7 @@ Copy `.env.example` and adjust values:
 | `ENCRYPTION_KEY` | *(auto-generated)* | AES-256 key for encrypting sensitive settings |
 | `PORT` | `8080` | API server port |
 | `LOG_FILE_PATH` | `/data/logs.jsonl` | Path to rsyslog JSON output |
-| `CORS_ORIGINS` | *(none)* | Comma-separated allowed origins for CORS |
+| `CORS_ORIGINS` | *(none)* | Comma-separated allowed origins for CORS. Only seeds the initial value in the database on first initialization — afterwards it's managed from the admin Settings UI |
 | `LDAP_SERVER` | *(none)* | LDAP/AD server hostname |
 | `LDAP_PORT` | `636` | LDAP server port |
 | `LDAP_USE_TLS` | `true` | Enable TLS for LDAP |

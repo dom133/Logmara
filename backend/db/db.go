@@ -439,6 +439,11 @@ func nullStrPtr(s string) *string {
 	return &s
 }
 
+// seedSettings inserts the default app_settings rows on first run (via
+// ON CONFLICT DO NOTHING below, so it never overwrites a value once the row
+// exists). CORS_ORIGINS seeds the initial "cors_origins" value from the
+// environment for this first-run case only; after initialization the value
+// lives in the database and is managed from the admin Settings UI, not env.
 func seedSettings(db *sql.DB) error {
 	settings := map[string]string{
 		"retention_days":      "30",
@@ -459,7 +464,7 @@ func seedSettings(db *sql.DB) error {
 		"ldap_default_role":   "viewer",
 		"ldap_auto_provision": "true",
 		"encryption_key":      "",
-		"cors_origins":        "",
+		"cors_origins":        strings.TrimSpace(os.Getenv("CORS_ORIGINS")),
 		"https_enabled":       "false",
 		"https_redirect":      "false",
 	}

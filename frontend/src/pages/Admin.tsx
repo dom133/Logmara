@@ -416,6 +416,14 @@ const handleCleanup = async () => {
 <Form.Item label="Session Timeout (minutes)" name="session_timeout_min">
                      <InputNumber min={1} max={10080} style={{ width: '100%' }} />
                    </Form.Item>
+                   <Divider orientation="left">CORS</Divider>
+                   <Form.Item
+                     label="Allowed CORS Origins"
+                     name="cors_origins"
+                     tooltip="Comma-separated list of origins allowed to call the API from a browser (e.g. http://localhost:3000,https://example.com). Leave empty to only allow the origin the app is served from."
+                   >
+                     <Input placeholder="http://localhost:3000,https://yourdomain.com" />
+                   </Form.Item>
                    <Divider orientation="left">HTTPS</Divider>
                    <Form.Item label="Enable HTTPS" name="https_enabled" valuePropName="checked">
                      <Switch checked={httpsEnabled} onChange={(v) => {
