@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { Badge, Button, Dropdown, Empty, List, Tag, Typography, theme } from 'antd'
+import { Badge, Button, Card, Drawer, Dropdown, Empty, List, Tag, Typography } from 'antd'
 import { BellOutlined } from '@ant-design/icons'
 import { getNotifications, markNotificationsRead, streamNotifications, InAppNotification } from '../services/api'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 const severityColor: Record<string, string> = {
   critical: 'red',
@@ -17,7 +18,7 @@ function formatTime(iso: string) {
 }
 
 export function NotificationBell() {
-  const { token } = theme.useToken()
+  const isMobile = useIsMobile()
   const [enabled, setEnabled] = useState(false)
   const [items, setItems] = useState<InAppNotification[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
@@ -51,9 +52,9 @@ export function NotificationBell() {
 
   if (!enabled) return null
 
-  const handleOpenChange = (nextOpen: boolean) => {
-    setOpen(nextOpen)
-    if (nextOpen && unreadCount > 0) {
+  const handleOpen = () => {
+    setOpen(true)
+    if (unreadCount > 0) {
       const maxID = items.reduce((max, n) => Math.max(max, n.id), lastIdRef.current)
       lastIdRef.current = maxID
       markNotificationsRead(maxID).catch(() => { /* ignore */ })
@@ -67,52 +68,78 @@ export function NotificationBell() {
     setUnreadCount(0)
   }
 
-  const renderDropdown = () => (
-    <div style={{
-      width: 'min(360px, calc(100vw - 32px))',
-      maxHeight: 420,
-      overflowY: 'auto',
-      background: token.colorBgElevated,
-      borderRadius: token.borderRadiusLG,
-      boxShadow: token.boxShadowSecondary,
-    }}>
-      <div style={{ padding: '10px 16px', borderBottom: `1px solid ${token.colorBorderSecondary}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Typography.Text strong>Notifications</Typography.Text>
-        {items.length > 0 && <Button type="link" size="small" style={{ padding: 0 }} onClick={handleClearAll}>Clear all</Button>}
-      </div>
-      {items.length === 0 ? (
-        <Empty description="No notifications" style={{ padding: 24 }} />
-      ) : (
-        <List
-          dataSource={items}
-          renderItem={(n) => (
-            <List.Item style={{ padding: '10px 16px', display: 'block' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                <Typography.Text strong style={{ fontSize: 13 }}>{n.title}</Typography.Text>
-                <Tag color={severityColor[n.severity] || 'default'} style={{ marginRight: 0 }}>{n.severity}</Tag>
-              </div>
-              <div style={{ fontSize: 13, color: token.colorTextSecondary, marginTop: 2 }}>{n.message}</div>
-              <div style={{ fontSize: 11, color: token.colorTextTertiary, marginTop: 4 }}>{formatTime(n.created_at)}</div>
-            </List.Item>
-          )}
-        />
+  const panelBody = items.length === 0 ? (
+    <Empty description="No notifications" style={{ padding: 24 }} />
+  ) : (
+    <List
+      dataSource={items}
+      renderItem={(n) => (
+        <List.Item style={{ padding: '10px 16px', display: 'block' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+            <Typography.Text strong style={{ fontSize: 13 }}>{n.title}</Typography.Text>
+            <Tag color={severityColor[n.severity] || 'default'} style={{ marginRight: 0 }}>{n.severity}</Tag>
+          </div>
+          <Typography.Text type="secondary" style={{ fontSize: 13, display: 'block', marginTop: 2 }}>{n.message}</Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>{formatTime(n.created_at)}</Typography.Text>
+        </List.Item>
       )}
-    </div>
+    />
   )
+
+  const clearButton = items.length > 0 && (
+    <Button type="link" size="small" style={{ padding: 0 }} onClick={handleClearAll}>Clear all</Button>
+  )
+
+  const bellButton = (
+    <Button
+      type="text"
+      onClick={isMobile ? handleOpen : undefined}
+      icon={
+        <Badge count={unreadCount} size="small" offset={[-2, 2]}>
+          <BellOutlined style={{ fontSize: 18 }} />
+        </Badge>
+      }
+    />
+  )
+
+  if (isMobile) {
+    return (
+      <>
+        {bellButton}
+        <Drawer
+          title="Notifications"
+          placement="bottom"
+          height="70%"
+          open={open}
+          onClose={() => setOpen(false)}
+          extra={clearButton}
+          styles={{ body: { padding: 0, overflowY: 'auto' } }}
+        >
+          {panelBody}
+        </Drawer>
+      </>
+    )
+  }
 
   return (
     <Dropdown
       open={open}
-      onOpenChange={handleOpenChange}
+      onOpenChange={(next) => { if (next) handleOpen(); else setOpen(false) }}
       trigger={['click']}
       placement="bottomRight"
-      dropdownRender={renderDropdown}
+      dropdownRender={() => (
+        <Card
+          size="small"
+          title="Notifications"
+          extra={clearButton}
+          style={{ width: 360 }}
+          styles={{ body: { padding: 0, maxHeight: 380, overflowY: 'auto' } }}
+        >
+          {panelBody}
+        </Card>
+      )}
     >
-      <Button type="text" icon={
-        <Badge count={unreadCount} size="small" offset={[-2, 2]}>
-          <BellOutlined style={{ fontSize: 18 }} />
-        </Badge>
-      } />
+      {bellButton}
     </Dropdown>
   )
 }

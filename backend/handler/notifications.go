@@ -17,6 +17,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// RequireNotificationsEnabled blocks the alert/channel/history management
+// API (not the notification bell's own GET /notifications, which needs to
+// stay reachable so it can report enabled:false and hide itself) whenever
+// the notifications_enabled setting is off.
+func RequireNotificationsEnabled(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if db.GetSetting(database, "notifications_enabled", "true") != "true" {
+			middleware.HandleError(c, model.NewForbidden("Notifications are disabled", nil))
+			return
+		}
+		c.Next()
+	}
+}
+
 func ListNotificationChannels(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		channels, err := db.GetAllNotificationChannels(database)
@@ -142,19 +156,28 @@ func ClearNotificationHistory(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// GetNotifications returns the signed-in user's unread count plus the most
-// recent in-app notifications, for the bell dropdown's initial load (the
-// live stream in StreamNotifications handles updates after that).
+// GetNotifications returns the signed-in user's unread count plus their
+// still-unread in-app notifications, for the bell dropdown's initial load
+// (the live stream in StreamNotifications handles updates after that).
+// Once something is marked read - whether via the "Clear all" button or
+// just by opening the bell - it drops out of this list for good, so a
+// "cleared" bell stays cleared across a page reload instead of the same
+// items reappearing every time.
 func GetNotifications(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetInt64("user_id")
 
+		lastRead, err := db.GetLastReadID(database, userID)
+		if err != nil {
+			middleware.HandleError(c, model.NewInternal("Failed to load notifications", err))
+			return
+		}
 		count, lastID, err := db.GetUnreadNotificationCount(database, userID)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to load notifications", err))
 			return
 		}
-		items, err := db.GetInAppNotifications(database, 0, 20)
+		items, err := db.GetInAppNotifications(database, lastRead, 20)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to load notifications", err))
 			return

@@ -271,11 +271,12 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 			isAdmin = false
 		}
 		c.JSON(http.StatusOK, gin.H{
-			"id":        userID,
-			"username":  username,
-			"role":      role,
-			"is_admin":  isAdmin,
-			"is_active": true,
+			"id":                    userID,
+			"username":              username,
+			"role":                  role,
+			"is_admin":              isAdmin,
+			"is_active":             true,
+			"notifications_enabled": db.GetSetting(database, "notifications_enabled", "true") == "true",
 		})
 	}
 }

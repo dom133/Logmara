@@ -562,6 +562,18 @@ func GetUnreadNotificationCount(db *sql.DB, userID int64) (count int64, lastID i
 	return count, lastID, nil
 }
 
+// GetLastReadID returns the id boundary userID has marked read (0 if they
+// have never read anything), for filtering the notification list down to
+// just what's still unread.
+func GetLastReadID(db *sql.DB, userID int64) (int64, error) {
+	var lastRead int64
+	err := db.QueryRow("SELECT last_read_id FROM user_notification_state WHERE user_id=$1", userID).Scan(&lastRead)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, fmt.Errorf("get notification state: %w", err)
+	}
+	return lastRead, nil
+}
+
 func MarkNotificationsRead(db *sql.DB, userID, lastReadID int64) error {
 	_, err := db.Exec(
 		`INSERT INTO user_notification_state (user_id, last_read_id) VALUES ($1, $2)
