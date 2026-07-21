@@ -105,7 +105,17 @@ export function NotificationBell() {
           message.warning('Notification permission was not granted')
           return
         }
-        const reg = await withTimeout(navigator.serviceWorker.ready, 10_000, 'waiting for the service worker')
+        // Register explicitly here rather than relying on the fire-and-
+        // forget call in main.tsx: that one only console.warns on failure,
+        // which nobody sees on a phone - if registration itself is broken
+        // (insecure origin, script blocked, wrong MIME type), this makes
+        // that error land in the toast instead of a 10s "waiting" timeout
+        // for a worker that was never going to show up.
+        let reg = await navigator.serviceWorker.getRegistration()
+        if (!reg) {
+          reg = await withTimeout(navigator.serviceWorker.register('/sw.js'), 10_000, 'registering the service worker')
+        }
+        reg = await withTimeout(navigator.serviceWorker.ready, 10_000, 'waiting for the service worker')
         const publicKey = await withTimeout(getVapidPublicKey(), 10_000, 'fetching the VAPID key from the server')
         const sub = await withTimeout(
           reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) }),

@@ -47,16 +47,17 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
   const [form] = Form.useForm()
   const ruleType = Form.useWatch('rule_type', form)
   const selectedParsers: string[] = Form.useWatch('parser_names', form) || []
+  const selectedDevices: string[] = Form.useWatch('device_ips', form) || []
+  const selectedDevicesKey = selectedDevices.join(',')
 
   const loadData = async () => {
     setLoading(true)
     try {
-      const [a, c, d, p, pf] = await Promise.all([getAlerts(), getNotificationChannels(), getDevices(), getParsers(), getParsedFields()])
+      const [a, c, d, p] = await Promise.all([getAlerts(), getNotificationChannels(), getDevices(), getParsers()])
       setAlerts(a)
       setChannels(c)
       setDevices(d)
       setParsers(p)
-      setParsedFields(pf)
     } catch {
       message.error('Failed to load alerts')
     } finally {
@@ -66,8 +67,27 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
 
   useEffect(() => { loadData() }, [])
 
+  // Refetch the field registry scoped to the selected device(s) whenever
+  // that selection changes, so "Field Conditions" only offers fields that
+  // parsers have actually extracted from those devices' logs (falls back to
+  // every known field when no device is selected).
+  useEffect(() => {
+    getParsedFields(selectedDevices.length > 0 ? selectedDevices : undefined)
+      .then(setParsedFields)
+      .catch(() => { /* keep the previous list rather than blanking the form */ })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDevicesKey])
+
   const deviceOptions = devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))
-  const parserOptions = parsers.map(p => ({ label: p.name, value: p.name }))
+  // Only parsers that have actually matched a log from at least one of the
+  // selected device(s) - an empty selection means "all devices", so show
+  // every parser, same as before this was device-scoped.
+  const availableParserNames = selectedDevices.length === 0
+    ? null
+    : new Set(devices.filter(d => selectedDevices.includes(d.fromhost_ip)).flatMap(d => d.matched_parsers || []))
+  const parserOptions = parsers
+    .filter(p => availableParserNames === null || availableParserNames.has(p.name))
+    .map(p => ({ label: p.name, value: p.name }))
   const fieldOptions = Array.from(
     new Map(
       parsedFields
@@ -195,14 +215,14 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
               <Form.Item name="severity" label="Minimum Severity" tooltip="Leave empty to match any severity">
                 <Select allowClear options={['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug'].map(s => ({ value: s, label: s }))} />
               </Form.Item>
-              <Form.Item name="parser_names" label="Parsers" tooltip="Which parser(s) must have matched the log entry; leave empty to match any parser (including unparsed logs)">
+              <Form.Item name="parser_names" label="Parsers" tooltip="Which parser(s) must have matched the log entry; leave empty to match any parser (including unparsed logs). Narrowed to parsers actually seen on the selected device(s) once you pick one.">
                 <Select mode="multiple" allowClear placeholder="Any parser" options={parserOptions} />
               </Form.Item>
               <Form.Item name="message_pattern" label="Message Pattern" tooltip="Substring or glob (*) match against the raw log message">
                 <Input placeholder="failed login" />
               </Form.Item>
 
-              <Form.Item label="Field Conditions" tooltip="All conditions must match (AND). Fields come from the parsers selected above, or all known fields if none are selected.">
+              <Form.Item label="Field Conditions" tooltip="All conditions must match (AND). Fields come from the parsers selected above, or all fields seen on the selected device(s) if no parser is selected, or every known field if neither is selected.">
                 <Form.List name="field_conditions">
                   {(fields, { add, remove }) => (
                     <>
