@@ -736,6 +736,7 @@ export interface NotificationLogEntry {
 	status: 'sent' | 'failed'
 	detail?: string
 	trigger_log?: TriggerLogSnapshot
+	in_app_notification_id?: number
 	matched_conditions?: string[]
 	created_at: string
 }

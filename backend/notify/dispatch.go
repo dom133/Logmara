@@ -116,13 +116,17 @@ func (d *Dispatcher) DispatchAlert(alert model.Alert, payload Payload) {
 
 func (d *Dispatcher) dispatchOne(alertID *int64, alertName string, ch model.NotificationChannel, payload Payload) {
 	status, detail := "sent", ""
+	var inAppID *int64
 
 	if ch.Type == model.ChannelTypeInApp {
 		id, createdAt, err := db.CreateInAppNotification(d.DB, alertID, payload.Title, payload.Message, payload.Severity)
 		if err != nil {
 			status, detail = "failed", err.Error()
-		} else if d.OnInApp != nil {
-			d.OnInApp(model.InAppNotification{ID: id, AlertID: alertID, Title: payload.Title, Message: payload.Message, Severity: payload.Severity, CreatedAt: createdAt})
+		} else {
+			inAppID = &id
+			if d.OnInApp != nil {
+				d.OnInApp(model.InAppNotification{ID: id, AlertID: alertID, Title: payload.Title, Message: payload.Message, Severity: payload.Severity, CreatedAt: createdAt})
+			}
 		}
 	} else if ch.Type == model.ChannelTypePush {
 		status, detail = sendPushChannel(d.DB, payload)
@@ -141,6 +145,7 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName string, ch model.Noti
 		AlertID: alertID, AlertName: alertName, ChannelID: &ch.ID, ChannelName: ch.Name, ChannelType: ch.Type,
 		Status: status, Detail: detail,
 		TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions,
+		InAppNotificationID: inAppID,
 	})
 }
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Card, Table, Button, Tag, Space, Modal, Form, Input, InputNumber, Select, Switch, message, Popconfirm, Tabs, Typography, Descriptions, List, Empty } from 'antd'
 import { PlusOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined, EyeOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import {
@@ -9,6 +10,7 @@ import {
   getDevices, DeviceStats, resolveDeviceDisplayName, getParsers, Parser, getParsedFields, ParsedField,
 } from '../services/api'
 import { useAuth } from '../services/auth'
+import { onLiveNotification } from '../services/notificationEvents'
 import { getErrorMessage } from '../utils/error'
 import SeverityTag from '../components/SeverityTag'
 
@@ -36,7 +38,7 @@ const operatorLabels: Record<FieldConditionOperator, string> = {
   regex: 'Regex',
 }
 
-function RulesTab({ canEdit }: { canEdit: boolean }) {
+function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [channels, setChannels] = useState<NotificationChannel[]>([])
   const [devices, setDevices] = useState<DeviceStats[]>([])
@@ -67,6 +69,14 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
   }
 
   useEffect(() => { loadData() }, [])
+
+  // A firing alert updates this rule's last_fired_at - refresh the list
+  // live while this tab is the one actually showing, rather than making the
+  // user switch away and back to see it.
+  useEffect(() => {
+    if (!active) return
+    return onLiveNotification(() => { loadData() })
+  }, [active])
 
   // Refetch the field registry scoped to the selected device(s) whenever
   // that selection changes, so "Field Conditions" only offers fields that
@@ -462,7 +472,7 @@ const historyStatusColor: Record<string, string> = {
   no_channel: 'orange',
 }
 
-function HistoryTab({ isAdmin }: { isAdmin: boolean }) {
+function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmin: boolean; active: boolean; focusInAppId?: number; onFocusConsumed: () => void }) {
   const [entries, setEntries] = useState<NotificationLogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
@@ -474,6 +484,30 @@ function HistoryTab({ isAdmin }: { isAdmin: boolean }) {
   }
 
   useEffect(() => { loadData() }, [])
+
+  // A new notification means a new row in notification_log - refresh the
+  // list live while this tab is the one actually showing.
+  useEffect(() => {
+    if (!active) return
+    return onLiveNotification(() => { loadData() })
+  }, [active])
+
+  // Coming from a bell notification click (see NotificationBell's
+  // goToHistoryDetail): open the same entry's Details view automatically,
+  // as if the user had clicked "Details" on it themselves. Only the most
+  // recent 100 history rows are fetched, and test notifications are never
+  // recorded in history at all - either way, tell the user instead of
+  // silently leaving the tab with nothing selected.
+  useEffect(() => {
+    if (!focusInAppId || loading) return
+    const match = entries.find((e) => e.in_app_notification_id === focusInAppId)
+    if (match) {
+      setViewing(match)
+    } else {
+      message.info('No matching history entry was found for that notification (it may be too old, or a test notification, which is never recorded in history).')
+    }
+    onFocusConsumed()
+  }, [focusInAppId, loading, entries, onFocusConsumed])
 
   const handleClear = async () => {
     setClearing(true)
@@ -601,17 +635,36 @@ export default function AlertsPage() {
   const canEdit = user?.role === 'admin' || user?.role === 'editor'
   const isAdmin = user?.role === 'admin'
 
+  // Deep-linked from a notification bell click (see NotificationBell's
+  // goToHistoryDetail): ?tab=history&notification=<in_app_notification_id>
+  // opens straight to History with that entry's Details already showing.
+  const [searchParams] = useSearchParams()
+  const initialTab = searchParams.get('tab') === 'history' ? 'history' : 'rules'
+  const initialFocusID = Number(searchParams.get('notification')) || undefined
+  const [activeTab, setActiveTab] = useState(initialTab)
+  const [focusInAppId, setFocusInAppId] = useState<number | undefined>(initialFocusID)
+
   const items = [
-    { key: 'rules', label: 'Alert Rules', children: <RulesTab canEdit={canEdit} /> },
+    { key: 'rules', label: 'Alert Rules', children: <RulesTab canEdit={canEdit} active={activeTab === 'rules'} /> },
     { key: 'channels', label: 'Notification Channels', children: <ChannelsTab canEdit={isAdmin} /> },
-    { key: 'history', label: 'History', children: <HistoryTab isAdmin={isAdmin} /> },
+    {
+      key: 'history', label: 'History',
+      children: (
+        <HistoryTab
+          isAdmin={isAdmin}
+          active={activeTab === 'history'}
+          focusInAppId={focusInAppId}
+          onFocusConsumed={() => setFocusInAppId(undefined)}
+        />
+      ),
+    },
   ]
 
   return (
     <>
       <Title level={3} style={{ marginTop: 0 }}>Alerts &amp; Notifications</Title>
       <Card>
-        <Tabs items={items} />
+        <Tabs items={items} activeKey={activeTab} onChange={setActiveTab} />
       </Card>
     </>
   )

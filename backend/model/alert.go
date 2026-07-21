@@ -110,17 +110,22 @@ type TriggerLogSnapshot struct {
 }
 
 type NotificationLogEntry struct {
-	ID                int64               `json:"id"`
-	AlertID           *int64              `json:"alert_id,omitempty"`
-	AlertName         string              `json:"alert_name"`
-	ChannelID         *int64              `json:"channel_id,omitempty"`
-	ChannelName       string              `json:"channel_name"`
-	ChannelType       string              `json:"channel_type"`
-	Status            string              `json:"status"`
-	Detail            string              `json:"detail,omitempty"`
-	TriggerLog        *TriggerLogSnapshot `json:"trigger_log,omitempty"`
-	MatchedConditions []string            `json:"matched_conditions,omitempty"`
-	CreatedAt         time.Time           `json:"created_at"`
+	ID          int64               `json:"id"`
+	AlertID     *int64              `json:"alert_id,omitempty"`
+	AlertName   string              `json:"alert_name"`
+	ChannelID   *int64              `json:"channel_id,omitempty"`
+	ChannelName string              `json:"channel_name"`
+	ChannelType string              `json:"channel_type"`
+	Status      string              `json:"status"`
+	Detail      string              `json:"detail,omitempty"`
+	TriggerLog  *TriggerLogSnapshot `json:"trigger_log,omitempty"`
+	// InAppNotificationID links this row back to the in_app_notifications
+	// row shown in the bell dropdown (set only when ChannelType is
+	// "in_app"), so clicking a bell notification can jump straight to and
+	// open this same entry in the alert History tab.
+	InAppNotificationID *int64    `json:"in_app_notification_id,omitempty"`
+	MatchedConditions   []string  `json:"matched_conditions,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 type InAppNotification struct {

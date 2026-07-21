@@ -5,6 +5,7 @@ import {
   getNotifications, markNotificationsRead, streamNotifications, InAppNotification,
   getVapidPublicKey, subscribePush, unsubscribePush,
 } from '../services/api'
+import { emitLiveNotification } from '../services/notificationEvents'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { getErrorMessage } from '../utils/error'
 
@@ -69,6 +70,7 @@ export function NotificationBell() {
         stopStream = streamNotifications((n) => {
           setItems(prev => [n, ...prev].slice(0, 50))
           setUnreadCount(prev => prev + 1)
+          emitLiveNotification(n)
         })
       }
     }).catch(() => { /* ignore */ })
@@ -158,13 +160,26 @@ export function NotificationBell() {
     setUnreadCount(0)
   }
 
+  // Jumps to the alert History tab and opens the same "Details" view this
+  // notification's dispatch produced there - see HistoryTab's focus-by-id
+  // handling in Alerts.tsx, matched via in_app_notification_id. A full
+  // navigation (not react-router) matches how other cross-page links in
+  // this app already work (e.g. device name -> filtered Logs view).
+  const goToHistoryDetail = (notificationId: number) => {
+    setOpen(false)
+    window.location.href = `/alerts?tab=history&notification=${notificationId}`
+  }
+
   const panelBody = items.length === 0 ? (
     <Empty description="No notifications" style={{ padding: 24 }} />
   ) : (
     <List
       dataSource={items}
       renderItem={(n) => (
-        <List.Item style={{ padding: '10px 16px', display: 'block' }}>
+        <List.Item
+          style={{ padding: '10px 16px', display: 'block', cursor: 'pointer' }}
+          onClick={() => goToHistoryDetail(n.id)}
+        >
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
             <Typography.Text strong style={{ fontSize: 13 }}>{n.title}</Typography.Text>
             <Tag color={severityColor[n.severity] || 'default'} style={{ marginRight: 0 }}>{n.severity}</Tag>
