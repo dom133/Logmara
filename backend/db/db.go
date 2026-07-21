@@ -719,16 +719,23 @@ var envBoolSettings = map[string]string{
 	"HTTPS_REDIRECT": "https_redirect",
 }
 
-// ApplyEnvSettingOverrides applies HTTPS settings from environment variables,
-// if present, and persists them to app_settings so they show up (and stay
-// visible) in the admin Settings UI. A var is only applied when explicitly
-// set to a non-empty value; otherwise the stored/admin-configured value is
-// left untouched, so restarting a container without the var doesn't silently
-// revert a change made through the UI.
+// ApplyEnvSettingOverrides seeds HTTPS settings from environment variables
+// the first time each is ever present, and persists them to app_settings so
+// they show up (and stay visible) in the admin Settings UI. A var is only
+// applied once per key, ever - tracked via a "<key>_env_applied" marker -
+// not on every startup: seedSettings has already given these rows a default
+// value by the time this runs, so re-applying the env var unconditionally
+// on every restart would silently stomp any change an admin made through
+// the UI since. A var is only applied at all when explicitly set to a
+// non-empty value.
 func ApplyEnvSettingOverrides(db *sql.DB) {
 	for envVar, key := range envBoolSettings {
 		raw := strings.TrimSpace(os.Getenv(envVar))
 		if raw == "" {
+			continue
+		}
+		appliedMarker := key + "_env_applied"
+		if GetSetting(db, appliedMarker, "false") == "true" {
 			continue
 		}
 		enabled, err := strconv.ParseBool(raw)
@@ -741,7 +748,10 @@ func ApplyEnvSettingOverrides(db *sql.DB) {
 			slog.Warn("failed to apply env setting override", "env", envVar, "key", key, "error", err)
 			continue
 		}
-		slog.Info("applied setting from environment variable", "env", envVar, "key", key, "value", value)
+		if err := UpdateSetting(db, appliedMarker, "true"); err != nil {
+			slog.Warn("failed to record env setting override as applied", "env", envVar, "key", key, "error", err)
+		}
+		slog.Info("applied setting from environment variable (first run only)", "env", envVar, "key", key, "value", value)
 	}
 
 	if GetSetting(db, "https_enabled", "false") == "true" {
