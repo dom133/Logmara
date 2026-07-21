@@ -122,6 +122,8 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName string, ch model.Noti
 		} else if d.OnInApp != nil {
 			d.OnInApp(model.InAppNotification{ID: id, AlertID: alertID, Title: payload.Title, Message: payload.Message, Severity: payload.Severity})
 		}
+	} else if ch.Type == model.ChannelTypePush {
+		status, detail = sendPushChannel(d.DB, payload)
 	} else {
 		secret, err := db.DecryptChannelSecret(d.DB, ch.ID)
 		if err != nil {
@@ -137,6 +139,23 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName string, ch model.Noti
 		AlertID: alertID, AlertName: alertName, ChannelID: &ch.ID, ChannelName: ch.Name, ChannelType: ch.Type,
 		Status: status, Detail: detail,
 	})
+}
+
+// sendPushChannel fans a payload out to every subscribed browser and
+// collapses the per-device results into the single status/detail pair the
+// notification_log records for this channel.
+func sendPushChannel(database *sql.DB, payload Payload) (status, detail string) {
+	delivered, failed, err := dispatchPush(database, payload)
+	if err != nil {
+		return "failed", err.Error()
+	}
+	if delivered == 0 {
+		return "failed", fmt.Sprintf("all %d push deliveries failed", failed)
+	}
+	if failed > 0 {
+		return "sent", fmt.Sprintf("delivered to %d device(s), %d failed", delivered, failed)
+	}
+	return "sent", fmt.Sprintf("delivered to %d device(s)", delivered)
 }
 
 // TestChannel sends a fixed test payload directly to a single channel,
@@ -159,6 +178,17 @@ func TestChannel(database *sql.DB, channel model.NotificationChannel, onInApp fu
 		}
 		if onInApp != nil {
 			onInApp(model.InAppNotification{ID: id, Title: payload.Title, Message: payload.Message, Severity: payload.Severity})
+		}
+		return nil
+	}
+
+	if channel.Type == model.ChannelTypePush {
+		delivered, failed, err := dispatchPush(database, payload)
+		if err != nil {
+			return err
+		}
+		if delivered == 0 {
+			return fmt.Errorf("all %d push deliveries failed", failed)
 		}
 		return nil
 	}

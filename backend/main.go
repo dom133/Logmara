@@ -291,6 +291,10 @@ func main() {
 		authGroup.POST("/notifications/mark-read", handler.MarkNotificationsRead(database))
 		authGroup.GET("/notifications/stream", notificationsGate, handler.StreamNotifications(notifHub))
 
+		authGroup.GET("/push/vapid-public-key", notificationsGate, handler.GetVAPIDPublicKey(database))
+		authGroup.POST("/push/subscribe", notificationsGate, handler.SubscribePush(database))
+		authGroup.POST("/push/unsubscribe", notificationsGate, handler.UnsubscribePush(database))
+
 		authGroup.GET("/parsers", handler.ListParsers(engine))
 		authGroup.GET("/parsers/fields", handler.ListParsedFields(engine))
 		authGroup.GET("/dashboards", handler.ListDashboards(database))

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Card, Table, Button, Tag, Space, Modal, Form, Input, InputNumber, Select, Switch, message, Popconfirm, Tabs, Typography } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined } from '@ant-design/icons'
+import { Card, Table, Button, Tag, Space, Modal, Form, Input, InputNumber, Select, Switch, message, Popconfirm, Tabs, Typography, Descriptions } from 'antd'
+import { PlusOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined, EyeOutlined } from '@ant-design/icons'
 import {
   getAlerts, createAlert, updateAlert, deleteAlert, Alert, AlertRequest, AlertRuleType, FieldConditionOperator,
   getNotificationChannels, createNotificationChannel, updateNotificationChannel, deleteNotificationChannel, testNotificationChannel,
@@ -25,6 +25,7 @@ const channelTypeLabels: Record<NotificationChannelType, string> = {
   slack: 'Slack',
   teams: 'Microsoft Teams',
   in_app: 'In-app',
+  push: 'Push (browser)',
 }
 
 const operatorLabels: Record<FieldConditionOperator, string> = {
@@ -421,6 +422,9 @@ function ChannelsTab({ canEdit }: { canEdit: boolean }) {
           {channelType === 'in_app' && (
             <Text type="secondary">Delivers to the notification bell for every signed-in user - no further configuration needed.</Text>
           )}
+          {channelType === 'push' && (
+            <Text type="secondary">Delivers a browser push notification to every device subscribed via the bell menu's "Enable push notifications" toggle - no further configuration needed.</Text>
+          )}
 
           <Form.Item name="enabled" label="Enabled" valuePropName="checked">
             <Switch />
@@ -441,6 +445,7 @@ function HistoryTab({ isAdmin }: { isAdmin: boolean }) {
   const [entries, setEntries] = useState<NotificationLogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
+  const [viewing, setViewing] = useState<NotificationLogEntry | null>(null)
 
   const loadData = () => {
     setLoading(true)
@@ -468,6 +473,12 @@ function HistoryTab({ isAdmin }: { isAdmin: boolean }) {
     { title: 'Channel', dataIndex: 'channel_name', key: 'channel_name', render: (v: string, r: NotificationLogEntry) => `${v} (${r.channel_type})` },
     { title: 'Status', dataIndex: 'status', key: 'status', render: (v: string) => <Tag color={historyStatusColor[v] || 'default'}>{v}</Tag> },
     { title: 'Detail', dataIndex: 'detail', key: 'detail', ellipsis: true },
+    {
+      title: 'Actions', key: 'actions',
+      render: (_v: unknown, r: NotificationLogEntry) => (
+        <Button size="small" icon={<EyeOutlined />} onClick={() => setViewing(r)}>Details</Button>
+      ),
+    },
   ]
 
   return (
@@ -479,7 +490,39 @@ function HistoryTab({ isAdmin }: { isAdmin: boolean }) {
           </Popconfirm>
         </div>
       )}
-      <Table dataSource={entries} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
+      <Table
+        dataSource={entries}
+        columns={columns}
+        rowKey="id"
+        loading={loading}
+        size="small"
+        scroll={{ x: 'max-content' }}
+        onRow={(r) => ({ onClick: () => setViewing(r), style: { cursor: 'pointer' } })}
+      />
+
+      <Modal
+        title="Notification Detail"
+        open={!!viewing}
+        onCancel={() => setViewing(null)}
+        footer={<Button onClick={() => setViewing(null)}>Close</Button>}
+        width={{ sm: '90%', md: 560 }}
+      >
+        {viewing && (
+          <Descriptions column={1} bordered size="small">
+            <Descriptions.Item label="Time">{new Date(viewing.created_at).toLocaleString()}</Descriptions.Item>
+            <Descriptions.Item label="Alert">{viewing.alert_name || '—'}</Descriptions.Item>
+            <Descriptions.Item label="Channel">{viewing.channel_name} ({viewing.channel_type})</Descriptions.Item>
+            <Descriptions.Item label="Status">
+              <Tag color={historyStatusColor[viewing.status] || 'default'}>{viewing.status}</Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="Detail">
+              <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable={!!viewing.detail}>
+                {viewing.detail || '—'}
+              </Typography.Paragraph>
+            </Descriptions.Item>
+          </Descriptions>
+        )}
+      </Modal>
     </>
   )
 }

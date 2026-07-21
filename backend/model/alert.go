@@ -19,6 +19,7 @@ const (
 	ChannelTypeSlack   = "slack"
 	ChannelTypeTeams   = "teams"
 	ChannelTypeInApp   = "in_app"
+	ChannelTypePush    = "push"
 )
 
 // Field condition operators, evaluated against a log entry's parsed_fields.
@@ -88,7 +89,7 @@ type NotificationChannel struct {
 
 type NotificationChannelRequest struct {
 	Name    string          `json:"name" binding:"required,max=255"`
-	Type    string          `json:"type" binding:"required,oneof=email webhook slack teams in_app"`
+	Type    string          `json:"type" binding:"required,oneof=email webhook slack teams in_app push"`
 	Config  json.RawMessage `json:"config"`
 	Secret  string          `json:"secret"`
 	Enabled *bool           `json:"enabled"`

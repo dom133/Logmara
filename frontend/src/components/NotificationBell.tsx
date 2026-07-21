@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { Badge, Button, Card, Drawer, Dropdown, Empty, List, Tag, Typography } from 'antd'
+import { Badge, Button, Card, Drawer, Dropdown, Empty, List, Space, Switch, Tag, Typography, message } from 'antd'
 import { BellOutlined } from '@ant-design/icons'
-import { getNotifications, markNotificationsRead, streamNotifications, InAppNotification } from '../services/api'
+import {
+  getNotifications, markNotificationsRead, streamNotifications, InAppNotification,
+  getVapidPublicKey, subscribePush, unsubscribePush,
+} from '../services/api'
 import { useIsMobile } from '../hooks/useIsMobile'
 
 const severityColor: Record<string, string> = {
@@ -17,12 +20,25 @@ function formatTime(iso: string) {
   return d.toLocaleString()
 }
 
+const pushSupported = typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window
+
+function urlBase64ToUint8Array(base64String: string) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const rawData = window.atob(base64)
+  const outputArray = new Uint8Array(rawData.length)
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i)
+  return outputArray
+}
+
 export function NotificationBell() {
   const isMobile = useIsMobile()
   const [enabled, setEnabled] = useState(false)
   const [items, setItems] = useState<InAppNotification[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
   const [open, setOpen] = useState(false)
+  const [pushSubscribed, setPushSubscribed] = useState(false)
+  const [pushBusy, setPushBusy] = useState(false)
   const lastIdRef = useRef(0)
 
   useEffect(() => {
@@ -50,7 +66,51 @@ export function NotificationBell() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!enabled || !pushSupported) return
+    let cancelled = false
+    navigator.serviceWorker.ready
+      .then(reg => reg.pushManager.getSubscription())
+      .then(sub => { if (!cancelled) setPushSubscribed(!!sub) })
+      .catch(() => { /* ignore */ })
+    return () => { cancelled = true }
+  }, [enabled])
+
   if (!enabled) return null
+
+  const handleTogglePush = async (checked: boolean) => {
+    setPushBusy(true)
+    try {
+      const reg = await navigator.serviceWorker.ready
+      if (checked) {
+        const permission = await Notification.requestPermission()
+        if (permission !== 'granted') {
+          message.warning('Notification permission was not granted')
+          return
+        }
+        const publicKey = await getVapidPublicKey()
+        const sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey),
+        })
+        await subscribePush(sub.toJSON())
+        setPushSubscribed(true)
+        message.success('Push notifications enabled')
+      } else {
+        const sub = await reg.pushManager.getSubscription()
+        if (sub) {
+          await unsubscribePush(sub.endpoint)
+          await sub.unsubscribe()
+        }
+        setPushSubscribed(false)
+        message.success('Push notifications disabled')
+      }
+    } catch {
+      message.error('Failed to update push notification setting')
+    } finally {
+      setPushBusy(false)
+    }
+  }
 
   const handleOpen = () => {
     setOpen(true)
@@ -90,6 +150,20 @@ export function NotificationBell() {
     <Button type="link" size="small" style={{ padding: 0 }} onClick={handleClearAll}>Clear all</Button>
   )
 
+  const pushRow = pushSupported && (
+    <div style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(128,128,128,0.2)' }}>
+      <Typography.Text style={{ fontSize: 12 }}>Push notifications</Typography.Text>
+      <Switch size="small" checked={pushSubscribed} loading={pushBusy} onChange={handleTogglePush} />
+    </div>
+  )
+
+  const panelContent = (
+    <>
+      {pushRow}
+      {panelBody}
+    </>
+  )
+
   const bellButton = (
     <Button
       type="text"
@@ -115,7 +189,7 @@ export function NotificationBell() {
           extra={clearButton}
           styles={{ body: { padding: 0, overflowY: 'auto' } }}
         >
-          {panelBody}
+          {panelContent}
         </Drawer>
       </>
     )
@@ -135,7 +209,7 @@ export function NotificationBell() {
           style={{ width: 360 }}
           styles={{ body: { padding: 0, maxHeight: 380, overflowY: 'auto' } }}
         >
-          {panelBody}
+          {panelContent}
         </Card>
       )}
     >

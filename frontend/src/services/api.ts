@@ -604,7 +604,7 @@ export async function uploadSSLCerts(certFile: File, keyFile: File) {
 // --- Alerts & Notifications ---
 
 export type AlertRuleType = 'log_threshold' | 'device_silence' | 'config_change'
-export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app'
+export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app' | 'push'
 export type FieldConditionOperator = 'equals' | 'contains' | 'not_equals' | 'regex'
 
 export interface AlertFieldCondition {
@@ -755,6 +755,23 @@ export async function getNotifications() {
 
 export async function markNotificationsRead(lastReadId: number) {
 	const res = await api.post('/notifications/mark-read', { last_read_id: lastReadId })
+	return res.data
+}
+
+// --- Web Push ---
+
+export async function getVapidPublicKey() {
+	const res = await api.get('/push/vapid-public-key')
+	return (res.data as { public_key: string }).public_key
+}
+
+export async function subscribePush(subscription: PushSubscriptionJSON) {
+	const res = await api.post('/push/subscribe', subscription)
+	return res.data
+}
+
+export async function unsubscribePush(endpoint: string) {
+	const res = await api.post('/push/unsubscribe', { endpoint })
 	return res.data
 }
 
