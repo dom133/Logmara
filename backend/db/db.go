@@ -30,7 +30,7 @@ func IsAppStarting() bool {
 }
 
 func Connect(dsn string) (*sql.DB, error) {
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("postgres-instrumented", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open db: %w", err)
 	}
@@ -401,6 +401,16 @@ END $$`,
 			SELECT NOW() as refreshed_at, severity, COUNT(*) as cnt FROM syslog_logs GROUP BY severity
 		`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_severity_key ON mv_dashboard_severity (severity)`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_top_errors AS
+			SELECT NOW() as refreshed_at, LEFT(message, 100) as message,
+				COALESCE(fromhost_ip, '') as fromhost_ip, MIN(hostname) as hostname, COUNT(*) as cnt
+			FROM syslog_logs
+			WHERE severity IN ('err', 'crit', 'alert', 'emerg') AND timestamp >= NOW() - INTERVAL '7 days'
+			GROUP BY LEFT(message, 100), fromhost_ip
+			ORDER BY cnt DESC
+			LIMIT 10
+		`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_top_errors_key ON mv_dashboard_top_errors (message, fromhost_ip)`,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_app_name_trgm ON syslog_logs USING GIN (app_name gin_trgm_ops)`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_device_stats AS
@@ -1010,8 +1020,9 @@ func RefreshMaterializedViews(db *sql.DB) {
 	_, err1 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_summary")
 	_, err2 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_severity")
 	_, err3 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_device_stats")
-	if err1 != nil || err2 != nil || err3 != nil {
-		slog.Error("materialized view refresh failed", "err1", err1, "err2", err2, "err3", err3)
+	_, err4 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_top_errors")
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		slog.Error("materialized view refresh failed", "err1", err1, "err2", err2, "err3", err3, "err4", err4)
 	}
 	slog.Info("materialized views refreshed")
 }

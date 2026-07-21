@@ -113,6 +113,12 @@ func main() {
 		slog.Info("redis shared state enabled")
 	}
 
+	// Feed every slow query recorded at the driver level (db.instrumentedConn)
+	// into the same admin slow-query log that handler.timedQuery writes to,
+	// so /admin/slow-queries covers all database access, not just the
+	// call sites explicitly wrapped in timedQuery.
+	db.SetSlowQueryHook(handler.RecordSlowQuery)
+
 	dsn := os.Getenv("DATABASE_URL")
 
 	var database *sql.DB
@@ -163,9 +169,14 @@ func main() {
 	ctx, maintCancel := context.WithCancel(context.Background())
 	stopVacuum, stopMV, stopTokenCleanup := db.StartMaintenance(ctx, database)
 
-	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive.
-	// RefreshMV itself skips while migration is in progress, so it's safe to
-	// start this ticker immediately.
+	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive
+	// while someone is actually logged in to look at them. With nobody logged
+	// in, this tick is a single cheap EXISTS check against refresh_tokens
+	// instead of a full REFRESH MATERIALIZED VIEW CONCURRENTLY pass - the
+	// 30-minute scheduler in db.StartMaintenance keeps running regardless, so
+	// the views never go stale for more than that. RefreshMV itself skips
+	// while migration is in progress, so it's safe to start this ticker
+	// immediately.
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -176,7 +187,9 @@ func main() {
 				slog.Info("fast dashboard MV refresh stopped")
 				return
 			case <-ticker.C:
-				db.RefreshMV(database)
+				if db.HasActiveSession(database) {
+					db.RefreshMV(database)
+				}
 			}
 		}
 	}()

@@ -155,6 +155,21 @@ func activePartitionNames(db *sql.DB) []string {
 	return names
 }
 
+// HasActiveSession reports whether any user currently holds a usable
+// session - a refresh token that hasn't been consumed (by logout or by
+// being rotated on refresh) and hasn't expired. Used to gate the fast (30s)
+// dashboard MV refresh loop: no point keeping stats near-real-time when
+// nobody is logged in to look at them.
+func HasActiveSession(db *sql.DB) bool {
+	var active bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM refresh_tokens WHERE used = false AND expires_at > NOW())").Scan(&active)
+	if err != nil {
+		slog.Error("active session check failed", "err", err)
+		return false
+	}
+	return active
+}
+
 func RefreshMV(db *sql.DB) {
 	// Migrate() runs in its own goroutine and can take a while on a large
 	// table (index builds, mv_device_stats aggregation) - the periodic
@@ -166,7 +181,7 @@ func RefreshMV(db *sql.DB) {
 		return
 	}
 	slog.Info("refreshing materialized views")
-	for _, mv := range []string{"mv_dashboard_summary", "mv_dashboard_severity", "mv_timeline_hourly", "mv_device_stats"} {
+	for _, mv := range []string{"mv_dashboard_summary", "mv_dashboard_severity", "mv_timeline_hourly", "mv_device_stats", "mv_dashboard_top_errors"} {
 		_, err := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY " + mv)
 		if err != nil {
 			slog.Error("mv refresh failed", "view", mv, "err", err)
