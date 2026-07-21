@@ -169,6 +169,31 @@ func main() {
 	ctx, maintCancel := context.WithCancel(context.Background())
 	stopVacuum, stopMV, stopTokenCleanup := db.StartMaintenance(ctx, database)
 
+	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive
+	// while someone is actually logged in to look at them. With nobody logged
+	// in, this tick is a single cheap EXISTS check against refresh_tokens
+	// instead of a full REFRESH MATERIALIZED VIEW CONCURRENTLY pass - the
+	// 30-minute scheduler in db.StartMaintenance keeps running regardless, so
+	// the views never go stale for more than that. RefreshMV itself skips
+	// while migration is in progress, so it's safe to start this ticker
+	// immediately.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		slog.Info("fast dashboard MV refresh started", "interval_seconds", 30)
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("fast dashboard MV refresh stopped")
+				return
+			case <-ticker.C:
+				if db.HasActiveSession(database) {
+					db.RefreshMV(database)
+				}
+			}
+		}
+	}()
+
 	// auth.Init/parser.NewEngine/the tailer all query tables that only exist
 	// once db.Migrate has run (users, parsers, syslog_logs) - on a brand new
 	// database these queries can otherwise race ahead of table creation and

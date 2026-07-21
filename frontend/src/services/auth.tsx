@@ -68,7 +68,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
-      await api.post('/auth/logout')
+      const refreshToken = localStorage.getItem('refresh_token')
+      await api.post('/auth/logout', { refresh_token: refreshToken })
     } catch (e) {
       console.error('Error during logout:', e)
     }

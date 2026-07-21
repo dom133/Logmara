@@ -57,9 +57,7 @@ func startMVScheduler(ctx context.Context, db *sql.DB, interval time.Duration) f
 				close(done)
 				return
 			case <-ticker.C:
-				if HasActiveSession(db) {
-					RefreshMV(db)
-				}
+				RefreshMV(db)
 			}
 		}
 	}()
@@ -159,9 +157,9 @@ func activePartitionNames(db *sql.DB) []string {
 
 // HasActiveSession reports whether any user currently holds a usable
 // session - a refresh token that hasn't been consumed (by logout or by
-// being rotated on refresh) and hasn't expired. Used to gate the periodic
-// MV refresh scheduler: no point refreshing dashboard stats when nobody is
-// logged in to look at them.
+// being rotated on refresh) and hasn't expired. Used to gate the fast (30s)
+// dashboard MV refresh loop: no point keeping stats near-real-time when
+// nobody is logged in to look at them.
 func HasActiveSession(db *sql.DB) bool {
 	var active bool
 	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM refresh_tokens WHERE used = false AND expires_at > NOW())").Scan(&active)

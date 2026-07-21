@@ -118,9 +118,9 @@ func Login(database *sql.DB) gin.HandlerFunc {
 		audit.LogAudit(database, user.ID, user.Username, "login_success", c.ClientIP(), "")
 
 		// Refresh dashboard MVs right away instead of waiting for the next
-		// scheduled tick, so stats aren't stale the moment someone logs back
-		// in after a stretch with nobody logged in (the periodic scheduler
-		// in db.StartMaintenance skips ticks while HasActiveSession is false).
+		// 30s tick, so stats aren't stale the moment someone logs back in
+		// after a stretch with nobody logged in (see main.go's fast MV
+		// refresh loop, which skips ticks while HasActiveSession is false).
 		go db.RefreshMV(database)
 
 		c.JSON(http.StatusOK, LoginResponse{
