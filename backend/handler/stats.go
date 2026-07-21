@@ -179,9 +179,9 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 
 	// Unfiltered dashboard load: served entirely from materialized views, no
 	// live query against syslog_logs at all. All four MVs are kept fresh by
-	// the background scheduler (main.go's 30s "fast dashboard MV refresh"
-	// loop and db.StartMaintenance's periodic scheduler), so the request
-	// path never blocks on a REFRESH or a multi-second aggregate scan.
+	// db.StartMaintenance's periodic scheduler (only while someone is logged
+	// in), so the request path never blocks on a REFRESH or a multi-second
+	// aggregate scan.
 	if useMV {
 		err := timedQuery("dashboard_stats_scalar_mv", func() error {
 			var refreshedAt pq.NullTime

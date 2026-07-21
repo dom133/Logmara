@@ -53,11 +53,17 @@ self.addEventListener('push', (event) => {
     }
   }
 
+  // Each alert is its own event, not an update to the previous one - a
+  // shared/fixed tag would make showNotification() silently replace the
+  // still-visible prior notification instead of popping a new banner
+  // (browsers treat same-tag calls as an in-place update unless renotify
+  // is set), which looked like push "stopped working" after the first one.
   const options = {
     body: payload.body || payload.message || '',
     icon: '/icons/icon-192.png',
     badge: '/icons/icon-192.png',
-    tag: payload.tag || 'syslog-gui-alert',
+    tag: payload.tag || `syslog-gui-alert-${Date.now()}`,
+    renotify: !!payload.tag,
     data: { url: payload.url || payload.link || '/' },
   }
 
