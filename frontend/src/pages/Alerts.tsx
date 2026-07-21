@@ -20,6 +20,7 @@ const ruleTypeLabels: Record<AlertRuleType, string> = {
   log_threshold: 'Log threshold',
   device_silence: 'Device silence',
   config_change: 'Config change',
+  relay_cert_expiring: 'Syslog relay certificate expiring',
 }
 
 const channelTypeLabels: Record<NotificationChannelType, string> = {
@@ -170,6 +171,9 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
         if (r.rule_type === 'device_silence') {
           return `silent for ${r.threshold}m on ${scope}`
         }
+        if (r.rule_type === 'relay_cert_expiring') {
+          return `warn ${r.threshold || 30} day(s) before a relay certificate expires`
+        }
         return r.audit_action_filter ? `action = ${r.audit_action_filter}` : 'any config change'
       },
     },
@@ -292,6 +296,12 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
           {ruleType === 'config_change' && (
             <Form.Item name="audit_action_filter" label="Action Filter" tooltip="e.g. settings_updated, user_created - leave empty to match any admin action">
               <Input placeholder="settings_updated" />
+            </Form.Item>
+          )}
+
+          {ruleType === 'relay_cert_expiring' && (
+            <Form.Item name="threshold" label="Warn Before Expiry (days)" tooltip="Fires once per relay certificate that's within this many days of its own expiry (checked hourly), subject to the cooldown below" rules={[{ required: true }]}>
+              <InputNumber min={1} style={{ width: '100%' }} />
             </Form.Item>
           )}
 

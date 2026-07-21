@@ -3,8 +3,9 @@ import { Card, Table, Button, Modal, Form, Input, Space, Tag, message, Tabs, Pop
 import { PlusOutlined, DeleteOutlined, SafetyCertificateOutlined, DownloadOutlined } from '@ant-design/icons'
 import {
   getRelayWhitelist, addRelayWhitelistEntry, deleteRelayWhitelistEntry,
-  getRelayCertificates, generateRelayCertificate, revokeRelayCertificate,
-  RelayWhitelistEntry, RelayCertificate,
+  getRelayCertificates, generateRelayCertificate, generateRelayCertificateForWhitelistEntry,
+  revokeRelayCertificate, regenerateRelayCertificate,
+  RelayWhitelistEntry, RelayCertificate, RELAY_CERT_RENEWAL_WINDOW_DAYS,
 } from '../services/api'
 import { getErrorMessage } from '../utils/error'
 
@@ -22,6 +23,8 @@ export default function SyslogRelay() {
   const [certModalOpen, setCertModalOpen] = useState(false)
   const [certForm] = Form.useForm()
   const [certGenerating, setCertGenerating] = useState(false)
+  const [generatingForWhitelistId, setGeneratingForWhitelistId] = useState<number | null>(null)
+  const [regeneratingCertId, setRegeneratingCertId] = useState<number | null>(null)
 
   const loadWhitelist = async () => {
     setWhitelistLoading(true)
@@ -76,6 +79,24 @@ export default function SyslogRelay() {
     }
   }
 
+  const warnSaveNow = (filename: string) => {
+    Modal.warning({
+      title: 'Save this file now',
+      width: 520,
+      content: (
+        <div>
+          <Paragraph>
+            Downloaded <Text code>{filename}</Text>. It contains the relay's private key (<Text code>client.key</Text>) -
+            the server doesn't store it, and <Text strong>it cannot be downloaded again</Text>.
+          </Paragraph>
+          <Paragraph>
+            If you lose this file, the only option is to revoke this certificate and generate a new one.
+          </Paragraph>
+        </div>
+      ),
+    })
+  }
+
   const handleGenerateCert = async () => {
     const values = await certForm.validateFields()
     setCertGenerating(true)
@@ -83,27 +104,27 @@ export default function SyslogRelay() {
       const { filename } = await generateRelayCertificate(values)
       setCertModalOpen(false)
       certForm.resetFields()
-      Modal.warning({
-        title: 'Save this file now',
-        width: 520,
-        content: (
-          <div>
-            <Paragraph>
-              Downloaded <Text code>{filename}</Text>. It contains the relay's private key (<Text code>client.key</Text>) -
-              the server doesn't store it, and <Text strong>it cannot be downloaded again</Text>.
-            </Paragraph>
-            <Paragraph>
-              If you lose this file, the only option is to revoke this certificate and generate a new one.
-            </Paragraph>
-          </div>
-        ),
-      })
+      warnSaveNow(filename)
       loadCerts()
       loadWhitelist()
     } catch (e: unknown) {
       message.error(getErrorMessage(e, 'Failed to generate certificate'))
     } finally {
       setCertGenerating(false)
+    }
+  }
+
+  const handleGenerateCertForWhitelistEntry = async (entry: RelayWhitelistEntry) => {
+    setGeneratingForWhitelistId(entry.id)
+    try {
+      const { filename } = await generateRelayCertificateForWhitelistEntry(entry.id, entry.label)
+      warnSaveNow(filename)
+      loadCerts()
+      loadWhitelist()
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to generate certificate'))
+    } finally {
+      setGeneratingForWhitelistId(null)
     }
   }
 
@@ -118,14 +139,40 @@ export default function SyslogRelay() {
     }
   }
 
+  const handleRegenerateCert = async (record: RelayCertificate) => {
+    setRegeneratingCertId(record.id)
+    try {
+      const { filename } = await regenerateRelayCertificate(record.id, record.label)
+      warnSaveNow(filename)
+      loadCerts()
+      loadWhitelist()
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to regenerate certificate'))
+    } finally {
+      setRegeneratingCertId(null)
+    }
+  }
+
+  const linkedCert = (record: RelayWhitelistEntry) =>
+    record.relay_cert_id ? certs.find(c => c.id === record.relay_cert_id) : undefined
+
+  const daysUntil = (isoDate: string) => Math.ceil((new Date(isoDate).getTime() - Date.now()) / (24 * 60 * 60 * 1000))
+  const isNearingExpiry = (record: RelayCertificate) => daysUntil(record.expires_at) <= RELAY_CERT_RENEWAL_WINDOW_DAYS
+
   const whitelistColumns = [
     { title: 'IP', dataIndex: 'ip_address', key: 'ip_address' },
     { title: 'Label', dataIndex: 'label', key: 'label' },
     {
-      title: 'Linked Certificate',
-      dataIndex: 'relay_cert_id',
-      key: 'relay_cert_id',
-      render: (id?: number) => id ? <Tag color="blue">#{id}</Tag> : <Text type="secondary">none</Text>,
+      title: 'Access',
+      key: 'access',
+      render: (_v: unknown, record: RelayWhitelistEntry) => {
+        if (!record.relay_cert_id) return <Tag>No certificate</Tag>
+        const cert = linkedCert(record)
+        if (cert?.status === 'revoked') {
+          return <Tag color="red">Blocked (certificate #{record.relay_cert_id} revoked)</Tag>
+        }
+        return <Tag color="green">Active (certificate #{record.relay_cert_id})</Tag>
+      },
     },
     {
       title: 'Added',
@@ -136,11 +183,36 @@ export default function SyslogRelay() {
     {
       title: 'Actions',
       key: 'actions',
-      render: (_v: unknown, record: RelayWhitelistEntry) => (
-        <Popconfirm title="Remove this whitelist entry?" okText="Yes" cancelText="No" onConfirm={() => handleDeleteWhitelist(record.id)}>
-          <Button size="small" danger icon={<DeleteOutlined />} />
-        </Popconfirm>
-      ),
+      render: (_v: unknown, record: RelayWhitelistEntry) => {
+        const cert = linkedCert(record)
+        const canGenerate = !record.relay_cert_id || cert?.status === 'revoked'
+        return (
+          <Space>
+            {canGenerate && (
+              <Popconfirm
+                title="Generate a certificate for this entry?"
+                description="Downloads a one-time bundle (ca.crt, client.crt, client.key, relay.conf) for this IP - save it, it can't be fetched again."
+                okText="Yes, generate"
+                cancelText="No"
+                onConfirm={() => handleGenerateCertForWhitelistEntry(record)}
+              >
+                <Button size="small" icon={<SafetyCertificateOutlined />} loading={generatingForWhitelistId === record.id}>
+                  Generate Certificate
+                </Button>
+              </Popconfirm>
+            )}
+            <Popconfirm
+              title="Remove this whitelist entry?"
+              description="If it has a certificate, that certificate will be revoked too."
+              okText="Yes"
+              cancelText="No"
+              onConfirm={() => handleDeleteWhitelist(record.id)}
+            >
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Popconfirm>
+          </Space>
+        )
+      },
     },
   ]
 
@@ -165,21 +237,64 @@ export default function SyslogRelay() {
       render: (date: string) => new Date(date).toLocaleString(),
     },
     {
+      title: 'Expires',
+      dataIndex: 'expires_at',
+      key: 'expires_at',
+      render: (date: string, record: RelayCertificate) => {
+        const days = daysUntil(date)
+        const formatted = new Date(date).toLocaleDateString()
+        if (record.status !== 'issued') return <Text type="secondary">{formatted}</Text>
+        if (days <= 0) return <Space><Text>{formatted}</Text><Tag color="red">Expired</Tag></Space>
+        if (days <= RELAY_CERT_RENEWAL_WINDOW_DAYS) return <Space><Text>{formatted}</Text><Tag color="orange">Expires in {days}d</Tag></Space>
+        return formatted
+      },
+    },
+    {
       title: 'Actions',
       key: 'actions',
-      render: (_v: unknown, record: RelayCertificate) => (
-        record.status === 'issued' ? (
-          <Popconfirm
-            title="Revoke this certificate?"
-            description="Its linked whitelist entry will be removed - the relay loses access immediately."
-            okText="Yes, revoke"
-            cancelText="No"
-            onConfirm={() => handleRevokeCert(record.id)}
-          >
-            <Button size="small" danger>Revoke</Button>
-          </Popconfirm>
-        ) : <Text type="secondary">-</Text>
-      ),
+      render: (_v: unknown, record: RelayCertificate) => {
+        if (record.status !== 'issued') {
+          return (
+            <Popconfirm
+              title="Regenerate this certificate?"
+              description="Issues a new certificate for the same whitelist entry and downloads it once. This revoked one stays in the list."
+              okText="Yes, regenerate"
+              cancelText="No"
+              onConfirm={() => handleRegenerateCert(record)}
+            >
+              <Button size="small" icon={<SafetyCertificateOutlined />} loading={regeneratingCertId === record.id}>
+                Regenerate
+              </Button>
+            </Popconfirm>
+          )
+        }
+        return (
+          <Space>
+            {isNearingExpiry(record) && (
+              <Popconfirm
+                title="Renew this certificate?"
+                description="Issues a replacement for the same whitelist entry and downloads it once - this certificate is revoked as soon as the new one is linked."
+                okText="Yes, renew"
+                cancelText="No"
+                onConfirm={() => handleRegenerateCert(record)}
+              >
+                <Button size="small" type="primary" icon={<SafetyCertificateOutlined />} loading={regeneratingCertId === record.id}>
+                  Renew
+                </Button>
+              </Popconfirm>
+            )}
+            <Popconfirm
+              title="Revoke this certificate?"
+              description="Blocks this relay immediately - its IP is dropped from the active allow-list. The device stays listed (shown as Blocked) so you can generate a new certificate for it whenever you're ready."
+              okText="Yes, revoke"
+              cancelText="No"
+              onConfirm={() => handleRevokeCert(record.id)}
+            >
+              <Button size="small" danger>Revoke</Button>
+            </Popconfirm>
+          </Space>
+        )
+      },
     },
   ]
 
@@ -205,7 +320,7 @@ export default function SyslogRelay() {
                   style={{ marginBottom: 16 }}
                   type="info"
                   showIcon
-                  message="Only connections from an IP on this list, presenting a certificate signed by this server's CA, are accepted on the mTLS port (6514). Everything else is dropped."
+                  message="Only connections from an IP whose current certificate is Active are accepted on the mTLS port (6514) - everything else, including a Blocked entry's old (revoked) key, is dropped. Removing an entry here revokes its certificate too."
                 />
                 <Table
                   rowKey="id"

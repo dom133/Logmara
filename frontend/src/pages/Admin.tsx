@@ -1,14 +1,16 @@
 import { useState, useEffect } from 'react'
-import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result } from 'antd'
+import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip } from 'antd'
 import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
-import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, User, DeviceStats, SlowQueryRecord } from '../services/api'
+import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, User, DeviceStats, SlowQueryRecord, ContainersHealthResponse } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
+import { useAuth } from '../services/auth'
 
 const { Option } = Select
 
 export default function Admin() {
+  const { refreshUser } = useAuth()
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(false)
   const [modalVisible, setModalVisible] = useState(false)
@@ -41,6 +43,8 @@ export default function Admin() {
   const [certFile, setCertFile] = useState<File | null>(null)
   const [keyFile, setKeyFile] = useState<File | null>(null)
   const [certInfo, setCertInfo] = useState<any>(null)
+  const [health, setHealth] = useState<ContainersHealthResponse | null>(null)
+  const [healthLoading, setHealthLoading] = useState(false)
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_admin',
@@ -165,6 +169,18 @@ await testLDAPConnection({
     }
   }
 
+  const loadHealth = async () => {
+    setHealthLoading(true)
+    try {
+      const data = await getContainersHealth()
+      setHealth(data)
+    } catch {
+      message.error('Failed to load health status')
+    } finally {
+      setHealthLoading(false)
+    }
+  }
+
   const handleClearSlowQueries = async () => {
     try {
       await clearSlowQueries()
@@ -202,6 +218,7 @@ await testLDAPConnection({
     loadSettings()
     loadDevices()
     loadSlowQueries()
+    loadHealth()
   }, [])
 
 const handleCreate = async () => {
@@ -278,6 +295,10 @@ const handleSaveSettings = async () => {
         message.success('Settings saved')
       }
       loadSettings()
+      // notifications_enabled/relay_ingestion_enabled control which items
+      // show in the sidebar (see App.tsx's navItems) - re-fetch /auth/me so
+      // that updates immediately instead of only after the next page load.
+      refreshUser()
     } catch (e: unknown) {
       const errMsg = getErrorMessage(e, 'Failed to save settings')
       message.error(errMsg)
@@ -883,6 +904,155 @@ const handleCleanup = async () => {
               </Card>
             ),
           },
+          {
+            key: 'health',
+            label: 'Health',
+            children: (
+              <div>
+                <Card
+                  title="Container Health"
+                  style={{ marginBottom: 16 }}
+                  extra={
+                    <Button icon={<ReloadOutlined />} loading={healthLoading} onClick={loadHealth}>
+                      Refresh
+                    </Button>
+                  }
+                >
+                  {health?.message && (
+                    <Alert
+                      type={health.docker_available ? 'warning' : 'info'}
+                      showIcon
+                      message={health.message}
+                      style={{ marginBottom: 16 }}
+                    />
+                  )}
+                  {health && !health.docker_available ? (
+                    <Result
+                      status="info"
+                      title="Docker health monitoring not configured"
+                      subTitle='Deploy the "docker-proxy" sidecar alongside the API (see docker-compose.yml / docker-stack.app.yml) to see container status here.'
+                    />
+                  ) : health?.services ? (
+                    <Table
+                      rowKey="name"
+                      loading={healthLoading}
+                      dataSource={health.services}
+                      pagination={false}
+                      tableLayout="fixed"
+                      scroll={{ x: 'max-content' }}
+                      columns={[
+                        { title: 'Service', dataIndex: 'name', key: 'name' },
+                        { title: 'Mode', dataIndex: 'mode', key: 'mode', width: 110 },
+                        { title: 'Image', dataIndex: 'image', key: 'image', ellipsis: true },
+                        {
+                          title: 'Replicas',
+                          key: 'replicas',
+                          width: 140,
+                          render: (_: unknown, s) => (
+                            <Tag color={s.replicas_running >= s.replicas_desired && s.replicas_desired > 0 ? 'green' : 'orange'}>
+                              {s.replicas_running} / {s.replicas_desired}
+                            </Tag>
+                          ),
+                        },
+                      ]}
+                      expandable={{
+                        rowExpandable: (s) => s.tasks.length > 0,
+                        expandedRowRender: (s) => (
+                          <Table
+                            rowKey={(t, i) => `${s.name}-${i}`}
+                            dataSource={s.tasks}
+                            pagination={false}
+                            size="small"
+                            columns={[
+                              { title: 'Node', dataIndex: 'node', key: 'node' },
+                              {
+                                title: 'State',
+                                dataIndex: 'state',
+                                key: 'state',
+                                render: (state: string) => <Tag color={containerStateColor(state)}>{state}</Tag>,
+                              },
+                              { title: 'Message', dataIndex: 'status', key: 'status', ellipsis: true },
+                            ]}
+                          />
+                        ),
+                      }}
+                    />
+                  ) : (
+                    <Table
+                      rowKey="name"
+                      loading={healthLoading}
+                      dataSource={health?.containers || []}
+                      pagination={false}
+                      tableLayout="fixed"
+                      scroll={{ x: 'max-content' }}
+                      columns={[
+                        { title: 'Container', dataIndex: 'name', key: 'name' },
+                        { title: 'Image', dataIndex: 'image', key: 'image', ellipsis: true },
+                        {
+                          title: 'State',
+                          dataIndex: 'state',
+                          key: 'state',
+                          width: 120,
+                          render: (state: string) => <Tag color={containerStateColor(state)}>{state}</Tag>,
+                        },
+                        {
+                          title: 'Health',
+                          dataIndex: 'health',
+                          key: 'health',
+                          width: 140,
+                          render: (h: string) => h ? <Tag color={containerHealthColor(h)}>{h}</Tag> : <span style={{ color: '#999' }}>-</span>,
+                        },
+                        { title: 'Status', dataIndex: 'status', key: 'status', ellipsis: true },
+                      ]}
+                    />
+                  )}
+                </Card>
+
+                <Card
+                  title="Syslog Relay Liveness"
+                  extra={
+                    <Tooltip title="The relay host sits in a separate, untrusted client VLAN with no inbound access and no shared Docker network - real container status can't be checked. This instead shows whether logs are still arriving from its whitelisted IP and whether its certificate is still valid.">
+                      <span style={{ color: '#999', cursor: 'help' }}>Why not container status?</span>
+                    </Tooltip>
+                  }
+                >
+                  <Table
+                    rowKey="ip_address"
+                    loading={healthLoading}
+                    dataSource={health?.relays || []}
+                    pagination={false}
+                    tableLayout="fixed"
+                    scroll={{ x: 'max-content' }}
+                    locale={{ emptyText: 'No relays configured - see Admin > Syslog Relay' }}
+                    columns={[
+                      { title: 'Label', dataIndex: 'label', key: 'label' },
+                      { title: 'IP Address', dataIndex: 'ip_address', key: 'ip_address', width: 160 },
+                      {
+                        title: 'Certificate',
+                        dataIndex: 'cert_status',
+                        key: 'cert_status',
+                        width: 120,
+                        render: (s: string) => <Tag color={s === 'issued' ? 'green' : s === 'revoked' ? 'red' : 'default'}>{s}</Tag>,
+                      },
+                      {
+                        title: 'Last Seen',
+                        key: 'last_seen',
+                        width: 200,
+                        render: (_: unknown, r) => r.last_seen ? new Date(r.last_seen).toLocaleString() : 'never',
+                      },
+                      {
+                        title: 'Status',
+                        dataIndex: 'status',
+                        key: 'status',
+                        width: 140,
+                        render: (s: string) => <Tag color={relayStatusColor(s)}>{relayStatusLabel(s)}</Tag>,
+                      },
+                    ]}
+                  />
+                </Card>
+              </div>
+            ),
+          },
         ]}
       />
 
@@ -973,4 +1143,39 @@ const handleCleanup = async () => {
       </Modal>
     </div>
   )
+}
+
+function containerStateColor(state: string): string {
+  switch (state) {
+    case 'running': return 'green'
+    case 'restarting': return 'orange'
+    case 'exited':
+    case 'dead': return 'red'
+    default: return 'default'
+  }
+}
+
+function containerHealthColor(health: string): string {
+  if (health === 'healthy') return 'green'
+  if (health === 'unhealthy') return 'red'
+  if (health.startsWith('health:')) return 'processing'
+  return 'default'
+}
+
+function relayStatusColor(status: string): string {
+  switch (status) {
+    case 'online': return 'green'
+    case 'stale': return 'orange'
+    case 'cert_revoked': return 'red'
+    default: return 'default'
+  }
+}
+
+function relayStatusLabel(status: string): string {
+  switch (status) {
+    case 'online': return 'Online'
+    case 'stale': return 'Stale'
+    case 'cert_revoked': return 'Certificate Revoked'
+    default: return 'Never Seen'
+  }
 }

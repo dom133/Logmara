@@ -29,6 +29,19 @@ const (
 	caKeyFile      = "ca.key"
 	serverCertFile = "server.crt"
 	serverKeyFile  = "server.key"
+
+	caValidityYears     = 15
+	serverValidityYears = 10
+	clientValidityYears = 5
+
+	// caRenewalWindow/serverRenewalWindow: how long before its own NotAfter
+	// EnsureCA proactively re-signs a cert, so a deployment that's merely
+	// restarted or touched periodically (see handler.SyncRelayConfig, called
+	// on every relay change and at every startup) never actually reaches
+	// expiry. Wide windows because both are long-lived and this is checked
+	// far more often than either one changes.
+	caRenewalWindow     = 365 * 24 * time.Hour
+	serverRenewalWindow = 90 * 24 * time.Hour
 )
 
 func newSerialNumber() (*big.Int, error) {
@@ -38,9 +51,12 @@ func newSerialNumber() (*big.Int, error) {
 
 // EnsureCA makes sure dir contains a CA keypair and a server certificate
 // signed by it (consumed by the rsyslog mTLS listener's
-// DefaultNetstreamDriverCertFile/KeyFile), generating whichever is missing.
-// Safe to call on every request that touches relay config - a no-op once
-// both already exist.
+// DefaultNetstreamDriverCertFile/KeyFile), generating whichever is missing,
+// and transparently renews either one in place once it's within its
+// renewal window of expiring - see renewCA and issueServerCert. Safe to
+// call on every request that touches relay config (and is - see
+// handler.SyncRelayConfig): a no-op once both exist and aren't close to
+// expiry.
 func EnsureCA(dir string) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("create pki dir: %w", err)
@@ -57,6 +73,12 @@ func EnsureCA(dir string) error {
 		if err != nil {
 			return fmt.Errorf("load existing CA: %w", err)
 		}
+		if time.Until(caCert.NotAfter) <= caRenewalWindow {
+			caCert, err = renewCA(dir, caCert, caKey)
+			if err != nil {
+				return fmt.Errorf("renew CA: %w", err)
+			}
+		}
 	} else {
 		caCert, caKey, err = generateCA()
 		if err != nil {
@@ -71,11 +93,81 @@ func EnsureCA(dir string) error {
 	}
 
 	serverCertPath := filepath.Join(dir, serverCertFile)
-	serverKeyPath := filepath.Join(dir, serverKeyFile)
 	if _, err := os.Stat(serverCertPath); err == nil {
-		return nil
+		serverCert, err := loadCertOnly(serverCertPath)
+		if err == nil && time.Until(serverCert.NotAfter) > serverRenewalWindow {
+			return nil
+		}
+		// Missing/unparseable/expiring - fall through and reissue below,
+		// same code path as "never existed".
 	}
+	return issueServerCert(dir, caCert, caKey)
+}
 
+func generateCA() (*x509.Certificate, *ecdsa.PrivateKey, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	cert, err := selfSignCA(key, pkix.Name{CommonName: "Syslytics Relay CA"})
+	if err != nil {
+		return nil, nil, err
+	}
+	return cert, key, nil
+}
+
+// renewCA re-signs a fresh self-signed CA certificate using the SAME
+// private key and Subject as oldCert, just with NotBefore reset to now and
+// NotAfter pushed out another caValidityYears - then overwrites ca.crt.
+//
+// This is deliberately not a real key rotation. TLS chain verification
+// only needs the issuer's public key (to check the leaf's signature) and a
+// currently-valid, name-matching trust anchor - not the exact certificate
+// object presented at signing time - so a relay certificate signed years
+// ago under the old ca.crt keeps validating against the new one without
+// being reissued or redistributed, because both carry the same key and
+// Subject. This only handles ordinary expiry; a suspected key compromise
+// needs a real rotation instead (a new key, and every relay certificate
+// reissued), which isn't automatic.
+func renewCA(dir string, oldCert *x509.Certificate, key *ecdsa.PrivateKey) (*x509.Certificate, error) {
+	cert, err := selfSignCA(key, oldCert.Subject)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeCertPEM(filepath.Join(dir, caCertFile), cert.Raw, 0644); err != nil {
+		return nil, err
+	}
+	return cert, nil
+}
+
+func selfSignCA(key *ecdsa.PrivateKey, subject pkix.Name) (*x509.Certificate, error) {
+	serial, err := newSerialNumber()
+	if err != nil {
+		return nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               subject,
+		NotBefore:              time.Now().Add(-time.Hour),
+		NotAfter:               time.Now().AddDate(caValidityYears, 0, 0),
+		KeyUsage:               x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid:  true,
+		IsCA:                   true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, err
+	}
+	return x509.ParseCertificate(der)
+}
+
+// issueServerCert signs a fresh certificate (new key each time) for the
+// central rsyslog mTLS listener and writes it to dir, overwriting whatever
+// was there - used both the first time EnsureCA runs and to renew it once
+// it's nearing expiry. Unlike the CA, there's no reason to keep the same
+// key across reissuance: this cert is never distributed to anything that
+// pins it, relays only need to trust the CA that signs it.
+func issueServerCert(dir string, caCert *x509.Certificate, caKey *ecdsa.PrivateKey) error {
 	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return fmt.Errorf("generate server key: %w", err)
@@ -88,7 +180,7 @@ func EnsureCA(dir string) error {
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: "syslog-relay-central"},
 		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().AddDate(10, 0, 0),
+		NotAfter:     time.Now().AddDate(serverValidityYears, 0, 0),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
@@ -96,39 +188,10 @@ func EnsureCA(dir string) error {
 	if err != nil {
 		return fmt.Errorf("sign server cert: %w", err)
 	}
-	if err := writeCertPEM(serverCertPath, der, 0644); err != nil {
+	if err := writeCertPEM(filepath.Join(dir, serverCertFile), der, 0644); err != nil {
 		return err
 	}
-	return writeECKeyPEM(serverKeyPath, serverKey, 0600)
-}
-
-func generateCA() (*x509.Certificate, *ecdsa.PrivateKey, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, err
-	}
-	serial, err := newSerialNumber()
-	if err != nil {
-		return nil, nil, err
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber:          serial,
-		Subject:                pkix.Name{CommonName: "Syslytics Relay CA"},
-		NotBefore:              time.Now().Add(-time.Hour),
-		NotAfter:               time.Now().AddDate(15, 0, 0),
-		KeyUsage:               x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
-		BasicConstraintsValid:  true,
-		IsCA:                   true,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		return nil, nil, err
-	}
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		return nil, nil, err
-	}
-	return cert, key, nil
+	return writeECKeyPEM(filepath.Join(dir, serverKeyFile), serverKey, 0600)
 }
 
 func loadCA(dir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
@@ -160,6 +223,21 @@ func loadCA(dir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	}
 
 	return cert, key, nil
+}
+
+// loadCertOnly reads just a certificate's expiry (no key needed) - used to
+// decide whether the server cert needs renewing without also having to
+// load its private key.
+func loadCertOnly(path string) (*x509.Certificate, error) {
+	certPEM, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return nil, fmt.Errorf("invalid certificate PEM")
+	}
+	return x509.ParseCertificate(block.Bytes)
 }
 
 // writeAtomic writes data to a temp file in the same directory and renames
@@ -201,6 +279,7 @@ type IssuedCert struct {
 	CAPEM       []byte
 	SerialHex   string
 	Fingerprint string
+	ExpiresAt   time.Time
 }
 
 // IssueClientCert signs a new client certificate for a relay identified by
@@ -224,11 +303,12 @@ func IssueClientCert(dir, label string) (*IssuedCert, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generate client serial: %w", err)
 	}
+	notAfter := time.Now().AddDate(clientValidityYears, 0, 0)
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: label},
 		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().AddDate(5, 0, 0),
+		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
@@ -249,5 +329,6 @@ func IssueClientCert(dir, label string) (*IssuedCert, error) {
 		CAPEM:       caPEM,
 		SerialHex:   serial.Text(16),
 		Fingerprint: hex.EncodeToString(fp[:]),
+		ExpiresAt:   notAfter,
 	}, nil
 }

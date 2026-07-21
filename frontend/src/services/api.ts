@@ -590,6 +590,51 @@ export async function clearSlowQueries() {
 	return res.data
 }
 
+// --- Health (Admin > Health) ---
+
+export interface ContainerHealth {
+	name: string
+	image: string
+	state: string
+	status: string
+	health?: string
+	node?: string
+}
+
+export interface ServiceHealth {
+	name: string
+	mode: string
+	image: string
+	replicas_desired: number
+	replicas_running: number
+	tasks: ContainerHealth[]
+}
+
+export interface RelayHealth {
+	label: string
+	ip_address: string
+	cert_status: string
+	last_seen?: string
+	seconds_since_seen?: number
+	status: 'online' | 'stale' | 'never_seen' | 'cert_revoked'
+}
+
+export interface ContainersHealthResponse {
+	docker_available: boolean
+	mode: 'single' | 'swarm' | ''
+	scope: 'cluster' | 'node' | ''
+	containers?: ContainerHealth[]
+	services?: ServiceHealth[]
+	relays: RelayHealth[]
+	message?: string
+	refreshed_at: string
+}
+
+export async function getContainersHealth() {
+	const res = await api.get('/admin/health/containers')
+	return res.data as ContainersHealthResponse
+}
+
 export async function uploadSSLCerts(certFile: File, keyFile: File) {
 	const formData = new FormData()
 	formData.append('cert', certFile)
@@ -634,9 +679,15 @@ export interface RelayCertificate {
 	fingerprint_sha256: string
 	status: 'issued' | 'revoked'
 	issued_at: string
+	expires_at: string
 	issued_by?: number
 	revoked_at?: string | null
 }
+
+// Mirrors backend model.RelayCertRenewalWindowDays - how close to its own
+// expiry an "issued" certificate must be before the backend will allow
+// regenerateRelayCertificate to renew it.
+export const RELAY_CERT_RENEWAL_WINDOW_DAYS = 30
 
 export async function getRelayCertificates() {
 	const res = await api.get('/admin/relay/certificates')
@@ -663,27 +714,48 @@ async function normalizeBlobError(e: unknown): Promise<Error> {
 	return e instanceof Error ? e : new Error('Request failed')
 }
 
-// Issues a new relay certificate and triggers a one-time download of the
-// bundle (ca.crt/client.crt/client.key/relay.conf) - the API never lets
-// this be fetched again after this call, so the caller must warn the user
-// to save it now.
-export async function generateRelayCertificate(data: { label: string; ip_address: string }) {
+// downloadCertificateBundle POSTs to url and triggers a one-time browser
+// download of the resulting .tar.gz - shared by both ways of issuing a
+// relay certificate below. The API never lets the bundle be fetched again
+// after this call, so the caller must warn the user to save it now.
+async function downloadCertificateBundle(url: string, body: unknown, fallbackFilename: string) {
 	let res
 	try {
-		res = await api.post('/admin/relay/certificates', data, { responseType: 'blob' })
+		res = await api.post(url, body, { responseType: 'blob' })
 	} catch (e: unknown) {
 		throw await normalizeBlobError(e)
 	}
 	const disposition = res.headers['content-disposition'] as string | undefined
 	const match = disposition?.match(/filename="?([^"]+)"?/)
-	const filename = match ? match[1] : `syslog-relay-${data.label}.tar.gz`
-	const url = URL.createObjectURL(res.data)
+	const filename = match ? match[1] : fallbackFilename
+	const downloadUrl = URL.createObjectURL(res.data)
 	const a = document.createElement('a')
-	a.href = url
+	a.href = downloadUrl
 	a.download = filename
 	a.click()
-	URL.revokeObjectURL(url)
+	URL.revokeObjectURL(downloadUrl)
 	return { filename }
+}
+
+// Issues a new relay certificate and whitelists its IP in the same step.
+// Fails if the IP is already whitelisted - use
+// generateRelayCertificateForWhitelistEntry for that case instead.
+export async function generateRelayCertificate(data: { label: string; ip_address: string }) {
+	return downloadCertificateBundle('/admin/relay/certificates', data, `syslog-relay-${data.label}.tar.gz`)
+}
+
+// Issues a certificate for an IP that's already whitelisted (added via
+// "Add IP" without one, or whose previous certificate was revoked) and
+// links it to that entry.
+export async function generateRelayCertificateForWhitelistEntry(id: number, label: string) {
+	return downloadCertificateBundle(`/admin/relay/whitelist/${id}/certificate`, undefined, `syslog-relay-${label}.tar.gz`)
+}
+
+// Reissues a certificate for a revoked one's whitelist entry (found
+// server-side by reverse lookup) - the old, revoked row stays in the list
+// for the audit trail.
+export async function regenerateRelayCertificate(id: number, label: string) {
+	return downloadCertificateBundle(`/admin/relay/certificates/${id}/regenerate`, undefined, `syslog-relay-${label}.tar.gz`)
 }
 
 export async function revokeRelayCertificate(id: number) {
@@ -693,7 +765,7 @@ export async function revokeRelayCertificate(id: number) {
 
 // --- Alerts & Notifications ---
 
-export type AlertRuleType = 'log_threshold' | 'device_silence' | 'config_change'
+export type AlertRuleType = 'log_threshold' | 'device_silence' | 'config_change' | 'relay_cert_expiring'
 export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app' | 'push'
 export type FieldConditionOperator = 'equals' | 'contains' | 'not_equals' | 'regex'
 

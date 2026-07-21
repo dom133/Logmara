@@ -11,6 +11,12 @@ const (
 	RelayCertStatusRevoked = "revoked"
 )
 
+// RelayCertRenewalWindowDays is how close to its own expiry an "issued"
+// certificate must be before RegenerateRelayCertificate will renew it (see
+// handler/relay.go) - matches the frontend's renewal-eligibility check in
+// SyslogRelay.tsx, which shows the "Renew" action under the same threshold.
+const RelayCertRenewalWindowDays = 30
+
 // RelayWhitelistEntry is one IP address allowed to send syslog to the
 // central mTLS relay listener (port 6514). RelayCertID is set when the
 // entry was created as part of issuing a relay certificate (the normal
@@ -40,6 +46,7 @@ type RelayCertificate struct {
 	Fingerprint string     `json:"fingerprint_sha256"`
 	Status      string     `json:"status"`
 	IssuedAt    time.Time  `json:"issued_at"`
+	ExpiresAt   time.Time  `json:"expires_at"`
 	IssuedBy    *int64     `json:"issued_by,omitempty"`
 	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
 }

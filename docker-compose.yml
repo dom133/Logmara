@@ -76,6 +76,33 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Read-only, allow-listed view onto the local Docker Engine API, used by
+  # Admin > Health (backend/handler/health_docker.go) to show container
+  # status. api talks to this instead of mounting /var/run/docker.sock
+  # itself - a raw socket mount grants full control of the host regardless
+  # of any :ro flag on the mount, since that only restricts writes to the
+  # socket *file*, not what the Docker API on the other end of it will do.
+  # This proxy only forwards GET on CONTAINERS/INFO and rejects everything
+  # else (POST: 0), so a bug here can't be escalated into host access.
+  # Not published to the host - reachable only from other syslog_net
+  # containers.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      CONTAINERS: 1
+      INFO: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+    networks:
+      - syslog_net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   api:
     build:
       context: .
@@ -106,6 +133,8 @@ services:
       # generated under Admin > Syslog Relay. Leave unset to fill it in by
       # hand after downloading (see README "Syslog Relay").
       RELAY_CENTRAL_HOST: ${RELAY_CENTRAL_HOST:-}
+      # Backs Admin > Health - see the docker-proxy service above.
+      DOCKER_PROXY_URL: http://docker-proxy:2375
     volumes:
       - log_data:/data
     ports:

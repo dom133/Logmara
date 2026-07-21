@@ -25,6 +25,7 @@ interface AuthContextType {
   setShowSessionWarning: (show: boolean) => void
   sessionWarningCountdown: number
   extendSession: () => Promise<void>
+  refreshUser: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType>({} as AuthContextType)
@@ -241,7 +242,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       showSessionWarning,
       setShowSessionWarning,
       sessionWarningCountdown,
-      extendSession
+      extendSession,
+      refreshUser: loadUser
     }}>
       {children}
     </AuthContext.Provider>

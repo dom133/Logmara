@@ -269,6 +269,28 @@ func main() {
 		}
 	}()
 
+	// Relay certificate expiry: hourly is more than enough resolution for a
+	// day-granularity warning window, and piggybacking SyncRelayConfig here
+	// (not just the expiry check) means the CA/server certificate's own
+	// in-place renewal (see relaypki.EnsureCA) keeps happening on a schedule
+	// even on a deployment that goes untouched for long stretches between
+	// relay whitelist/certificate changes and restarts.
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := handler.SyncRelayConfig(database); err != nil {
+					slog.Warn("relay config sync failed during periodic check", "error", err)
+				}
+				alertEngine.CheckRelayCertExpiring(database)
+			}
+		}
+	}()
+
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(middleware.ErrorHandler())
@@ -372,6 +394,7 @@ func main() {
 			adminGroup.GET("/audit-log", handler.GetAuditLog(database))
 			adminGroup.GET("/slow-queries", handler.GetSlowQueries())
 			adminGroup.DELETE("/slow-queries", handler.ClearSlowQueriesHandler())
+			adminGroup.GET("/health/containers", handler.GetContainersHealth(database))
 			adminGroup.PUT("/devices/:ip/alias", handler.UpdateDeviceAlias(database))
 			adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(database))
 			adminGroup.POST("/nginx-reload", handler.ReloadNginx(database))
@@ -379,9 +402,11 @@ func main() {
 			adminGroup.GET("/relay/whitelist", handler.ListRelayWhitelist(database))
 			adminGroup.POST("/relay/whitelist", handler.CreateRelayWhitelistEntry(database))
 			adminGroup.DELETE("/relay/whitelist/:id", handler.DeleteRelayWhitelistEntry(database))
+			adminGroup.POST("/relay/whitelist/:id/certificate", handler.GenerateCertificateForWhitelistEntry(database))
 			adminGroup.GET("/relay/certificates", handler.ListRelayCertificates(database))
 			adminGroup.POST("/relay/certificates", handler.CreateRelayCertificate(database))
 			adminGroup.DELETE("/relay/certificates/:id", handler.RevokeRelayCertificate(database))
+			adminGroup.POST("/relay/certificates/:id/regenerate", handler.RegenerateRelayCertificate(database))
 
 			adminGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))
 			adminGroup.PUT("/notification-channels/:id", notificationsGate, handler.UpdateNotificationChannel(database))

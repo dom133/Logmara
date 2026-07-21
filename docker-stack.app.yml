@@ -60,6 +60,44 @@ version: "3.8"
 # ordering, not as a readiness gate.
 
 services:
+  # Read-only, allow-listed view onto the Docker Engine API, used by
+  # Admin > Health (backend/handler/health_docker.go) to show container /
+  # Swarm service status. Placed on manager nodes only (node.role ==
+  # manager) - unlike a single-host /containers/json call, Swarm's
+  # /services and /tasks endpoints return the *entire* cluster's state from
+  # any one manager, including nodes that never run api itself (the
+  # Postgres/Redis managers) - so this, unlike mounting the socket into api
+  # directly on app=true workers, is what actually gives full cluster
+  # visibility. api reaches it through the docker-proxy service DNS name,
+  # which load-balances across every manager replica. Not published - only
+  # reachable from other syslog_net containers. See the matching comment in
+  # docker-compose.yml for why this proxy exists instead of a raw socket
+  # mount on api.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      CONTAINERS: 1
+      SERVICES: 1
+      TASKS: 1
+      NODES: 1
+      INFO: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - syslog_net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      mode: global
+      placement:
+        constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+
   rsyslog:
     image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-rsyslog:${TAG:-latest}
     environment:
@@ -137,6 +175,8 @@ services:
       RSYSLOG_RELOAD_TARGETS_HOST: tasks.rsyslog
       RSYSLOG_RELOAD_PORT: "8082"
       RELAY_CENTRAL_HOST: ${RELAY_CENTRAL_HOST:-}
+      # Backs Admin > Health - see the docker-proxy service above.
+      DOCKER_PROXY_URL: http://docker-proxy:2375
       # Must match the redis_password secret used by docker-stack.redis.yml.
       REDIS_SENTINEL_ADDRS: sentinel1:26379,sentinel2:26379,sentinel3:26379
       REDIS_MASTER_NAME: mymaster

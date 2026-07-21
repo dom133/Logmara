@@ -326,6 +326,7 @@ func Migrate(db *sql.DB) error {
 			created_at TIMESTAMPTZ DEFAULT NOW(),
 			created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
 		)`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='relay_certificates' AND column_name='expires_at') THEN ALTER TABLE relay_certificates ADD COLUMN expires_at TIMESTAMPTZ; END IF; END $$`,
 	}
 
 	for _, stmt := range statements {
