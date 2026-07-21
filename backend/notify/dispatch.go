@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"syslog-gui/db"
 	"syslog-gui/model"
@@ -145,17 +146,17 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName string, ch model.Noti
 // collapses the per-device results into the single status/detail pair the
 // notification_log records for this channel.
 func sendPushChannel(database *sql.DB, payload Payload) (status, detail string) {
-	delivered, failed, err := dispatchPush(database, payload)
+	res, err := dispatchPush(database, payload)
 	if err != nil {
 		return "failed", err.Error()
 	}
-	if delivered == 0 {
-		return "failed", fmt.Sprintf("all %d push deliveries failed", failed)
+	if res.Delivered == 0 {
+		return "failed", fmt.Sprintf("all %d push deliveries failed: %s", res.Failed, strings.Join(res.Errors, "; "))
 	}
-	if failed > 0 {
-		return "sent", fmt.Sprintf("delivered to %d device(s), %d failed", delivered, failed)
+	if res.Failed > 0 {
+		return "sent", fmt.Sprintf("delivered to %d device(s), %d failed: %s", res.Delivered, res.Failed, strings.Join(res.Errors, "; "))
 	}
-	return "sent", fmt.Sprintf("delivered to %d device(s)", delivered)
+	return "sent", fmt.Sprintf("delivered to %d device(s)", res.Delivered)
 }
 
 // TestChannel sends a fixed test payload directly to a single channel,
@@ -183,12 +184,12 @@ func TestChannel(database *sql.DB, channel model.NotificationChannel, onInApp fu
 	}
 
 	if channel.Type == model.ChannelTypePush {
-		delivered, failed, err := dispatchPush(database, payload)
+		res, err := dispatchPush(database, payload)
 		if err != nil {
 			return err
 		}
-		if delivered == 0 {
-			return fmt.Errorf("all %d push deliveries failed", failed)
+		if res.Delivered == 0 {
+			return fmt.Errorf("all %d push deliveries failed: %s", res.Failed, strings.Join(res.Errors, "; "))
 		}
 		return nil
 	}
