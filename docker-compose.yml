@@ -51,6 +51,11 @@ services:
     ports:
       - "${RSYSLOG_PORT:-514}:514"
       - "${RSYSLOG_PORT:-514}:514/udp"
+      # mTLS listener for remote syslog relays (Admin > Settings > enable
+      # relay ingestion). Safe to leave published even when unused: with no
+      # relay certificate issued and none whitelisted, every connection is
+      # dropped at the ACL (see rsyslog/syslog.conf and README "Syslog Relay").
+      - "${RELAY_MTLS_PORT:-6514}:6514"
     depends_on:
       api:
         condition: service_healthy
@@ -96,6 +101,11 @@ services:
       # that, it's managed from the admin Settings UI and this env var is
       # ignored on subsequent restarts.
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Optional: this server's hostname/IP as reachable from a relay's VLAN,
+      # pre-filled into the relay.conf bundled with every certificate
+      # generated under Admin > Syslog Relay. Leave unset to fill it in by
+      # hand after downloading (see README "Syslog Relay").
+      RELAY_CENTRAL_HOST: ${RELAY_CENTRAL_HOST:-}
     volumes:
       - log_data:/data
     ports:

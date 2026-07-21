@@ -1,0 +1,47 @@
+# Standalone compose file for the small "syslog relay" host deployed in a
+# client VLAN, forwarding syslog to the central server over mTLS instead of
+# storing anything locally. This is NOT part of the main app stack (see
+# docker-compose.yml / docker-stack.app.yml) - copy this file (and
+# Dockerfile.rsyslog-relay) to the small server that will sit in the
+# clients' VLAN and run it there, on its own.
+#
+# Deploy:
+#   1. On the central server, Admin > Settings > enable "Relay logów (VLAN)".
+#   2. Admin > Syslog Relay > Certyfikaty: generate a certificate for this
+#      relay (label + this host's IP as seen by the central server) and
+#      download the resulting syslog-relay-<label>.tar.gz - the private key
+#      is only ever handed out this once, so save it now.
+#   3. Extract it next to this file:
+#        mkdir -p relay-bundle && tar xzf syslog-relay-<label>.tar.gz -C relay-bundle
+#      (produces ca.crt, client.crt, client.key, relay.conf)
+#   4. docker compose -f docker-compose.relay.yml up -d --build
+#
+# See README "Syslog Relay" for the full walkthrough, including the
+# firewall rule this needs (outbound 6514/tcp to the central server only).
+
+services:
+  rsyslog-relay:
+    build:
+      context: .
+      dockerfile: Dockerfile.rsyslog-relay
+    volumes:
+      - ./relay-bundle/relay.conf:/etc/rsyslog.d/relay.conf:ro
+      - ./relay-bundle/ca.crt:/etc/syslog-relay/tls/ca.crt:ro
+      - ./relay-bundle/client.crt:/etc/syslog-relay/tls/client.crt:ro
+      - ./relay-bundle/client.key:/etc/syslog-relay/tls/client.key:ro
+      # rsyslog's disk-assisted queue (see relay.conf's omfwd action) spools
+      # here by default - persisted so a restart doesn't drop logs that were
+      # buffered while the central server/link was unreachable.
+      - relay_queue:/var/lib/rsyslog
+    ports:
+      - "${RELAY_PORT:-514}:514"
+      - "${RELAY_PORT:-514}:514/udp"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  relay_queue:

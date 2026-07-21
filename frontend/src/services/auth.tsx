@@ -8,6 +8,7 @@ interface User {
   is_admin: boolean
   is_active: boolean
   notifications_enabled: boolean
+  relay_ingestion_enabled: boolean
 }
 
 interface AuthContextType {

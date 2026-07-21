@@ -254,10 +254,12 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 		oldHttpsEnabled := db.GetSetting(database, "https_enabled", "false")
 		oldHttpsRedirect := db.GetSetting(database, "https_redirect", "false")
 		oldCorsOrigins := db.GetSetting(database, "cors_origins", "")
+		oldRelayEnabled := db.GetSetting(database, "relay_ingestion_enabled", "false")
 
 		newHttpsEnabled := settings["https_enabled"]
 		newHttpsRedirect := settings["https_redirect"]
 		newCorsOrigins := settings["cors_origins"]
+		newRelayEnabled := settings["relay_ingestion_enabled"]
 
 		if newHttpsEnabled == "true" && oldHttpsEnabled != "true" {
 			sslDir := os.Getenv("SSL_DIR")
@@ -299,6 +301,17 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 				c.JSON(http.StatusOK, gin.H{
 					"message":            "Settings updated",
 					"nginx_reload_error": err.Error(),
+				})
+				return
+			}
+		}
+
+		if newRelayEnabled != "" && newRelayEnabled != oldRelayEnabled {
+			if err := SyncRelayConfig(database); err != nil {
+				slog.Warn("relay config sync failed after settings update", "error", err)
+				c.JSON(http.StatusOK, gin.H{
+					"message":            "Settings updated",
+					"relay_reload_error": err.Error(),
 				})
 				return
 			}

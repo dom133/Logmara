@@ -308,6 +308,24 @@ func Migrate(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions (user_id)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='fire_on_every_match') THEN ALTER TABLE alerts ADD COLUMN fire_on_every_match BOOLEAN NOT NULL DEFAULT FALSE; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='field_conditions_logic') THEN ALTER TABLE alerts ADD COLUMN field_conditions_logic VARCHAR(10) NOT NULL DEFAULT 'and'; END IF; END $$`,
+		`CREATE TABLE IF NOT EXISTS relay_certificates (
+			id SERIAL PRIMARY KEY,
+			label VARCHAR(255) NOT NULL,
+			serial_hex VARCHAR(64) NOT NULL,
+			fingerprint_sha256 VARCHAR(64) NOT NULL,
+			status VARCHAR(20) NOT NULL DEFAULT 'issued',
+			issued_at TIMESTAMPTZ DEFAULT NOW(),
+			issued_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			revoked_at TIMESTAMPTZ
+		)`,
+		`CREATE TABLE IF NOT EXISTS relay_whitelist (
+			id SERIAL PRIMARY KEY,
+			ip_address VARCHAR(64) UNIQUE NOT NULL,
+			label VARCHAR(255) NOT NULL,
+			relay_cert_id INTEGER REFERENCES relay_certificates(id) ON DELETE SET NULL,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+		)`,
 	}
 
 	for _, stmt := range statements {
@@ -601,6 +619,7 @@ func seedSettings(db *sql.DB) error {
 		"smtp_from":                    "",
 		"smtp_use_tls":                 "true",
 		"device_silence_check_minutes": "5",
+		"relay_ingestion_enabled":      "false",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -669,6 +688,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "Use STARTTLS for the SMTP connection"
 		case "device_silence_check_minutes":
 			desc = "How often to check for silent devices (minutes)"
+		case "relay_ingestion_enabled":
+			desc = "Accept syslog forwarded by remote relays over mTLS (Admin > Syslog Relay)"
 		}
 		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
 			return fmt.Errorf("seed setting %s: %w", k, err)

@@ -166,6 +166,20 @@ func main() {
 		}
 	}()
 
+	// Same reasoning as the nginx sync above: the rsyslog container's reload
+	// sidecar (see rsyslog/reload-sidecar) may not be up yet on a cold
+	// `docker compose up`, and /data/relay's PKI material + ACL live on the
+	// shared volume, not in the database, so they need to be re-applied on
+	// every restart regardless of whether relay_ingestion_enabled changed.
+	go func() {
+		<-migrationDone
+		const attempts = 10
+		const delay = 3 * time.Second
+		if err := handler.SyncRelayConfigWithRetry(database, attempts, delay); err != nil {
+			slog.Warn("failed to sync relay config at startup after retries", "attempts", attempts, "error", err)
+		}
+	}()
+
 	ctx, maintCancel := context.WithCancel(context.Background())
 	stopVacuum, stopMV, stopTokenCleanup := db.StartMaintenance(ctx, database)
 
@@ -361,6 +375,13 @@ func main() {
 			adminGroup.PUT("/devices/:ip/alias", handler.UpdateDeviceAlias(database))
 			adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(database))
 			adminGroup.POST("/nginx-reload", handler.ReloadNginx(database))
+
+			adminGroup.GET("/relay/whitelist", handler.ListRelayWhitelist(database))
+			adminGroup.POST("/relay/whitelist", handler.CreateRelayWhitelistEntry(database))
+			adminGroup.DELETE("/relay/whitelist/:id", handler.DeleteRelayWhitelistEntry(database))
+			adminGroup.GET("/relay/certificates", handler.ListRelayCertificates(database))
+			adminGroup.POST("/relay/certificates", handler.CreateRelayCertificate(database))
+			adminGroup.DELETE("/relay/certificates/:id", handler.RevokeRelayCertificate(database))
 
 			adminGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))
 			adminGroup.PUT("/notification-channels/:id", notificationsGate, handler.UpdateNotificationChannel(database))

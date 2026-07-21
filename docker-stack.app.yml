@@ -76,6 +76,13 @@ services:
         published: 514
         protocol: udp
         mode: host
+      # mTLS listener for remote syslog relays (Admin > Settings > enable
+      # relay ingestion). Safe to leave published even when unused - see the
+      # matching comment in docker-compose.yml.
+      - target: 6514
+        published: 6514
+        protocol: tcp
+        mode: host
     networks:
       - syslog_net
     depends_on:
@@ -123,6 +130,13 @@ services:
       HTTPS_ENABLED: ${HTTPS_ENABLED:-}
       HTTPS_REDIRECT: ${HTTPS_REDIRECT:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # rsyslog runs `mode: global` across every edge=true node (see the
+      # comment above), so a relay ACL/whitelist change must reload all of
+      # them, not just whichever one currently holds the keepalived VIP -
+      # same reasoning as tasks.frontend for nginx above.
+      RSYSLOG_RELOAD_TARGETS_HOST: tasks.rsyslog
+      RSYSLOG_RELOAD_PORT: "8082"
+      RELAY_CENTRAL_HOST: ${RELAY_CENTRAL_HOST:-}
       # Must match the redis_password secret used by docker-stack.redis.yml.
       REDIS_SENTINEL_ADDRS: sentinel1:26379,sentinel2:26379,sentinel3:26379
       REDIS_MASTER_NAME: mymaster

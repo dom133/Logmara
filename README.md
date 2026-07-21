@@ -368,6 +368,52 @@ Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizar
 - Kill the edge node currently holding the VIP → keepalived should fail over in 1-3s; confirm with `ip addr` on the new holder and by sending a test syslog message during the cutover.
 - Send syslog messages throughout each test and confirm no duplicates or gaps in the logs table, and that `/admin/slow-queries` and dashboard stats look the same regardless of which `api` replica answers the request.
 
+## Syslog Relay (Optional, Multi-VLAN)
+
+Lets one or more small, standalone rsyslog hosts sit in VLANs that don't route directly to the central server, collect syslog from local devices, and forward it over an authenticated, encrypted channel (mTLS on port 6514) to this server's normal ingestion pipeline. The central server keeps accepting direct syslog on 514 from its own VLAN exactly as in the Quick Start — relays are additive, not a replacement, and any number of them can point at the same central server. This works the same whether the central side is a single server (`docker-compose.yml`) or the [High Availability](#high-availability-deployment-multi-node-optional) multi-node stack above.
+
+```
+VLAN A (devices)          VLAN B (DMZ/relay)              VLAN C (central)
+ device1 ─┐
+ device2 ─┼─► syslog-relay ──mTLS 6514/tcp──► rsyslog ──► logs.jsonl ──► tailer
+ device3 ─┘   (small server,                      ▲        (unchanged)
+               forward-only)                       │
+VLAN D (DMZ/relay 2)                                │
+ device4 ──► syslog-relay-2 ──────mTLS 6514/tcp──────┘
+```
+
+Each relay reuses the same JSON conversion the central server already does locally (`rsyslog/syslog.conf`'s `JsonLines` template), so `fromhost_ip` stays the real device IP — the field parser matching and per-device stats rely on — instead of becoming the relay's own IP.
+
+### How it's secured
+
+- **mTLS**: the central server runs its own internal CA (generated automatically the first time you use this feature — see `backend/relaypki`). Every relay gets a client certificate signed by that CA; the central listener rejects any connection without a valid one.
+- **IP whitelist**: a valid certificate alone isn't enough — the peer's IP must also be on the whitelist (Admin > Syslog Relay > Whitelist IP). Together these mean only a relay you've explicitly approved, from an IP you've explicitly approved, gets in.
+- There's no X.509 CRL/OCSP in this implementation — "revoking" a certificate (Admin > Syslog Relay > Certyfikaty > Odwołaj) removes its whitelist entry, which is what actually cuts it off. The certificate itself stays cryptographically valid but can no longer reach the listener.
+- The private key for a relay's certificate is generated on the server but **never stored** there — it's handed to you exactly once, in the `.tar.gz` bundle the browser downloads when you generate it. If you lose it, revoke that certificate and generate a new one; there's no way to re-download the old key.
+
+### Enabling it
+
+1. Admin > Settings > **Syslog Relay** > turn on "Relay logów (VLAN)". This starts accepting mTLS connections on port 6514 (still gated by the whitelist below, so nothing gets in until you add a relay).
+2. A new **Syslog Relay** entry appears in the sidebar. Open it > **Certyfikaty** > "Generuj certyfikat", give the relay a label and the IP it will connect from (as seen by the central server), and confirm. The browser downloads `syslog-relay-<label>.tar.gz` — save it now, this is the only copy.
+3. Copy that file to the small server you're deploying in the client VLAN, alongside `docker-compose.relay.yml` and `Dockerfile.rsyslog-relay` from this repo:
+   ```bash
+   mkdir -p relay-bundle && tar xzf syslog-relay-<label>.tar.gz -C relay-bundle
+   docker compose -f docker-compose.relay.yml up -d --build
+   ```
+4. Point the devices in that VLAN at the relay's IP on port 514 (tcp or udp), same as you would the central server directly.
+
+If `RELAY_CENTRAL_HOST` isn't set on the central server's `api` service, the generated `relay.conf` ships with a `<CENTRAL_HOST>` placeholder — edit it in the extracted bundle before starting the relay.
+
+### Firewall
+
+The relay only ever needs one outbound rule: **relay → central, 6514/tcp**. It doesn't need to be reachable *from* the central VLAN at all. On the central side, only 6514/tcp needs to be reachable from the relay's VLAN — devices behind the relay never talk to the central server directly.
+
+### Limitations
+
+- One relay is a single small server with no built-in failover (unlike the edge nodes in the HA section above) — if it goes down, its VLAN stops forwarding until it's back. Run more than one relay (in different VLANs, or the same one) if that's not acceptable; each gets its own certificate and whitelist entry.
+- The relay buffers to disk (`queue.type="LinkedList"` with `queue.saveOnShutdown` in the generated `relay.conf`) if the link to the central server drops, and catches up once it's back — but a full disk stops accepting new logs until the backlog is delivered.
+- On a relay's very first boot, if the central server's own CA/server certificate hasn't been generated yet, `rsyslog/entrypoint.sh` on the central side generates a throwaway placeholder so its listener can still start; whichever of that script or the API's own cert generation runs first "wins" and both sides converge on the same CA. This only matters during the very first `docker compose up` after enabling the feature.
+
 ## Features
 
 - **Live Log Viewer** �?" Browse, filter, and search ingested syslog messages in real-time
@@ -537,29 +583,34 @@ POST /api/parsers/test
 
 ```
 ├── docker-compose.yml
+├── docker-compose.relay.yml  # Standalone compose for a remote syslog relay host
 ├── Dockerfile.backend
 ├── Dockerfile.frontend
 ├── Dockerfile.rsyslog
+├── Dockerfile.rsyslog-relay   # Image for the standalone relay host
 ├── .env.example
 ├── backend/
 │   ├── main.go              # Entry point, route setup, rate limiter, CORS
 │   ├── auth/                 # JWT middleware, refresh tokens, bcrypt
 │   ├── db/                   # Database connection, migrations, builtin parsers
-│   ├── handler/              # HTTP handlers (auth, logs, parsers, dashboards, admin, init)
+│   ├── handler/              # HTTP handlers (auth, logs, parsers, dashboards, admin, init, relay)
 │   ├── ldap/                 # LDAP/AD authentication with TLS
 │   ├── model/                # Go structs for DB models
 │   ├── parser/               # Regex parser engine
+│   ├── relaypki/              # Internal CA + relay certificate issuance (mTLS)
 │   ├── tailer/               # File tailer for rsyslog JSONL
 │   └── util/                 # Key generation, encryption utilities
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx           # Main layout with pinned sidebar
-│   │   ├── pages/            # Page components (including SetupWizard)
+│   │   ├── pages/            # Page components (including SetupWizard, SyslogRelay)
 │   │   └── services/         # API client with 401 interceptor, auth context
 │   ├── nginx.conf
 │   └── vite.config.ts
 └── rsyslog/
-    └── syslog.conf           # rsyslog template + output config
+    ├── syslog.conf            # rsyslog template + output config, incl. the mTLS relay listener
+    ├── entrypoint.sh           # Generates a placeholder relay CA/cert if missing, starts the reload sidecar
+    └── reload-sidecar/         # HTTP sidecar that HUPs rsyslogd on relay config changes
 ```
 
 ## Security

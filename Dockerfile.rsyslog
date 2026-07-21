@@ -1,7 +1,10 @@
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends rsyslog procps && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends rsyslog rsyslog-gnutls procps openssl busybox-static && rm -rf /var/lib/apt/lists/*
 COPY rsyslog/syslog.conf /etc/rsyslog.d/syslog.conf
-EXPOSE 514 514/udp
+COPY rsyslog/entrypoint.sh /entrypoint.sh
+COPY rsyslog/reload-sidecar/cgi-bin/reload.sh /srv/reload-sidecar/cgi-bin/reload.sh
+RUN chmod +x /entrypoint.sh /srv/reload-sidecar/cgi-bin/reload.sh
+EXPOSE 514 514/udp 6514
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD pgrep -x rsyslogd || exit 1
-CMD ["rsyslogd", "-n"]
+ENTRYPOINT ["/entrypoint.sh"]

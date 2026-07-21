@@ -1,0 +1,13 @@
+# Minimal image for the standalone "syslog relay" host deployed in a
+# client VLAN (see README "Syslog Relay" and docker-compose.relay.yml).
+# Unlike Dockerfile.rsyslog (the main stack's collector, which writes
+# logs.jsonl for the api's tailer), this only ever forwards - the actual
+# config (relay.conf) and TLS material are supplied at deploy time from the
+# certificate bundle downloaded once from Admin > Syslog Relay, not baked
+# into the image.
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends rsyslog rsyslog-gnutls procps && rm -rf /var/lib/apt/lists/*
+EXPOSE 514 514/udp
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD pgrep -x rsyslogd || exit 1
+CMD ["rsyslogd", "-n"]

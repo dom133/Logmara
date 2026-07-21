@@ -601,6 +601,96 @@ export async function uploadSSLCerts(certFile: File, keyFile: File) {
 	return res.data
 }
 
+// --- Syslog Relay (Admin > Syslog Relay) ---
+
+export interface RelayWhitelistEntry {
+	id: number
+	ip_address: string
+	label: string
+	relay_cert_id?: number
+	created_at: string
+	created_by?: number
+}
+
+export async function getRelayWhitelist() {
+	const res = await api.get('/admin/relay/whitelist')
+	return (res.data || []) as RelayWhitelistEntry[]
+}
+
+export async function addRelayWhitelistEntry(data: { ip_address: string; label: string }) {
+	const res = await api.post('/admin/relay/whitelist', data)
+	return res.data
+}
+
+export async function deleteRelayWhitelistEntry(id: number) {
+	const res = await api.delete(`/admin/relay/whitelist/${id}`)
+	return res.data
+}
+
+export interface RelayCertificate {
+	id: number
+	label: string
+	serial_hex: string
+	fingerprint_sha256: string
+	status: 'issued' | 'revoked'
+	issued_at: string
+	issued_by?: number
+	revoked_at?: string | null
+}
+
+export async function getRelayCertificates() {
+	const res = await api.get('/admin/relay/certificates')
+	return (res.data || []) as RelayCertificate[]
+}
+
+// responseType: 'blob' means an error response's JSON body arrives as a
+// Blob instead of being parsed - read it back out so getErrorMessage can
+// still surface the real "IP already whitelisted"-style message instead of
+// a generic fallback.
+async function normalizeBlobError(e: unknown): Promise<Error> {
+	if (e && typeof e === 'object' && 'response' in e) {
+		const resp = (e as { response?: { data?: unknown } }).response
+		if (resp?.data instanceof Blob) {
+			try {
+				const text = await resp.data.text()
+				const parsed = JSON.parse(text)
+				if (parsed?.error) return new Error(parsed.error)
+			} catch {
+				// not JSON - fall through to the generic error below
+			}
+		}
+	}
+	return e instanceof Error ? e : new Error('Request failed')
+}
+
+// Issues a new relay certificate and triggers a one-time download of the
+// bundle (ca.crt/client.crt/client.key/relay.conf) - the API never lets
+// this be fetched again after this call, so the caller must warn the user
+// to save it now.
+export async function generateRelayCertificate(data: { label: string; ip_address: string }) {
+	let res
+	try {
+		res = await api.post('/admin/relay/certificates', data, { responseType: 'blob' })
+	} catch (e: unknown) {
+		throw await normalizeBlobError(e)
+	}
+	const disposition = res.headers['content-disposition'] as string | undefined
+	const match = disposition?.match(/filename="?([^"]+)"?/)
+	const filename = match ? match[1] : `syslog-relay-${data.label}.tar.gz`
+	const url = URL.createObjectURL(res.data)
+	const a = document.createElement('a')
+	a.href = url
+	a.download = filename
+	a.click()
+	URL.revokeObjectURL(url)
+	return { filename }
+}
+
+export async function revokeRelayCertificate(id: number) {
+	const res = await api.delete(`/admin/relay/certificates/${id}`)
+	return res.data
+}
+
 // --- Alerts & Notifications ---
 
 export type AlertRuleType = 'log_threshold' | 'device_silence' | 'config_change'

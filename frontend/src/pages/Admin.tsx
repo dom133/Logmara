@@ -80,6 +80,7 @@ export default function Admin() {
       formValues['https_enabled'] = data['https_enabled'] === 'true'
       formValues['https_redirect'] = data['https_redirect'] === 'true'
       formValues['notifications_enabled'] = data['notifications_enabled'] === 'true'
+      formValues['relay_ingestion_enabled'] = data['relay_ingestion_enabled'] === 'true'
       formValues['smtp_enabled'] = data['smtp_enabled'] === 'true'
       formValues['smtp_use_tls'] = data['smtp_use_tls'] === 'true'
       if (data['smtp_port']) formValues['smtp_port'] = parseInt(data['smtp_port'], 10)
@@ -269,6 +270,8 @@ const handleSaveSettings = async () => {
       const result = await updateSettings(strValues)
       if (result?.nginx_reload_error) {
         message.warning(`Settings saved, but nginx reload failed: ${result.nginx_reload_error}`)
+      } else if (result?.relay_reload_error) {
+        message.warning(`Settings saved, but relay config reload failed: ${result.relay_reload_error}`)
       } else {
         message.success('Settings saved')
       }
@@ -519,6 +522,15 @@ const handleCleanup = async () => {
                     </Form.Item>
                     <Form.Item label="Use STARTTLS" name="smtp_use_tls" valuePropName="checked">
                       <Switch disabled={!smtpEnabled} />
+                    </Form.Item>
+                    <Divider orientation="left">Syslog Relay</Divider>
+                    <Form.Item
+                      label="Relay logów (VLAN)"
+                      name="relay_ingestion_enabled"
+                      valuePropName="checked"
+                      tooltip="Zezwól na odbiór logów syslog od zdalnych relayów (mTLS + whitelist IP) w innych VLAN-ach. Po włączeniu, whitelista i certyfikaty relayów są dostępne w osobnym menu 'Syslog Relay'."
+                    >
+                      <Switch />
                     </Form.Item>
                     {certInfo && (
                       <Result
