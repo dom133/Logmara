@@ -238,6 +238,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			} else {
 				flushedPos = batchStartPos
 				savePosition(posFile, flushedPos)
+				alerts.EvaluateBatch(db, entries)
 			}
 			entries = entries[:0]
 		}
