@@ -6,6 +6,7 @@ import {
   getVapidPublicKey, subscribePush, unsubscribePush,
 } from '../services/api'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { getErrorMessage } from '../utils/error'
 
 const severityColor: Record<string, string> = {
   critical: 'red',
@@ -29,6 +30,18 @@ function urlBase64ToUint8Array(base64String: string) {
   const outputArray = new Uint8Array(rawData.length)
   for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i)
   return outputArray
+}
+
+// A stuck service worker, an unreachable VAPID endpoint, or a browser push
+// service that never responds to subscribe() all resolve to the same silent
+// failure mode: the enable-push promise chain just never settles, so the
+// switch spins forever with no error. Race every step against a timeout so
+// there's always a concrete answer instead of an indefinite hang.
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`Timed out ${label} (${ms / 1000}s)`)), ms)),
+  ])
 }
 
 export function NotificationBell() {
@@ -92,17 +105,17 @@ export function NotificationBell() {
           message.warning('Notification permission was not granted')
           return
         }
-        const reg = await navigator.serviceWorker.ready
-        const publicKey = await getVapidPublicKey()
-        const sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(publicKey),
-        })
-        await subscribePush(sub.toJSON())
+        const reg = await withTimeout(navigator.serviceWorker.ready, 10_000, 'waiting for the service worker')
+        const publicKey = await withTimeout(getVapidPublicKey(), 10_000, 'fetching the VAPID key from the server')
+        const sub = await withTimeout(
+          reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) }),
+          15_000, 'subscribing with the browser push service',
+        )
+        await withTimeout(subscribePush(sub.toJSON()), 10_000, 'saving the subscription on the server')
         setPushSubscribed(true)
         message.success('Push notifications enabled')
       } else {
-        const reg = await navigator.serviceWorker.ready
+        const reg = await withTimeout(navigator.serviceWorker.ready, 10_000, 'waiting for the service worker')
         const sub = await reg.pushManager.getSubscription()
         if (sub) {
           await unsubscribePush(sub.endpoint)
@@ -111,8 +124,9 @@ export function NotificationBell() {
         setPushSubscribed(false)
         message.success('Push notifications disabled')
       }
-    } catch {
-      message.error('Failed to update push notification setting')
+    } catch (e) {
+      console.error('push notification toggle failed', e)
+      message.error(getErrorMessage(e, 'Failed to update push notification setting'))
     } finally {
       setPushBusy(false)
     }
