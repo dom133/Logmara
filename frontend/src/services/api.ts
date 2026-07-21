@@ -734,7 +734,7 @@ export interface NotificationLogEntry {
 	channel_id?: number
 	channel_name: string
 	channel_type: string
-	status: 'sent' | 'failed'
+	status: 'sent' | 'partial' | 'failed' | 'no_channel'
 	detail?: string
 	trigger_log?: TriggerLogSnapshot
 	in_app_notification_id?: number

@@ -468,6 +468,7 @@ function ChannelsTab({ canEdit }: { canEdit: boolean }) {
 
 const historyStatusColor: Record<string, string> = {
   sent: 'green',
+  partial: 'orange',
   failed: 'red',
   no_channel: 'orange',
 }

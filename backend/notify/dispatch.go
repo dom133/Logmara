@@ -168,7 +168,7 @@ func sendPushChannel(database *sql.DB, payload Payload) (status, detail string) 
 		return "failed", fmt.Sprintf("all %d push deliveries failed: %s", res.Failed, strings.Join(res.Errors, "; "))
 	}
 	if res.Failed > 0 {
-		return "sent", fmt.Sprintf("delivered to %d device(s), %d failed: %s", res.Delivered, res.Failed, strings.Join(res.Errors, "; "))
+		return "partial", fmt.Sprintf("delivered to %d device(s), %d failed (not delivered to those): %s", res.Delivered, res.Failed, strings.Join(res.Errors, "; "))
 	}
 	return "sent", fmt.Sprintf("delivered to %d device(s)", res.Delivered)
 }
