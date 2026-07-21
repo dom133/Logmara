@@ -81,13 +81,18 @@ export function NotificationBell() {
   const handleTogglePush = async (checked: boolean) => {
     setPushBusy(true)
     try {
-      const reg = await navigator.serviceWorker.ready
       if (checked) {
+        // Request permission first, as the very first await in this
+        // handler - it needs to run on the click's user-activation, and
+        // waiting on anything else (like serviceWorker.ready) beforehand
+        // risks losing that on stricter mobile browsers, or hanging here
+        // indefinitely if the service worker is stuck installing.
         const permission = await Notification.requestPermission()
         if (permission !== 'granted') {
           message.warning('Notification permission was not granted')
           return
         }
+        const reg = await navigator.serviceWorker.ready
         const publicKey = await getVapidPublicKey()
         const sub = await reg.pushManager.subscribe({
           userVisibleOnly: true,
@@ -97,6 +102,7 @@ export function NotificationBell() {
         setPushSubscribed(true)
         message.success('Push notifications enabled')
       } else {
+        const reg = await navigator.serviceWorker.ready
         const sub = await reg.pushManager.getSubscription()
         if (sub) {
           await unsubscribePush(sub.endpoint)

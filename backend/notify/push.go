@@ -24,6 +24,15 @@ const vapidSubject = "admin@localhost"
 // so a verbose HTML error page doesn't blow up notification_log.detail.
 const maxPushErrorBody = 300
 
+// pushTTLSeconds is how long the push service should hold a notification for
+// a device that isn't currently connected before giving up on it silently.
+// The whole point of push is delivering alerts to a browser that's in the
+// background or whose machine just woke up - a short TTL means the push
+// service drops the message before the browser reconnects, which looked
+// like "push only works while the tab is open". 12h covers a laptop being
+// asleep overnight without holding a stale alert too long.
+const pushTTLSeconds = 12 * 60 * 60
+
 // sendWebPush delivers payload to a single browser push subscription.
 // gone reports whether the endpoint is no longer valid (404/410), meaning
 // the caller should delete the subscription rather than retry it later.
@@ -44,7 +53,7 @@ func sendWebPush(endpoint, p256dh, auth, publicKey, privateKey string, payload P
 		Subscriber:      vapidSubject,
 		VAPIDPublicKey:  publicKey,
 		VAPIDPrivateKey: privateKey,
-		TTL:             60,
+		TTL:             pushTTLSeconds,
 	})
 	if err != nil {
 		return false, fmt.Errorf("request to push service failed: %w", err)

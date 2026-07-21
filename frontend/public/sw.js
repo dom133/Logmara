@@ -7,7 +7,14 @@ const SHELL_ASSETS = ['/', '/manifest.webmanifest']
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll(SHELL_ASSETS))
+      // Pre-caching the shell is a nice-to-have for offline/fast reloads,
+      // not a prerequisite for the worker to run - if a flaky connection
+      // (mobile networks, self-signed cert hiccups) makes one of these
+      // fetches fail, swallow it rather than leaving install() rejected,
+      // which would strand the worker in "installing" forever and block
+      // everything that waits on navigator.serviceWorker.ready (push
+      // subscribe included).
+      .then((cache) => cache.addAll(SHELL_ASSETS).catch(() => {}))
       .then(() => self.skipWaiting())
   )
 })
