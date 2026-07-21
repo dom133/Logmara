@@ -113,7 +113,7 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
     form.resetFields()
     form.setFieldsValue({
       rule_type: 'log_threshold', is_active: true, window_minutes: 5, cooldown_minutes: 15, threshold: 5, fire_on_every_match: false,
-      channel_ids: [], device_ips: [], parser_names: [], field_conditions: [],
+      channel_ids: [], device_ips: [], parser_names: [], field_conditions: [], field_conditions_logic: 'and',
     })
     setModalOpen(true)
   }
@@ -234,10 +234,18 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
                 <Input placeholder="failed login" />
               </Form.Item>
 
-              <Form.Item label="Field Conditions" tooltip="All conditions must match (AND). Fields come from the parsers selected above, or all fields seen on the selected device(s) if no parser is selected, or every known field if neither is selected.">
+              <Form.Item label="Field Conditions" tooltip="Fields come from the parsers selected above, or all fields seen on the selected device(s) if no parser is selected, or every known field if neither is selected.">
                 <Form.List name="field_conditions">
                   {(fields, { add, remove }) => (
                     <>
+                      {fields.length > 1 && (
+                        <Form.Item name="field_conditions_logic" label="Combine conditions with" initialValue="and" style={{ maxWidth: 220 }}>
+                          <Select options={[
+                            { value: 'and', label: 'AND (all must match)' },
+                            { value: 'or', label: 'OR (any must match)' },
+                          ]} />
+                        </Form.Item>
+                      )}
                       {fields.map((field) => (
                         <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }} wrap>
                           <Form.Item name={[field.name, 'field_name']} rules={[{ required: true, message: 'Field required' }]} noStyle>

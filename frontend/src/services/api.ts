@@ -607,6 +607,8 @@ export type AlertRuleType = 'log_threshold' | 'device_silence' | 'config_change'
 export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app' | 'push'
 export type FieldConditionOperator = 'equals' | 'contains' | 'not_equals' | 'regex'
 
+export type FieldConditionsLogic = 'and' | 'or'
+
 export interface AlertFieldCondition {
 	id?: number
 	field_name: string
@@ -623,6 +625,7 @@ export interface Alert {
 	device_ips: string[]
 	parser_names: string[]
 	field_conditions: AlertFieldCondition[]
+	field_conditions_logic: FieldConditionsLogic
 	message_pattern?: string
 	threshold: number
 	window_minutes: number
@@ -645,6 +648,7 @@ export interface AlertRequest {
 	device_ips?: string[]
 	parser_names?: string[]
 	field_conditions?: AlertFieldCondition[]
+	field_conditions_logic?: FieldConditionsLogic
 	message_pattern?: string
 	threshold?: number
 	window_minutes?: number

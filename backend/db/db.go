@@ -307,6 +307,7 @@ func Migrate(db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions (user_id)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='fire_on_every_match') THEN ALTER TABLE alerts ADD COLUMN fire_on_every_match BOOLEAN NOT NULL DEFAULT FALSE; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='field_conditions_logic') THEN ALTER TABLE alerts ADD COLUMN field_conditions_logic VARCHAR(10) NOT NULL DEFAULT 'and'; END IF; END $$`,
 	}
 
 	for _, stmt := range statements {

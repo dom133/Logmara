@@ -33,14 +33,17 @@ func CreateAlert(db *sql.DB, req model.AlertRequest, createdBy int64) (*model.Al
 	if req.CooldownMinutes <= 0 {
 		req.CooldownMinutes = 15
 	}
+	if req.FieldConditionsLogic != model.FieldConditionsLogicOr {
+		req.FieldConditionsLogic = model.FieldConditionsLogicAnd
+	}
 
 	var id int64
 	err := db.QueryRow(
-		`INSERT INTO alerts (name, description, rule_type, severity, device_ips, parser_names, message_pattern, threshold, window_minutes, cooldown_minutes, fire_on_every_match, audit_action_filter, is_active, created_by, updated_at)
-		 VALUES ($1, $2, $3, NULLIF($4,''), $5, $6, NULLIF($7,''), $8, $9, $10, $11, NULLIF($12,''), $13, $14, NOW())
+		`INSERT INTO alerts (name, description, rule_type, severity, device_ips, parser_names, message_pattern, threshold, window_minutes, cooldown_minutes, fire_on_every_match, field_conditions_logic, audit_action_filter, is_active, created_by, updated_at)
+		 VALUES ($1, $2, $3, NULLIF($4,''), $5, $6, NULLIF($7,''), $8, $9, $10, $11, $12, NULLIF($13,''), $14, $15, NOW())
 		 RETURNING id`,
 		req.Name, req.Description, req.RuleType, req.Severity, pq.Array(req.DeviceIPs), pq.Array(req.ParserNames), req.MessagePattern,
-		req.Threshold, req.WindowMinutes, req.CooldownMinutes, req.FireOnEveryMatch, req.AuditActionFilter, isActive, createdBy,
+		req.Threshold, req.WindowMinutes, req.CooldownMinutes, req.FireOnEveryMatch, req.FieldConditionsLogic, req.AuditActionFilter, isActive, createdBy,
 	).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("create alert: %w", err)
@@ -67,13 +70,16 @@ func UpdateAlert(db *sql.DB, id int64, req model.AlertRequest) (*model.Alert, er
 	if req.CooldownMinutes <= 0 {
 		req.CooldownMinutes = 15
 	}
+	if req.FieldConditionsLogic != model.FieldConditionsLogicOr {
+		req.FieldConditionsLogic = model.FieldConditionsLogicAnd
+	}
 
 	_, err := db.Exec(
 		`UPDATE alerts SET name=$1, description=$2, rule_type=$3, severity=NULLIF($4,''), device_ips=$5,
 		 parser_names=$6, message_pattern=NULLIF($7,''), threshold=$8, window_minutes=$9, cooldown_minutes=$10,
-		 fire_on_every_match=$11, audit_action_filter=NULLIF($12,''), is_active=$13, updated_at=NOW() WHERE id=$14`,
+		 fire_on_every_match=$11, field_conditions_logic=$12, audit_action_filter=NULLIF($13,''), is_active=$14, updated_at=NOW() WHERE id=$15`,
 		req.Name, req.Description, req.RuleType, req.Severity, pq.Array(req.DeviceIPs), pq.Array(req.ParserNames), req.MessagePattern,
-		req.Threshold, req.WindowMinutes, req.CooldownMinutes, req.FireOnEveryMatch, req.AuditActionFilter, isActive, id,
+		req.Threshold, req.WindowMinutes, req.CooldownMinutes, req.FireOnEveryMatch, req.FieldConditionsLogic, req.AuditActionFilter, isActive, id,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update alert: %w", err)
@@ -119,7 +125,7 @@ func scanAlert(row *sql.Rows) (model.Alert, error) {
 	var createdBy sql.NullInt64
 	var lastFiredAt sql.NullTime
 	err := row.Scan(&a.ID, &a.Name, &description, &a.RuleType, &severity, pq.Array(&a.DeviceIPs), pq.Array(&a.ParserNames), &messagePattern,
-		&threshold, &a.WindowMinutes, &a.CooldownMinutes, &a.FireOnEveryMatch, &auditActionFilter, &a.IsActive, &createdBy, &a.CreatedAt, &a.UpdatedAt, &lastFiredAt)
+		&threshold, &a.WindowMinutes, &a.CooldownMinutes, &a.FireOnEveryMatch, &a.FieldConditionsLogic, &auditActionFilter, &a.IsActive, &createdBy, &a.CreatedAt, &a.UpdatedAt, &lastFiredAt)
 	if err != nil {
 		return a, err
 	}
@@ -144,7 +150,7 @@ func scanAlert(row *sql.Rows) (model.Alert, error) {
 }
 
 const alertColumns = `id, name, description, rule_type, severity, device_ips, parser_names, message_pattern,
-	threshold, window_minutes, cooldown_minutes, fire_on_every_match, audit_action_filter, is_active, created_by, created_at, updated_at, last_fired_at`
+	threshold, window_minutes, cooldown_minutes, fire_on_every_match, field_conditions_logic, audit_action_filter, is_active, created_by, created_at, updated_at, last_fired_at`
 
 func GetAllAlerts(db *sql.DB) ([]model.Alert, error) {
 	rows, err := db.Query(`SELECT ` + alertColumns + ` FROM alerts ORDER BY created_at DESC`)

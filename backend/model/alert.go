@@ -30,6 +30,13 @@ const (
 	FieldOpRegex     = "regex"
 )
 
+// Field condition logic: how a rule's field conditions combine, when it has
+// more than one.
+const (
+	FieldConditionsLogicAnd = "and"
+	FieldConditionsLogicOr  = "or"
+)
+
 type AlertFieldCondition struct {
 	ID        int64  `json:"id,omitempty"`
 	FieldName string `json:"field_name"`
@@ -38,47 +45,52 @@ type AlertFieldCondition struct {
 }
 
 type Alert struct {
-	ID                int64                 `json:"id"`
-	Name              string                `json:"name"`
-	Description       string                `json:"description"`
-	RuleType          string                `json:"rule_type"`
-	Severity          string                `json:"severity,omitempty"`
-	DeviceIPs         []string              `json:"device_ips"`
-	ParserNames       []string              `json:"parser_names"`
-	FieldConditions   []AlertFieldCondition `json:"field_conditions"`
-	MessagePattern    string                `json:"message_pattern,omitempty"`
-	Threshold         int                   `json:"threshold"`
-	WindowMinutes     int                   `json:"window_minutes"`
-	CooldownMinutes   int                   `json:"cooldown_minutes"`
+	ID              int64                 `json:"id"`
+	Name            string                `json:"name"`
+	Description     string                `json:"description"`
+	RuleType        string                `json:"rule_type"`
+	Severity        string                `json:"severity,omitempty"`
+	DeviceIPs       []string              `json:"device_ips"`
+	ParserNames     []string              `json:"parser_names"`
+	FieldConditions []AlertFieldCondition `json:"field_conditions"`
+	// FieldConditionsLogic is how multiple FieldConditions combine:
+	// FieldConditionsLogicAnd (default, every condition must match) or
+	// FieldConditionsLogicOr (any one condition matching is enough).
+	FieldConditionsLogic string `json:"field_conditions_logic,omitempty"`
+	MessagePattern       string `json:"message_pattern,omitempty"`
+	Threshold            int    `json:"threshold"`
+	WindowMinutes        int    `json:"window_minutes"`
+	CooldownMinutes      int    `json:"cooldown_minutes"`
 	// FireOnEveryMatch, when set, makes a log_threshold rule notify once per
 	// matching log entry instead of accumulating matches against Threshold/
 	// WindowMinutes and gating repeats behind CooldownMinutes.
-	FireOnEveryMatch  bool                  `json:"fire_on_every_match"`
-	AuditActionFilter string                `json:"audit_action_filter,omitempty"`
-	IsActive          bool                  `json:"is_active"`
-	CreatedBy         *int64                `json:"created_by,omitempty"`
-	CreatedAt         time.Time             `json:"created_at"`
-	UpdatedAt         time.Time             `json:"updated_at"`
-	LastFiredAt       *time.Time            `json:"last_fired_at,omitempty"`
-	ChannelIDs        []int64               `json:"channel_ids"`
+	FireOnEveryMatch  bool       `json:"fire_on_every_match"`
+	AuditActionFilter string     `json:"audit_action_filter,omitempty"`
+	IsActive          bool       `json:"is_active"`
+	CreatedBy         *int64     `json:"created_by,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	LastFiredAt       *time.Time `json:"last_fired_at,omitempty"`
+	ChannelIDs        []int64    `json:"channel_ids"`
 }
 
 type AlertRequest struct {
-	Name              string                `json:"name" binding:"required,max=255"`
-	Description       string                `json:"description"`
-	RuleType          string                `json:"rule_type" binding:"required,oneof=log_threshold device_silence config_change"`
-	Severity          string                `json:"severity"`
-	DeviceIPs         []string              `json:"device_ips"`
-	ParserNames       []string              `json:"parser_names"`
-	FieldConditions   []AlertFieldCondition `json:"field_conditions"`
-	MessagePattern    string                `json:"message_pattern"`
-	Threshold         int                   `json:"threshold"`
-	WindowMinutes     int                   `json:"window_minutes"`
-	CooldownMinutes   int                   `json:"cooldown_minutes"`
-	FireOnEveryMatch  bool                  `json:"fire_on_every_match"`
-	AuditActionFilter string                `json:"audit_action_filter"`
-	IsActive          *bool                 `json:"is_active"`
-	ChannelIDs        []int64               `json:"channel_ids"`
+	Name                 string                `json:"name" binding:"required,max=255"`
+	Description          string                `json:"description"`
+	RuleType             string                `json:"rule_type" binding:"required,oneof=log_threshold device_silence config_change"`
+	Severity             string                `json:"severity"`
+	DeviceIPs            []string              `json:"device_ips"`
+	ParserNames          []string              `json:"parser_names"`
+	FieldConditions      []AlertFieldCondition `json:"field_conditions"`
+	FieldConditionsLogic string                `json:"field_conditions_logic"`
+	MessagePattern       string                `json:"message_pattern"`
+	Threshold            int                   `json:"threshold"`
+	WindowMinutes        int                   `json:"window_minutes"`
+	CooldownMinutes      int                   `json:"cooldown_minutes"`
+	FireOnEveryMatch     bool                  `json:"fire_on_every_match"`
+	AuditActionFilter    string                `json:"audit_action_filter"`
+	IsActive             *bool                 `json:"is_active"`
+	ChannelIDs           []int64               `json:"channel_ids"`
 }
 
 type NotificationChannel struct {

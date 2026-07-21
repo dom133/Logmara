@@ -53,12 +53,24 @@ func decodeParsedFields(raw []byte) map[string]string {
 	return fields
 }
 
-// matchFieldConditions reports whether every condition matches fields (AND
-// semantics). An empty condition list always matches. A condition whose
-// field is absent from fields never matches, regardless of operator.
-func matchFieldConditions(conditions []model.AlertFieldCondition, fields map[string]string) bool {
+// matchFieldConditions reports whether conditions match fields, combined
+// according to logic: model.FieldConditionsLogicOr requires only one
+// condition to match, anything else (including "") defaults to AND
+// semantics, requiring every condition to match. An empty condition list
+// always matches. A condition whose field is absent from fields never
+// matches, regardless of operator.
+func matchFieldConditions(conditions []model.AlertFieldCondition, fields map[string]string, logic string) bool {
 	if len(conditions) == 0 {
 		return true
+	}
+	if logic == model.FieldConditionsLogicOr {
+		for _, cond := range conditions {
+			val, ok := fields[cond.FieldName]
+			if ok && evaluateFieldCondition(cond, val) {
+				return true
+			}
+		}
+		return false
 	}
 	for _, cond := range conditions {
 		val, ok := fields[cond.FieldName]

@@ -143,7 +143,7 @@ func (e *Engine) EvaluateBatch(database *sql.DB, entries []model.IngestEntry) {
 			if !matchPattern(rule.MessagePattern, entry.Message) {
 				continue
 			}
-			if len(rule.FieldConditions) > 0 && !matchFieldConditions(rule.FieldConditions, decodeParsedFields(entry.ParsedFields)) {
+			if len(rule.FieldConditions) > 0 && !matchFieldConditions(rule.FieldConditions, decodeParsedFields(entry.ParsedFields), rule.FieldConditionsLogic) {
 				continue
 			}
 			matchedEntries = append(matchedEntries, entry)
@@ -236,6 +236,12 @@ func describeMatchedConditions(rule model.Alert, entry model.IngestEntry) []stri
 	if len(rule.FieldConditions) > 0 {
 		fields := decodeParsedFields(entry.ParsedFields)
 		for _, cond := range rule.FieldConditions {
+			// With OR logic only some conditions need to have matched -
+			// only describe the ones entry actually satisfied, so the
+			// history doesn't imply every condition applied.
+			if rule.FieldConditionsLogic == model.FieldConditionsLogicOr && !evaluateFieldCondition(cond, fields[cond.FieldName]) {
+				continue
+			}
 			lines = append(lines, fmt.Sprintf("Field %q %s %q (log value: %q)", cond.FieldName, cond.Operator, cond.Value, fields[cond.FieldName]))
 		}
 	}
