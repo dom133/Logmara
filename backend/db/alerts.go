@@ -2,8 +2,10 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/lib/pq"
 
@@ -473,12 +475,29 @@ func DecryptChannelSecret(database *sql.DB, id int64) (string, error) {
 // ---- Notification log ----
 
 func LogNotification(db *sql.DB, entry model.NotificationLogEntry) error {
+	var triggerLog, matchedConditions []byte
+	if entry.TriggerLog != nil {
+		triggerLog, _ = json.Marshal(entry.TriggerLog)
+	}
+	if len(entry.MatchedConditions) > 0 {
+		matchedConditions, _ = json.Marshal(entry.MatchedConditions)
+	}
 	_, err := db.Exec(
-		`INSERT INTO notification_log (alert_id, alert_name, channel_id, channel_name, channel_type, status, detail)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		`INSERT INTO notification_log (alert_id, alert_name, channel_id, channel_name, channel_type, status, detail, trigger_log, matched_conditions)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		entry.AlertID, entry.AlertName, entry.ChannelID, entry.ChannelName, entry.ChannelType, entry.Status, entry.Detail,
+		nullableJSON(triggerLog), nullableJSON(matchedConditions),
 	)
 	return err
+}
+
+// nullableJSON turns a nil/empty marshaled payload into a real SQL NULL
+// instead of storing the literal string "null" in a JSONB column.
+func nullableJSON(b []byte) interface{} {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
 }
 
 func GetNotificationHistory(db *sql.DB, limit int) ([]model.NotificationLogEntry, error) {
@@ -486,7 +505,7 @@ func GetNotificationHistory(db *sql.DB, limit int) ([]model.NotificationLogEntry
 		limit = 100
 	}
 	rows, err := db.Query(
-		`SELECT id, alert_id, alert_name, channel_id, channel_name, channel_type, status, detail, created_at
+		`SELECT id, alert_id, alert_name, channel_id, channel_name, channel_type, status, detail, trigger_log, matched_conditions, created_at
 		 FROM notification_log ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list notification history: %w", err)
@@ -497,10 +516,17 @@ func GetNotificationHistory(db *sql.DB, limit int) ([]model.NotificationLogEntry
 	for rows.Next() {
 		var e model.NotificationLogEntry
 		var detail sql.NullString
-		if err := rows.Scan(&e.ID, &e.AlertID, &e.AlertName, &e.ChannelID, &e.ChannelName, &e.ChannelType, &e.Status, &detail, &e.CreatedAt); err != nil {
+		var triggerLog, matchedConditions []byte
+		if err := rows.Scan(&e.ID, &e.AlertID, &e.AlertName, &e.ChannelID, &e.ChannelName, &e.ChannelType, &e.Status, &detail, &triggerLog, &matchedConditions, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan notification history entry: %w", err)
 		}
 		e.Detail = detail.String
+		if len(triggerLog) > 0 {
+			_ = json.Unmarshal(triggerLog, &e.TriggerLog)
+		}
+		if len(matchedConditions) > 0 {
+			_ = json.Unmarshal(matchedConditions, &e.MatchedConditions)
+		}
 		entries = append(entries, e)
 	}
 	return entries, nil
@@ -513,13 +539,19 @@ func ClearNotificationHistory(db *sql.DB) error {
 
 // ---- In-app notifications ----
 
-func CreateInAppNotification(db *sql.DB, alertID *int64, title, message, severity string) (int64, error) {
+// CreateInAppNotification inserts the notification and returns the id and
+// created_at Postgres actually assigned (DEFAULT NOW()) - callers need the
+// real value, not time.Now() from the app server, so the copy fanned out
+// over SSE shows the same timestamp GetInAppNotifications later returns for
+// the same row.
+func CreateInAppNotification(db *sql.DB, alertID *int64, title, message, severity string) (int64, time.Time, error) {
 	var id int64
+	var createdAt time.Time
 	err := db.QueryRow(
-		`INSERT INTO in_app_notifications (alert_id, title, message, severity) VALUES ($1, $2, $3, $4) RETURNING id`,
+		`INSERT INTO in_app_notifications (alert_id, title, message, severity) VALUES ($1, $2, $3, $4) RETURNING id, created_at`,
 		alertID, title, message, severity,
-	).Scan(&id)
-	return id, err
+	).Scan(&id, &createdAt)
+	return id, createdAt, err
 }
 
 func GetInAppNotifications(db *sql.DB, sinceID int64, limit int) ([]model.InAppNotification, error) {

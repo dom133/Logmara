@@ -104,6 +104,7 @@ func (d *Dispatcher) DispatchAlert(alert model.Alert, payload Payload) {
 		_ = db.LogNotification(d.DB, model.NotificationLogEntry{
 			AlertID: &alertID, AlertName: alert.Name,
 			ChannelName: "(none)", Status: "no_channel", Detail: "Rule fired but has no notification channels attached",
+			TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions,
 		})
 		return
 	}
@@ -117,11 +118,11 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName string, ch model.Noti
 	status, detail := "sent", ""
 
 	if ch.Type == model.ChannelTypeInApp {
-		id, err := db.CreateInAppNotification(d.DB, alertID, payload.Title, payload.Message, payload.Severity)
+		id, createdAt, err := db.CreateInAppNotification(d.DB, alertID, payload.Title, payload.Message, payload.Severity)
 		if err != nil {
 			status, detail = "failed", err.Error()
 		} else if d.OnInApp != nil {
-			d.OnInApp(model.InAppNotification{ID: id, AlertID: alertID, Title: payload.Title, Message: payload.Message, Severity: payload.Severity})
+			d.OnInApp(model.InAppNotification{ID: id, AlertID: alertID, Title: payload.Title, Message: payload.Message, Severity: payload.Severity, CreatedAt: createdAt})
 		}
 	} else if ch.Type == model.ChannelTypePush {
 		status, detail = sendPushChannel(d.DB, payload)
@@ -139,6 +140,7 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName string, ch model.Noti
 	_ = db.LogNotification(d.DB, model.NotificationLogEntry{
 		AlertID: alertID, AlertName: alertName, ChannelID: &ch.ID, ChannelName: ch.Name, ChannelType: ch.Type,
 		Status: status, Detail: detail,
+		TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions,
 	})
 }
 
@@ -173,12 +175,12 @@ func TestChannel(database *sql.DB, channel model.NotificationChannel, onInApp fu
 	}
 
 	if channel.Type == model.ChannelTypeInApp {
-		id, err := db.CreateInAppNotification(database, nil, payload.Title, payload.Message, payload.Severity)
+		id, createdAt, err := db.CreateInAppNotification(database, nil, payload.Title, payload.Message, payload.Severity)
 		if err != nil {
 			return err
 		}
 		if onInApp != nil {
-			onInApp(model.InAppNotification{ID: id, Title: payload.Title, Message: payload.Message, Severity: payload.Severity})
+			onInApp(model.InAppNotification{ID: id, Title: payload.Title, Message: payload.Message, Severity: payload.Severity, CreatedAt: createdAt})
 		}
 		return nil
 	}

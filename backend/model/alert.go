@@ -95,16 +95,32 @@ type NotificationChannelRequest struct {
 	Enabled *bool           `json:"enabled"`
 }
 
+// TriggerLogSnapshot is a self-contained copy of the log entry that caused
+// an alert to fire. It's stored alongside the notification log entry
+// (rather than just a reference to syslog_logs) so the alert history's
+// "Details" view still shows the triggering log after retention cleanup has
+// purged the original row.
+type TriggerLogSnapshot struct {
+	Timestamp  string `json:"timestamp"`
+	Hostname   string `json:"hostname"`
+	FromHostIP string `json:"fromhost_ip"`
+	AppName    string `json:"app_name,omitempty"`
+	Severity   string `json:"severity"`
+	Message    string `json:"message"`
+}
+
 type NotificationLogEntry struct {
-	ID          int64     `json:"id"`
-	AlertID     *int64    `json:"alert_id,omitempty"`
-	AlertName   string    `json:"alert_name"`
-	ChannelID   *int64    `json:"channel_id,omitempty"`
-	ChannelName string    `json:"channel_name"`
-	ChannelType string    `json:"channel_type"`
-	Status      string    `json:"status"`
-	Detail      string    `json:"detail,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID                int64               `json:"id"`
+	AlertID           *int64              `json:"alert_id,omitempty"`
+	AlertName         string              `json:"alert_name"`
+	ChannelID         *int64              `json:"channel_id,omitempty"`
+	ChannelName       string              `json:"channel_name"`
+	ChannelType       string              `json:"channel_type"`
+	Status            string              `json:"status"`
+	Detail            string              `json:"detail,omitempty"`
+	TriggerLog        *TriggerLogSnapshot `json:"trigger_log,omitempty"`
+	MatchedConditions []string            `json:"matched_conditions,omitempty"`
+	CreatedAt         time.Time           `json:"created_at"`
 }
 
 type InAppNotification struct {

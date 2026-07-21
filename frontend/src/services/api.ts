@@ -717,6 +717,15 @@ export async function testNotificationChannel(id: number) {
 	return res.data
 }
 
+export interface TriggerLogSnapshot {
+	timestamp: string
+	hostname: string
+	fromhost_ip: string
+	app_name?: string
+	severity: string
+	message: string
+}
+
 export interface NotificationLogEntry {
 	id: number
 	alert_id?: number
@@ -726,6 +735,8 @@ export interface NotificationLogEntry {
 	channel_type: string
 	status: 'sent' | 'failed'
 	detail?: string
+	trigger_log?: TriggerLogSnapshot
+	matched_conditions?: string[]
 	created_at: string
 }
 

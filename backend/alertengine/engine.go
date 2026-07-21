@@ -167,13 +167,61 @@ func (e *Engine) EvaluateBatch(database *sql.DB, entries []model.IngestEntry) {
 		}
 
 		_ = db.MarkAlertFired(database, rule.ID)
+		conditions := describeMatchedConditions(rule, lastEntry)
+		conditions = append(conditions, fmt.Sprintf("Threshold reached: %d matching log(s) within %d minute(s) (required: %d)", matched, rule.WindowMinutes, threshold))
 		e.dispatcher.DispatchAlert(rule, notify.Payload{
 			Title: fmt.Sprintf("Alert: %s", rule.Name),
 			Message: fmt.Sprintf("%d matching log entries in the last %d minute(s). Latest from %s: %s",
 				matched, rule.WindowMinutes, lastEntry.Hostname, lastEntry.Message),
-			Severity: notifySeverity(lastEntry.Severity),
+			Severity:          notifySeverity(lastEntry.Severity),
+			TriggerLog:        triggerLogSnapshot(lastEntry),
+			MatchedConditions: conditions,
 		})
 	}
+}
+
+// triggerLogSnapshot copies the fields of the log entry that triggered an
+// alert into a self-contained record, so it survives independently of
+// syslog_logs retention cleanup (see model.TriggerLogSnapshot).
+func triggerLogSnapshot(entry model.IngestEntry) *model.TriggerLogSnapshot {
+	return &model.TriggerLogSnapshot{
+		Timestamp:  entry.Timestamp,
+		Hostname:   entry.Hostname,
+		FromHostIP: entry.FromHostIP,
+		AppName:    entry.AppName,
+		Severity:   entry.Severity,
+		Message:    entry.Message,
+	}
+}
+
+// describeMatchedConditions lists which of the rule's filters entry
+// satisfied - entry is assumed to already pass every one of them (only
+// ever called with the representative entry from EvaluateBatch's matching
+// loop, which only advances lastEntry once every filter has passed). An
+// unrestricted rule (no severity/device/parser/pattern/field filters)
+// yields an empty list, since there was nothing besides the threshold to
+// satisfy.
+func describeMatchedConditions(rule model.Alert, entry model.IngestEntry) []string {
+	var lines []string
+	if rule.Severity != "" {
+		lines = append(lines, fmt.Sprintf("Severity %s or more severe (log severity: %s)", rule.Severity, entry.Severity))
+	}
+	if len(rule.DeviceIPs) > 0 {
+		lines = append(lines, fmt.Sprintf("Device is one of: %s (log device: %s)", strings.Join(rule.DeviceIPs, ", "), entry.FromHostIP))
+	}
+	if len(rule.ParserNames) > 0 {
+		lines = append(lines, fmt.Sprintf("Parser matches one of: %s (log parsers: %s)", strings.Join(rule.ParserNames, ", "), strings.Join(entry.MatchedParsers, ", ")))
+	}
+	if rule.MessagePattern != "" {
+		lines = append(lines, fmt.Sprintf("Message matches pattern: %q", rule.MessagePattern))
+	}
+	if len(rule.FieldConditions) > 0 {
+		fields := decodeParsedFields(entry.ParsedFields)
+		for _, cond := range rule.FieldConditions {
+			lines = append(lines, fmt.Sprintf("Field %q %s %q (log value: %q)", cond.FieldName, cond.Operator, cond.Value, fields[cond.FieldName]))
+		}
+	}
+	return lines
 }
 
 // EvaluateConfigChange fires any active config_change alert rule whose
@@ -202,10 +250,15 @@ func (e *Engine) EvaluateConfigChange(database *sql.DB, action, details string) 
 		}
 
 		_ = db.MarkAlertFired(database, rule.ID)
+		conditionDesc := "Any audit action (no filter set)"
+		if rule.AuditActionFilter != "" {
+			conditionDesc = fmt.Sprintf("Audit action matches: %s", rule.AuditActionFilter)
+		}
 		e.dispatcher.DispatchAlert(rule, notify.Payload{
-			Title:    fmt.Sprintf("Config change: %s", action),
-			Message:  fmt.Sprintf("Action '%s' was performed. %s", action, details),
-			Severity: "warning",
+			Title:             fmt.Sprintf("Config change: %s", action),
+			Message:           fmt.Sprintf("Action '%s' was performed. %s", action, details),
+			Severity:          "warning",
+			MatchedConditions: []string{conditionDesc, fmt.Sprintf("Action performed: %s", action)},
 		})
 	}
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Card, Table, Button, Tag, Space, Modal, Form, Input, InputNumber, Select, Switch, message, Popconfirm, Tabs, Typography, Descriptions } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined, EyeOutlined } from '@ant-design/icons'
+import { Card, Table, Button, Tag, Space, Modal, Form, Input, InputNumber, Select, Switch, message, Popconfirm, Tabs, Typography, Descriptions, List, Empty } from 'antd'
+import { PlusOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined, EyeOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import {
   getAlerts, createAlert, updateAlert, deleteAlert, Alert, AlertRequest, AlertRuleType, FieldConditionOperator,
   getNotificationChannels, createNotificationChannel, updateNotificationChannel, deleteNotificationChannel, testNotificationChannel,
@@ -10,6 +10,7 @@ import {
 } from '../services/api'
 import { useAuth } from '../services/auth'
 import { getErrorMessage } from '../utils/error'
+import SeverityTag from '../components/SeverityTag'
 
 const { Title, Text } = Typography
 
@@ -525,22 +526,70 @@ function HistoryTab({ isAdmin }: { isAdmin: boolean }) {
         open={!!viewing}
         onCancel={() => setViewing(null)}
         footer={<Button onClick={() => setViewing(null)}>Close</Button>}
-        width={{ sm: '90%', md: 560 }}
+        width={{ sm: '90%', md: 640 }}
       >
         {viewing && (
-          <Descriptions column={1} bordered size="small">
-            <Descriptions.Item label="Time">{new Date(viewing.created_at).toLocaleString()}</Descriptions.Item>
-            <Descriptions.Item label="Alert">{viewing.alert_name || '—'}</Descriptions.Item>
-            <Descriptions.Item label="Channel">{viewing.channel_name} ({viewing.channel_type})</Descriptions.Item>
-            <Descriptions.Item label="Status">
-              <Tag color={historyStatusColor[viewing.status] || 'default'}>{viewing.status}</Tag>
-            </Descriptions.Item>
-            <Descriptions.Item label="Detail">
-              <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable={!!viewing.detail}>
-                {viewing.detail || '—'}
-              </Typography.Paragraph>
-            </Descriptions.Item>
-          </Descriptions>
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Descriptions column={1} bordered size="small">
+              <Descriptions.Item label="Time">{new Date(viewing.created_at).toLocaleString()}</Descriptions.Item>
+              <Descriptions.Item label="Alert">{viewing.alert_name || '—'}</Descriptions.Item>
+              <Descriptions.Item label="Channel">{viewing.channel_name} ({viewing.channel_type})</Descriptions.Item>
+              <Descriptions.Item label="Status">
+                <Tag color={historyStatusColor[viewing.status] || 'default'}>{viewing.status}</Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="Detail">
+                <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable={!!viewing.detail}>
+                  {viewing.detail || '—'}
+                </Typography.Paragraph>
+              </Descriptions.Item>
+            </Descriptions>
+
+            <div>
+              <Text strong>Triggering log</Text>
+              <div style={{ marginTop: 8 }}>
+                {viewing.trigger_log ? (
+                  <Descriptions column={1} bordered size="small">
+                    <Descriptions.Item label="Time">{new Date(viewing.trigger_log.timestamp).toLocaleString()}</Descriptions.Item>
+                    <Descriptions.Item label="Severity"><SeverityTag severity={viewing.trigger_log.severity} /></Descriptions.Item>
+                    <Descriptions.Item label="Host">{viewing.trigger_log.hostname} ({viewing.trigger_log.fromhost_ip})</Descriptions.Item>
+                    {viewing.trigger_log.app_name && (
+                      <Descriptions.Item label="App">{viewing.trigger_log.app_name}</Descriptions.Item>
+                    )}
+                    <Descriptions.Item label="Message">
+                      <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable>
+                        {viewing.trigger_log.message}
+                      </Typography.Paragraph>
+                    </Descriptions.Item>
+                  </Descriptions>
+                ) : (
+                  <Empty description="No log entry associated with this notification (e.g. a config-change alert)" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                )}
+              </div>
+            </div>
+
+            <div>
+              <Text strong>Conditions met</Text>
+              <div style={{ marginTop: 8 }}>
+                {viewing.matched_conditions && viewing.matched_conditions.length > 0 ? (
+                  <List
+                    size="small"
+                    bordered
+                    dataSource={viewing.matched_conditions}
+                    renderItem={(item) => (
+                      <List.Item>
+                        <Space align="start">
+                          <CheckCircleOutlined style={{ color: '#52c41a', marginTop: 4 }} />
+                          <span>{item}</span>
+                        </Space>
+                      </List.Item>
+                    )}
+                  />
+                ) : (
+                  <Empty description="No condition breakdown recorded for this notification" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                )}
+              </div>
+            </div>
+          </Space>
         )}
       </Modal>
     </>
