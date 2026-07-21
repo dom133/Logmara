@@ -129,8 +129,7 @@ func (e *Engine) EvaluateBatch(database *sql.DB, entries []model.IngestEntry) {
 	}
 
 	for _, rule := range rules {
-		matched := 0
-		var lastEntry model.IngestEntry
+		var matchedEntries []model.IngestEntry
 		for _, entry := range entries {
 			if !meetsSeverity(entry.Severity, rule.Severity) {
 				continue
@@ -147,12 +146,31 @@ func (e *Engine) EvaluateBatch(database *sql.DB, entries []model.IngestEntry) {
 			if len(rule.FieldConditions) > 0 && !matchFieldConditions(rule.FieldConditions, decodeParsedFields(entry.ParsedFields)) {
 				continue
 			}
-			matched++
-			lastEntry = entry
+			matchedEntries = append(matchedEntries, entry)
 		}
-		if matched == 0 {
+		if len(matchedEntries) == 0 {
 			continue
 		}
+
+		if rule.FireOnEveryMatch {
+			// Every matching entry notifies on its own, bypassing the
+			// threshold/window/cooldown gate entirely.
+			for _, entry := range matchedEntries {
+				_ = db.MarkAlertFired(database, rule.ID)
+				conditions := describeMatchedConditions(rule, entry)
+				e.dispatcher.DispatchAlert(rule, notify.Payload{
+					Title:             fmt.Sprintf("Alert: %s", rule.Name),
+					Message:           fmt.Sprintf("Matching log entry from %s: %s", entry.Hostname, entry.Message),
+					Severity:          notifySeverity(entry.Severity),
+					TriggerLog:        triggerLogSnapshot(entry),
+					MatchedConditions: conditions,
+				})
+			}
+			continue
+		}
+
+		lastEntry := matchedEntries[len(matchedEntries)-1]
+		matched := len(matchedEntries)
 
 		threshold := rule.Threshold
 		if threshold <= 0 {

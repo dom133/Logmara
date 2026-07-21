@@ -49,6 +49,7 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
   const [editing, setEditing] = useState<Alert | null>(null)
   const [form] = Form.useForm()
   const ruleType = Form.useWatch('rule_type', form)
+  const fireOnEveryMatch = Form.useWatch('fire_on_every_match', form)
   const selectedParsers: string[] = Form.useWatch('parser_names', form) || []
   const selectedDevices: string[] = Form.useWatch('device_ips', form) || []
   const selectedDevicesKey = selectedDevices.join(',')
@@ -111,7 +112,7 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
     setEditing(null)
     form.resetFields()
     form.setFieldsValue({
-      rule_type: 'log_threshold', is_active: true, window_minutes: 5, cooldown_minutes: 15, threshold: 5,
+      rule_type: 'log_threshold', is_active: true, window_minutes: 5, cooldown_minutes: 15, threshold: 5, fire_on_every_match: false,
       channel_ids: [], device_ips: [], parser_names: [], field_conditions: [],
     })
     setModalOpen(true)
@@ -257,14 +258,20 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
                 </Form.List>
               </Form.Item>
 
-              <Space.Compact block>
-                <Form.Item name="threshold" label="Threshold (matches)" style={{ flex: 1 }} rules={[{ required: true }]}>
-                  <InputNumber min={1} style={{ width: '100%' }} />
-                </Form.Item>
-                <Form.Item name="window_minutes" label="Window (minutes)" style={{ flex: 1 }} rules={[{ required: true }]}>
-                  <InputNumber min={1} style={{ width: '100%' }} />
-                </Form.Item>
-              </Space.Compact>
+              <Form.Item name="fire_on_every_match" label="Fire on every match" valuePropName="checked" tooltip="Notify for every matching log entry as it arrives, instead of counting matches against a threshold. Ignores Threshold, Window, and Cooldown below.">
+                <Switch />
+              </Form.Item>
+
+              {!fireOnEveryMatch && (
+                <Space.Compact block>
+                  <Form.Item name="threshold" label="Threshold (matches)" style={{ flex: 1 }} rules={[{ required: true }]}>
+                    <InputNumber min={1} style={{ width: '100%' }} />
+                  </Form.Item>
+                  <Form.Item name="window_minutes" label="Window (minutes)" style={{ flex: 1 }} rules={[{ required: true }]}>
+                    <InputNumber min={1} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Space.Compact>
+              )}
             </>
           )}
 
@@ -280,9 +287,11 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
             </Form.Item>
           )}
 
-          <Form.Item name="cooldown_minutes" label="Cooldown (minutes)" tooltip="Minimum time between repeat notifications for this rule" rules={[{ required: true }]}>
-            <InputNumber min={1} style={{ width: '100%' }} />
-          </Form.Item>
+          {!(ruleType === 'log_threshold' && fireOnEveryMatch) && (
+            <Form.Item name="cooldown_minutes" label="Cooldown (minutes)" tooltip="Minimum time between repeat notifications for this rule" rules={[{ required: true }]}>
+              <InputNumber min={1} style={{ width: '100%' }} />
+            </Form.Item>
+          )}
           <Form.Item name="channel_ids" label="Notification Channels">
             <Select mode="multiple" options={channels.map(c => ({ value: c.id, label: `${c.name} (${channelTypeLabels[c.type]})` }))} />
           </Form.Item>

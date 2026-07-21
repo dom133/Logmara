@@ -627,6 +627,7 @@ export interface Alert {
 	threshold: number
 	window_minutes: number
 	cooldown_minutes: number
+	fire_on_every_match: boolean
 	audit_action_filter?: string
 	is_active: boolean
 	created_by?: number
@@ -648,6 +649,7 @@ export interface AlertRequest {
 	threshold?: number
 	window_minutes?: number
 	cooldown_minutes?: number
+	fire_on_every_match?: boolean
 	audit_action_filter?: string
 	is_active?: boolean
 	channel_ids?: number[]

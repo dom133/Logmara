@@ -50,6 +50,10 @@ type Alert struct {
 	Threshold         int                   `json:"threshold"`
 	WindowMinutes     int                   `json:"window_minutes"`
 	CooldownMinutes   int                   `json:"cooldown_minutes"`
+	// FireOnEveryMatch, when set, makes a log_threshold rule notify once per
+	// matching log entry instead of accumulating matches against Threshold/
+	// WindowMinutes and gating repeats behind CooldownMinutes.
+	FireOnEveryMatch  bool                  `json:"fire_on_every_match"`
 	AuditActionFilter string                `json:"audit_action_filter,omitempty"`
 	IsActive          bool                  `json:"is_active"`
 	CreatedBy         *int64                `json:"created_by,omitempty"`
@@ -71,6 +75,7 @@ type AlertRequest struct {
 	Threshold         int                   `json:"threshold"`
 	WindowMinutes     int                   `json:"window_minutes"`
 	CooldownMinutes   int                   `json:"cooldown_minutes"`
+	FireOnEveryMatch  bool                  `json:"fire_on_every_match"`
 	AuditActionFilter string                `json:"audit_action_filter"`
 	IsActive          *bool                 `json:"is_active"`
 	ChannelIDs        []int64               `json:"channel_ids"`
