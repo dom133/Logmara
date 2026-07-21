@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"syslog-gui/sharedstate"
+	"syslytics/sharedstate"
 )
 
 type SlowQueryRecord struct {

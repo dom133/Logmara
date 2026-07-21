@@ -12,7 +12,7 @@ import (
 
 	"github.com/lib/pq"
 
-	"syslog-gui/model"
+	"syslytics/model"
 )
 
 type Engine struct {

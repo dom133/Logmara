@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"syslog-gui/db"
-	"syslog-gui/model"
-	"syslog-gui/notify"
-	"syslog-gui/sharedstate"
+	"syslytics/db"
+	"syslytics/model"
+	"syslytics/notify"
+	"syslytics/sharedstate"
 )
 
 var severityRank = map[string]int{

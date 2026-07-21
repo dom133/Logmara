@@ -12,7 +12,7 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 
-	"syslog-gui/db"
+	"syslytics/db"
 )
 
 // vapidSubject identifies this server to push services per RFC 8292. It

@@ -14,11 +14,11 @@ import (
 	"time"
 
 	"github.com/lib/pq"
-	"syslog-gui/alertengine"
-	"syslog-gui/control"
-	"syslog-gui/model"
-	"syslog-gui/parser"
-	"syslog-gui/sharedstate"
+	"syslytics/alertengine"
+	"syslytics/control"
+	"syslytics/model"
+	"syslytics/parser"
+	"syslytics/sharedstate"
 )
 
 const (

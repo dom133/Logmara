@@ -3,7 +3,7 @@ package alertengine
 import (
 	"testing"
 
-	"syslog-gui/model"
+	"syslytics/model"
 )
 
 func TestMatchDevice(t *testing.T) {

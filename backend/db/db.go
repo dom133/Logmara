@@ -15,8 +15,8 @@ import (
 
 	_ "github.com/lib/pq"
 
-	"syslog-gui/db/parsers"
-	"syslog-gui/util"
+	"syslytics/db/parsers"
+	"syslytics/util"
 )
 
 var appStarting atomic.Bool

@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"syslog-gui/audit"
-	"syslog-gui/auth"
-	"syslog-gui/control"
-	"syslog-gui/db"
-	"syslog-gui/ldap"
+	"syslytics/audit"
+	"syslytics/auth"
+	"syslytics/control"
+	"syslytics/db"
+	"syslytics/ldap"
 
 	"github.com/gin-gonic/gin"
 )

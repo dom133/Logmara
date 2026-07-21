@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"syslog-gui/db"
-	"syslog-gui/model"
+	"syslytics/db"
+	"syslytics/model"
 )
 
 // BuildNotifier constructs the Sender for a channel given its decrypted
@@ -182,7 +182,7 @@ func sendPushChannel(database *sql.DB, payload Payload) (status, detail string) 
 func TestChannel(database *sql.DB, channel model.NotificationChannel, onInApp func(model.InAppNotification)) error {
 	payload := Payload{
 		Title:    "Test notification",
-		Message:  "This is a test notification from SysLog GUI.",
+		Message:  "This is a test notification from Syslytics.",
 		Severity: "info",
 	}
 

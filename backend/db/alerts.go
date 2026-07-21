@@ -9,8 +9,8 @@ import (
 
 	"github.com/lib/pq"
 
-	"syslog-gui/model"
-	"syslog-gui/util"
+	"syslytics/model"
+	"syslytics/util"
 )
 
 func encryptionKey(db *sql.DB) string {

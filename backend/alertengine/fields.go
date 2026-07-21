@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"syslog-gui/model"
+	"syslytics/model"
 )
 
 // matchDevice reports whether fromHostIP is one of the rule's selected

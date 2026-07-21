@@ -10,11 +10,11 @@ import (
 	"strconv"
 	"time"
 
-	"syslog-gui/auth"
-	"syslog-gui/db"
-	"syslog-gui/middleware"
-	"syslog-gui/model"
-	"syslog-gui/util"
+	"syslytics/auth"
+	"syslytics/db"
+	"syslytics/middleware"
+	"syslytics/model"
+	"syslytics/util"
 
 	"github.com/gin-gonic/gin"
 )

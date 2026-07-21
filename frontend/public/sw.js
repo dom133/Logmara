@@ -1,7 +1,7 @@
 // Minimal service worker: makes the app installable and delivers Web Push
 // notifications. Deliberately does not cache API responses (/api/**) - the
 // app is a live log viewer, stale data would be actively misleading.
-const CACHE_NAME = 'syslog-gui-shell-v1'
+const CACHE_NAME = 'syslytics-shell-v1'
 const SHELL_ASSETS = ['/', '/manifest.webmanifest']
 
 self.addEventListener('install', (event) => {
@@ -44,7 +44,7 @@ self.addEventListener('fetch', (event) => {
 })
 
 self.addEventListener('push', (event) => {
-  let payload = { title: 'SysLog GUI', body: 'You have a new notification.' }
+  let payload = { title: 'Syslytics', body: 'You have a new notification.' }
   if (event.data) {
     try {
       payload = { ...payload, ...event.data.json() }
@@ -62,12 +62,12 @@ self.addEventListener('push', (event) => {
     body: payload.body || payload.message || '',
     icon: '/icons/icon-192.png',
     badge: '/icons/icon-192.png',
-    tag: payload.tag || `syslog-gui-alert-${Date.now()}`,
+    tag: payload.tag || `syslytics-alert-${Date.now()}`,
     renotify: !!payload.tag,
     data: { url: payload.url || payload.link || '/' },
   }
 
-  event.waitUntil(self.registration.showNotification(payload.title || 'SysLog GUI', options))
+  event.waitUntil(self.registration.showNotification(payload.title || 'Syslytics', options))
 })
 
 self.addEventListener('notificationclick', (event) => {

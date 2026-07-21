@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"syslog-gui/sharedstate"
+	"syslytics/sharedstate"
 )
 
 const redisOpTimeout = 2 * time.Second

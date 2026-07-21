@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"syslog-gui/middleware"
-	"syslog-gui/model"
+	"syslytics/middleware"
+	"syslytics/model"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"

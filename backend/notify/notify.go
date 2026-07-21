@@ -1,6 +1,6 @@
 package notify
 
-import "syslog-gui/model"
+import "syslytics/model"
 
 // Payload is a single notification event, independent of which channel
 // type ends up delivering it.

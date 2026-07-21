@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"time"
 
-	"syslog-gui/audit"
-	"syslog-gui/auth"
-	"syslog-gui/db"
-	"syslog-gui/ldap"
+	"syslytics/audit"
+	"syslytics/auth"
+	"syslytics/db"
+	"syslytics/ldap"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"

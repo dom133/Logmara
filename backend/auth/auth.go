@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"time"
 
-	"syslog-gui/db"
+	"syslytics/db"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"

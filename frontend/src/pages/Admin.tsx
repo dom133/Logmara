@@ -515,7 +515,7 @@ const handleCleanup = async () => {
                       <Input.Password disabled={!smtpEnabled} />
                     </Form.Item>
                     <Form.Item label="From Address" name="smtp_from">
-                      <Input placeholder="syslog-gui@example.com" disabled={!smtpEnabled} />
+                      <Input placeholder="syslytics@example.com" disabled={!smtpEnabled} />
                     </Form.Item>
                     <Form.Item label="Use STARTTLS" name="smtp_use_tls" valuePropName="checked">
                       <Switch disabled={!smtpEnabled} />

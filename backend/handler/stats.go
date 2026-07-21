@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"syslog-gui/model"
+	"syslytics/model"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"

@@ -8,11 +8,11 @@ import (
 	"strconv"
 	"time"
 
-	"syslog-gui/db"
-	"syslog-gui/middleware"
-	"syslog-gui/model"
-	"syslog-gui/notify"
-	"syslog-gui/notifyhub"
+	"syslytics/db"
+	"syslytics/middleware"
+	"syslytics/model"
+	"syslytics/notify"
+	"syslytics/notifyhub"
 
 	"github.com/gin-gonic/gin"
 )

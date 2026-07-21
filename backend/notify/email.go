@@ -30,7 +30,7 @@ func (n *EmailNotifier) Send(payload Payload) error {
 	}
 
 	addr := fmt.Sprintf("%s:%s", n.SMTP.Host, n.SMTP.Port)
-	subject := fmt.Sprintf("[SysLog GUI] %s", payload.Title)
+	subject := fmt.Sprintf("[Syslytics] %s", payload.Title)
 	body := payload.Message
 	if payload.Link != "" {
 		body += "\n\n" + payload.Link

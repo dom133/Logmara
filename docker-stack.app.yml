@@ -7,10 +7,10 @@
 # Swarm `docker stack deploy` does NOT build images (no `build:` support),
 # so images must be built and pushed to a registry every node can pull from
 # first:
-#   docker build -f Dockerfile.backend  -t ${REGISTRY:?}/syslog-gui-api:${TAG:-latest} .
-#   docker build -f Dockerfile.rsyslog  -t ${REGISTRY:?}/syslog-gui-rsyslog:${TAG:-latest} .
-#   docker build -f Dockerfile.frontend -t ${REGISTRY:?}/syslog-gui-frontend:${TAG:-latest} .
-#   docker push ${REGISTRY:?}/syslog-gui-api:${TAG:-latest}   (repeat for the other two)
+#   docker build -f Dockerfile.backend  -t ${REGISTRY:?}/syslytics-api:${TAG:-latest} .
+#   docker build -f Dockerfile.rsyslog  -t ${REGISTRY:?}/syslytics-rsyslog:${TAG:-latest} .
+#   docker build -f Dockerfile.frontend -t ${REGISTRY:?}/syslytics-frontend:${TAG:-latest} .
+#   docker push ${REGISTRY:?}/syslytics-api:${TAG:-latest}   (repeat for the other two)
 #
 # `api` and `frontend` run 2 replicas each (see API_REPLICAS/FRONTEND_
 # REPLICAS below to change that). This requires docker-stack.redis.yml to
@@ -61,7 +61,7 @@ version: "3.8"
 
 services:
   rsyslog:
-    image: ${REGISTRY:?set REGISTRY to your image registry}/syslog-gui-rsyslog:${TAG:-latest}
+    image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-rsyslog:${TAG:-latest}
     environment:
       - TZ=${TZ:-Europe/Warsaw}
     volumes:
@@ -99,7 +99,7 @@ services:
         condition: on-failure
 
   api:
-    image: ${REGISTRY:?set REGISTRY to your image registry}/syslog-gui-api:${TAG:-latest}
+    image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-api:${TAG:-latest}
     environment:
       # api reads these directly via os.Getenv (backend/auth/auth.go:29 etc.)
       # — unlike the spilo Postgres image, this backend has no _FILE/Docker-
@@ -155,7 +155,7 @@ services:
           memory: 512M
 
   frontend:
-    image: ${REGISTRY:?set REGISTRY to your image registry}/syslog-gui-frontend:${TAG:-latest}
+    image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-frontend:${TAG:-latest}
     volumes:
       - log_data:/data
     ports:

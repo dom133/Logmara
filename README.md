@@ -1,4 +1,4 @@
-# SysLog GUI
+# Syslytics
 
 Web-based syslog monitoring, parsing, and visualization platform with Docker Compose deployment.
 
@@ -234,15 +234,15 @@ ssh pg1
 git clone https://gitlab.dom133.xyz/dominik.kruszewski/syslog_gui.git
 cd syslog_gui
 
-export REGISTRY=registry.example.com/syslog-gui TAG=v1
-docker build -f Dockerfile.backend  -t $REGISTRY/syslog-gui-api:$TAG .
-docker build -f Dockerfile.rsyslog  -t $REGISTRY/syslog-gui-rsyslog:$TAG .
-docker build -f Dockerfile.frontend -t $REGISTRY/syslog-gui-frontend:$TAG .
-docker build -f Dockerfile.patroni  -t $REGISTRY/syslog-gui-patroni:$TAG .
-docker push $REGISTRY/syslog-gui-api:$TAG
-docker push $REGISTRY/syslog-gui-rsyslog:$TAG
-docker push $REGISTRY/syslog-gui-frontend:$TAG
-docker push $REGISTRY/syslog-gui-patroni:$TAG
+export REGISTRY=registry.example.com/syslytics TAG=v1
+docker build -f Dockerfile.backend  -t $REGISTRY/syslytics-api:$TAG .
+docker build -f Dockerfile.rsyslog  -t $REGISTRY/syslytics-rsyslog:$TAG .
+docker build -f Dockerfile.frontend -t $REGISTRY/syslytics-frontend:$TAG .
+docker build -f Dockerfile.patroni  -t $REGISTRY/syslytics-patroni:$TAG .
+docker push $REGISTRY/syslytics-api:$TAG
+docker push $REGISTRY/syslytics-rsyslog:$TAG
+docker push $REGISTRY/syslytics-frontend:$TAG
+docker push $REGISTRY/syslytics-patroni:$TAG
 ```
 
 #### 5. Initialize the swarm and join the other nodes
@@ -329,7 +329,7 @@ Sanity-check leader election worked: `docker exec -it $(docker ps -qf name=syslo
 Still on `pg1` (or wherever you're driving `docker stack deploy` from), export the values from step 7:
 
 ```bash
-export REGISTRY=registry.example.com/syslog-gui TAG=v1
+export REGISTRY=registry.example.com/syslytics TAG=v1
 export NFS_SERVER=10.0.0.30
 export JWT_SECRET=$(openssl rand -base64 48)
 export ADMIN_PASSWORD=$(openssl rand -base64 16)
@@ -387,7 +387,7 @@ Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizar
 ## Parser Creation Guide
 
 ### Overview
-The syslog-gui includes a powerful regex-based parser engine that allows you to extract structured data from raw syslog messages. Parsers can be created directly through the web interface or via API endpoints.
+Syslytics includes a powerful regex-based parser engine that allows you to extract structured data from raw syslog messages. Parsers can be created directly through the web interface or via API endpoints.
 
 ### Creating a Parser
 1. Navigate to the **Admin Panel** → **Parsers**
@@ -589,7 +589,7 @@ npm run dev
 
 ## Parser Engine
 
-The syslog-gui includes a robust parser engine that allows you to extract structured data from raw syslog messages using regular expressions.
+Syslytics includes a robust parser engine that allows you to extract structured data from raw syslog messages using regular expressions.
 
 ### How Parsers Work
 1. **Pattern Matching**: Parsers match incoming log messages based on hostname, IP address, or regex patterns
