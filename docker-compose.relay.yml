@@ -6,7 +6,7 @@
 # clients' VLAN and run it there, on its own.
 #
 # Deploy:
-#   1. On the central server, Admin > Settings > enable "Relay logów (VLAN)".
+#   1. On the central server, Admin > Settings > enable "Enable Syslog Relay Ingestion".
 #   2. Admin > Syslog Relay > Certyfikaty: generate a certificate for this
 #      relay (label + this host's IP as seen by the central server) and
 #      download the resulting syslog-relay-<label>.tar.gz - the private key

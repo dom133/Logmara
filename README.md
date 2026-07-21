@@ -388,13 +388,13 @@ Each relay reuses the same JSON conversion the central server already does local
 
 - **mTLS**: the central server runs its own internal CA (generated automatically the first time you use this feature — see `backend/relaypki`). Every relay gets a client certificate signed by that CA; the central listener rejects any connection without a valid one.
 - **IP whitelist**: a valid certificate alone isn't enough — the peer's IP must also be on the whitelist (Admin > Syslog Relay > Whitelist IP). Together these mean only a relay you've explicitly approved, from an IP you've explicitly approved, gets in.
-- There's no X.509 CRL/OCSP in this implementation — "revoking" a certificate (Admin > Syslog Relay > Certyfikaty > Odwołaj) removes its whitelist entry, which is what actually cuts it off. The certificate itself stays cryptographically valid but can no longer reach the listener.
+- There's no X.509 CRL/OCSP in this implementation — "revoking" a certificate (Admin > Syslog Relay > Certificates > Revoke) removes its whitelist entry, which is what actually cuts it off. The certificate itself stays cryptographically valid but can no longer reach the listener.
 - The private key for a relay's certificate is generated on the server but **never stored** there — it's handed to you exactly once, in the `.tar.gz` bundle the browser downloads when you generate it. If you lose it, revoke that certificate and generate a new one; there's no way to re-download the old key.
 
 ### Enabling it
 
-1. Admin > Settings > **Syslog Relay** > turn on "Relay logów (VLAN)". This starts accepting mTLS connections on port 6514 (still gated by the whitelist below, so nothing gets in until you add a relay).
-2. A new **Syslog Relay** entry appears in the sidebar. Open it > **Certyfikaty** > "Generuj certyfikat", give the relay a label and the IP it will connect from (as seen by the central server), and confirm. The browser downloads `syslog-relay-<label>.tar.gz` — save it now, this is the only copy.
+1. Admin > Settings > **Syslog Relay** > turn on "Enable Syslog Relay Ingestion". This starts accepting mTLS connections on port 6514 (still gated by the whitelist below, so nothing gets in until you add a relay).
+2. A new **Syslog Relay** entry appears in the sidebar. Open it > **Certificates** > "Generate Certificate", give the relay a label and the IP it will connect from (as seen by the central server), and confirm. The browser downloads `syslog-relay-<label>.tar.gz` — save it now, this is the only copy.
 3. Copy that file to the small server you're deploying in the client VLAN, alongside `docker-compose.relay.yml` and `Dockerfile.rsyslog-relay` from this repo:
    ```bash
    mkdir -p relay-bundle && tar xzf syslog-relay-<label>.tar.gz -C relay-bundle
@@ -402,7 +402,7 @@ Each relay reuses the same JSON conversion the central server already does local
    ```
 4. Point the devices in that VLAN at the relay's IP on port 514 (tcp or udp), same as you would the central server directly.
 
-If `RELAY_CENTRAL_HOST` isn't set on the central server's `api` service, the generated `relay.conf` ships with a `<CENTRAL_HOST>` placeholder — edit it in the extracted bundle before starting the relay.
+The target host baked into every generated `relay.conf` comes from, in order: the **Central Server Address** field under Admin > Settings > Syslog Relay (only editable once ingestion is enabled), then the `RELAY_CENTRAL_HOST` env var on the central server's `api` service, then `127.0.0.1` if neither is set — which only makes sense for same-host testing, so set one of the first two for any real cross-VLAN deployment.
 
 ### Firewall
 

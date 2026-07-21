@@ -84,16 +84,16 @@ export default function SyslogRelay() {
       setCertModalOpen(false)
       certForm.resetFields()
       Modal.warning({
-        title: 'Zapisz ten plik teraz',
+        title: 'Save this file now',
         width: 520,
         content: (
           <div>
             <Paragraph>
-              Pobrano <Text code>{filename}</Text>. Zawiera klucz prywatny relaya (<Text code>client.key</Text>) -
-              serwer go nie przechowuje i <Text strong>nie da się go pobrać ponownie</Text>.
+              Downloaded <Text code>{filename}</Text>. It contains the relay's private key (<Text code>client.key</Text>) -
+              the server doesn't store it, and <Text strong>it cannot be downloaded again</Text>.
             </Paragraph>
             <Paragraph>
-              Jeśli zgubisz ten plik, jedyną opcją jest odwołanie tego certyfikatu i wygenerowanie nowego.
+              If you lose this file, the only option is to revoke this certificate and generate a new one.
             </Paragraph>
           </div>
         ),
@@ -120,24 +120,24 @@ export default function SyslogRelay() {
 
   const whitelistColumns = [
     { title: 'IP', dataIndex: 'ip_address', key: 'ip_address' },
-    { title: 'Etykieta', dataIndex: 'label', key: 'label' },
+    { title: 'Label', dataIndex: 'label', key: 'label' },
     {
-      title: 'Powiązany certyfikat',
+      title: 'Linked Certificate',
       dataIndex: 'relay_cert_id',
       key: 'relay_cert_id',
-      render: (id?: number) => id ? <Tag color="blue">#{id}</Tag> : <Text type="secondary">brak</Text>,
+      render: (id?: number) => id ? <Tag color="blue">#{id}</Tag> : <Text type="secondary">none</Text>,
     },
     {
-      title: 'Dodano',
+      title: 'Added',
       dataIndex: 'created_at',
       key: 'created_at',
       render: (date: string) => new Date(date).toLocaleString(),
     },
     {
-      title: 'Akcje',
+      title: 'Actions',
       key: 'actions',
       render: (_v: unknown, record: RelayWhitelistEntry) => (
-        <Popconfirm title="Usunąć wpis z whitelisty?" okText="Tak" cancelText="Nie" onConfirm={() => handleDeleteWhitelist(record.id)}>
+        <Popconfirm title="Remove this whitelist entry?" okText="Yes" cancelText="No" onConfirm={() => handleDeleteWhitelist(record.id)}>
           <Button size="small" danger icon={<DeleteOutlined />} />
         </Popconfirm>
       ),
@@ -145,38 +145,38 @@ export default function SyslogRelay() {
   ]
 
   const certColumns = [
-    { title: 'Etykieta', dataIndex: 'label', key: 'label' },
+    { title: 'Label', dataIndex: 'label', key: 'label' },
     {
       title: 'Status',
       dataIndex: 'status',
       key: 'status',
-      render: (status: string) => <Tag color={status === 'issued' ? 'green' : 'red'}>{status === 'issued' ? 'wydany' : 'odwołany'}</Tag>,
+      render: (status: string) => <Tag color={status === 'issued' ? 'green' : 'red'}>{status === 'issued' ? 'issued' : 'revoked'}</Tag>,
     },
     {
-      title: 'Odcisk (SHA-256)',
+      title: 'Fingerprint (SHA-256)',
       dataIndex: 'fingerprint_sha256',
       key: 'fingerprint_sha256',
       render: (fp: string) => <Text code style={{ fontSize: 12 }}>{fp.slice(0, 16)}…</Text>,
     },
     {
-      title: 'Wydano',
+      title: 'Issued',
       dataIndex: 'issued_at',
       key: 'issued_at',
       render: (date: string) => new Date(date).toLocaleString(),
     },
     {
-      title: 'Akcje',
+      title: 'Actions',
       key: 'actions',
       render: (_v: unknown, record: RelayCertificate) => (
         record.status === 'issued' ? (
           <Popconfirm
-            title="Odwołać ten certyfikat?"
-            description="Powiązany wpis whitelisty zostanie usunięty - relay straci dostęp natychmiast."
-            okText="Tak, odwołaj"
-            cancelText="Nie"
+            title="Revoke this certificate?"
+            description="Its linked whitelist entry will be removed - the relay loses access immediately."
+            okText="Yes, revoke"
+            cancelText="No"
             onConfirm={() => handleRevokeCert(record.id)}
           >
-            <Button size="small" danger>Odwołaj</Button>
+            <Button size="small" danger>Revoke</Button>
           </Popconfirm>
         ) : <Text type="secondary">-</Text>
       ),
@@ -187,7 +187,7 @@ export default function SyslogRelay() {
     <div>
       <Card style={{ marginBottom: 16 }}>
         <h2 style={{ margin: 0 }}>Syslog Relay</h2>
-        <Text type="secondary">Zarządzanie relayami syslog dla wdrożeń wielo-VLAN (mTLS + whitelist IP)</Text>
+        <Text type="secondary">Manage syslog relays for multi-VLAN deployments (mTLS + IP whitelist). Central server address is set under Admin &gt; Settings &gt; Syslog Relay.</Text>
       </Card>
 
       <Tabs
@@ -198,14 +198,14 @@ export default function SyslogRelay() {
             label: 'Whitelist IP',
             children: (
               <Card
-                title="Dozwolone adresy IP relayów"
-                extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setWhitelistModalOpen(true)}>Dodaj IP</Button>}
+                title="Allowed relay IP addresses"
+                extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setWhitelistModalOpen(true)}>Add IP</Button>}
               >
                 <Alert
                   style={{ marginBottom: 16 }}
                   type="info"
                   showIcon
-                  message="Tylko połączenia z adresu IP na tej liście, prezentujące certyfikat podpisany przez CA tego serwera, są akceptowane na porcie mTLS (6514). Wszystko inne jest odrzucane."
+                  message="Only connections from an IP on this list, presenting a certificate signed by this server's CA, are accepted on the mTLS port (6514). Everything else is dropped."
                 />
                 <Table
                   rowKey="id"
@@ -219,17 +219,17 @@ export default function SyslogRelay() {
           },
           {
             key: 'certificates',
-            label: 'Certyfikaty',
+            label: 'Certificates',
             children: (
               <Card
-                title="Certyfikaty relayów"
-                extra={<Button type="primary" icon={<SafetyCertificateOutlined />} onClick={() => setCertModalOpen(true)}>Generuj certyfikat</Button>}
+                title="Relay certificates"
+                extra={<Button type="primary" icon={<SafetyCertificateOutlined />} onClick={() => setCertModalOpen(true)}>Generate Certificate</Button>}
               >
                 <Alert
                   style={{ marginBottom: 16 }}
                   type="warning"
                   showIcon
-                  message="Klucz prywatny jest widoczny tylko raz, w chwili generowania. Serwer go nie przechowuje - w razie zgubienia jedyną opcją jest odwołanie certyfikatu i wygenerowanie nowego."
+                  message="The private key is only ever shown once, at generation time. The server doesn't store it - if it's lost, the only option is to revoke the certificate and generate a new one."
                 />
                 <Table
                   rowKey="id"
@@ -245,46 +245,46 @@ export default function SyslogRelay() {
       />
 
       <Modal
-        title="Dodaj IP do whitelisty"
+        title="Add IP to whitelist"
         open={whitelistModalOpen}
         onOk={handleAddWhitelist}
         onCancel={() => { setWhitelistModalOpen(false); whitelistForm.resetFields() }}
         confirmLoading={whitelistSaving}
-        okText="Dodaj"
-        cancelText="Anuluj"
+        okText="Add"
+        cancelText="Cancel"
       >
         <Form form={whitelistForm} layout="vertical">
-          <Form.Item label="Adres IP relaya" name="ip_address" rules={[{ required: true, message: 'Wymagane' }]}>
-            <Input placeholder="np. 10.20.0.10" />
+          <Form.Item label="Relay IP address" name="ip_address" rules={[{ required: true, message: 'Required' }]}>
+            <Input placeholder="e.g. 10.20.0.10" />
           </Form.Item>
-          <Form.Item label="Etykieta" name="label" rules={[{ required: true, message: 'Wymagane' }]}>
-            <Input placeholder="np. relay-vlan-b" />
+          <Form.Item label="Label" name="label" rules={[{ required: true, message: 'Required' }]}>
+            <Input placeholder="e.g. relay-vlan-b" />
           </Form.Item>
         </Form>
       </Modal>
 
       <Modal
-        title="Generuj certyfikat relaya"
+        title="Generate relay certificate"
         open={certModalOpen}
         onOk={handleGenerateCert}
         onCancel={() => { setCertModalOpen(false); certForm.resetFields() }}
         confirmLoading={certGenerating}
-        okText="Generuj i pobierz"
-        cancelText="Anuluj"
+        okText="Generate & Download"
+        cancelText="Cancel"
         okButtonProps={{ icon: <DownloadOutlined /> }}
       >
         <Space direction="vertical" style={{ width: '100%' }}>
           <Alert
             type="info"
             showIcon
-            message="Wygeneruje certyfikat kliencki podpisany przez CA tego serwera oraz doda podany adres IP do whitelisty. Paczka (ca.crt, client.crt, client.key, relay.conf) zostanie pobrana automatycznie - tylko ten jeden raz."
+            message="This will generate a client certificate signed by this server's CA and add the given IP address to the whitelist. The bundle (ca.crt, client.crt, client.key, relay.conf) downloads automatically - this one time only."
           />
           <Form form={certForm} layout="vertical" style={{ width: '100%' }}>
-            <Form.Item label="Etykieta relaya" name="label" rules={[{ required: true, message: 'Wymagane' }]}>
-              <Input placeholder="np. relay-vlan-b" />
+            <Form.Item label="Relay label" name="label" rules={[{ required: true, message: 'Required' }]}>
+              <Input placeholder="e.g. relay-vlan-b" />
             </Form.Item>
-            <Form.Item label="Adres IP relaya" name="ip_address" rules={[{ required: true, message: 'Wymagane' }]}>
-              <Input placeholder="np. 10.20.0.10" />
+            <Form.Item label="Relay IP address" name="ip_address" rules={[{ required: true, message: 'Required' }]}>
+              <Input placeholder="e.g. 10.20.0.10" />
             </Form.Item>
           </Form>
         </Space>

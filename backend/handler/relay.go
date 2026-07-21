@@ -301,7 +301,7 @@ func CreateRelayCertificate(database *sql.DB) gin.HandlerFunc {
 			slog.Warn("relay config sync failed after certificate issue", "error", err)
 		}
 
-		bundle, err := buildRelayBundle(issued, req.Label)
+		bundle, err := buildRelayBundle(database, issued, req.Label)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to build certificate bundle", err))
 			return
@@ -342,7 +342,7 @@ func RevokeRelayCertificate(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func buildRelayBundle(issued *relaypki.IssuedCert, label string) ([]byte, error) {
+func buildRelayBundle(database *sql.DB, issued *relaypki.IssuedCert, label string) ([]byte, error) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
@@ -354,7 +354,7 @@ func buildRelayBundle(issued *relaypki.IssuedCert, label string) ([]byte, error)
 		{"ca.crt", issued.CAPEM},
 		{"client.crt", issued.CertPEM},
 		{"client.key", issued.KeyPEM},
-		{"relay.conf", relayConfSnippet(label)},
+		{"relay.conf", relayConfSnippet(database, label)},
 	}
 	for _, f := range files {
 		hdr := &tar.Header{Name: f.name, Mode: 0600, Size: int64(len(f.data))}
@@ -377,13 +377,20 @@ func buildRelayBundle(issued *relaypki.IssuedCert, label string) ([]byte, error)
 // relayConfSnippet is a ready-to-use rsyslog config for the relay side:
 // listens on 514/tcp+udp like the standalone single-server rsyslog
 // (rsyslog/syslog.conf), but forwards over mTLS instead of writing a local
-// file. RELAY_CENTRAL_HOST should be set to this server's address reachable
-// from the relay's VLAN; when unset, a placeholder is left for the admin to
-// fill in.
-func relayConfSnippet(label string) []byte {
-	host := os.Getenv("RELAY_CENTRAL_HOST")
+// file. The target host is this server's address reachable from the
+// relay's VLAN, resolved in order: the "relay_central_host" setting
+// (Admin > Syslog Relay), then the RELAY_CENTRAL_HOST env var, then
+// "127.0.0.1" - always a syntactically valid address rather than a
+// placeholder the admin might forget to replace, but 127.0.0.1 only makes
+// sense for same-host testing; a real cross-VLAN deployment needs one of
+// the first two set.
+func relayConfSnippet(database *sql.DB, label string) []byte {
+	host := db.GetSetting(database, "relay_central_host", "")
 	if host == "" {
-		host = "<CENTRAL_HOST>"
+		host = os.Getenv("RELAY_CENTRAL_HOST")
+	}
+	if host == "" {
+		host = "127.0.0.1"
 	}
 
 	tpl := `# Generated for relay %q. Place ca.crt / client.crt / client.key from this

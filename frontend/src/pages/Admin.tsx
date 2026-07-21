@@ -28,6 +28,7 @@ export default function Admin() {
   const [ldapVerifyCert, setLdapVerifyCert] = useState(true)
   const [httpsEnabled, setHttpsEnabled] = useState(false)
   const [httpsRedirect, setHttpsRedirect] = useState(false)
+  const [relayEnabled, setRelayEnabled] = useState(false)
   const [smtpEnabled, setSmtpEnabled] = useState(false)
   const [testing, setTesting] = useState(false)
   const [purgeModalOpen, setPurgeModalOpen] = useState(false)
@@ -91,6 +92,7 @@ export default function Admin() {
       setLdapVerifyCert(data['ldap_verify_cert'] !== 'false')
       setHttpsEnabled(data['https_enabled'] === 'true')
       setHttpsRedirect(data['https_redirect'] === 'true')
+      setRelayEnabled(data['relay_ingestion_enabled'] === 'true')
       setSmtpEnabled(data['smtp_enabled'] === 'true')
     } catch {
       message.error('Failed to load settings')
@@ -525,12 +527,19 @@ const handleCleanup = async () => {
                     </Form.Item>
                     <Divider orientation="left">Syslog Relay</Divider>
                     <Form.Item
-                      label="Relay logów (VLAN)"
+                      label="Enable Syslog Relay Ingestion"
                       name="relay_ingestion_enabled"
                       valuePropName="checked"
-                      tooltip="Zezwól na odbiór logów syslog od zdalnych relayów (mTLS + whitelist IP) w innych VLAN-ach. Po włączeniu, whitelista i certyfikaty relayów są dostępne w osobnym menu 'Syslog Relay'."
+                      tooltip="Accept syslog forwarded by remote relays (mTLS + IP whitelist) in other VLANs. Once enabled, whitelist and certificate management appear in a separate 'Syslog Relay' menu (admin-only)."
                     >
-                      <Switch />
+                      <Switch checked={relayEnabled} onChange={(v) => { setRelayEnabled(v); settingsForm.setFieldValue('relay_ingestion_enabled', v) }} />
+                    </Form.Item>
+                    <Form.Item
+                      label="Central Server Address"
+                      name="relay_central_host"
+                      tooltip="This server's hostname/IP as reachable from a relay's VLAN, pre-filled into every relay.conf bundle generated on the Syslog Relay page. Falls back to the RELAY_CENTRAL_HOST env var, then 127.0.0.1, if left empty."
+                    >
+                      <Input placeholder="e.g. syslog.example.com or 10.0.0.5" disabled={!relayEnabled} />
                     </Form.Item>
                     {certInfo && (
                       <Result

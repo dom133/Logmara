@@ -256,10 +256,26 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 		oldCorsOrigins := db.GetSetting(database, "cors_origins", "")
 		oldRelayEnabled := db.GetSetting(database, "relay_ingestion_enabled", "false")
 
+		// Callers (e.g. the Syslog Relay page) may submit a partial settings
+		// map containing only the key(s) they actually changed - default each
+		// of these to its current value rather than "" when absent, so an
+		// unrelated partial update can't be misread as "turn this off" below.
 		newHttpsEnabled := settings["https_enabled"]
+		if _, ok := settings["https_enabled"]; !ok {
+			newHttpsEnabled = oldHttpsEnabled
+		}
 		newHttpsRedirect := settings["https_redirect"]
+		if _, ok := settings["https_redirect"]; !ok {
+			newHttpsRedirect = oldHttpsRedirect
+		}
 		newCorsOrigins := settings["cors_origins"]
+		if _, ok := settings["cors_origins"]; !ok {
+			newCorsOrigins = oldCorsOrigins
+		}
 		newRelayEnabled := settings["relay_ingestion_enabled"]
+		if _, ok := settings["relay_ingestion_enabled"]; !ok {
+			newRelayEnabled = oldRelayEnabled
+		}
 
 		if newHttpsEnabled == "true" && oldHttpsEnabled != "true" {
 			sslDir := os.Getenv("SSL_DIR")

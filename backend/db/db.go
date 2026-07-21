@@ -620,6 +620,7 @@ func seedSettings(db *sql.DB) error {
 		"smtp_use_tls":                 "true",
 		"device_silence_check_minutes": "5",
 		"relay_ingestion_enabled":      "false",
+		"relay_central_host":           "",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -690,6 +691,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "How often to check for silent devices (minutes)"
 		case "relay_ingestion_enabled":
 			desc = "Accept syslog forwarded by remote relays over mTLS (Admin > Syslog Relay)"
+		case "relay_central_host":
+			desc = "This server's hostname/IP as reachable from a relay's VLAN, pre-filled into generated relay.conf bundles"
 		}
 		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
 			return fmt.Errorf("seed setting %s: %w", k, err)
