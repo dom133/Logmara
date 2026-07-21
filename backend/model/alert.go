@@ -110,9 +110,16 @@ type TriggerLogSnapshot struct {
 }
 
 type NotificationLogEntry struct {
-	ID          int64               `json:"id"`
-	AlertID     *int64              `json:"alert_id,omitempty"`
-	AlertName   string              `json:"alert_name"`
+	ID        int64  `json:"id"`
+	AlertID   *int64 `json:"alert_id,omitempty"`
+	AlertName string `json:"alert_name"`
+	// FiringID is shared by every channel dispatched for the same rule
+	// firing, so the alert history can group these rows back into a single
+	// "this rule fired, here's what happened per channel" entry instead of
+	// one row per channel per firing. Empty for rows written before this
+	// column existed - the frontend falls back to treating each of those as
+	// its own single-channel group.
+	FiringID    string              `json:"firing_id,omitempty"`
 	ChannelID   *int64              `json:"channel_id,omitempty"`
 	ChannelName string              `json:"channel_name"`
 	ChannelType string              `json:"channel_type"`

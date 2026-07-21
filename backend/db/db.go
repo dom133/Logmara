@@ -282,6 +282,8 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='notification_log' AND column_name='trigger_log') THEN ALTER TABLE notification_log ADD COLUMN trigger_log JSONB; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='notification_log' AND column_name='matched_conditions') THEN ALTER TABLE notification_log ADD COLUMN matched_conditions JSONB; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='notification_log' AND column_name='in_app_notification_id') THEN ALTER TABLE notification_log ADD COLUMN in_app_notification_id BIGINT; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='notification_log' AND column_name='firing_id') THEN ALTER TABLE notification_log ADD COLUMN firing_id VARCHAR(36); END IF; END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_notification_log_firing_id ON notification_log (firing_id)`,
 		`CREATE TABLE IF NOT EXISTS in_app_notifications (
 			id BIGSERIAL PRIMARY KEY,
 			alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,

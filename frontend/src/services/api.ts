@@ -730,6 +730,7 @@ export interface NotificationLogEntry {
 	id: number
 	alert_id?: number
 	alert_name: string
+	firing_id?: string
 	channel_id?: number
 	channel_name: string
 	channel_type: string

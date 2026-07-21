@@ -483,12 +483,20 @@ func LogNotification(db *sql.DB, entry model.NotificationLogEntry) error {
 		matchedConditions, _ = json.Marshal(entry.MatchedConditions)
 	}
 	_, err := db.Exec(
-		`INSERT INTO notification_log (alert_id, alert_name, channel_id, channel_name, channel_type, status, detail, trigger_log, matched_conditions, in_app_notification_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		entry.AlertID, entry.AlertName, entry.ChannelID, entry.ChannelName, entry.ChannelType, entry.Status, entry.Detail,
+		`INSERT INTO notification_log (alert_id, alert_name, firing_id, channel_id, channel_name, channel_type, status, detail, trigger_log, matched_conditions, in_app_notification_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		entry.AlertID, entry.AlertName, nullableString(entry.FiringID), entry.ChannelID, entry.ChannelName, entry.ChannelType, entry.Status, entry.Detail,
 		nullableJSON(triggerLog), nullableJSON(matchedConditions), entry.InAppNotificationID,
 	)
 	return err
+}
+
+// nullableString turns an empty string into a real SQL NULL.
+func nullableString(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // nullableJSON turns a nil/empty marshaled payload into a real SQL NULL
@@ -505,7 +513,7 @@ func GetNotificationHistory(db *sql.DB, limit int) ([]model.NotificationLogEntry
 		limit = 100
 	}
 	rows, err := db.Query(
-		`SELECT id, alert_id, alert_name, channel_id, channel_name, channel_type, status, detail, trigger_log, matched_conditions, in_app_notification_id, created_at
+		`SELECT id, alert_id, alert_name, firing_id, channel_id, channel_name, channel_type, status, detail, trigger_log, matched_conditions, in_app_notification_id, created_at
 		 FROM notification_log ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list notification history: %w", err)
@@ -515,12 +523,13 @@ func GetNotificationHistory(db *sql.DB, limit int) ([]model.NotificationLogEntry
 	var entries []model.NotificationLogEntry
 	for rows.Next() {
 		var e model.NotificationLogEntry
-		var detail sql.NullString
+		var detail, firingID sql.NullString
 		var triggerLog, matchedConditions []byte
-		if err := rows.Scan(&e.ID, &e.AlertID, &e.AlertName, &e.ChannelID, &e.ChannelName, &e.ChannelType, &e.Status, &detail, &triggerLog, &matchedConditions, &e.InAppNotificationID, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.AlertID, &e.AlertName, &firingID, &e.ChannelID, &e.ChannelName, &e.ChannelType, &e.Status, &detail, &triggerLog, &matchedConditions, &e.InAppNotificationID, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan notification history entry: %w", err)
 		}
 		e.Detail = detail.String
+		e.FiringID = firingID.String
 		if len(triggerLog) > 0 {
 			_ = json.Unmarshal(triggerLog, &e.TriggerLog)
 		}

@@ -6,7 +6,7 @@ import {
   getAlerts, createAlert, updateAlert, deleteAlert, Alert, AlertRequest, AlertRuleType, FieldConditionOperator,
   getNotificationChannels, createNotificationChannel, updateNotificationChannel, deleteNotificationChannel, testNotificationChannel,
   NotificationChannel, NotificationChannelRequest, NotificationChannelType,
-  getNotificationHistory, clearNotificationHistory, NotificationLogEntry,
+  getNotificationHistory, clearNotificationHistory, NotificationLogEntry, TriggerLogSnapshot,
   getDevices, DeviceStats, resolveDeviceDisplayName, getParsers, Parser, getParsedFields, ParsedField,
 } from '../services/api'
 import { useAuth } from '../services/auth'
@@ -472,11 +472,51 @@ const historyStatusColor: Record<string, string> = {
   no_channel: 'orange',
 }
 
+// One rule firing dispatches to every one of its channels, each writing its
+// own notification_log row (same firing_id) - group those back into a
+// single history entry per firing, so the table shows one row per alert
+// covering all of its channels, with the per-channel breakdown moved into
+// the Details view.
+interface HistoryGroup {
+  key: string
+  alertName: string
+  alertId?: number
+  createdAt: string
+  triggerLog?: TriggerLogSnapshot
+  matchedConditions?: string[]
+  channels: NotificationLogEntry[]
+}
+
+function groupHistoryEntries(entries: NotificationLogEntry[]): HistoryGroup[] {
+  const groups = new Map<string, HistoryGroup>()
+  for (const e of entries) {
+    // Rows written before firing_id existed have no grouping key to share
+    // with anything else - fall back to the row's own id, so each becomes
+    // its own single-channel group instead of colliding with unrelated rows.
+    const key = e.firing_id || `single-${e.id}`
+    const group = groups.get(key)
+    if (group) {
+      group.channels.push(e)
+    } else {
+      groups.set(key, {
+        key,
+        alertName: e.alert_name,
+        alertId: e.alert_id,
+        createdAt: e.created_at,
+        triggerLog: e.trigger_log,
+        matchedConditions: e.matched_conditions,
+        channels: [e],
+      })
+    }
+  }
+  return Array.from(groups.values())
+}
+
 function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmin: boolean; active: boolean; focusInAppId?: number; onFocusConsumed: () => void }) {
   const [entries, setEntries] = useState<NotificationLogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
-  const [viewing, setViewing] = useState<NotificationLogEntry | null>(null)
+  const [viewing, setViewing] = useState<HistoryGroup | null>(null)
 
   const loadData = () => {
     setLoading(true)
@@ -484,6 +524,8 @@ function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmi
   }
 
   useEffect(() => { loadData() }, [])
+
+  const groups = groupHistoryEntries(entries)
 
   // A new notification means a new row in notification_log - refresh the
   // list live while this tab is the one actually showing.
@@ -493,14 +535,14 @@ function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmi
   }, [active])
 
   // Coming from a bell notification click (see NotificationBell's
-  // goToHistoryDetail): open the same entry's Details view automatically,
+  // goToHistoryDetail): open the same firing's Details view automatically,
   // as if the user had clicked "Details" on it themselves. Only the most
   // recent 100 history rows are fetched, and test notifications are never
   // recorded in history at all - either way, tell the user instead of
   // silently leaving the tab with nothing selected.
   useEffect(() => {
     if (!focusInAppId || loading) return
-    const match = entries.find((e) => e.in_app_notification_id === focusInAppId)
+    const match = groups.find((g) => g.channels.some((c) => c.in_app_notification_id === focusInAppId))
     if (match) {
       setViewing(match)
     } else {
@@ -523,15 +565,22 @@ function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmi
   }
 
   const columns = [
-    { title: 'Time', dataIndex: 'created_at', key: 'created_at', render: (v: string) => new Date(v).toLocaleString() },
-    { title: 'Alert', dataIndex: 'alert_name', key: 'alert_name' },
-    { title: 'Channel', dataIndex: 'channel_name', key: 'channel_name', render: (v: string, r: NotificationLogEntry) => `${v} (${r.channel_type})` },
-    { title: 'Status', dataIndex: 'status', key: 'status', render: (v: string) => <Tag color={historyStatusColor[v] || 'default'}>{v}</Tag> },
-    { title: 'Detail', dataIndex: 'detail', key: 'detail', ellipsis: true },
+    { title: 'Time', dataIndex: 'createdAt', key: 'createdAt', render: (v: string) => new Date(v).toLocaleString() },
+    { title: 'Alert', dataIndex: 'alertName', key: 'alertName' },
+    {
+      title: 'Channels', key: 'channels',
+      render: (_v: unknown, g: HistoryGroup) => (
+        <Space size={4} wrap>
+          {g.channels.map((c) => (
+            <Tag key={c.id} color={historyStatusColor[c.status] || 'default'}>{c.channel_name}</Tag>
+          ))}
+        </Space>
+      ),
+    },
     {
       title: 'Actions', key: 'actions',
-      render: (_v: unknown, r: NotificationLogEntry) => (
-        <Button size="small" icon={<EyeOutlined />} onClick={() => setViewing(r)}>Details</Button>
+      render: (_v: unknown, g: HistoryGroup) => (
+        <Button size="small" icon={<EyeOutlined />} onClick={() => setViewing(g)}>Details</Button>
       ),
     },
   ]
@@ -546,13 +595,13 @@ function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmi
         </div>
       )}
       <Table
-        dataSource={entries}
+        dataSource={groups}
         columns={columns}
-        rowKey="id"
+        rowKey="key"
         loading={loading}
         size="small"
         scroll={{ x: 'max-content' }}
-        onRow={(r) => ({ onClick: () => setViewing(r), style: { cursor: 'pointer' } })}
+        onRow={(g) => ({ onClick: () => setViewing(g), style: { cursor: 'pointer' } })}
       />
 
       <Modal
@@ -565,33 +614,51 @@ function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmi
         {viewing && (
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
             <Descriptions column={1} bordered size="small">
-              <Descriptions.Item label="Time">{new Date(viewing.created_at).toLocaleString()}</Descriptions.Item>
-              <Descriptions.Item label="Alert">{viewing.alert_name || '—'}</Descriptions.Item>
-              <Descriptions.Item label="Channel">{viewing.channel_name} ({viewing.channel_type})</Descriptions.Item>
-              <Descriptions.Item label="Status">
-                <Tag color={historyStatusColor[viewing.status] || 'default'}>{viewing.status}</Tag>
-              </Descriptions.Item>
-              <Descriptions.Item label="Detail">
-                <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable={!!viewing.detail}>
-                  {viewing.detail || '—'}
-                </Typography.Paragraph>
-              </Descriptions.Item>
+              <Descriptions.Item label="Time">{new Date(viewing.createdAt).toLocaleString()}</Descriptions.Item>
+              <Descriptions.Item label="Alert">{viewing.alertName || '—'}</Descriptions.Item>
             </Descriptions>
+
+            <div>
+              <Text strong>Delivery by channel</Text>
+              <div style={{ marginTop: 8 }}>
+                <List
+                  size="small"
+                  bordered
+                  dataSource={viewing.channels}
+                  renderItem={(c) => (
+                    <List.Item>
+                      <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                        <Space>
+                          <Text strong>{c.channel_name}</Text>
+                          <Text type="secondary">({c.channel_type})</Text>
+                          <Tag color={historyStatusColor[c.status] || 'default'}>{c.status}</Tag>
+                        </Space>
+                        {c.detail && (
+                          <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable>
+                            {c.detail}
+                          </Typography.Paragraph>
+                        )}
+                      </Space>
+                    </List.Item>
+                  )}
+                />
+              </div>
+            </div>
 
             <div>
               <Text strong>Triggering log</Text>
               <div style={{ marginTop: 8 }}>
-                {viewing.trigger_log ? (
+                {viewing.triggerLog ? (
                   <Descriptions column={1} bordered size="small">
-                    <Descriptions.Item label="Time">{new Date(viewing.trigger_log.timestamp).toLocaleString()}</Descriptions.Item>
-                    <Descriptions.Item label="Severity"><SeverityTag severity={viewing.trigger_log.severity} /></Descriptions.Item>
-                    <Descriptions.Item label="Host">{viewing.trigger_log.hostname} ({viewing.trigger_log.fromhost_ip})</Descriptions.Item>
-                    {viewing.trigger_log.app_name && (
-                      <Descriptions.Item label="App">{viewing.trigger_log.app_name}</Descriptions.Item>
+                    <Descriptions.Item label="Time">{new Date(viewing.triggerLog.timestamp).toLocaleString()}</Descriptions.Item>
+                    <Descriptions.Item label="Severity"><SeverityTag severity={viewing.triggerLog.severity} /></Descriptions.Item>
+                    <Descriptions.Item label="Host">{viewing.triggerLog.hostname} ({viewing.triggerLog.fromhost_ip})</Descriptions.Item>
+                    {viewing.triggerLog.app_name && (
+                      <Descriptions.Item label="App">{viewing.triggerLog.app_name}</Descriptions.Item>
                     )}
                     <Descriptions.Item label="Message">
                       <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable>
-                        {viewing.trigger_log.message}
+                        {viewing.triggerLog.message}
                       </Typography.Paragraph>
                     </Descriptions.Item>
                   </Descriptions>
@@ -604,11 +671,11 @@ function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmi
             <div>
               <Text strong>Conditions met</Text>
               <div style={{ marginTop: 8 }}>
-                {viewing.matched_conditions && viewing.matched_conditions.length > 0 ? (
+                {viewing.matchedConditions && viewing.matchedConditions.length > 0 ? (
                   <List
                     size="small"
                     bordered
-                    dataSource={viewing.matched_conditions}
+                    dataSource={viewing.matchedConditions}
                     renderItem={(item) => (
                       <List.Item>
                         <Space align="start">

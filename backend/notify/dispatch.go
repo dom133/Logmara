@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"syslog-gui/db"
 	"syslog-gui/model"
 )
@@ -97,12 +99,17 @@ func (d *Dispatcher) DispatchAlert(alert model.Alert, payload Payload) {
 		return
 	}
 	alertID := alert.ID
+	// One id per firing, shared by every channel's notification_log row
+	// below, so the alert history can group them back into a single
+	// "this rule fired, here's what happened per channel" entry instead of
+	// showing one row per channel per firing.
+	firingID := uuid.New().String()
 
 	if len(channels) == 0 {
 		// The rule fired but has nothing to deliver to - record that it fired
 		// at all, otherwise there is no trace of it anywhere in the history.
 		_ = db.LogNotification(d.DB, model.NotificationLogEntry{
-			AlertID: &alertID, AlertName: alert.Name,
+			AlertID: &alertID, AlertName: alert.Name, FiringID: firingID,
 			ChannelName: "(none)", Status: "no_channel", Detail: "Rule fired but has no notification channels attached",
 			TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions,
 		})
@@ -110,11 +117,11 @@ func (d *Dispatcher) DispatchAlert(alert model.Alert, payload Payload) {
 	}
 
 	for _, ch := range channels {
-		d.dispatchOne(&alertID, alert.Name, ch, payload)
+		d.dispatchOne(&alertID, alert.Name, firingID, ch, payload)
 	}
 }
 
-func (d *Dispatcher) dispatchOne(alertID *int64, alertName string, ch model.NotificationChannel, payload Payload) {
+func (d *Dispatcher) dispatchOne(alertID *int64, alertName, firingID string, ch model.NotificationChannel, payload Payload) {
 	status, detail := "sent", ""
 	var inAppID *int64
 
@@ -142,7 +149,7 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName string, ch model.Noti
 	}
 
 	_ = db.LogNotification(d.DB, model.NotificationLogEntry{
-		AlertID: alertID, AlertName: alertName, ChannelID: &ch.ID, ChannelName: ch.Name, ChannelType: ch.Type,
+		AlertID: alertID, AlertName: alertName, FiringID: firingID, ChannelID: &ch.ID, ChannelName: ch.Name, ChannelType: ch.Type,
 		Status: status, Detail: detail,
 		TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions,
 		InAppNotificationID: inAppID,

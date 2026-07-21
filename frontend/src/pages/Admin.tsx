@@ -854,6 +854,7 @@ const handleCleanup = async () => {
                       dataIndex: 'timestamp',
                       key: 'timestamp',
                       width: 180,
+                      sorter: (a: SlowQueryRecord, b: SlowQueryRecord) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
                       render: (ts: string) => new Date(ts).toLocaleString(),
                     },
                   ]}
