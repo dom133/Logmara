@@ -593,6 +593,22 @@ func relayConfSnippet(database *sql.DB, label string) []byte {
 # bundle at /etc/syslog-relay/tls/ on the relay host, then use this file as
 # rsyslog.d/relay.conf there. See README "Syslog Relay" for the full
 # deployment steps (docker-compose.relay.yml).
+#
+# TLS material is set via the GLOBAL DefaultNetstreamDriver* params, not the
+# omfwd action's own StreamDriverCAFile/CertFile/KeyFile params below: those
+# per-action params were only wired up for the sender side in rsyslog 8.2310
+# (https://github.com/rsyslog/rsyslog/issues/5150), so on the 8.2302.0 that
+# ships in Debian bookworm (Dockerfile.rsyslog-relay's base image) they're
+# silently ignored and the connection goes out with no client cert and no
+# trust anchors at all - central then logs "peer did not provide a
+# certificate" and this relay logs "signer not found" for the exact same
+# handshake. Kept below anyway for forward-compat with newer rsyslog.
+global(
+  DefaultNetstreamDriverCAFile="/etc/syslog-relay/tls/ca.crt"
+  DefaultNetstreamDriverCertFile="/etc/syslog-relay/tls/client.crt"
+  DefaultNetstreamDriverKeyFile="/etc/syslog-relay/tls/client.key"
+)
+
 module(load="imtcp")
 input(type="imtcp" port="514")
 module(load="imudp")
