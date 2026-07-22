@@ -82,6 +82,8 @@ export default function Admin() {
       if (data['ldap_port']) formValues['ldap_port'] = parseInt(data['ldap_port'], 10)
       if (data['retention_days']) formValues['retention_days'] = parseInt(data['retention_days'], 10)
       if (data['session_timeout_min'] !== undefined && data['session_timeout_min'] !== '') formValues['session_timeout_min'] = parseInt(data['session_timeout_min'], 10)
+      if (data['security_max_failed_attempts']) formValues['security_max_failed_attempts'] = parseInt(data['security_max_failed_attempts'], 10)
+      if (data['security_lockout_duration_min']) formValues['security_lockout_duration_min'] = parseInt(data['security_lockout_duration_min'], 10)
       formValues['https_enabled'] = data['https_enabled'] === 'true'
       formValues['https_redirect'] = data['https_redirect'] === 'true'
       formValues['notifications_enabled'] = data['notifications_enabled'] === 'true'
