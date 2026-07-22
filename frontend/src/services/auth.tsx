@@ -54,7 +54,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
-      await api.post('/auth/logout')
+      await api.post('/auth/logout', {})
     } catch (e) {
       console.error('Error during logout:', e)
     }
@@ -133,7 +133,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const extendSession = useCallback(async () => {
     extendingRef.current = true
     try {
-      const res = await api.post('/auth/refresh')
+      const res = await api.post('/auth/refresh', {})
       setupSessionWarning(res.data.expires_at)
       setIsSessionExpiringSoon(false)
       setShowSessionWarning(false)
