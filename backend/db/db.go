@@ -450,9 +450,13 @@ END $$`,
 		// EXISTS below is a no-op on any deployment where the view already
 		// exists, so an already-materialized copy needs dropping first to
 		// pick up the new column (its unique index goes with it, recreated
-		// by the CREATE UNIQUE INDEX statement further down).
+		// by the CREATE UNIQUE INDEX statement further down). Also drop the
+		// older definition that took the most recent *non-blank* via_relay
+		// (so a device that had switched from relay to direct still showed
+		// "via relay" forever) in favor of the true most-recent-log value.
 		`DO $$ BEGIN
-			IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mv_device_stats' AND column_name='via_relay') THEN
+			IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mv_device_stats' AND column_name='via_relay')
+				OR EXISTS (SELECT 1 FROM pg_matviews WHERE matviewname = 'mv_device_stats' AND definition LIKE '%FILTER (WHERE via_relay%') THEN
 				DROP MATERIALIZED VIEW IF EXISTS mv_device_stats;
 			END IF;
 		END $$`,
@@ -468,12 +472,13 @@ END $$`,
 					SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END) as notice,
 					SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END) as info,
 					SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug,
-					-- Most recent non-blank via_relay this device's logs have carried -
-					-- set by rsyslog/syslog.conf's relayAccept ruleset only for entries
-					-- that arrived through a relay (see relayConfSnippet's JsonLines
-					-- template), so a device sending straight to the central listener
-					-- never gets one.
-					(array_agg(via_relay ORDER BY timestamp DESC) FILTER (WHERE via_relay IS NOT NULL AND via_relay != ''))[1] as via_relay
+					-- via_relay of this device's single most recent log row, set by
+					-- rsyslog/syslog.conf's relayAccept ruleset only for entries that
+					-- arrived through a relay (see relayConfSnippet's JsonLines
+					-- template) - blank/NULL when the last log came straight to the
+					-- central listener, so "Proxy" tracks the current source, not
+					-- just whichever relay was last seen at some point in the past.
+					(array_agg(via_relay ORDER BY timestamp DESC))[1] as via_relay
 				FROM syslog_logs
 				GROUP BY fromhost_ip
 			),
