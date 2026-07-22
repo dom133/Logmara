@@ -49,7 +49,7 @@ if [ ! -f "$RELAY_DIR/allowed-relays.conf" ]; then
     # run yet - bind the mTLS listener but reject every connection (fail
     # closed) until an admin enables the feature and whitelists at least
     # one relay. handler.writeRelayACL overwrites this with the real
-    # ruleset + input() + PermittedPeers list once the API has run - see
+    # ruleset + input() + PermittedPeer list once the API has run - see
     # its doc comment for why the listener itself, not just the IP
     # allow-list, has to be regenerated dynamically.
     cat > "$RELAY_DIR/allowed-relays.conf" <<'EOF'
@@ -61,7 +61,7 @@ input(type="imtcp" port="6514" ruleset="relayIngest"
   StreamDriver.Name="gtls"
   StreamDriver.Mode="1"
   StreamDriver.AuthMode="x509/name"
-  StreamDriver.PermittedPeers=["no-relay-certificates-active"]
+  PermittedPeer=["no-relay-certificates-active"]
 )
 EOF
 fi

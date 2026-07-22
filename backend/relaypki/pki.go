@@ -5,7 +5,7 @@
 // on demand, giving each issuance a CommonName unique to that one cert
 // (label + serial) - see IssueClientCert. There is no external PKI
 // dependency and no CRL/OCSP - a relay cert is cut off either by its exact
-// CommonName no longer being in the mTLS listener's PermittedPeers list
+// CommonName no longer being in the mTLS listener's PermittedPeer list
 // (regenerated on every issue/revoke, see handler.writeRelayACL - this is
 // what makes a regenerated certificate's old key stop working even though
 // it's still cryptographically valid and CA-signed) or by removing its IP
@@ -305,7 +305,7 @@ func IssueClientCert(dir, label string) (*IssuedCert, error) {
 	}
 	// CommonName embeds the serial so this issuance's CN can never collide
 	// with a previous (or future) one for the same label - the mTLS
-	// listener's PermittedPeers is pinned to this exact string per
+	// listener's PermittedPeer is pinned to this exact string per
 	// currently-"issued" certificate (see handler.writeRelayACL), so a
 	// regenerated or revoked certificate's old CN simply stops matching
 	// once its whitelist entry is relinked, rather than continuing to

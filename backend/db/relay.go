@@ -44,7 +44,7 @@ func GetRelayWhitelist(db *sql.DB) ([]model.RelayWhitelistEntry, error) {
 // certificate is currently "issued", its IP address paired with the exact
 // peer name (CommonName) that certificate was issued with - what
 // writeRelayACL uses to build both the IP allow-list and the
-// StreamDriver.PermittedPeers list that pins the mTLS handshake to that
+// PermittedPeer list that pins the mTLS handshake to that
 // one certificate (see relaypki.IssueClientCert). An entry with no
 // certificate yet, or whose certificate has been revoked or superseded, is
 // excluded - a relay physically can't get in either way, whether or not

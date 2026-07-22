@@ -4,7 +4,7 @@ import "time"
 
 // Relay certificate lifecycle states. There is no real X.509 CRL/OCSP in
 // v1 - "revoked" cuts a cert off at the transport layer instead, by
-// dropping its CommonName from the mTLS listener's PermittedPeers list
+// dropping its CommonName from the mTLS listener's PermittedPeer list
 // (see handler.writeRelayACL) and, if its whitelist entry hasn't since
 // been relinked to a replacement certificate, also from the IP allow-list.
 // See handler.RevokeRelayCertificate.
@@ -65,7 +65,7 @@ type RelayCertificateRequest struct {
 // name (CommonName) its currently-linked certificate was issued with - see
 // db.GetActiveRelayACLEntries and handler.writeRelayACL, which uses both
 // halves to build the IP allow-list and the mTLS listener's
-// StreamDriver.PermittedPeers list.
+// PermittedPeer list.
 type RelayACLEntry struct {
 	IPAddress string
 	PeerName  string

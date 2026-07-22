@@ -57,19 +57,18 @@ func relayHeartbeatPath(ip string) string {
 // the input() below.
 const relayListenerRuleset = "relayIngest"
 
-// relaySentinelPeer is a StreamDriver.PermittedPeers placeholder that can
-// never equal a real certificate's CommonName (see relaypki.IssueClientCert
-// - every real one contains "#" followed by a hex serial). Used instead of
-// an empty PermittedPeers array so the mTLS listener still binds - and
-// stays unambiguously fail-closed - when relay ingestion is disabled or
-// nothing currently qualifies, rather than relying on undocumented
-// behavior for what an empty list means to the gtls driver.
+// relaySentinelPeer is a PermittedPeer placeholder that can never equal a
+// real certificate's CommonName (see relaypki.IssueClientCert - every real
+// one contains "#" followed by a hex serial). Used instead of an empty
+// PermittedPeer array so the mTLS listener still binds - and stays
+// unambiguously fail-closed - when relay ingestion is disabled or nothing
+// currently qualifies, rather than relying on undocumented behavior for
+// what an empty list means to the gtls driver.
 const relaySentinelPeer = "no-relay-certificates-active"
 
 // rsyslogStringLiteral quotes s for use inside a RainerScript string
-// literal or array element (e.g. StreamDriver.PermittedPeers=[...]) -
-// backslash and double-quote are the only two characters that syntax
-// treats specially.
+// literal or array element (e.g. PermittedPeer=[...]) - backslash and
+// double-quote are the only two characters that syntax treats specially.
 func rsyslogStringLiteral(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
@@ -82,8 +81,8 @@ func rsyslogStringLiteral(s string) string {
 // itself (port 6514) - the latter has to live here too, not statically in
 // syslog.conf, because pinning the TLS handshake to the exact
 // currently-issued certificate per relay (StreamDriver.AuthMode="x509/name"
-// + PermittedPeers, matched against the CommonName relaypki.IssueClientCert
-// gives each cert - label + "#" + serial) requires PermittedPeers to be
+// + PermittedPeer, matched against the CommonName relaypki.IssueClientCert
+// gives each cert - label + "#" + serial) requires PermittedPeer to be
 // regenerated every time a certificate is issued or revoked, and that
 // parameter can only be set where the listener is declared.
 //
@@ -150,7 +149,7 @@ func writeRelayACL(database *sql.DB) error {
 	fmt.Fprintf(&content, "ruleset(name=%q) {\n%s}\n\n", relayListenerRuleset, rulesetBody)
 	fmt.Fprintf(&content, "input(type=\"imtcp\" port=\"6514\" ruleset=%q\n", relayListenerRuleset)
 	content.WriteString("  StreamDriver.Name=\"gtls\"\n  StreamDriver.Mode=\"1\"\n  StreamDriver.AuthMode=\"x509/name\"\n")
-	fmt.Fprintf(&content, "  StreamDriver.PermittedPeers=[%s]\n)\n", strings.Join(peerLiterals, ", "))
+	fmt.Fprintf(&content, "  PermittedPeer=[%s]\n)\n", strings.Join(peerLiterals, ", "))
 
 	dir := relayPKIDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
