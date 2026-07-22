@@ -159,7 +159,8 @@ export async function getDashboardStats(): Promise<DashboardStats> {
 }
 
 export async function getTimeline(interval = '1h', from?: string, to?: string) {
-  const res = await api.get('/stats/timeline', { params: { interval, from, to } })
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const res = await api.get('/stats/timeline', { params: { interval, from, to, tz } })
   return (res.data?.timeline || []) as TimelinePoint[]
 }
 
@@ -188,7 +189,8 @@ export async function getSeverityStats(from?: string, to?: string) {
 }
 
 export async function exportCSV(params: Record<string, string>) {
-  const res = await api.get('/export/csv', { params, responseType: 'blob' })
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const res = await api.get('/export/csv', { params: { ...params, tz }, responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -198,7 +200,8 @@ export async function exportCSV(params: Record<string, string>) {
 }
 
 export async function exportHTML(params: Record<string, string>) {
-  const res = await api.get('/export/html', { params, responseType: 'blob' })
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const res = await api.get('/export/html', { params: { ...params, tz }, responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -208,7 +211,8 @@ export async function exportHTML(params: Record<string, string>) {
 }
 
 export async function exportDashboardCSV(id: number, params: Record<string, string>) {
-  const res = await api.get(`/dashboards/${id}/export/csv`, { params, responseType: 'blob' })
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const res = await api.get(`/dashboards/${id}/export/csv`, { params: { ...params, tz }, responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -218,7 +222,8 @@ export async function exportDashboardCSV(id: number, params: Record<string, stri
 }
 
 export async function exportDashboardHTML(id: number, params: Record<string, string>) {
-  const res = await api.get(`/dashboards/${id}/export/html`, { params, responseType: 'blob' })
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const res = await api.get(`/dashboards/${id}/export/html`, { params: { ...params, tz }, responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url

@@ -462,6 +462,13 @@ func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
 		interval := c.DefaultQuery("interval", "hour")
 		from := c.Query("from")
 		to := c.Query("to")
+		// tz is the visitor's IANA timezone (e.g. "Europe/Warsaw"), sent by the
+		// frontend from Intl.DateTimeFormat().resolvedOptions().timeZone, so
+		// that bucket boundaries (day/week/month, and hour in half/quarter-hour
+		// offset zones) land on the visitor's local calendar instead of the
+		// database server's timezone. An invalid/unknown name is rejected by
+		// Postgres at query time, so queryWithTZFallback retries with "UTC".
+		tz := c.DefaultQuery("tz", "UTC")
 
 		fieldMap := map[string]string{"1m": "minute", "5m": "minute", "15m": "minute", "30m": "minute", "1h": "hour", "6h": "hour", "1d": "day", "1w": "week", "1mon": "month", "minute": "minute", "hour": "hour", "day": "day", "week": "week", "month": "month"}
 		field, ok := fieldMap[interval]
@@ -486,10 +493,10 @@ func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
 
 			_ = timedQuery("timeline_stats", func() error {
 				query := fmt.Sprintf(
-					"SELECT date_trunc('%s', hour) as ts, SUM(cnt) as cnt FROM mv_timeline_hourly WHERE hour >= now() - interval '%s' GROUP BY ts ORDER BY ts",
+					"SELECT date_trunc('%s', hour AT TIME ZONE $1) AT TIME ZONE $1 as ts, SUM(cnt) as cnt FROM mv_timeline_hourly WHERE hour >= now() - interval '%s' GROUP BY ts ORDER BY ts",
 					field, lookback,
 				)
-				rows, err := db.Query(query)
+				rows, err := queryWithTZFallback(db, query, tz, nil)
 				if err != nil {
 					return err
 				}
@@ -506,12 +513,12 @@ func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
 		} else {
 			var query string
 			args := []interface{}{field}
-			argIdx := 2
+			argIdx := 3
 
 			if from == "" {
-				query = "SELECT date_trunc($1, timestamp) as ts, COUNT(*) FROM syslog_logs WHERE timestamp >= now() - interval '24 hours'"
+				query = "SELECT date_trunc($1, timestamp AT TIME ZONE $2) AT TIME ZONE $2 as ts, COUNT(*) FROM syslog_logs WHERE timestamp >= now() - interval '24 hours'"
 			} else {
-				query = fmt.Sprintf("SELECT date_trunc($1, timestamp) as ts, COUNT(*) FROM syslog_logs WHERE timestamp >= $%d", argIdx)
+				query = fmt.Sprintf("SELECT date_trunc($1, timestamp AT TIME ZONE $2) AT TIME ZONE $2 as ts, COUNT(*) FROM syslog_logs WHERE timestamp >= $%d", argIdx)
 				args = append(args, from)
 				argIdx++
 			}
@@ -524,7 +531,7 @@ func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
 			query += " GROUP BY ts ORDER BY ts"
 
 			_ = timedQuery("timeline_stats", func() error {
-				rows, err := db.Query(query, args...)
+				rows, err := queryWithTZFallback(db, query, tz, args)
 				if err != nil {
 					return err
 				}
@@ -542,4 +549,27 @@ func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
 
 		c.JSON(http.StatusOK, gin.H{"timeline": points})
 	}
+}
+
+// queryWithTZFallback runs query with tz bound as its first placeholder
+// ($1 for the mv_timeline_hourly path, $2 for the syslog_logs path - extraArgs
+// carries the rest in order) and retries once with "UTC" if Postgres rejects
+// the timezone name (unknown zones raise an error at AT TIME ZONE evaluation
+// time, not at parse time, so this can't be validated up front).
+func queryWithTZFallback(db *sql.DB, query, tz string, extraArgs []interface{}) (*sql.Rows, error) {
+	buildArgs := func(tzArg string) []interface{} {
+		if len(extraArgs) == 0 {
+			return []interface{}{tzArg}
+		}
+		args := make([]interface{}, 0, len(extraArgs)+1)
+		args = append(args, extraArgs[0], tzArg)
+		args = append(args, extraArgs[1:]...)
+		return args
+	}
+
+	rows, err := db.Query(query, buildArgs(tz)...)
+	if err != nil && tz != "UTC" {
+		rows, err = db.Query(query, buildArgs("UTC")...)
+	}
+	return rows, err
 }
