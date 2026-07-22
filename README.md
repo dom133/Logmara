@@ -491,10 +491,11 @@ Each relay reuses the same JSON conversion the central server already does local
 
 - **mTLS**: the central server runs its own internal CA (generated automatically the first time you use this feature — see `backend/relaypki`). The CA uses RSA 4096-bit keys. Every relay gets a client certificate signed by that CA; the central listener rejects any connection without a valid one.
 - **IP whitelist**: a valid certificate alone isn't enough — the peer's IP must also be on the whitelist (Admin > Syslog Relay > Whitelist IP). Together these mean only a relay you've explicitly approved, from an IP you've explicitly approved, gets in.
-- **Revocation is a real, immediate cutoff** — there's no X.509 CRL/OCSP at the TLS layer (a revoked certificate's private key is still, on its own, perfectly capable of completing a handshake), so instead the allow-list itself is certificate-aware: `allowed-relays.conf` only ever admits an IP whose *currently linked* certificate is "issued". Revoking one (Admin > Syslog Relay > Certificates > Revoke) regenerates that file without the entry's IP and reloads rsyslog, so the relay is shut out on the next connection attempt — not just marked revoked in the database.
+- **Revocation is a real, immediate cutoff** — there's no X.509 CRL/OCSP at the TLS layer, so instead every relay certificate gets a CommonName unique to that one issuance (`label#serial`, see `backend/relaypki`), and the mTLS listener's `StreamDriver.AuthMode="x509/name"` only accepts a handshake whose CommonName is in the current `StreamDriver.PermittedPeers` list — regenerated, alongside the IP allow-list, in the very same `allowed-relays.conf` every time a certificate is issued or revoked. Revoking one (Admin > Syslog Relay > Certificates > Revoke), or replacing it via Regenerate/Renew, drops its exact CommonName from that list, so the *old* key specifically stops working — not just "some cert signed by our CA" — even though it's still cryptographically valid and unexpired.
+  - Applying this needs a real `rsyslogd` restart, not just a config nudge: rsyslog has no lightweight reload (`SIGHUP` only reopens output files), so `entrypoint.sh` runs `rsyslogd` as a supervised child and the reload sidecar kills just that child to force a restart against the regenerated config. This briefly interrupts ingestion on **both** 514 and 6514 (one process serves both), every time a relay whitelist/certificate change is applied.
   - The whitelist entry itself is left in place either way, now shown as **Blocked** on the Whitelist IP tab, rather than deleted — generate a replacement certificate for it (from either tab) to restore access.
   - Removing an IP from the **whitelist** entirely (Whitelist IP > delete) also revokes its certificate, since a device that's no longer allowed in shouldn't leave an "issued" certificate lying around either.
-  - The old, revoked certificate row is always kept for the audit trail — "Regenerate" on a revoked row issues a fresh certificate for the same entry without deleting its history.
+  - The old, revoked certificate row is always kept for the audit trail — "Regenerate" on a revoked row issues a fresh certificate (with its own fresh CommonName) for the same entry without deleting its history.
 - The private key for a relay's certificate is generated on the server but **never stored** there — it's handed to you exactly once, in the `.tar.gz` bundle the browser downloads when you generate it. If you lose it, revoke (or regenerate from) that certificate; there's no way to re-download the old key.
 
 ### Certificate expiry, renewal, and CA rotation
@@ -809,8 +810,8 @@ POST /api/parsers/test
 │   └── vite.config.ts
 └── rsyslog/
     ├── syslog.conf            # rsyslog template + output config, incl. the mTLS relay listener
-    ├── entrypoint.sh           # Generates a placeholder relay CA/cert if missing, starts the reload sidecar
-    └── reload-sidecar/         # HTTP sidecar that HUPs rsyslogd on relay config changes
+    ├── entrypoint.sh           # Generates a placeholder relay CA/cert if missing, supervises + restarts rsyslogd
+    └── reload-sidecar/         # HTTP sidecar that restarts rsyslogd on relay config changes (SIGHUP can't reload config)
 ```
 
 ## Security

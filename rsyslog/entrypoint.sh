@@ -46,15 +46,58 @@ fi
 
 if [ ! -f "$RELAY_DIR/allowed-relays.conf" ]; then
     # Relay ingestion is disabled by default and the API hasn't necessarily
-    # run yet - default to dropping every connection on the relay listener
-    # until an admin enables the feature and whitelists at least one relay.
-    printf '# No relay whitelist yet - dropping all connections.\nstop\n' > "$RELAY_DIR/allowed-relays.conf"
+    # run yet - bind the mTLS listener but reject every connection (fail
+    # closed) until an admin enables the feature and whitelists at least
+    # one relay. handler.writeRelayACL overwrites this with the real
+    # ruleset + input() + PermittedPeers list once the API has run - see
+    # its doc comment for why the listener itself, not just the IP
+    # allow-list, has to be regenerated dynamically.
+    cat > "$RELAY_DIR/allowed-relays.conf" <<'EOF'
+# No relay whitelist yet - dropping all connections.
+ruleset(name="relayIngest") {
+    stop
+}
+input(type="imtcp" port="6514" ruleset="relayIngest"
+  StreamDriver.Name="gtls"
+  StreamDriver.Mode="1"
+  StreamDriver.AuthMode="x509/name"
+  StreamDriver.PermittedPeers=["no-relay-certificates-active"]
+)
+EOF
 fi
 
 # Debian's busybox build (unlike Alpine's, which splits httpd out into the
 # separate busybox-extras package) includes the httpd applet directly.
-# Backgrounded so rsyslogd can run in the foreground below and receive
-# signals normally (docker stop, etc).
 busybox httpd -f -p 8082 -h /srv/reload-sidecar &
 
-exec rsyslogd -n
+# rsyslogd has no true hot-reload: SIGHUP only reopens output files as of
+# rsyslog 4.5.1+ ($HUPisRestart, which made HUP do a full restart, defaults
+# to off and is deprecated/removed upstream) - it never rereads
+# rsyslog.conf or anything it include()s, so config changes (like the
+# relay ACL above) would otherwise never take effect after this first
+# parse. Run rsyslogd as a supervised child instead of as PID 1 so
+# reload-sidecar/cgi-bin/reload.sh can force a real restart - the only way
+# rsyslog actually picks up a new config - by killing just this child,
+# without taking the whole container (and this httpd sidecar) down with
+# it. Every such restart briefly drops connections on BOTH port 514 and
+# 6514, since one process serves both - by design, not a bug: it's the
+# same cost any rsyslog config change pays outside Docker too.
+#
+# set -e (above) would otherwise abort this whole script - and so kill the
+# container - the moment rsyslogd exits for any reason, since a killed or
+# crashed child makes `wait` return non-zero; `|| true` on it keeps the
+# loop itself immune to that so it can respawn instead.
+trap 'kill -TERM "$RSYSLOG_PID" 2>/dev/null; wait "$RSYSLOG_PID" 2>/dev/null; exit 0' TERM INT
+
+while true; do
+    start=$(date +%s)
+    rsyslogd -n &
+    RSYSLOG_PID=$!
+    wait "$RSYSLOG_PID" || true
+    # Guards against a hot crash-loop (e.g. a bad generated config) pegging
+    # the CPU - only kicks in when rsyslogd exited almost immediately.
+    elapsed=$(( $(date +%s) - start ))
+    if [ "$elapsed" -lt 2 ]; then
+        sleep 2
+    fi
+done

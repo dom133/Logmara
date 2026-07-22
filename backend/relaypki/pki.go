@@ -2,9 +2,14 @@
 // remote syslog relays (see backend/handler/relay.go) over mTLS: the
 // central server signs its own CA on first use, signs a server cert for
 // its rsyslog mTLS listener with it, and signs one client cert per relay
-// on demand. There is no external PKI dependency and no CRL/OCSP - relay
-// certs are cut off by removing their IP from the whitelist ACL instead
-// (see model.RelayCertStatusRevoked).
+// on demand, giving each issuance a CommonName unique to that one cert
+// (label + serial) - see IssueClientCert. There is no external PKI
+// dependency and no CRL/OCSP - a relay cert is cut off either by its exact
+// CommonName no longer being in the mTLS listener's PermittedPeers list
+// (regenerated on every issue/revoke, see handler.writeRelayACL - this is
+// what makes a regenerated certificate's old key stop working even though
+// it's still cryptographically valid and CA-signed) or by removing its IP
+// from the whitelist ACL entirely (see model.RelayCertStatusRevoked).
 package relaypki
 
 import (
@@ -298,10 +303,18 @@ func IssueClientCert(dir, label string) (*IssuedCert, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generate client serial: %w", err)
 	}
+	// CommonName embeds the serial so this issuance's CN can never collide
+	// with a previous (or future) one for the same label - the mTLS
+	// listener's PermittedPeers is pinned to this exact string per
+	// currently-"issued" certificate (see handler.writeRelayACL), so a
+	// regenerated or revoked certificate's old CN simply stops matching
+	// once its whitelist entry is relinked, rather than continuing to
+	// authenticate as any CA-signed cert would under x509/certvalid.
+	commonName := label + "#" + serial.Text(16)
 	notAfter := time.Now().AddDate(clientValidityYears, 0, 0)
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: label},
+		Subject:      pkix.Name{CommonName: commonName},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
