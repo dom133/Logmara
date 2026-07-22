@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"sync"
@@ -51,7 +52,9 @@ func StartCacheInvalidationSubscriber(ctx context.Context, b *sharedstate.Broadc
 func InvalidateAllCaches() {
 	invalidateAllCachesLocal()
 	if cacheBroadcaster != nil {
-		_ = cacheBroadcaster.Publish(context.Background(), cacheInvalidateChannel, "")
+		if err := cacheBroadcaster.Publish(context.Background(), cacheInvalidateChannel, ""); err != nil {
+			slog.Warn("failed to broadcast cache invalidation", "error", err)
+		}
 	}
 }
 

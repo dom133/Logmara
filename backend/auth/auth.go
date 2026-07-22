@@ -18,33 +18,40 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-var jwtSecret []byte
-var authDB *sql.DB
+// Config holds everything the auth package needs at runtime.
+// Pass it to middleware and handlers instead of relying on globals.
+type Config struct {
+	jwtSecret []byte
+	db        *sql.DB
+}
 
 // weakDefaultJWTSecret is the placeholder value shipped in docker-compose.yml
 // and .env.example. It must never be used to sign real tokens.
 const weakDefaultJWTSecret = "change-this-to-a-random-secret-key"
 
-func Init(database *sql.DB) error {
+// Init validates the JWT secret, persists a generated one if missing,
+// and returns a ready-to-use Config.
+func Init(database *sql.DB) (*Config, error) {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == weakDefaultJWTSecret {
-		// docker-compose.yml falls back to this placeholder whenever JWT_SECRET
-		// isn't set in the environment/.env, so treat it as unset rather than
-		// failing startup — fall through to the persisted or generated secret.
 		secret = ""
-	} else if secret != "" && len(secret) < 16 {
-		return fmt.Errorf("JWT_SECRET is too short (%d chars); use at least 16 random characters", len(secret))
+	} else if secret != "" && len(secret) < 32 {
+		return nil, fmt.Errorf("JWT_SECRET is too short (%d chars); use at least 32 characters", len(secret))
 	}
 	if secret == "" {
 		secret = db.GetSetting(database, "jwt_secret", "")
+	}
+	if secret != "" && len(secret) < 32 {
+		return nil, fmt.Errorf("persisted jwt_secret is too short (%d chars); use at least 32 characters", len(secret))
 	}
 	if secret == "" {
 		secret = generateRandomKey()
 		db.UpdateSetting(database, "jwt_secret", secret)
 	}
-	jwtSecret = []byte(secret)
-	authDB = database
-	return nil
+	return &Config{
+		jwtSecret: []byte(secret),
+		db:        database,
+	}, nil
 }
 
 func generateRandomKey() string {
@@ -59,15 +66,15 @@ func generateJTI() string {
 	return hex.EncodeToString(b)
 }
 
-func getJWTExpiryMin() int {
+func (cfg *Config) getJWTExpiryMin() int {
 	timeoutStr := os.Getenv("SESSION_TIMEOUT_MIN")
 	if timeoutStr != "" {
 		if t, err := strconv.Atoi(timeoutStr); err == nil && t > 0 {
 			return t
 		}
 	}
-	if authDB != nil {
-		timeoutStr = db.GetSetting(authDB, "session_timeout_min", "15")
+	if cfg.db != nil {
+		timeoutStr = db.GetSetting(cfg.db, "session_timeout_min", "15")
 	}
 	if t, err := strconv.Atoi(timeoutStr); err == nil && t > 0 {
 		return t
@@ -75,8 +82,9 @@ func getJWTExpiryMin() int {
 	return 15
 }
 
-func GenerateToken(userID int64, username string, role string) (string, string, time.Time, error) {
-	expiryMin := getJWTExpiryMin()
+// GenerateToken creates a signed access JWT.
+func (cfg *Config) GenerateToken(userID int64, username string, role string) (string, string, time.Time, error) {
+	expiryMin := cfg.getJWTExpiryMin()
 	jti := generateJTI()
 	exp := time.Now().Add(time.Duration(expiryMin) * time.Minute)
 	claims := jwt.MapClaims{
@@ -88,19 +96,20 @@ func GenerateToken(userID int64, username string, role string) (string, string, 
 		"iat":      time.Now().Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenStr, err := token.SignedString(jwtSecret)
+	tokenStr, err := token.SignedString(cfg.jwtSecret)
 	if err != nil {
 		return "", "", time.Time{}, err
 	}
 	return tokenStr, jti, exp, nil
 }
 
-func ValidateToken(tokenString string) (*jwt.MapClaims, error) {
+// ValidateToken parses and validates a JWT string.
+func (cfg *Config) ValidateToken(tokenString string) (*jwt.MapClaims, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return jwtSecret, nil
+		return cfg.jwtSecret, nil
 	})
 	if err != nil {
 		return nil, err
@@ -111,6 +120,7 @@ func ValidateToken(tokenString string) (*jwt.MapClaims, error) {
 	return nil, fmt.Errorf("invalid token")
 }
 
+// GenerateRefreshToken returns a random refresh token with 7-day expiry.
 func GenerateRefreshToken(userID int) (string, time.Time) {
 	b := make([]byte, 32)
 	rand.Read(b)
@@ -119,11 +129,13 @@ func GenerateRefreshToken(userID int) (string, time.Time) {
 	return token, exp
 }
 
+// HashPassword hashes a password with bcrypt (cost 14).
 func HashPassword(password string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), 14)
 	return string(hash), err
 }
 
+// CheckPassword verifies a password against a bcrypt hash.
 func CheckPassword(password, hash string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	return err == nil
@@ -136,6 +148,7 @@ var (
 	hasSpecial = regexp.MustCompile(`[^A-Za-z0-9]`)
 )
 
+// ValidatePassword enforces complexity requirements.
 func ValidatePassword(password string) error {
 	if len(password) < 8 {
 		return fmt.Errorf("password must be at least 8 characters")
@@ -165,7 +178,8 @@ func extractJTI(claims *jwt.MapClaims) string {
 	return ""
 }
 
-func JWTRequired() gin.HandlerFunc {
+// JWTRequired returns middleware that validates JWT tokens and checks blacklist.
+func (cfg *Config) JWTRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenString, _ := c.Cookie("accessToken")
 		if tokenString == "" {
@@ -185,7 +199,7 @@ func JWTRequired() gin.HandlerFunc {
 			return
 		}
 
-		claims, err := ValidateToken(tokenString)
+		claims, err := cfg.ValidateToken(tokenString)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
 			c.Abort()
@@ -193,8 +207,8 @@ func JWTRequired() gin.HandlerFunc {
 		}
 
 		jti := extractJTI(claims)
-		if jti != "" && authDB != nil {
-			if blacklisted, err := db.IsJTIBlacklisted(authDB, jti); err == nil && blacklisted {
+		if jti != "" && cfg.db != nil {
+			if blacklisted, err := db.IsJTIBlacklisted(cfg.db, jti); err == nil && blacklisted {
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "token revoked"})
 				c.Abort()
 				return
@@ -210,6 +224,7 @@ func JWTRequired() gin.HandlerFunc {
 	}
 }
 
+// RoleRequired returns middleware that enforces at least one of the given roles.
 func RoleRequired(roles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, exists := c.Get("claims")
@@ -234,6 +249,7 @@ func RoleRequired(roles ...string) gin.HandlerFunc {
 	}
 }
 
+// AdminRequired returns middleware that enforces admin role.
 func AdminRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, exists := c.Get("claims")

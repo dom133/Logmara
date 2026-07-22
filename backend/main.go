@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -46,19 +47,132 @@ func newLimiter(client *sharedstate.Client, bucket string, limit int, window tim
 	return newRateLimiter(limit, window)
 }
 
+type persistentBucketEntry struct {
+	Tokens     float64 `json:"t"`
+	LastRefill int64   `json:"lr"`
+}
+
+type tokenBucketEntry struct {
+	tokens     float64
+	lastRefill time.Time
+}
+
 type rateLimiter struct {
-	mu       sync.Mutex
-	requests map[string][]time.Time
-	limit    int
-	window   time.Duration
+	mu         sync.Mutex
+	buckets    map[string]*tokenBucketEntry
+	limit      int
+	window     time.Duration
+	refillRate float64
+	filePath   string
+	stop       chan struct{}
 }
 
 func newRateLimiter(limit int, window time.Duration) *rateLimiter {
-	return &rateLimiter{
-		requests: make(map[string][]time.Time),
-		limit:    limit,
-		window:   window,
+	rl := &rateLimiter{
+		buckets:    make(map[string]*tokenBucketEntry),
+		limit:      limit,
+		window:     window,
+		refillRate: float64(limit) / window.Seconds(),
+		stop:       make(chan struct{}),
 	}
+	go rl.saveLoop()
+	return rl
+}
+
+func newPersistentRateLimiter(limit int, window time.Duration, filePath string) *rateLimiter {
+	rl := &rateLimiter{
+		buckets:    make(map[string]*tokenBucketEntry),
+		limit:      limit,
+		window:     window,
+		refillRate: float64(limit) / window.Seconds(),
+		filePath:   filePath,
+		stop:       make(chan struct{}),
+	}
+	rl.loadState()
+	go rl.saveLoop()
+	return rl
+}
+
+func (rl *rateLimiter) loadState() {
+	if rl.filePath == "" {
+		return
+	}
+	data, err := os.ReadFile(rl.filePath)
+	if err != nil {
+		return
+	}
+	var entries map[string]persistentBucketEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return
+	}
+	now := time.Now()
+	for ip, e := range entries {
+		age := now.Sub(time.Unix(e.LastRefill, 0))
+		if age > rl.window {
+			continue
+		}
+		rl.buckets[ip] = &tokenBucketEntry{
+			tokens:     e.Tokens + age.Seconds()*rl.refillRate,
+			lastRefill: now,
+		}
+		if rl.buckets[ip].tokens > float64(rl.limit) {
+			rl.buckets[ip].tokens = float64(rl.limit)
+		}
+	}
+}
+
+func (rl *rateLimiter) saveState() {
+	if rl.filePath == "" {
+		return
+	}
+	entries := make(map[string]persistentBucketEntry)
+	for ip, e := range rl.buckets {
+		entries[ip] = persistentBucketEntry{
+			Tokens:     e.tokens,
+			LastRefill: e.lastRefill.Unix(),
+		}
+	}
+	data, err := json.Marshal(entries)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(rl.filePath, data, 0600)
+}
+
+func (rl *rateLimiter) Stop() {
+	rl.saveState()
+	close(rl.stop)
+}
+
+func (rl *rateLimiter) saveLoop() {
+	ticker := time.NewTicker(rl.window)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-rl.stop:
+			return
+		case <-ticker.C:
+			rl.mu.Lock()
+			for ip, entry := range rl.buckets {
+				if entry.tokens >= float64(rl.limit) {
+					delete(rl.buckets, ip)
+				}
+			}
+			rl.mu.Unlock()
+			if rl.filePath != "" {
+				rl.saveState()
+			}
+		}
+	}
+}
+
+func (rl *rateLimiter) refill(entry *tokenBucketEntry, now time.Time) {
+	elapsed := now.Sub(entry.lastRefill).Seconds()
+	entry.tokens += elapsed * rl.refillRate
+	if entry.tokens > float64(rl.limit) {
+		entry.tokens = float64(rl.limit)
+	}
+	entry.lastRefill = now
 }
 
 func (rl *rateLimiter) Allow(ip string) bool {
@@ -66,22 +180,21 @@ func (rl *rateLimiter) Allow(ip string) bool {
 	defer rl.mu.Unlock()
 
 	now := time.Now()
-	cutoff := now.Add(-rl.window)
-
-	times := rl.requests[ip]
-	valid := make([]time.Time, 0, len(times))
-	for _, t := range times {
-		if t.After(cutoff) {
-			valid = append(valid, t)
+	entry, exists := rl.buckets[ip]
+	if !exists {
+		entry = &tokenBucketEntry{
+			tokens:     float64(rl.limit) - 1,
+			lastRefill: now,
 		}
+		rl.buckets[ip] = entry
+		return true
 	}
 
-	if len(valid) >= rl.limit {
-		rl.requests[ip] = valid
+	rl.refill(entry, now)
+	if entry.tokens < 1 {
 		return false
 	}
-
-	rl.requests[ip] = append(valid, now)
+	entry.tokens--
 	return true
 }
 
@@ -216,7 +329,8 @@ func main() {
 	// auth.Init anyway, so waiting here doesn't add any new startup latency.
 	<-migrationDone
 
-	if err := auth.Init(database); err != nil {
+	authCfg, err := auth.Init(database)
+	if err != nil {
 		slog.Error("auth initialization failed", "error", err)
 		os.Exit(1)
 	}
@@ -307,16 +421,16 @@ func main() {
 	initLimiter := newLimiter(sharedClient, "init", 3, time.Hour)
 
 	r.GET("/api/health", handler.HealthCheck(database))
-	r.POST("/api/auth/login", rateLimitMiddleware(loginLimiter), handler.Login(database))
-	r.POST("/api/auth/refresh", rateLimitMiddleware(refreshLimiter), handler.Refresh(database))
-	r.POST("/api/auth/logout", handler.Logout(database))
+	r.POST("/api/auth/login", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(loginLimiter), handler.Login(database, authCfg))
+	r.POST("/api/auth/refresh", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(refreshLimiter), handler.Refresh(database, authCfg))
+	r.POST("/api/auth/logout", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.Logout(database))
 	r.GET("/api/status/initialized", handler.CheckInitialized(database))
-	r.POST("/api/init", rateLimitMiddleware(initLimiter), handler.Initialize(database))
+	r.POST("/api/init", middleware.RequireJSON(), middleware.MaxRequestBodySize(8*1024), rateLimitMiddleware(initLimiter), handler.Initialize(database))
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
 	r.GET("/api/init/db-config", handler.GetDbConfig())
 
 	authGroup := r.Group("/api")
-	authGroup.Use(auth.JWTRequired())
+	authGroup.Use(authCfg.JWTRequired())
 	authGroup.Use(handler.CSRFRequired())
 	{
 		authGroup.POST("/logs", handler.GetLogs(database))
@@ -331,7 +445,7 @@ func main() {
 		authGroup.GET("/export/html", handler.ExportHTML(database))
 		authGroup.GET("/auth/me", handler.GetMe(database))
 		changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute)
-		authGroup.POST("/auth/change-password", rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
+		authGroup.POST("/auth/change-password", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
 
 		notificationsGate := handler.RequireNotificationsEnabled(database)
 
@@ -483,8 +597,8 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	r.GET("/api/status/initialized", handler.CheckInitializedStandalone())
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
 	r.GET("/api/init/db-config", handler.GetDbConfig())
-	r.POST("/api/init/test-db", rateLimitMiddleware(testDbLimiter), handler.TestDatabaseConfig())
-	r.POST("/api/init", rateLimitMiddleware(initLimiter), handler.InitializeStandalone(ready))
+	r.POST("/api/init/test-db", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(testDbLimiter), handler.TestDatabaseConfig())
+	r.POST("/api/init", middleware.RequireJSON(), middleware.MaxRequestBodySize(8*1024), rateLimitMiddleware(initLimiter), handler.InitializeStandalone(ready))
 
 	srv := &http.Server{
 		Addr:         ":" + port,

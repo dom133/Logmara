@@ -120,7 +120,7 @@ type ChangePasswordRequest struct {
 	NewPassword     string `json:"new_password" binding:"required,min=8,max=128"`
 }
 
-func Login(database *sql.DB) gin.HandlerFunc {
+func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req LoginRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -201,7 +201,7 @@ func Login(database *sql.DB) gin.HandlerFunc {
 		db.UpdateLastLogin(database, user.Username)
 		user.LastLoginAt = ptrTime(time.Now())
 
-		token, jti, accessExpiresAt, err := auth.GenerateToken(user.ID, user.Username, user.Role)
+		token, jti, accessExpiresAt, err := authCfg.GenerateToken(user.ID, user.Username, user.Role)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
@@ -248,7 +248,7 @@ func getJWTExpiryMin() int {
 // real replay and rejected.
 const refreshReuseGraceWindow = 10 * time.Second
 
-func Refresh(database *sql.DB) gin.HandlerFunc {
+func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		refreshToken, err := c.Cookie(RefreshTokenCookieName)
 		if err != nil || refreshToken == "" {
@@ -288,7 +288,7 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		token, _, accessExpiresAt, err := auth.GenerateToken(user.ID, user.Username, user.Role)
+		token, _, accessExpiresAt, err := authCfg.GenerateToken(user.ID, user.Username, user.Role)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
