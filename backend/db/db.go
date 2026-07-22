@@ -1074,7 +1074,28 @@ func CheckUserLockout(db *sql.DB, userID int64) (bool, error) {
 func IncrementFailedLogins(db *sql.DB, userID int64) error {
 	maxFail := maxFailedAttempts(db)
 	lockoutDur := failedLockoutDuration(db)
-	_, err := db.Exec("UPDATE users SET failed_login_attempts = users.failed_login_attempts + 1, locked_until = CASE WHEN users.failed_login_attempts >= $2 THEN NOW() + $3::interval ELSE users.locked_until END FROM (SELECT failed_login_attempts FROM users WHERE id = $1) t WHERE users.id = $1", userID, maxFail, fmt.Sprintf("%d minutes", int(lockoutDur.Minutes())))
+	// Only increment failures for users who are NOT currently locked.
+	// For already-locked users, leave both fields untouched so the admin
+	// unlock is not silently overridden by a stray failed login.
+	// When the lockout expires (locked_until < NOW), treat the user as
+	// unlocked: a single new failure can re-lock them if it reaches the threshold.
+	var curFailed int
+	var curLockedUntil time.Time
+	var hasLockout bool
+	err := db.QueryRow("SELECT failed_login_attempts, locked_until, locked_until IS NOT NULL FROM users WHERE id = $1", userID).Scan(&curFailed, &curLockedUntil, &hasLockout)
+	if err != nil {
+		return err
+	}
+	// Skip if actively locked
+	if hasLockout && curLockedUntil.After(time.Now()) {
+		return nil
+	}
+	newFailed := curFailed + 1
+	if newFailed >= maxFail {
+		_, err = db.Exec("UPDATE users SET failed_login_attempts = $2, locked_until = NOW() + $3::interval WHERE id = $1", userID, newFailed, fmt.Sprintf("%d minutes", int(lockoutDur.Minutes())))
+	} else {
+		_, err = db.Exec("UPDATE users SET failed_login_attempts = $2, locked_until = NULL WHERE id = $1", userID, newFailed)
+	}
 	return err
 }
 
