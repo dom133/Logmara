@@ -594,15 +594,14 @@ func relayConfSnippet(database *sql.DB, label string) []byte {
 # rsyslog.d/relay.conf there. See README "Syslog Relay" for the full
 # deployment steps (docker-compose.relay.yml).
 #
-# TLS material is set via the GLOBAL DefaultNetstreamDriver* params, not the
-# omfwd action's own StreamDriverCAFile/CertFile/KeyFile params below: those
-# per-action params were only wired up for the sender side in rsyslog 8.2310
-# (https://github.com/rsyslog/rsyslog/issues/5150), so on the 8.2302.0 that
-# ships in Debian bookworm (Dockerfile.rsyslog-relay's base image) they're
-# silently ignored and the connection goes out with no client cert and no
-# trust anchors at all - central then logs "peer did not provide a
-# certificate" and this relay logs "signer not found" for the exact same
-# handshake. Kept below anyway for forward-compat with newer rsyslog.
+# TLS material is set via the GLOBAL DefaultNetstreamDriver* params below,
+# not the omfwd action's own StreamDriverCAFile/CertFile/KeyFile params:
+# those per-action params only exist on the sender side starting in rsyslog
+# 8.2310 (https://github.com/rsyslog/rsyslog/issues/5150) - on the 8.2302.0
+# that ships in Debian bookworm (Dockerfile.rsyslog-relay's base image)
+# they're not just ignored but rejected outright as unknown parameters
+# ("typo in config file?"), so omfwd's action() below deliberately omits
+# them and relies on this global() block instead.
 global(
   DefaultNetstreamDriverCAFile="/etc/syslog-relay/tls/ca.crt"
   DefaultNetstreamDriverCertFile="/etc/syslog-relay/tls/client.crt"
@@ -641,9 +640,6 @@ template(name="JsonLines" type="list") {
   StreamDriver="gtls"
   StreamDriverMode="1"
   StreamDriverAuthMode="x509/certvalid"
-  StreamDriverCAFile="/etc/syslog-relay/tls/ca.crt"
-  StreamDriverCertFile="/etc/syslog-relay/tls/client.crt"
-  StreamDriverKeyFile="/etc/syslog-relay/tls/client.key"
   queue.type="LinkedList"
   queue.filename="relayqueue"
   queue.saveOnShutdown="on"
