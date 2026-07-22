@@ -113,13 +113,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (username: string, password: string) => {
     try {
       const res = await api.post('/auth/login', { username, password })
-      loadUser()
+      const userData = res.data.user
+      setUser({
+        id: userData.id,
+        username: userData.username,
+        role: userData.role,
+        is_admin: userData.is_admin,
+        is_active: userData.is_active,
+        notifications_enabled: userData.notifications_enabled ?? true,
+        relay_ingestion_enabled: userData.relay_ingestion_enabled ?? false,
+      })
       setupSessionWarning(res.data.expires_at)
       return { ok: true }
     } catch (error: any) {
       return { ok: false, error: error.response?.data?.message || 'Login failed' }
     }
-  }, [loadUser, setupSessionWarning])
+  }, [setupSessionWarning])
 
   const extendSession = useCallback(async () => {
     extendingRef.current = true
