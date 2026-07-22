@@ -456,7 +456,12 @@ END $$`,
 		// "via relay" forever) in favor of the true most-recent-log value.
 		`DO $$ BEGIN
 			IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mv_device_stats' AND column_name='via_relay')
-				OR EXISTS (SELECT 1 FROM pg_matviews WHERE matviewname = 'mv_device_stats' AND definition LIKE '%FILTER (WHERE via_relay%') THEN
+				-- pg_get_viewdef() heavily re-parenthesizes FILTER's boolean
+				-- expression (e.g. "FILTER (WHERE ((via_relay IS NOT NULL) AND
+				-- ...))"), so matching the old clause verbatim would never hit.
+				-- FILTER appears nowhere else in this view, so its mere presence
+				-- is enough to identify the pre-fix definition.
+				OR EXISTS (SELECT 1 FROM pg_matviews WHERE matviewname = 'mv_device_stats' AND definition LIKE '%FILTER%') THEN
 				DROP MATERIALIZED VIEW IF EXISTS mv_device_stats;
 			END IF;
 		END $$`,
