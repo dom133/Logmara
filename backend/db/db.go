@@ -922,7 +922,7 @@ func deleteOldLogsBatched(db *sql.DB, retentionDays int) (int64, error) {
 
 	for {
 		result, err := db.Exec(
-			"DELETE FROM syslog_logs WHERE ctid IN (SELECT ctid FROM syslog_logs WHERE timestamp < NOW() - INTERVAL $1 LIMIT $2)",
+			"DELETE FROM syslog_logs WHERE ctid IN (SELECT ctid FROM syslog_logs WHERE timestamp < NOW() - $1::interval LIMIT $2)",
 			fmt.Sprintf("%d days", retentionDays), batchSize,
 		)
 		if err != nil {
@@ -1063,7 +1063,7 @@ func CheckUserLockout(db *sql.DB, userID int64) (bool, error) {
 func IncrementFailedLogins(db *sql.DB, userID int64) error {
 	maxFail := maxFailedAttempts(db)
 	lockoutDur := failedLockoutDuration(db)
-	_, err := db.Exec("UPDATE users SET failed_login_attempts = failed_login_attempts + 1, locked_until = CASE WHEN failed_login_attempts >= $2 THEN NOW() + INTERVAL $3 ELSE locked_until END FROM (SELECT failed_login_attempts FROM users WHERE id = $1) t WHERE users.id = $1", userID, maxFail, fmt.Sprintf("%d minutes", int(lockoutDur.Minutes())))
+	_, err := db.Exec("UPDATE users SET failed_login_attempts = failed_login_attempts + 1, locked_until = CASE WHEN failed_login_attempts >= $2 THEN NOW() + $3::interval ELSE locked_until END FROM (SELECT failed_login_attempts FROM users WHERE id = $1) t WHERE users.id = $1", userID, maxFail, fmt.Sprintf("%d minutes", int(lockoutDur.Minutes())))
 	return err
 }
 
