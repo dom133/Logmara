@@ -135,12 +135,6 @@ func HashPassword(password string) (string, error) {
 	return string(hash), err
 }
 
-// CheckPassword verifies a password against a bcrypt hash.
-func CheckPassword(password, hash string) bool {
-	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
-	return err == nil
-}
-
 var (
 	hasUpper   = regexp.MustCompile(`[A-Z]`)
 	hasLower   = regexp.MustCompile(`[a-z]`)

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -316,12 +315,4 @@ func UpdateDeviceAlias(db *sql.DB) gin.HandlerFunc {
 		InvalidateAllCaches()
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
-}
-
-func matchGlob(pattern, value string) bool {
-	if pattern == "" || pattern == "*" {
-		return true
-	}
-	matched, _ := filepath.Match(pattern, value)
-	return matched
 }

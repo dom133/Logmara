@@ -72,11 +72,9 @@ func TestFactoryFunctions(t *testing.T) {
 		code int
 	}{
 		{"NewBadRequest", NewBadRequest, http.StatusBadRequest},
-		{"NewUnauthorized", NewUnauthorized, http.StatusUnauthorized},
 		{"NewForbidden", NewForbidden, http.StatusForbidden},
 		{"NewNotFound", NewNotFound, http.StatusNotFound},
 		{"NewConflict", NewConflict, http.StatusConflict},
-		{"NewValidationError", NewValidationError, http.StatusUnprocessableEntity},
 		{"NewInternal", NewInternal, http.StatusInternalServerError},
 		{"NewServiceUnavailable", NewServiceUnavailable, http.StatusServiceUnavailable},
 	}
@@ -91,21 +89,6 @@ func TestFactoryFunctions(t *testing.T) {
 				t.Errorf("expected message %q, got %q", "test", e.Message)
 			}
 		})
-	}
-}
-
-func TestWrapError(t *testing.T) {
-	cause := errors.New("original error")
-	e := WrapError(cause, http.StatusNotFound, "resource not found")
-
-	if e.Code != http.StatusNotFound {
-		t.Errorf("expected code %d, got %d", http.StatusNotFound, e.Code)
-	}
-	if e.Message != "resource not found" {
-		t.Errorf("expected message %q, got %q", "resource not found", e.Message)
-	}
-	if e.Cause != cause {
-		t.Errorf("expected cause %v, got %v", cause, e.Cause)
 	}
 }
 

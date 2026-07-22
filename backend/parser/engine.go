@@ -220,11 +220,9 @@ func (e *Engine) Parse(hostname, appName, message string) *ParseResult {
 	for _, p := range matched {
 		parserNames = append(parserNames, p.Name)
 		fields := e.Extract(&p, message)
-		if fields != nil {
-			for k, v := range fields {
-				if _, exists := merged[k]; !exists {
-					merged[k] = v
-				}
+		for k, v := range fields {
+			if _, exists := merged[k]; !exists {
+				merged[k] = v
 			}
 		}
 	}

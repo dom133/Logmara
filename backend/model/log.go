@@ -203,11 +203,3 @@ func (d DeviceStats) MarshalJSON() ([]byte, error) {
 		Alias:    (Alias)(d),
 	})
 }
-
-func ParseIngestEntry(raw []byte) (*IngestEntry, error) {
-	var entry IngestEntry
-	if err := json.Unmarshal(raw, &entry); err != nil {
-		return nil, err
-	}
-	return &entry, nil
-}

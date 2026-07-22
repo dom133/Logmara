@@ -39,12 +39,27 @@ type RateLimiter interface {
 // newLimiter picks the local or Redis-backed limiter based on whether
 // Redis is configured. bucket namespaces the limiter's counters in Redis
 // (irrelevant for the local implementation, which is only ever used by one
-// process anyway).
-func newLimiter(client *sharedstate.Client, bucket string, limit int, window time.Duration) RateLimiter {
+// process anyway). filePath is only honored for the local implementation
+// (Redis already persists across restarts on its own); pass "" for limiters
+// where losing counters on restart is acceptable.
+func newLimiter(client *sharedstate.Client, bucket string, limit int, window time.Duration, filePath string) RateLimiter {
 	if client != nil {
 		return sharedstate.NewRedisRateLimiter(client, bucket, limit, window)
 	}
+	if filePath != "" {
+		return newPersistentRateLimiter(limit, window, filePath)
+	}
 	return newRateLimiter(limit, window)
+}
+
+// stopIfPersistent flushes a local rate limiter's bucket state to disk
+// before shutdown, so brute-force counters (login, change-password) survive
+// a restart instead of silently resetting. It's a no-op for the Redis-backed
+// limiter, which has no local state to flush.
+func stopIfPersistent(rl RateLimiter) {
+	if s, ok := rl.(interface{ Stop() }); ok {
+		s.Stop()
+	}
 }
 
 type persistentBucketEntry struct {
@@ -416,9 +431,14 @@ func main() {
 	// frontend/nginx.conf and handler.reloadNginx) - clients only ever reach
 	// this API through it, so there's no CORS handling here.
 
-	loginLimiter := newLimiter(sharedClient, "login", 5, time.Minute)
-	refreshLimiter := newLimiter(sharedClient, "refresh", 10, time.Minute)
-	initLimiter := newLimiter(sharedClient, "init", 3, time.Hour)
+	// login and change-password guard against credential brute-forcing, so
+	// their counters are persisted to the /data volume and survive an api
+	// restart; the rest are low-stakes enough that losing counters on
+	// restart is an acceptable tradeoff for the extra complexity.
+	loginLimiter := newLimiter(sharedClient, "login", 5, time.Minute, "/data/ratelimit-login.json")
+	refreshLimiter := newLimiter(sharedClient, "refresh", 10, time.Minute, "")
+	initLimiter := newLimiter(sharedClient, "init", 3, time.Hour, "")
+	changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute, "/data/ratelimit-change-password.json")
 
 	r.GET("/api/health", handler.HealthCheck(database))
 	r.POST("/api/auth/login", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(loginLimiter), handler.Login(database, authCfg))
@@ -444,7 +464,6 @@ func main() {
 		authGroup.GET("/export/csv", handler.ExportCSV(database))
 		authGroup.GET("/export/html", handler.ExportHTML(database))
 		authGroup.GET("/auth/me", handler.GetMe(database))
-		changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute)
 		authGroup.POST("/auth/change-password", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
 
 		notificationsGate := handler.RequireNotificationsEnabled(database)
@@ -569,6 +588,8 @@ func main() {
 	stopVacuum()
 	stopMV()
 	stopTokenCleanup()
+	stopIfPersistent(loginLimiter)
+	stopIfPersistent(changePasswordLimiter)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -591,8 +612,8 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	r.Use(middleware.SecurityHeaders())
 	r.Use(middleware.GzipCompress())
 
-	initLimiter := newLimiter(sharedClient, "wizard-init", 3, time.Hour)
-	testDbLimiter := newLimiter(sharedClient, "wizard-test-db", 20, 10*time.Minute)
+	initLimiter := newLimiter(sharedClient, "wizard-init", 3, time.Hour, "")
+	testDbLimiter := newLimiter(sharedClient, "wizard-test-db", 20, 10*time.Minute, "")
 	r.GET("/api/health", handler.HealthCheckStandalone())
 	r.GET("/api/status/initialized", handler.CheckInitializedStandalone())
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())

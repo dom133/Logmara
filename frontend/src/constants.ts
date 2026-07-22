@@ -22,22 +22,6 @@ export const SEVERITY_LABELS: Record<string, string> = {
   debug: 'Debug',
 };
 
-export const STATUS_COLORS: Record<string, NonNullable<TagProps['color']>> = {
-  active: 'green',
-  inactive: 'default',
-  error: 'red',
-  syncing: 'blue',
-  unknown: 'default',
-};
-
-export const STATUS_LABELS: Record<string, string> = {
-  active: 'Active',
-  inactive: 'Inactive',
-  error: 'Error',
-  syncing: 'Syncing',
-  unknown: 'Unknown',
-};
-
 export const DATE_PRESETS = [
   { label: 'Last Hour', value: '1h' },
   { label: 'Last 6 Hours', value: '6h' },

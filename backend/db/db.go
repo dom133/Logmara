@@ -1183,14 +1183,3 @@ func RefreshMaterializedViews(db *sql.DB) {
 	}
 	slog.Info("materialized views refreshed")
 }
-
-func StartMVRefreshLoop(db *sql.DB, interval time.Duration) {
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for range ticker.C {
-			RefreshMaterializedViews(db)
-		}
-	}()
-	slog.Info("materialized view refresh loop started", "interval", interval)
-}

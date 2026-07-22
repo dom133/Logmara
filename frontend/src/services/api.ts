@@ -479,16 +479,6 @@ export async function purgeAllLogs(pauseDuringPurge: boolean) {
 	return res.data
 }
 
-export async function pauseIngestion() {
-	const res = await api.post('/admin/ingestion/pause')
-	return res.data
-}
-
-export async function resumeIngestion() {
-	const res = await api.post('/admin/ingestion/resume')
-	return res.data
-}
-
 export async function testLDAPConnection(data: {
 	server: string
 	port: number

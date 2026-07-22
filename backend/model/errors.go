@@ -40,10 +40,6 @@ func NewBadRequest(message string, cause error) *AppError {
 	return NewAppError(http.StatusBadRequest, message, cause)
 }
 
-func NewUnauthorized(message string, cause error) *AppError {
-	return NewAppError(http.StatusUnauthorized, message, cause)
-}
-
 func NewForbidden(message string, cause error) *AppError {
 	return NewAppError(http.StatusForbidden, message, cause)
 }
@@ -56,18 +52,10 @@ func NewConflict(message string, cause error) *AppError {
 	return NewAppError(http.StatusConflict, message, cause)
 }
 
-func NewValidationError(message string, cause error) *AppError {
-	return NewAppError(http.StatusUnprocessableEntity, message, cause)
-}
-
 func NewInternal(message string, cause error) *AppError {
 	return NewAppError(http.StatusInternalServerError, message, cause)
 }
 
 func NewServiceUnavailable(message string, cause error) *AppError {
 	return NewAppError(http.StatusServiceUnavailable, message, cause)
-}
-
-func WrapError(err error, code int, message string) *AppError {
-	return NewAppError(code, message, err)
 }

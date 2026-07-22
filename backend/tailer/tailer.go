@@ -148,8 +148,6 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 				filePos = 0
 				flushedPos = 0
 				savePosition(posFile, 0)
-				stat, _ = f.Stat()
-				fileSize = stat.Size()
 				lastCompaction = time.Now()
 			}
 		}

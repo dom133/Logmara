@@ -4,8 +4,6 @@ import (
 	"database/sql"
 	"log/slog"
 	"net/http"
-	"os"
-	"strconv"
 	"time"
 
 	"syslytics/audit"
@@ -242,16 +240,6 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 
 func ptrTime(t time.Time) *time.Time {
 	return &t
-}
-
-func getJWTExpiryMin() int {
-	timeoutStr := os.Getenv("SESSION_TIMEOUT_MIN")
-	if timeoutStr != "" {
-		if t, err := strconv.Atoi(timeoutStr); err == nil && t > 0 {
-			return t
-		}
-	}
-	return 15
 }
 
 // refreshReuseGraceWindow tolerates a refresh token being presented twice in
