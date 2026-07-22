@@ -971,6 +971,10 @@ export function streamNotifications(onNotification: (n: InAppNotification) => vo
 					credentials: 'include',
 					signal: controller.signal,
 				})
+				if (res.status === 401 || res.status === 403) {
+					window.location.href = '/login'
+					return
+				}
 				if (!res.ok || !res.body) throw new Error(`stream failed: ${res.status}`)
 
 				const reader = res.body.getReader()

@@ -128,6 +128,28 @@ func cleanupExpiredRefreshTokens(db *sql.DB) {
 	if n, err := res.RowsAffected(); err == nil && n > 0 {
 		slog.Info("refresh token cleanup completed", "rows_deleted", n)
 	}
+
+	timeoutMin := getInactivityTimeoutMin(db)
+	res, err = db.Exec(
+		"UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE used = false AND created_at < NOW() - ($1 || ' minutes')::INTERVAL",
+		timeoutMin,
+	)
+	if err != nil {
+		slog.Error("inactive token expiry failed", "err", err)
+		return
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		slog.Info("inactive tokens expired", "rows_marked", n, "timeout_min", timeoutMin)
+	}
+}
+
+func getInactivityTimeoutMin(db *sql.DB) string {
+	var val sql.NullString
+	err := db.QueryRow("SELECT value FROM app_settings WHERE key = 'session_timeout_min'").Scan(&val)
+	if err != nil || !val.Valid {
+		return "15"
+	}
+	return val.String
 }
 
 // runVacuumAnalyze targets only the currently-active partitions (this month
@@ -185,7 +207,14 @@ func activePartitionNames(db *sql.DB) []string {
 // nobody is logged in to look at them.
 func HasActiveSession(db *sql.DB) bool {
 	var active bool
-	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM refresh_tokens WHERE used = false AND expires_at > NOW())").Scan(&active)
+	err := db.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM refresh_tokens
+			WHERE used = false
+			  AND expires_at > NOW()
+			  AND created_at > NOW() - (COALESCE((SELECT value FROM app_settings WHERE key = 'session_timeout_min'), '15')::int || ' minutes')::INTERVAL
+		)
+	`).Scan(&active)
 	if err != nil {
 		slog.Error("active session check failed", "err", err)
 		return false
