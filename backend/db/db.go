@@ -127,6 +127,7 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='parsed_fields') THEN ALTER TABLE syslog_logs ADD COLUMN parsed_fields JSONB DEFAULT '{}'; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='matched_parsers') THEN ALTER TABLE syslog_logs ADD COLUMN matched_parsers TEXT[] DEFAULT '{}'; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='fromhost_ip') THEN ALTER TABLE syslog_logs ADD COLUMN fromhost_ip VARCHAR(255); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='via_relay') THEN ALTER TABLE syslog_logs ADD COLUMN via_relay VARCHAR(255); END IF; END $$`,
 		`DO $$ BEGIN EXECUTE 'DROP INDEX IF EXISTS idx_syslog_parsed_fields'; EXCEPTION WHEN OTHERS THEN NULL; END $$`,
 		`DO $$ BEGIN EXECUTE 'DROP INDEX IF EXISTS idx_syslog_timestamp'; EXCEPTION WHEN OTHERS THEN NULL; END $$`,
 		`DO $$ BEGIN EXECUTE 'DROP INDEX IF EXISTS idx_syslog_recent_7d'; EXCEPTION WHEN OTHERS THEN NULL; END $$`,
@@ -445,6 +446,16 @@ END $$`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_top_errors_key ON mv_dashboard_top_errors (message, fromhost_ip)`,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_app_name_trgm ON syslog_logs USING GIN (app_name gin_trgm_ops)`,
+		// mv_device_stats predates the via_relay column: CREATE ... IF NOT
+		// EXISTS below is a no-op on any deployment where the view already
+		// exists, so an already-materialized copy needs dropping first to
+		// pick up the new column (its unique index goes with it, recreated
+		// by the CREATE UNIQUE INDEX statement further down).
+		`DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mv_device_stats' AND column_name='via_relay') THEN
+				DROP MATERIALIZED VIEW IF EXISTS mv_device_stats;
+			END IF;
+		END $$`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_device_stats AS
 			WITH dev_stats AS (
 				SELECT COALESCE(fromhost_ip, '') as fromhost_ip, MIN(hostname) as hostname,
@@ -456,7 +467,13 @@ END $$`,
 					SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) as warning,
 					SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END) as notice,
 					SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END) as info,
-					SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug
+					SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug,
+					-- Most recent non-blank via_relay this device's logs have carried -
+					-- set by rsyslog/syslog.conf's relayAccept ruleset only for entries
+					-- that arrived through a relay (see relayConfSnippet's JsonLines
+					-- template), so a device sending straight to the central listener
+					-- never gets one.
+					(array_agg(via_relay ORDER BY timestamp DESC) FILTER (WHERE via_relay IS NOT NULL AND via_relay != ''))[1] as via_relay
 				FROM syslog_logs
 				GROUP BY fromhost_ip
 			),
@@ -469,6 +486,7 @@ END $$`,
 			)
 			SELECT d.fromhost_ip, d.hostname, d.total_logs, d.last_seen,
 				d.emergency, d.alert, d.critical, d.err_count, d.warning, d.notice, d.info, d.debug,
+				d.via_relay,
 				COALESCE(p.parsers, '{}'::TEXT[]) as parsers
 			FROM dev_stats d
 			LEFT JOIN dev_parsers p ON p.fromhost_ip = d.fromhost_ip

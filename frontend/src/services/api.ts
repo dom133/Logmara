@@ -103,6 +103,10 @@ export interface DeviceStats {
   severity_count: Record<string, number>
   matched_parsers: string[]
   has_parsed: boolean
+  // Label of the relay this device's logs are currently arriving through,
+  // or absent for a device sending straight to the central listener.
+  via_relay?: string
+  uses_proxy: boolean
 }
 
 export interface LogsPage {

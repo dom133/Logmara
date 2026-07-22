@@ -318,7 +318,7 @@ func fetchDeviceStats(db *sql.DB, limit int) []model.DeviceStats {
 		// syslog_logs live - see fetchDevices in logs.go for the same fix.
 		rows, err := db.Query(
 			`SELECT fromhost_ip, hostname, total_logs, last_seen,
-				emergency, alert, critical, err_count, warning, notice, info, debug
+				emergency, alert, critical, err_count, warning, notice, info, debug, via_relay
 				FROM mv_device_stats ORDER BY total_logs DESC LIMIT $1`, limit,
 		)
 		if err != nil {
@@ -329,10 +329,12 @@ func fetchDeviceStats(db *sql.DB, limit int) []model.DeviceStats {
 		for rows.Next() {
 			var d model.DeviceStats
 			var emergency, alert, critical, errCount, warning, notice, info, debug int64
+			var viaRelay sql.NullString
 			if err := rows.Scan(&d.FromHostIP, &d.Hostname, &d.TotalLogs, &d.LastSeen,
-				&emergency, &alert, &critical, &errCount, &warning, &notice, &info, &debug); err != nil {
+				&emergency, &alert, &critical, &errCount, &warning, &notice, &info, &debug, &viaRelay); err != nil {
 				continue
 			}
+			d.ViaRelay = viaRelay.String
 			d.SeverityCount = model.SeverityCounts{
 				"emergency": emergency, "alert": alert, "critical": critical, "error": errCount,
 				"warning": warning, "notice": notice, "info": info, "debug": debug,

@@ -805,6 +805,21 @@ const handleCleanup = async () => {
                       },
                     },
                     {
+                      title: 'Proxy',
+                      dataIndex: 'via_relay',
+                      key: 'via_relay',
+                      width: 160,
+                      filters: [
+                        { text: 'Via relay', value: true },
+                        { text: 'Direct', value: false },
+                      ],
+                      onFilter: (value, record: DeviceStats) => record.uses_proxy === value,
+                      render: (_v: unknown, record: DeviceStats) =>
+                        record.uses_proxy
+                          ? <Tag color="blue">{record.via_relay}</Tag>
+                          : <span style={{ color: '#999' }}>Direct</span>,
+                    },
+                    {
                       title: 'Total Logs',
                       dataIndex: 'total_logs',
                       key: 'total_logs',

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -643,7 +644,7 @@ template(name="JsonLines" type="list") {
   property(name="procid" format="json")
   constant(value="\",\"message\":\"")
   property(name="msg" format="json")
-  constant(value="\"}\n")
+  constant(value="\",\"via_relay\":\"%s\"}\n")
 }
 
 *.* action(type="omfwd"
@@ -660,7 +661,24 @@ template(name="JsonLines" type="list") {
   action.resumeInterval="10"
 )
 `
-	return []byte(fmt.Sprintf(tpl, label, host))
+	return []byte(fmt.Sprintf(tpl, label, host, jsonEscapeForRsyslogConstant(label)))
+}
+
+// jsonEscapeForRsyslogConstant prepares label to sit inside a JSON string
+// value that's itself embedded in an rsyslog constant(value="...") literal
+// (see the "via_relay" field in relayConfSnippet's JsonLines template) -
+// two escaping layers stacked on each other, since label ends up nested
+// inside both. JSON-encode it first (quotes/backslashes/control chars
+// become JSON escapes), then escape backslashes and quotes a second time so
+// that JSON-escaped text survives rsyslog's own string literal parsing
+// unchanged - otherwise a label containing a quote or backslash would
+// either corrupt the generated config or the JSON it's meant to produce.
+func jsonEscapeForRsyslogConstant(label string) string {
+	jsonBytes, _ := json.Marshal(label)
+	inner := string(jsonBytes[1 : len(jsonBytes)-1])
+	inner = strings.ReplaceAll(inner, `\`, `\\`)
+	inner = strings.ReplaceAll(inner, `"`, `\"`)
+	return inner
 }
 
 var filenameUnsafeRe = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)

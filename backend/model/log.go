@@ -37,6 +37,7 @@ type IngestEntry struct {
 	Facility       string   `json:"facility"`
 	Message        string   `json:"message"`
 	RawMessage     string   `json:"raw_message"`
+	ViaRelay       string   `json:"via_relay"`
 	ParsedFields   []byte   `json:"-"`
 	MatchedParsers []string `json:"-"`
 }
@@ -67,6 +68,7 @@ func (e *IngestEntry) UnmarshalJSON(data []byte) error {
 		AtTimestamp          string `json:"@timestamp"`
 		Program              string `json:"program"`
 		SyslogTag            string `json:"syslog_tag"`
+		ViaRelay             string `json:"via_relay"`
 	}
 
 	var raw RawEntry
@@ -128,6 +130,7 @@ func (e *IngestEntry) UnmarshalJSON(data []byte) error {
 	if e.MsgID == "" && raw.SyslogTag != "" {
 		e.MsgID = raw.SyslogTag
 	}
+	e.ViaRelay = raw.ViaRelay
 
 	return nil
 }
@@ -187,6 +190,11 @@ type DeviceStats struct {
 	SeverityCount  SeverityCounts `json:"severity_count"`
 	MatchedParsers []string       `json:"matched_parsers"`
 	HasParsed      bool           `json:"has_parsed"`
+	// ViaRelay is the label of the relay this device's logs are currently
+	// arriving through (see rsyslog/syslog.conf's relayAccept ruleset and
+	// mv_device_stats.via_relay), or "" for a device sending straight to
+	// the central listener.
+	ViaRelay string `json:"via_relay,omitempty"`
 }
 
 func (d DeviceStats) MarshalJSON() ([]byte, error) {
@@ -196,10 +204,12 @@ func (d DeviceStats) MarshalJSON() ([]byte, error) {
 		lastSeen = d.LastSeen.Time.Format(time.RFC3339)
 	}
 	return json.Marshal(&struct {
-		LastSeen string `json:"last_seen"`
+		LastSeen  string `json:"last_seen"`
+		UsesProxy bool   `json:"uses_proxy"`
 		Alias
 	}{
-		LastSeen: lastSeen,
-		Alias:    (Alias)(d),
+		LastSeen:  lastSeen,
+		UsesProxy: d.ViaRelay != "",
+		Alias:     (Alias)(d),
 	})
 }
