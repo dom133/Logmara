@@ -1124,7 +1124,7 @@ func CleanupExpiredBlacklist(db *sql.DB) error {
 	if ttl == "" {
 		ttl = "7 days"
 	}
-	_, err := db.Exec("DELETE FROM jwt_blacklist WHERE blacklisted_at < NOW() - INTERVAL $1", ttl)
+	_, err := db.Exec("DELETE FROM jwt_blacklist WHERE blacklisted_at < NOW() - $1::interval", ttl)
 	return err
 }
 
