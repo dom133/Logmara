@@ -596,39 +596,39 @@ func nullStrPtr(s string) *string {
 // lives in the database and is managed from the admin Settings UI, not env.
 func seedSettings(db *sql.DB) error {
 	settings := map[string]string{
-		"retention_days":               "30",
-		"session_timeout_min":          "15",
-		"is_initialized":               "false",
-		"ldap_enabled":                 "false",
-		"ldap_server":                  "",
-		"ldap_port":                    "389",
-		"ldap_use_tls":                 "false",
-		"ldap_verify_cert":             "true",
-		"ldap_ca_cert":                 "",
-		"ldap_base_dn":                 "",
-		"ldap_bind_dn":                 "",
-		"ldap_bind_password":           "",
-		"ldap_user_filter":             "(uid=%s)",
-		"ldap_username_attr":           "uid",
-		"ldap_email_attr":              "mail",
-		"ldap_default_role":            "viewer",
-		"ldap_auto_provision":          "true",
-		"encryption_key":               "",
-		"cors_origins":                 strings.TrimSpace(os.Getenv("CORS_ORIGINS")),
-		"https_enabled":                "false",
-		"https_redirect":               "false",
-		"notifications_enabled":        "true",
-		"smtp_enabled":                 "false",
-		"smtp_host":                    "",
-		"smtp_port":                    "587",
-		"smtp_username":                "",
-		"smtp_password":                "",
-		"smtp_from":                    "",
-		"smtp_use_tls":                 "true",
-		"device_silence_check_minutes": "5",
-		"relay_ingestion_enabled":      "false",
-		"relay_central_host":           "",
-		"security_max_failed_attempts": "",
+		"retention_days":                "30",
+		"session_timeout_min":           "15",
+		"is_initialized":                "false",
+		"ldap_enabled":                  "false",
+		"ldap_server":                   "",
+		"ldap_port":                     "389",
+		"ldap_use_tls":                  "false",
+		"ldap_verify_cert":              "true",
+		"ldap_ca_cert":                  "",
+		"ldap_base_dn":                  "",
+		"ldap_bind_dn":                  "",
+		"ldap_bind_password":            "",
+		"ldap_user_filter":              "(uid=%s)",
+		"ldap_username_attr":            "uid",
+		"ldap_email_attr":               "mail",
+		"ldap_default_role":             "viewer",
+		"ldap_auto_provision":           "true",
+		"encryption_key":                "",
+		"cors_origins":                  strings.TrimSpace(os.Getenv("CORS_ORIGINS")),
+		"https_enabled":                 "false",
+		"https_redirect":                "false",
+		"notifications_enabled":         "true",
+		"smtp_enabled":                  "false",
+		"smtp_host":                     "",
+		"smtp_port":                     "587",
+		"smtp_username":                 "",
+		"smtp_password":                 "",
+		"smtp_from":                     "",
+		"smtp_use_tls":                  "true",
+		"device_silence_check_minutes":  "5",
+		"relay_ingestion_enabled":       "false",
+		"relay_central_host":            "",
+		"security_max_failed_attempts":  "",
 		"security_lockout_duration_min": "",
 	}
 
@@ -765,47 +765,58 @@ func getSettingRaw(db *sql.DB, key string) string {
 	return val
 }
 
-// envBoolSettings maps environment variables to the app_settings key they
-// override. Both default to disabled (see seedSettings); an operator can pin
-// either one via env for container/orchestrator-managed deployments.
-var envBoolSettings = map[string]string{
-	"HTTPS_ENABLED":  "https_enabled",
-	"HTTPS_REDIRECT": "https_redirect",
+type envSetting struct {
+	envVar  string
+	key     string
+	def     string
+	isBool  bool
 }
 
-// ApplyEnvSettingOverrides seeds HTTPS settings from environment variables
-// the first time each is ever present, and persists them to app_settings so
-// they show up (and stay visible) in the admin Settings UI. A var is only
-// applied once per key, ever - tracked via a "<key>_env_applied" marker -
-// not on every startup: seedSettings has already given these rows a default
-// value by the time this runs, so re-applying the env var unconditionally
-// on every restart would silently stomp any change an admin made through
-// the UI since. A var is only applied at all when explicitly set to a
-// non-empty value.
+var envSettings = []envSetting{
+	{"HTTPS_ENABLED", "https_enabled", "false", true},
+	{"HTTPS_REDIRECT", "https_redirect", "false", true},
+	{"MAX_FAILED_ATTEMPTS", "security_max_failed_attempts", "5", false},
+	{"LOCKOUT_DURATION_MIN", "security_lockout_duration_min", "15", false},
+	{"SESSION_TIMEOUT_MIN", "session_timeout_min", "15", false},
+}
+
+// ApplyEnvSettingOverrides populates app_settings rows that are still empty
+// with a value from the matching environment variable or the built-in default.
+// Each key is only filled once, tracked via a "<key>_env_applied" marker, so
+// an admin's subsequent UI edits are never silently overwritten on restart.
 func ApplyEnvSettingOverrides(db *sql.DB) {
-	for envVar, key := range envBoolSettings {
-		raw := strings.TrimSpace(os.Getenv(envVar))
-		if raw == "" {
-			continue
-		}
-		appliedMarker := key + "_env_applied"
+	for _, es := range envSettings {
+		raw := strings.TrimSpace(os.Getenv(es.envVar))
+		appliedMarker := es.key + "_env_applied"
 		if GetSetting(db, appliedMarker, "false") == "true" {
 			continue
 		}
-		enabled, err := strconv.ParseBool(raw)
-		if err != nil {
-			slog.Warn("invalid boolean value for env setting override, ignoring", "env", envVar, "value", raw)
+		current := GetSetting(db, es.key, "")
+		if current != "" {
 			continue
 		}
-		value := strconv.FormatBool(enabled)
-		if err := UpdateSetting(db, key, value); err != nil {
-			slog.Warn("failed to apply env setting override", "env", envVar, "key", key, "error", err)
+		value := es.def
+		if raw != "" {
+			if es.isBool {
+				if _, err := strconv.ParseBool(raw); err != nil {
+					slog.Warn("invalid boolean value for env setting override, ignoring", "env", es.envVar, "value", raw)
+					continue
+				}
+			}
+			value = raw
+		}
+		if err := UpdateSetting(db, es.key, value); err != nil {
+			slog.Warn("failed to apply env setting override", "env", es.envVar, "key", es.key, "error", err)
 			continue
 		}
 		if err := UpdateSetting(db, appliedMarker, "true"); err != nil {
-			slog.Warn("failed to record env setting override as applied", "env", envVar, "key", key, "error", err)
+			slog.Warn("failed to record env setting override as applied", "env", es.envVar, "key", es.key, "error", err)
 		}
-		slog.Info("applied setting from environment variable (first run only)", "env", envVar, "key", key, "value", value)
+		src := "default"
+		if raw != "" {
+			src = es.envVar
+		}
+		slog.Info("applied setting from environment variable (first run only)", "env", es.envVar, "key", es.key, "value", value, "source", src)
 	}
 
 	if GetSetting(db, "https_enabled", "false") == "true" {
@@ -938,18 +949,18 @@ func deleteOldLogsBatched(db *sql.DB, retentionDays int) (int64, error) {
 }
 
 type User struct {
-	ID                   int64      `json:"id"`
-	Username             string     `json:"username"`
-	Email                string     `json:"email"`
-	PasswordHash         string     `json:"-"`
-	Role                 string     `json:"role"`
-	AuthType             string     `json:"auth_type"`
-	IsAdmin              bool       `json:"is_admin"`
-	IsActive             bool       `json:"is_active"`
-	CreatedAt            time.Time  `json:"created_at"`
-	LastLoginAt          *time.Time `json:"last_login_at"`
-	FailedLoginAttempts  int        `json:"failed_login_attempts"`
-	LockedUntil          *time.Time `json:"locked_until"`
+	ID                  int64      `json:"id"`
+	Username            string     `json:"username"`
+	Email               string     `json:"email"`
+	PasswordHash        string     `json:"-"`
+	Role                string     `json:"role"`
+	AuthType            string     `json:"auth_type"`
+	IsAdmin             bool       `json:"is_admin"`
+	IsActive            bool       `json:"is_active"`
+	CreatedAt           time.Time  `json:"created_at"`
+	LastLoginAt         *time.Time `json:"last_login_at"`
+	FailedLoginAttempts int        `json:"failed_login_attempts"`
+	LockedUntil         *time.Time `json:"locked_until"`
 }
 
 type AuditLog struct {
