@@ -45,7 +45,7 @@ api.interceptors.response.use(
       originalRequest._retry = true
       isRefreshing = true
       try {
-        const res = await api.post('/auth/refresh')
+        const res = await api.post('/auth/refresh', {})
         processQueue(null)
         return api(originalRequest)
       } catch (err) {
