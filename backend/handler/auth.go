@@ -407,7 +407,7 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 			"is_admin":                isAdmin,
 			"is_active":               true,
 			"notifications_enabled":   db.GetSetting(database, "notifications_enabled", "true") == "true",
-			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "false",
+			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "true",
 			"expires_at":              exp,
 		})
 	}

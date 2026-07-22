@@ -387,7 +387,7 @@ Each relay reuses the same JSON conversion the central server already does local
 
 ### How it's secured
 
-- **mTLS**: the central server runs its own internal CA (generated automatically the first time you use this feature — see `backend/relaypki`). Every relay gets a client certificate signed by that CA; the central listener rejects any connection without a valid one.
+- **mTLS**: the central server runs its own internal CA (generated automatically the first time you use this feature — see `backend/relaypki`). The CA uses RSA 4096-bit keys. Every relay gets a client certificate signed by that CA; the central listener rejects any connection without a valid one.
 - **IP whitelist**: a valid certificate alone isn't enough — the peer's IP must also be on the whitelist (Admin > Syslog Relay > Whitelist IP). Together these mean only a relay you've explicitly approved, from an IP you've explicitly approved, gets in.
 - **Revocation is a real, immediate cutoff** — there's no X.509 CRL/OCSP at the TLS layer (a revoked certificate's private key is still, on its own, perfectly capable of completing a handshake), so instead the allow-list itself is certificate-aware: `allowed-relays.conf` only ever admits an IP whose *currently linked* certificate is "issued". Revoking one (Admin > Syslog Relay > Certificates > Revoke) regenerates that file without the entry's IP and reloads rsyslog, so the relay is shut out on the next connection attempt — not just marked revoked in the database.
   - The whitelist entry itself is left in place either way, now shown as **Blocked** on the Whitelist IP tab, rather than deleted — generate a replacement certificate for it (from either tab) to restore access.
@@ -447,14 +447,85 @@ A [relay](#syslog-relay-optional-multi-vlan) isn't on `syslog_net` and isn't rea
 - **Pin Dashboards** �?" Pin frequently-used dashboards to the sidebar for quick access
 - **Export** �?" Download logs as CSV or HTML reports
 - **Statistics** �?" Timeline charts, severity breakdown, and per-device metrics
-- **Secure Authentication** �?" JWT access tokens (15 min) + refresh tokens (7 days) with rotation
+- **Secure Authentication** �?" JWT access tokens (configurable timeout) + refresh tokens (7 days) with rotation, JWT blacklisting on logout
+- **Account Lockout** �?" Automatic lockout after configurable failed login attempts, admin unlock from Admin panel
+- **CSRF Protection** �?" Double-submit cookie pattern on all mutating endpoints
 - **LDAP/AD Integration** �?" Authenticate against Active Directory or OpenLDAP with TLS support
-- **Audit Logging** �?" Track login attempts, password changes, and admin actions
-- **Rate Limiting** �?" Login endpoint protected against brute-force attacks
+- **Audit Logging** �?" Track login attempts, lockouts, unlocks, password changes, and admin actions
+- **Rate Limiting** �?" Login endpoint protected against brute-force attacks (Redis-shared in HA mode)
 - **CORS Protection** �?" Configurable allowed origins
 - **Setup Wizard** �?" Guided initial configuration with admin account, database, security keys, and optional LDAP/CORS
 - **Admin Panel** �?" User management, settings, audit log viewer, LDAP connection test
 - **Health Monitoring** �?" Container/Swarm service status and syslog relay liveness in one place (see [Health Monitoring](#health-monitoring))
+
+## GUI Configuration Guide
+
+### Admin Settings
+Navigate to **Admin > Settings** to configure application-wide options organized by category:
+
+- **General**:
+  - **Log Retention (days)**: How long logs are kept before automatic deletion (1–3650 days).
+  - **Session Timeout (minutes)**: Maximum session inactivity before tokens expire (1–10080 minutes, default 15).
+- **Security**:
+  - **Max Failed Login Attempts**: Number of failed login attempts before account lockout (1–100). Leave empty to use `MAX_FAILED_ATTEMPTS` env var or default (5).
+  - **Lockout Duration (minutes)**: How long an account stays locked after reaching max failed attempts (1–1440 minutes). Leave empty to use `LOCKOUT_DURATION_MIN` env var or default (15).
+- **CORS**:
+  - **Allowed CORS Origins**: Comma-separated list of origins allowed to call the API from a browser. Leave empty to only allow the origin the app is served from.
+- **HTTPS**:
+  - **Enable HTTPS**: Toggle to enable TLS termination on the API server.
+  - **Redirect HTTP to HTTPS**: Force all HTTP traffic to HTTPS.
+  - **Upload Certificate/Key**: Upload PEM-formatted certificate and private key files.
+
+### Alerts
+Navigate to the **Alerts** tab to create and manage alert rules. Alerts monitor incoming logs and notify you when specific conditions are met.
+
+- **Rule Types**: Choose from predefined alert types:
+  - `log_threshold`: Triggers when a specific field value exceeds a threshold.
+  - `device_silence`: Triggers when a device stops sending logs for a configured period.
+  - `config_change`: Triggers when a configuration change is detected in logs.
+  - `relay_cert_expiring`: Triggers when a syslog relay certificate is nearing expiration.
+- **Conditions**: Define the matching criteria using:
+  - **Field**: The log field to monitor (e.g., `severity`, `parsed_status`, `device`).
+  - **Operator**: Comparison method (`equals`, `contains`, `gt`, `lt`, `regex`).
+  - **Value**: The value to compare against.
+- **Cooling Period**: Set the cooldown duration (default 3600 seconds) to prevent alert fatigue.
+- **Notification Channels**: Assign one or more channels to deliver alerts:
+  - `email`, `webhook`, `slack`, `teams`, `in_app`, `push`.
+- **Testing & History**: Use the "Test Channel" button to verify connectivity. View past alerts and their resolution status in the history panel.
+
+### Parsers
+The **Parsers** tab allows you to extract structured data from raw syslog messages using regex patterns.
+
+- **Create Parser**: Click "Create Parser" to define a new rule.
+  - **Name & Description**: Identify the parser purpose.
+  - **Device Type**: Classify the source (e.g., `mikrotik`, `ubiquiti`, `cisco`).
+  - **Match Type**: Determine how logs are matched:
+    - `hostname`: Match based on the log hostname.
+    - `app_name`: Match based on the application name.
+    - `message`: Match against the full message content.
+    - `all`: Apply to all incoming logs.
+  - **Match Value**: The pattern to match (when not using `message`).
+  - **Regex**: Enter a regex with named groups (e.g., `(?P<ip>\d+\.\d+\.\d+\.\d+)`) to extract fields.
+  - **Fields**: Define each extracted field's `Name`, `Label`, and `Type` (`string`, `number`, `ip`, `datetime`).
+- **Test Parser**: Paste a sample log line into the test modal to verify your regex extracts fields correctly.
+- **Management**: Enable/disable parsers, clone existing ones, or trigger a "Reparse" to apply changes to historical unparsed logs.
+
+### Dashboards
+The **Dashboards** tab provides customizable views of your log data.
+
+- **Create/Edit Dashboard**: Set a `Name`, `Description`, and `Visibility` (`private` or `public`).
+- **Pin to Favorites**: Pin frequently used dashboards to the sidebar for instant access.
+- **Filters**: Narrow down data using:
+  - **Devices**: Select specific devices or groups.
+  - **Severities**: Filter by log level (e.g., Error, Warning, Info).
+  - **Parsed Fields**: Filter by extracted field values.
+  - **Date Range**: Set a custom time window for analysis.
+- **Data Views**: 
+  - **Log Table**: Real-time paginated log entries with sortable columns.
+  - **Statistics**: Cards showing log counts, severity distribution, and device metrics.
+  - **Charts**: Visualize trends over time.
+- **Export**: Download dashboard data as CSV or generate HTML reports.
+- **Customization**: Adjust visible columns and sort order; settings are saved to your profile.
 
 ## Parser Creation Guide
 
@@ -642,13 +713,19 @@ POST /api/parsers/test
 
 ## Security
 
-- **JWT Access Tokens** — Short-lived (15 minutes), HS256 signed
-- **Refresh Tokens** — 7-day expiry with rotation; invalidated on logout
+- **JWT Access Tokens** — Short-lived (configurable via `session_timeout_min` setting, default 15 minutes), HS256 signed
+- **Refresh Tokens** — 7-day expiry with rotation; all of a user's tokens invalidated on logout via bulk `used = true`
+- **JWT Blacklisting** — Access token JTI inserted into `jwt_blacklist` table on logout, checked on every request
+- **CSRF Protection** — Double-submit cookie pattern: `csrf_token` cookie (SameSite=Strict) must match `X-CSRF-Token` header on all non-GET requests
+- **Account Lockout** — After N failed login attempts (configurable via `security_max_failed_attempts`, default 5), the account is locked for a configurable duration (`security_lockout_duration_min`, default 15 minutes)
+- **Admin Unlock** — Administrators can manually unlock any locked user from Admin > Users
+- **Inactive Session Expiry** — Background job marks refresh tokens as used when inactive for longer than `session_timeout_min` (default 15 minutes)
 - **Timing-Safe Comparison** — Constant-time password verification prevents timing attacks
 - **bcrypt** — Password hashing with cost factor 14
-- **Rate Limiting** — In-memory rate limiter on login endpoint
+- **Rate Limiting** — Lua-backed sliding-window rate limiter on login endpoint (Redis-shared in HA mode, in-memory fallback)
+- **Cookie Security** — `Secure` flag respects `X-Forwarded-Proto` header, allowing correct behavior behind HTTP reverse proxies
 - **CORS** — Configurable allowed origins; disabled by default
-- **Audit Log** — All authentication events and admin actions recorded
+- **Audit Log** — All authentication events, lockouts, unlocks, and admin actions recorded
 - **Sensitive Data Masking** — JWT secret, encryption key, and LDAP password masked in API responses
 - **Certificate Verification** — LDAP TLS connections verify server certificates by default
 
