@@ -629,7 +629,18 @@ input(type="imudp" port="514")
 template(name="JsonLines" type="list") {
   constant(value="{")
   constant(value="\"timestamp\":\"")
-  property(name="timereported" dateFormat="rfc3339" format="json")
+  # timegenerated (this relay's own receipt clock) instead of timereported
+  # (parsed from the device's message body): most devices send legacy
+  # RFC3164 timestamps with no timezone offset, which rsyslog would
+  # otherwise fill in using ITS OWN local time - wrong whenever the relay
+  # container's clock isn't in the same zone as the devices behind it, and
+  # silently wrong by that offset (e.g. a relay defaulting to UTC while its
+  # devices are in CEST reports every timestamp 2h ahead). timegenerated is
+  # stamped at receipt from the system clock, which is always a correct UTC
+  # instant regardless of the container's configured timezone - stamped
+  # before this relay's own disk-buffered retry queue, so it isn't skewed by
+  # delivery delays either. See README "Syslog Relay".
+  property(name="timegenerated" dateFormat="rfc3339" format="json")
   constant(value="\",\"hostname\":\"")
   property(name="hostname" format="json")
   constant(value="\",\"fromhost_ip\":\"")
