@@ -219,8 +219,22 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 
 		setAuthCookies(c, token, refreshToken, accessExpiresAt, refreshExpiresAt)
 
+		userResp := gin.H{
+			"id":                      user.ID,
+			"username":                user.Username,
+			"email":                   user.Email,
+			"role":                    user.Role,
+			"auth_type":               user.AuthType,
+			"is_admin":                user.IsAdmin,
+			"is_active":               user.IsActive,
+			"created_at":              user.CreatedAt,
+			"last_login_at":           user.LastLoginAt,
+			"notifications_enabled":   db.GetSetting(database, "notifications_enabled", "true") == "true",
+			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "true",
+		}
+
 		c.JSON(http.StatusOK, gin.H{
-			"user":       *user,
+			"user":       userResp,
 			"expires_at": accessExpiresAt.Unix(),
 		})
 	}
