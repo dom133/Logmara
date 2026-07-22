@@ -313,14 +313,23 @@ export default function App() {
   useEffect(() => {
     let cancelled = false
     const check = async () => {
-      const res = await checkInitialized()
-      if (cancelled) return
-      if (res.starting) {
+      try {
+        const res = await checkInitialized()
+        if (cancelled) return
+        if (res.starting) {
+          setStarting(true)
+          setTimeout(() => check(), 2000)
+        } else {
+          setStarting(false)
+          setInitialized(res.initialized)
+        }
+      } catch {
+        // API unreachable (e.g. 502 while the backend container is still
+        // coming up) - treat the same as "starting" and keep polling
+        // instead of leaving the app stuck on a bare spinner forever.
+        if (cancelled) return
         setStarting(true)
         setTimeout(() => check(), 2000)
-      } else {
-        setStarting(false)
-        setInitialized(res.initialized)
       }
     }
     check()
