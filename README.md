@@ -369,6 +369,108 @@ Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizar
 - Kill the edge node currently holding the VIP → keepalived should fail over in 1-3s; confirm with `ip addr` on the new holder and by sending a test syslog message during the cutover.
 - Send syslog messages throughout each test and confirm no duplicates or gaps in the logs table, and that `/admin/slow-queries` and dashboard stats look the same regardless of which `api` replica answers the request.
 
+### Updating images (rolling update)
+
+When you change code, config, or dependencies, rebuild your images, push them under a **new tag**, then re-deploy each stack so Swarm performs a rolling update (no downtime if done in the right order).
+
+#### 1. Build and push new images
+
+```bash
+ssh pg1
+cd syslog_gui
+git pull   # or switch to the branch/commit you want
+
+export REGISTRY=registry.example.com/syslytics TAG=v2   # <-- bump the tag
+
+docker build -f Dockerfile.backend   -t $REGISTRY/syslytics-api:$TAG .
+docker build -f Dockerfile.rsyslog   -t $REGISTRY/syslytics-rsyslog:$TAG .
+docker build -f Dockerfile.frontend  -t $REGISTRY/syslytics-frontend:$TAG .
+docker build -f Dockerfile.patroni   -t $REGISTRY/syslytics-patroni:$TAG .
+docker push $REGISTRY/syslytics-api:$TAG
+docker push $REGISTRY/syslytics-rsyslog:$TAG
+docker push $REGISTRY/syslytics-frontend:$TAG
+docker push $REGISTRY/syslytics-patroni:$TAG
+```
+
+#### 2. Re-deploy stacks (rolling update)
+
+Deploy in this order so that data-tier services are current before the app tier connects to them:
+
+```bash
+# Postgres + etcd (uses stop-first: old task stops before new one starts)
+docker stack deploy \
+  --resolve-image always \
+  --with-registry-auth \
+  -c docker-stack.postgres.yml syslog-pg
+
+# Redis + Sentinel (stop-first default)
+docker stack deploy \
+  --resolve-image always \
+  --with-registry-auth \
+  -c docker-stack.redis.yml syslog-redis
+
+# App tier: api/frontend (start-first) + rsyslog (global)
+docker stack deploy \
+  --resolve-image always \
+  --with-registry-auth \
+  -c docker-stack.app.yml syslog-app
+```
+
+`--resolve-image always` forces every node to pull the latest image from the registry before starting the new task. Without it, Swarm reuses the locally cached image and your update silently does nothing.
+
+#### 3. Force an update (config/secret changes)
+
+If you only changed a Swarm secret, config, or environment variable (not the image itself), re-deploy with `--force` to trigger a rolling restart:
+
+```bash
+docker service update --force syslog-app_api
+docker service update --force syslog-app_frontend
+docker service update --force syslog-app_rsyslog
+```
+
+Or re-deploy the whole stack with both flags:
+
+```bash
+docker stack deploy --resolve-image always --with-registry-auth -c docker-stack.app.yml syslog-app
+```
+
+#### 4. Watch the rollout
+
+```bash
+watch docker service ls          # services move from "old/NEW" to "NEW/NEW" as tasks converge
+docker service ps syslog-app_api # per-task status — look for "Running" replacing the old slot
+docker service logs -f syslog-app_api   # follow logs during the update
+```
+
+Each stack's `update_config` controls the pace:
+
+| Stack | Policy | Meaning |
+|-------|--------|---------|
+| `syslog-pg` (postgres1/2/3) | `stop-first` | Old Patroni node stops, new one starts — Patroni re-elects leader on the new task |
+| `syslog-redis` (redis/sentinel) | default | One-by-one rolling restart; Sentinel quorum stays intact |
+| `syslog-app` (api/frontend) | `start-first`, parallelism 1 | New replica starts and becomes healthy before the old one is removed — zero-downtime |
+| `syslog-app` (rsyslog) | `mode: global` | Updates every `edge=true` node one at a time; only the VIP-holder receives traffic |
+
+#### 5. Roll back if something went wrong
+
+If a new image breaks, revert to the previous tag:
+
+```bash
+export TAG=v1   # previous working tag
+
+docker stack deploy \
+  --resolve-image always \
+  --with-registry-auth \
+  -c docker-stack.app.yml syslog-app
+```
+
+Swarm rolls back each replica in the same rolling fashion. For a faster emergency rollback, drain the affected node:
+
+```bash
+docker node drain app1
+```
+This forces all tasks on `app1` to reschedule onto other `app=true` nodes, giving you time to fix the image.
+
 ## Syslog Relay (Optional, Multi-VLAN)
 
 Lets one or more small, standalone rsyslog hosts sit in VLANs that don't route directly to the central server, collect syslog from local devices, and forward it over an authenticated, encrypted channel (mTLS on port 6514) to this server's normal ingestion pipeline. The central server keeps accepting direct syslog on 514 from its own VLAN exactly as in the Quick Start — relays are additive, not a replacement, and any number of them can point at the same central server. This works the same whether the central side is a single server (`docker-compose.yml`) or the [High Availability](#high-availability-deployment-multi-node-optional) multi-node stack above.
