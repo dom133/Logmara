@@ -371,7 +371,10 @@ func Logout(database *sql.DB) gin.HandlerFunc {
 			}
 		}
 		if refreshToken != "" {
-			database.Exec("UPDATE refresh_tokens SET used = true WHERE token = $1", refreshToken)
+			var userID int
+			if err := database.QueryRow("SELECT user_id FROM refresh_tokens WHERE token = $1", refreshToken).Scan(&userID); err == nil {
+				database.Exec("UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE user_id = $1 AND used = false", userID)
+			}
 		}
 		clearAuthCookies(c)
 		c.JSON(http.StatusOK, gin.H{"message": "Logged out"})
@@ -398,14 +401,14 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 		}
 		exp := int64((*mapClaims)["exp"].(float64))
 		c.JSON(http.StatusOK, gin.H{
-			"id":                    userID,
-			"username":              username,
-			"role":                  role,
-			"is_admin":              isAdmin,
-			"is_active":             true,
-			"notifications_enabled": db.GetSetting(database, "notifications_enabled", "true") == "true",
+			"id":                      userID,
+			"username":                username,
+			"role":                    role,
+			"is_admin":                isAdmin,
+			"is_active":               true,
+			"notifications_enabled":   db.GetSetting(database, "notifications_enabled", "true") == "true",
 			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "false",
-			"expires_at":            exp,
+			"expires_at":              exp,
 		})
 	}
 }
