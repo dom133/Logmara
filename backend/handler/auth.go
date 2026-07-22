@@ -28,6 +28,7 @@ func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpi
 	csrf := generateCSRFToken()
 	accessMaxAge := int(time.Until(accessExpiry).Seconds())
 	refreshMaxAge := int(time.Until(refreshExpiry).Seconds())
+	secure := c.GetHeader("X-Forwarded-Proto") == "https"
 
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     CSRFTokenCookieName,
@@ -36,7 +37,7 @@ func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpi
 		Expires:  accessExpiry,
 		MaxAge:   accessMaxAge,
 		HttpOnly: false,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
 	})
 
@@ -47,7 +48,7 @@ func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpi
 		Expires:  accessExpiry,
 		MaxAge:   accessMaxAge,
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -58,12 +59,13 @@ func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpi
 		Expires:  refreshExpiry,
 		MaxAge:   refreshMaxAge,
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 }
 
 func clearAuthCookies(c *gin.Context) {
+	secure := c.GetHeader("X-Forwarded-Proto") == "https"
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     CSRFTokenCookieName,
 		Value:    "",
@@ -71,7 +73,7 @@ func clearAuthCookies(c *gin.Context) {
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
 		HttpOnly: false,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
 	})
 
@@ -82,7 +84,7 @@ func clearAuthCookies(c *gin.Context) {
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -93,7 +95,7 @@ func clearAuthCookies(c *gin.Context) {
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 }
