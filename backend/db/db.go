@@ -1045,7 +1045,7 @@ func CreateLDAPUser(db *sql.DB, username, email, role string, isAdmin bool) (*Us
 }
 
 func UpdateLastLogin(db *sql.DB, username string) error {
-	_, err := db.Exec("UPDATE users SET last_login = NOW() WHERE username = $1", username)
+	_, err := db.Exec("UPDATE users SET last_login_at = NOW() WHERE username = $1", username)
 	return err
 }
 
@@ -1063,7 +1063,7 @@ func CheckUserLockout(db *sql.DB, userID int64) (bool, error) {
 func IncrementFailedLogins(db *sql.DB, userID int64) error {
 	maxFail := maxFailedAttempts(db)
 	lockoutDur := failedLockoutDuration(db)
-	_, err := db.Exec("UPDATE users SET failed_login_attempts = failed_login_attempts + 1, locked_until = CASE WHEN failed_login_attempts >= $2 THEN NOW() + INTERVAL $3 ELSE locked_until END FROM (SELECT failed_login_attempts FROM users WHERE id = $1) t WHERE users.id = $1", userID, maxFail, lockoutDur.String())
+	_, err := db.Exec("UPDATE users SET failed_login_attempts = failed_login_attempts + 1, locked_until = CASE WHEN failed_login_attempts >= $2 THEN NOW() + INTERVAL $3 ELSE locked_until END FROM (SELECT failed_login_attempts FROM users WHERE id = $1) t WHERE users.id = $1", userID, maxFail, fmt.Sprintf("%d minutes", int(lockoutDur.Minutes())))
 	return err
 }
 
