@@ -8,6 +8,7 @@ import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import EmptyState from '../components/EmptyState'
 import { DATE_PRESETS } from '../constants'
+import { useAuth } from '../services/auth'
 
 const { Title, Text } = Typography
 const { RangePicker } = DatePicker
@@ -17,6 +18,7 @@ const INTERVAL_OPTIONS = [1, 3, 5, 10, 30]
 
 export default function LogsViewer() {
   const [searchParams] = useSearchParams()
+  const { user } = useAuth()
   const urlHostname = searchParams.get('hostname') || ''
   const urlFromHostIP = searchParams.get('fromhost_ip') || ''
   const [logs, setLogs] = useState<LogEntry[]>([])
@@ -86,7 +88,7 @@ export default function LogsViewer() {
   useEffect(() => {
     loadDevices()
     const interval = setInterval(() => {
-      if (isTabActive) {
+      if (isTabActive && user) {
         loadDevices()
       }
     }, 30000)
@@ -101,7 +103,7 @@ export default function LogsViewer() {
       clearInterval(interval)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [isTabActive])
+  }, [isTabActive, user])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -175,12 +177,12 @@ export default function LogsViewer() {
   }, [filters, pageSize])
 
   useEffect(() => {
-    if (!isTabActive || !appendMode) return
+    if (!isTabActive || !appendMode || !user) return
     const interval = setInterval(() => {
       pollLogs()
     }, refreshInterval * 1000)
     return () => clearInterval(interval)
-  }, [isTabActive, appendMode, pollLogs, refreshInterval])
+  }, [isTabActive, appendMode, pollLogs, refreshInterval, user])
 
   const handleLoadMore = () => loadLogs(false)
 

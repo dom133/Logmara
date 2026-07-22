@@ -161,11 +161,11 @@ export default function DashboardViewPage() {
     loadDashboard()
     loadDevices()
     const interval = setInterval(() => {
-      if (isTabActive) {
+      if (isTabActive && user) {
         loadDevices()
       }
     }, 30000)
-    
+
     // Check if tab is active
     const handleVisibilityChange = () => {
       setIsTabActive(!document.hidden)
@@ -177,7 +177,7 @@ export default function DashboardViewPage() {
       clearInterval(interval)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [dashboardId, isTabActive])
+  }, [dashboardId, isTabActive, user])
 
   useEffect(() => {
     if (dashboard) {
@@ -190,12 +190,12 @@ export default function DashboardViewPage() {
   }, [refreshInterval, dashboardId])
 
   useEffect(() => {
-    if (!isTabActive) return
+    if (!isTabActive || !user) return
     const interval = setInterval(() => {
       pollLogs()
     }, refreshInterval * 1000)
     return () => clearInterval(interval)
-  }, [isTabActive, pollLogs, refreshInterval])
+  }, [isTabActive, pollLogs, refreshInterval, user])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
