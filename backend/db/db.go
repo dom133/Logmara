@@ -1074,7 +1074,7 @@ func CheckUserLockout(db *sql.DB, userID int64) (bool, error) {
 func IncrementFailedLogins(db *sql.DB, userID int64) error {
 	maxFail := maxFailedAttempts(db)
 	lockoutDur := failedLockoutDuration(db)
-	_, err := db.Exec("UPDATE users SET failed_login_attempts = failed_login_attempts + 1, locked_until = CASE WHEN failed_login_attempts >= $2 THEN NOW() + $3::interval ELSE locked_until END FROM (SELECT failed_login_attempts FROM users WHERE id = $1) t WHERE users.id = $1", userID, maxFail, fmt.Sprintf("%d minutes", int(lockoutDur.Minutes())))
+	_, err := db.Exec("UPDATE users SET failed_login_attempts = users.failed_login_attempts + 1, locked_until = CASE WHEN users.failed_login_attempts >= $2 THEN NOW() + $3::interval ELSE users.locked_until END FROM (SELECT failed_login_attempts FROM users WHERE id = $1) t WHERE users.id = $1", userID, maxFail, fmt.Sprintf("%d minutes", int(lockoutDur.Minutes())))
 	return err
 }
 
