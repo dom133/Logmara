@@ -264,6 +264,7 @@ func main() {
 	defer database.Close()
 
 	db.SetAppStarting(true)
+	schemaReady := make(chan struct{})
 	migrationDone := make(chan struct{})
 	go func() {
 		defer close(migrationDone)
@@ -271,6 +272,14 @@ func main() {
 			slog.Error("failed to migrate database", "error", err)
 			os.Exit(1)
 		}
+		close(schemaReady)
+
+		// RefreshMaterializedViews scans the full syslog_logs table and its
+		// runtime grows with log volume, unlike MigrateWithLock above (a fast
+		// no-op once the schema exists). It must not gate the HTTP listener
+		// (and therefore /api/health) from coming up, or every restart's
+		// health-check window scales with how much data has accumulated -
+		// auth/routes/tailer below only need the schema, not fresh views.
 		db.RefreshMaterializedViews(database)
 		db.ApplyEnvSettingOverrides(database)
 		db.SetAppStarting(false)
@@ -340,9 +349,12 @@ func main() {
 	// auth.Init/parser.NewEngine/the tailer all query tables that only exist
 	// once db.Migrate has run (users, parsers, syslog_logs) - on a brand new
 	// database these queries can otherwise race ahead of table creation and
-	// fail. Everything below this point already ran sequentially after
-	// auth.Init anyway, so waiting here doesn't add any new startup latency.
-	<-migrationDone
+	// fail. They don't need RefreshMaterializedViews/ApplyEnvSettingOverrides
+	// to have finished too, so this waits on schemaReady (closed right after
+	// the schema migration) rather than the fuller migrationDone - keeping
+	// the HTTP listener off the critical path of the materialized-view
+	// refresh below.
+	<-schemaReady
 
 	authCfg, err := auth.Init(database)
 	if err != nil {
