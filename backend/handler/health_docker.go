@@ -328,6 +328,25 @@ func fetchSwarmServices(ctx context.Context) ([]ServiceHealth, error) {
 	return out, nil
 }
 
+// relayHeartbeatLastSeen reads back the mtime of the per-relay heartbeat
+// files rsyslog/syslog.conf's relayAccept ruleset touches on the shared
+// /data volume (see relayHeartbeatPath) - whichever of ips have never
+// connected simply have no file yet and are absent from the result, not an
+// error, same contract as the db.GetLastSeenByIPs this replaced.
+func relayHeartbeatLastSeen(ips []string) map[string]time.Time {
+	result := make(map[string]time.Time, len(ips))
+	for _, ip := range ips {
+		path := relayHeartbeatPath(ip)
+		if path == "" {
+			continue
+		}
+		if info, err := os.Stat(path); err == nil {
+			result[ip] = info.ModTime()
+		}
+	}
+	return result
+}
+
 // fetchRelayHealth can't reach into the relay host at all (see the package
 // doc comment in relay.go: it lives in a separate, untrusted client VLAN
 // with only outbound 6514/tcp to the central server allowed - nothing here
@@ -345,10 +364,7 @@ func fetchRelayHealth(database *sql.DB) []RelayHealth {
 	for i, e := range entries {
 		ips[i] = e.IPAddress
 	}
-	lastSeen, err := db.GetLastSeenByIPs(database, ips)
-	if err != nil {
-		lastSeen = map[string]time.Time{}
-	}
+	lastSeen := relayHeartbeatLastSeen(ips)
 
 	certStatus := make(map[int64]string)
 	if certs, err := db.GetRelayCertificates(database); err == nil {

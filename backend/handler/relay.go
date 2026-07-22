@@ -38,6 +38,18 @@ func relayACLPath() string {
 	return filepath.Join(relayPKIDir(), "allowed-relays.conf")
 }
 
+// relayHeartbeatPath returns where rsyslog/syslog.conf's RelayHeartbeatFile
+// template (ruleset "relayAccept") touches a small file every time it
+// forwards a batch from ip, or "" if ip isn't a valid address - defends
+// against building a path from a malformed relay_whitelist.ip_address value
+// (there's no format check on insert, see db.AddRelayWhitelistEntry).
+func relayHeartbeatPath(ip string) string {
+	if net.ParseIP(ip) == nil {
+		return ""
+	}
+	return filepath.Join(relayPKIDir(), "heartbeat-"+ip)
+}
+
 // writeRelayACL regenerates the rsyslog snippet that gates the mTLS relay
 // listener (ruleset "relayIngest" in rsyslog/syslog.conf, which includes
 // this file): a valid client certificate alone is not enough to get in, the
