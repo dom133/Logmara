@@ -300,8 +300,9 @@ function AppLayout({ children }: { children: React.ReactNode }) {
 }
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
-  const { token } = useAuth()
-  if (!token) return <Navigate to="/login" replace />
+  const { user, loading } = useAuth()
+  if (loading) return null
+  if (!user) return <Navigate to="/login" replace />
   return <AppLayout>{children}</AppLayout>
 }
 

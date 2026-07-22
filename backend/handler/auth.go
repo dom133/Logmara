@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 
 	"syslytics/audit"
@@ -15,6 +17,86 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
+
+const (
+	AccessTokenCookieName  = "accessToken"
+	RefreshTokenCookieName = "refreshToken"
+	CSRFTokenCookieName    = "csrf_token"
+)
+
+func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpiry, refreshExpiry time.Time) {
+	csrf := generateCSRFToken()
+	accessMaxAge := int(time.Until(accessExpiry).Seconds())
+	refreshMaxAge := int(time.Until(refreshExpiry).Seconds())
+
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     CSRFTokenCookieName,
+		Value:    csrf,
+		Path:     "/",
+		Expires:  accessExpiry,
+		MaxAge:   accessMaxAge,
+		HttpOnly: false,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
+
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     AccessTokenCookieName,
+		Value:    accessToken,
+		Path:     "/",
+		Expires:  accessExpiry,
+		MaxAge:   accessMaxAge,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     RefreshTokenCookieName,
+		Value:    refreshToken,
+		Path:     "/",
+		Expires:  refreshExpiry,
+		MaxAge:   refreshMaxAge,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func clearAuthCookies(c *gin.Context) {
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     CSRFTokenCookieName,
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		HttpOnly: false,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
+
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     AccessTokenCookieName,
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     RefreshTokenCookieName,
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
 
 type LoginRequest struct {
 	Username string `json:"username" binding:"required,max=100"`
@@ -44,9 +126,18 @@ func Login(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		existing, err := db.GetUserByUsername(database, req.Username)
+		if err == nil {
+			if locked, _ := db.CheckUserLockout(database, existing.ID); locked && existing.IsActive {
+				audit.LogAudit(database, existing.ID, req.Username, "login_failed_lockout", c.ClientIP(), "account locked")
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "Account temporarily locked. Try again later."})
+				return
+			}
+		}
+
 		var user *db.User
 
-		existing, err := db.GetUserByUsername(database, req.Username)
+		existing, err = db.GetUserByUsername(database, req.Username)
 		if err == nil && existing.IsActive {
 			if err := bcrypt.CompareHashAndPassword([]byte(existing.PasswordHash), []byte(req.Password)); err == nil {
 				user = existing
@@ -95,44 +186,56 @@ func Login(database *sql.DB) gin.HandlerFunc {
 			}
 
 			if user == nil {
+				if existing != nil {
+					db.IncrementFailedLogins(database, existing.ID)
+				}
 				audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "invalid user or inactive")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 				return
 			}
 		}
 
+		db.ResetFailedLogins(database, user.ID)
 		db.UpdateLastLogin(database, user.Username)
 		user.LastLoginAt = ptrTime(time.Now())
 
-		token, err := auth.GenerateToken(user.ID, user.Username, user.Role)
+		token, jti, accessExpiresAt, err := auth.GenerateToken(user.ID, user.Username, user.Role)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
 		}
+		_ = jti
 
-		refreshToken, expiresAt := auth.GenerateRefreshToken(int(user.ID))
-		if err := insertRefreshToken(database, int(user.ID), refreshToken, expiresAt); err != nil {
+		refreshToken, refreshExpiresAt := auth.GenerateRefreshToken(int(user.ID))
+		if err := insertRefreshToken(database, int(user.ID), refreshToken, refreshExpiresAt); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
 
 		audit.LogAudit(database, user.ID, user.Username, "login_success", c.ClientIP(), "")
 
-		// Refresh dashboard MVs right away instead of waiting for the next
-		// 30s tick, so stats aren't stale the moment someone logs back in
-		// after a stretch with nobody logged in (see main.go's fast MV
-		// refresh loop, which skips ticks while HasActiveSession is false).
 		go db.RefreshMV(database)
 
-		c.JSON(http.StatusOK, LoginResponse{
-			Token:        token,
-			RefreshToken: refreshToken,
-			User:         *user,
+		setAuthCookies(c, token, refreshToken, accessExpiresAt, refreshExpiresAt)
+
+		c.JSON(http.StatusOK, gin.H{
+			"user":       *user,
+			"expires_at": accessExpiresAt.Unix(),
 		})
 	}
 }
 
 func ptrTime(t time.Time) *time.Time {
 	return &t
+}
+
+func getJWTExpiryMin() int {
+	timeoutStr := os.Getenv("SESSION_TIMEOUT_MIN")
+	if timeoutStr != "" {
+		if t, err := strconv.Atoi(timeoutStr); err == nil && t > 0 {
+			return t
+		}
+	}
+	return 15
 }
 
 // refreshReuseGraceWindow tolerates a refresh token being presented twice in
@@ -145,10 +248,14 @@ const refreshReuseGraceWindow = 10 * time.Second
 
 func Refresh(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var req RefreshRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-			return
+		refreshToken, err := c.Cookie(RefreshTokenCookieName)
+		if err != nil || refreshToken == "" {
+			var req RefreshRequest
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+				return
+			}
+			refreshToken = req.RefreshToken
 		}
 
 		var userID int
@@ -156,13 +263,14 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 			`UPDATE refresh_tokens SET used = true, used_at = NOW()
 			 WHERE token = $1 AND used = false AND expires_at > NOW()
 			 RETURNING user_id`,
-			req.RefreshToken,
+			refreshToken,
 		).Scan(&userID)
 
 		var replacementToken string
 		if claimErr != nil {
-			recoveredUserID, recoveredToken, recovered := recoverRacedRefresh(database, req.RefreshToken)
+			recoveredUserID, recoveredToken, recovered := recoverRacedRefresh(database, refreshToken)
 			if !recovered {
+				clearAuthCookies(c)
 				audit.LogAudit(database, 0, "", "refresh_failed", c.ClientIP(), "invalid, expired, or reused refresh token")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
 				return
@@ -173,11 +281,12 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 
 		user, err := getUserByID(database, userID)
 		if err != nil {
+			clearAuthCookies(c)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
 			return
 		}
 
-		token, err := auth.GenerateToken(user.ID, user.Username, user.Role)
+		token, _, accessExpiresAt, err := auth.GenerateToken(user.ID, user.Username, user.Role)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
@@ -185,10 +294,9 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 
 		if replacementToken != "" {
 			audit.LogAudit(database, user.ID, user.Username, "refresh_race_recovered", c.ClientIP(), "")
-			c.JSON(http.StatusOK, gin.H{
-				"token":         token,
-				"refresh_token": replacementToken,
-			})
+			replacementExpiry := time.Now().Add(7 * 24 * time.Hour)
+			setAuthCookies(c, token, replacementToken, accessExpiresAt, replacementExpiry)
+			c.JSON(http.StatusOK, gin.H{"success": true, "expires_at": accessExpiresAt.Unix()})
 			return
 		}
 
@@ -196,16 +304,14 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 		if err := insertRefreshToken(database, userID, newRefreshToken, newExpiresAt); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
-		if _, err := database.Exec("UPDATE refresh_tokens SET replaced_by = $1 WHERE token = $2", newRefreshToken, req.RefreshToken); err != nil {
+		if _, err := database.Exec("UPDATE refresh_tokens SET replaced_by = $1 WHERE token = $2", newRefreshToken, refreshToken); err != nil {
 			slog.Error("failed to link rotated refresh token", "error", err)
 		}
 
 		audit.LogAudit(database, user.ID, user.Username, "refresh_success", c.ClientIP(), "")
 
-		c.JSON(http.StatusOK, gin.H{
-			"token":         token,
-			"refresh_token": newRefreshToken,
-		})
+		setAuthCookies(c, token, newRefreshToken, accessExpiresAt, newExpiresAt)
+		c.JSON(http.StatusOK, gin.H{"success": true, "expires_at": accessExpiresAt.Unix()})
 	}
 }
 
@@ -250,10 +356,22 @@ func getUserByID(database *sql.DB, userID int) (*db.User, error) {
 
 func Logout(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var req RefreshRequest
-		if err := c.ShouldBindJSON(&req); err == nil {
-			database.Exec("UPDATE refresh_tokens SET used = true WHERE token = $1", req.RefreshToken)
+		jti, _ := c.Get("jti")
+		if jtiStr, ok := jti.(string); ok && jtiStr != "" {
+			db.BlacklistJTI(database, jtiStr)
 		}
+
+		refreshToken, _ := c.Cookie(RefreshTokenCookieName)
+		if refreshToken == "" {
+			var req RefreshRequest
+			if err := c.ShouldBindJSON(&req); err == nil {
+				refreshToken = req.RefreshToken
+			}
+		}
+		if refreshToken != "" {
+			database.Exec("UPDATE refresh_tokens SET used = true WHERE token = $1", refreshToken)
+		}
+		clearAuthCookies(c)
 		c.JSON(http.StatusOK, gin.H{"message": "Logged out"})
 	}
 }
@@ -276,6 +394,7 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 		if err != nil {
 			isAdmin = false
 		}
+		exp := int64((*mapClaims)["exp"].(float64))
 		c.JSON(http.StatusOK, gin.H{
 			"id":                    userID,
 			"username":              username,
@@ -283,7 +402,8 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 			"is_admin":              isAdmin,
 			"is_active":             true,
 			"notifications_enabled": db.GetSetting(database, "notifications_enabled", "true") == "true",
-			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "true",
+			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "false",
+			"expires_at":            exp,
 		})
 	}
 }

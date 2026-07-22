@@ -53,6 +53,12 @@ func generateRandomKey() string {
 	return hex.EncodeToString(b)
 }
 
+func generateJTI() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 func getJWTExpiryMin() int {
 	timeoutStr := os.Getenv("SESSION_TIMEOUT_MIN")
 	if timeoutStr != "" {
@@ -69,17 +75,24 @@ func getJWTExpiryMin() int {
 	return 15
 }
 
-func GenerateToken(userID int64, username string, role string) (string, error) {
+func GenerateToken(userID int64, username string, role string) (string, string, time.Time, error) {
 	expiryMin := getJWTExpiryMin()
+	jti := generateJTI()
+	exp := time.Now().Add(time.Duration(expiryMin) * time.Minute)
 	claims := jwt.MapClaims{
 		"user_id":  userID,
 		"username": username,
 		"role":     role,
-		"exp":      time.Now().Add(time.Duration(expiryMin) * time.Minute).Unix(),
+		"jti":      jti,
+		"exp":      exp.Unix(),
 		"iat":      time.Now().Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jwtSecret)
+	tokenStr, err := token.SignedString(jwtSecret)
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+	return tokenStr, jti, exp, nil
 }
 
 func ValidateToken(tokenString string) (*jwt.MapClaims, error) {
@@ -145,14 +158,23 @@ func ValidatePassword(password string) error {
 	return nil
 }
 
+func extractJTI(claims *jwt.MapClaims) string {
+	if v, ok := (*claims)["jti"].(string); ok {
+		return v
+	}
+	return ""
+}
+
 func JWTRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
-		tokenString := ""
-		if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
-			tokenString = authHeader[7:]
-		} else if authHeader != "" {
-			tokenString = authHeader
+		tokenString, _ := c.Cookie("accessToken")
+		if tokenString == "" {
+			authHeader := c.GetHeader("Authorization")
+			if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
+				tokenString = authHeader[7:]
+			} else if authHeader != "" {
+				tokenString = authHeader
+			}
 		}
 		if tokenString == "" {
 			tokenString = c.Query("token")
@@ -170,7 +192,17 @@ func JWTRequired() gin.HandlerFunc {
 			return
 		}
 
+		jti := extractJTI(claims)
+		if jti != "" && authDB != nil {
+			if blacklisted, err := db.IsJTIBlacklisted(authDB, jti); err == nil && blacklisted {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "token revoked"})
+				c.Abort()
+				return
+			}
+		}
+
 		c.Set("claims", claims)
+		c.Set("jti", jti)
 		if uid, ok := (*claims)["user_id"].(float64); ok {
 			c.Set("user_id", int64(uid))
 		}

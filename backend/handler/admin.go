@@ -221,6 +221,25 @@ func ResetPassword(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
+func UnlockUserHandler(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := parseIDParam(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+			return
+		}
+
+		if err := db.UnlockUser(database, id); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		actorID, actorName := actorFromContext(c)
+		audit.LogAudit(database, actorID, actorName, "user_unlocked", c.ClientIP(), fmt.Sprintf("unlocked user id %d", id))
+		c.JSON(http.StatusOK, gin.H{"message": "User unlocked"})
+	}
+}
+
 func GetSettings(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		settings, err := db.GetAllSettings(database)

@@ -3,12 +3,20 @@ import axios from 'axios'
 export const api = axios.create({
   baseURL: '/api',
   timeout: 30000,
+  withCredentials: true,
 })
 
+function getCookie(name: string): string | undefined {
+  const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'))
+  return match ? decodeURIComponent(match[2]) : undefined
+}
+
 api.interceptors.request.use(config => {
-  const token = localStorage.getItem('token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
+  if (config.method && config.method !== 'get' && config.method !== 'head' && config.method !== 'options') {
+    const csrfToken = getCookie('csrf_token')
+    if (csrfToken) {
+      config.headers['X-CSRF-Token'] = csrfToken
+    }
   }
   return config
 })
@@ -37,21 +45,11 @@ api.interceptors.response.use(
       originalRequest._retry = true
       isRefreshing = true
       try {
-        const refreshToken = localStorage.getItem('refresh_token')
-        if (!refreshToken) throw new Error('No refresh token')
-        const res = await api.post('/auth/refresh', { refresh_token: refreshToken })
-        const newToken = res.data.token
-        const newRT = res.data.refresh_token
-        localStorage.setItem('token', newToken)
-        localStorage.setItem('refresh_token', newRT)
-        api.defaults.headers.common['Authorization'] = `Bearer ${newToken}`
-        originalRequest.headers.Authorization = `Bearer ${newToken}`
+        const res = await api.post('/auth/refresh')
         processQueue(null)
         return api(originalRequest)
       } catch (err) {
         processQueue(err)
-        localStorage.removeItem('token')
-        localStorage.removeItem('refresh_token')
         window.location.href = '/login'
         return Promise.reject(err)
       } finally {
@@ -61,11 +59,6 @@ api.interceptors.response.use(
     return Promise.reject(error)
   }
 )
-
-export async function refreshAccessToken(refreshToken: string) {
-  const res = await api.post('/auth/refresh', { refresh_token: refreshToken })
-  return res.data
-}
 
 export interface LogEntry {
   id: number
@@ -432,6 +425,8 @@ export interface User {
 	is_active: boolean
 	created_at: string
 	last_login_at: string | null
+	failed_login_attempts: number
+	locked_until: string | null
 }
 
 export async function getUsers() {
@@ -456,6 +451,11 @@ export async function deleteUser(id: number) {
 
 export async function resetPassword(id: number, password: string) {
 	const res = await api.put(`/admin/users/${id}/reset-password`, { password })
+	return res.data
+}
+
+export async function unlockUser(id: number) {
+	const res = await api.post(`/admin/users/${id}/unlock`)
 	return res.data
 }
 
@@ -967,9 +967,8 @@ export function streamNotifications(onNotification: (n: InAppNotification) => vo
 	const connect = async () => {
 		while (!stopped) {
 			try {
-				const token = localStorage.getItem('token')
 				const res = await fetch('/api/notifications/stream', {
-					headers: token ? { Authorization: `Bearer ${token}` } : {},
+					credentials: 'include',
 					signal: controller.signal,
 				})
 				if (!res.ok || !res.body) throw new Error(`stream failed: ${res.status}`)

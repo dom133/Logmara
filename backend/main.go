@@ -181,7 +181,8 @@ func main() {
 	}()
 
 	ctx, maintCancel := context.WithCancel(context.Background())
-	stopVacuum, stopMV, stopTokenCleanup := db.StartMaintenance(ctx, database)
+	stopVacuum, stopMV, stopTokenCleanup, stopJWTCleanup := db.StartMaintenance(ctx, database)
+	_ = stopJWTCleanup
 
 	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive
 	// while someone is actually logged in to look at them. With nobody logged
@@ -316,6 +317,7 @@ func main() {
 
 	authGroup := r.Group("/api")
 	authGroup.Use(auth.JWTRequired())
+	authGroup.Use(handler.CSRFRequired())
 	{
 		authGroup.POST("/logs", handler.GetLogs(database))
 		authGroup.POST("/logs/count", handler.GetLogsCount(database))
@@ -383,6 +385,7 @@ func main() {
 			adminGroup.PUT("/users/:id", handler.UpdateUser(database))
 			adminGroup.DELETE("/users/:id", handler.DeleteUser(database))
 			adminGroup.PUT("/users/:id/reset-password", handler.ResetPassword(database))
+			adminGroup.POST("/users/:id/unlock", handler.UnlockUserHandler(database))
 			adminGroup.GET("/settings", handler.GetSettings(database))
 			adminGroup.PUT("/settings", handler.UpdateSettings(database))
 			adminGroup.POST("/settings/cleanup", handler.CleanupLogs(database))

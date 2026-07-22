@@ -186,6 +186,12 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='role') THEN ALTER TABLE users ADD COLUMN role VARCHAR(50) DEFAULT 'viewer'; END IF; END $$`,
 		`UPDATE users SET role = 'admin' WHERE is_admin = TRUE AND role = 'viewer'`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='is_active') THEN ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='failed_login_attempts') THEN ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER DEFAULT 0; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='locked_until') THEN ALTER TABLE users ADD COLUMN locked_until TIMESTAMPTZ; END IF; END $$`,
+		`CREATE TABLE IF NOT EXISTS jwt_blacklist (
+			jti TEXT PRIMARY KEY,
+			blacklisted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		`CREATE TABLE IF NOT EXISTS user_dashboard_pins (
 			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
 			dashboard_id INTEGER REFERENCES dashboards(id) ON DELETE CASCADE,
@@ -622,6 +628,8 @@ func seedSettings(db *sql.DB) error {
 		"device_silence_check_minutes": "5",
 		"relay_ingestion_enabled":      "false",
 		"relay_central_host":           "",
+		"security_max_failed_attempts": "",
+		"security_lockout_duration_min": "",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -694,6 +702,10 @@ func seedSettings(db *sql.DB) error {
 			desc = "Accept syslog forwarded by remote relays over mTLS (Admin > Syslog Relay)"
 		case "relay_central_host":
 			desc = "This server's hostname/IP as reachable from a relay's VLAN, pre-filled into generated relay.conf bundles"
+		case "security_max_failed_attempts":
+			desc = "Max failed login attempts before account lockout (empty = use MAX_FAILED_ATTEMPTS env or default 5)"
+		case "security_lockout_duration_min":
+			desc = "Account lockout duration in minutes (empty = use LOCKOUT_DURATION_MIN env or default 15)"
 		}
 		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
 			return fmt.Errorf("seed setting %s: %w", k, err)
@@ -926,16 +938,18 @@ func deleteOldLogsBatched(db *sql.DB, retentionDays int) (int64, error) {
 }
 
 type User struct {
-	ID           int64      `json:"id"`
-	Username     string     `json:"username"`
-	Email        string     `json:"email"`
-	PasswordHash string     `json:"-"`
-	Role         string     `json:"role"`
-	AuthType     string     `json:"auth_type"`
-	IsAdmin      bool       `json:"is_admin"`
-	IsActive     bool       `json:"is_active"`
-	CreatedAt    time.Time  `json:"created_at"`
-	LastLoginAt  *time.Time `json:"last_login_at"`
+	ID                   int64      `json:"id"`
+	Username             string     `json:"username"`
+	Email                string     `json:"email"`
+	PasswordHash         string     `json:"-"`
+	Role                 string     `json:"role"`
+	AuthType             string     `json:"auth_type"`
+	IsAdmin              bool       `json:"is_admin"`
+	IsActive             bool       `json:"is_active"`
+	CreatedAt            time.Time  `json:"created_at"`
+	LastLoginAt          *time.Time `json:"last_login_at"`
+	FailedLoginAttempts  int        `json:"failed_login_attempts"`
+	LockedUntil          *time.Time `json:"locked_until"`
 }
 
 type AuditLog struct {
@@ -949,7 +963,7 @@ type AuditLog struct {
 }
 
 func GetAllUsers(db *sql.DB) ([]User, error) {
-	rows, err := db.Query("SELECT id, username, email, role, auth_type, is_admin, is_active, created_at, last_login_at FROM users ORDER BY created_at DESC")
+	rows, err := db.Query("SELECT id, username, email, role, auth_type, is_admin, is_active, created_at, last_login_at, COALESCE(failed_login_attempts, 0), locked_until FROM users ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -958,7 +972,7 @@ func GetAllUsers(db *sql.DB) ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.AuthType, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.AuthType, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.FailedLoginAttempts, &u.LockedUntil); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -1031,7 +1045,86 @@ func CreateLDAPUser(db *sql.DB, username, email, role string, isAdmin bool) (*Us
 }
 
 func UpdateLastLogin(db *sql.DB, username string) error {
-	_, err := db.Exec("UPDATE users SET last_login_at = NOW() WHERE username = $1", username)
+	_, err := db.Exec("UPDATE users SET last_login = NOW() WHERE username = $1", username)
+	return err
+}
+
+// ---- Lockout helpers ----
+
+func CheckUserLockout(db *sql.DB, userID int64) (bool, error) {
+	var locked bool
+	err := db.QueryRow("SELECT COALESCE(locked_until, NOW()) > NOW() FROM users WHERE id = $1", userID).Scan(&locked)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return locked, err
+}
+
+func IncrementFailedLogins(db *sql.DB, userID int64) error {
+	maxFail := maxFailedAttempts(db)
+	lockoutDur := failedLockoutDuration(db)
+	_, err := db.Exec("UPDATE users SET failed_login_attempts = failed_login_attempts + 1, locked_until = CASE WHEN failed_login_attempts >= $2 THEN NOW() + INTERVAL $3 ELSE locked_until END FROM (SELECT failed_login_attempts FROM users WHERE id = $1) t WHERE users.id = $1", userID, maxFail, lockoutDur.String())
+	return err
+}
+
+func ResetFailedLogins(db *sql.DB, userID int64) error {
+	_, err := db.Exec("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1", userID)
+	return err
+}
+
+func UnlockUser(db *sql.DB, userID int64) error {
+	return ResetFailedLogins(db, userID)
+}
+
+func maxFailedAttempts(db *sql.DB) int {
+	s := GetSetting(db, "security_max_failed_attempts", "")
+	if s == "" {
+		s = os.Getenv("MAX_FAILED_ATTEMPTS")
+	}
+	if s == "" {
+		return 5
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 5
+	}
+	return n
+}
+
+func failedLockoutDuration(db *sql.DB) time.Duration {
+	s := GetSetting(db, "security_lockout_duration_min", "")
+	if s == "" {
+		s = os.Getenv("LOCKOUT_DURATION_MIN")
+	}
+	if s == "" {
+		return 15 * time.Minute
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 15 * time.Minute
+	}
+	return time.Duration(n) * time.Minute
+}
+
+// ---- JWT Blacklist helpers ----
+
+func BlacklistJTI(db *sql.DB, jti string) error {
+	_, err := db.Exec("INSERT INTO jwt_blacklist (jti) VALUES ($1) ON CONFLICT DO NOTHING", jti)
+	return err
+}
+
+func IsJTIBlacklisted(db *sql.DB, jti string) (bool, error) {
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM jwt_blacklist WHERE jti = $1)", jti).Scan(&exists)
+	return exists, err
+}
+
+func CleanupExpiredBlacklist(db *sql.DB) error {
+	ttl := os.Getenv("JWT_BLACKLIST_TTL")
+	if ttl == "" {
+		ttl = "7 days"
+	}
+	_, err := db.Exec("DELETE FROM jwt_blacklist WHERE blacklisted_at < NOW() - INTERVAL $1", ttl)
 	return err
 }
 

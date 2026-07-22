@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func()) {
+func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func(), func()) {
 	vacuumInterval := getIntervalHours("VACUUM_INTERVAL_HOURS", "vacuum_interval_hours", 24)
 	mvInterval := getIntervalMinutes("MV_REFRESH_INTERVAL_MIN", "mv_refresh_interval_min", 30)
 
@@ -18,8 +18,9 @@ func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func()) 
 	stopVacuum := startVacuumScheduler(ctx, db, vacuumInterval)
 	stopMV := startMVScheduler(ctx, db, mvInterval)
 	stopTokenCleanup := startRefreshTokenCleanupScheduler(ctx, db, 1*time.Hour)
+	stopJWTCleanup := startJWTBlacklistCleanup(ctx, db, 1*time.Minute)
 
-	return stopVacuum, stopMV, stopTokenCleanup
+	return stopVacuum, stopMV, stopTokenCleanup, stopJWTCleanup
 }
 
 func startVacuumScheduler(ctx context.Context, db *sql.DB, interval time.Duration) func() {
@@ -94,6 +95,28 @@ func startRefreshTokenCleanupScheduler(ctx context.Context, db *sql.DB, interval
 // by rotation (used=true) once they're well past the race-recovery grace
 // window. Without this the refresh_tokens table grows forever, since every
 // login and every refresh only ever inserts a new row.
+func startJWTBlacklistCleanup(ctx context.Context, db *sql.DB, interval time.Duration) func() {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		slog.Info("jwt blacklist cleanup scheduler started", "interval_minutes", interval.Minutes())
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("jwt blacklist cleanup scheduler stopped")
+				close(done)
+				return
+			case <-ticker.C:
+				CleanupExpiredBlacklist(db)
+			}
+		}
+	}()
+	return func() {
+		<-done
+	}
+}
+
 func cleanupExpiredRefreshTokens(db *sql.DB) {
 	res, err := db.Exec(
 		"DELETE FROM refresh_tokens WHERE expires_at < NOW() OR (used = true AND used_at < NOW() - INTERVAL '1 day')",

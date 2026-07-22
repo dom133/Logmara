@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip } from 'antd'
 import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
-import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, User, DeviceStats, SlowQueryRecord, ContainersHealthResponse } from '../services/api'
+import { getUsers, createUser, updateUser, deleteUser, resetPassword, unlockUser, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, User, DeviceStats, SlowQueryRecord, ContainersHealthResponse } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
@@ -279,6 +279,16 @@ const handleResetPassword = async (user: User) => {
     }
   }
 
+  const handleUnlock = async (id: number) => {
+    try {
+      await unlockUser(id)
+      message.success('User unlocked')
+      loadUsers()
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to unlock user'))
+    }
+  }
+
 const handleSaveSettings = async () => {
     const values = settingsForm.getFieldsValue()
     const strValues: Record<string, string> = {}
@@ -366,6 +376,27 @@ const handleCleanup = async () => {
       render: (active: boolean) => <Tag color={active ? 'green' : 'red'}>{active ? 'Active' : 'Disabled'}</Tag>,
     },
     {
+      title: 'Status',
+      dataIndex: 'locked_until',
+      key: 'locked_until',
+      render: (_v: string | null, record: User) => {
+        if (record.locked_until) {
+          const remaining = Math.max(0, new Date(record.locked_until).getTime() - Date.now())
+          const minutes = Math.floor(remaining / 60000)
+          const seconds = Math.floor((remaining % 60000) / 1000)
+          return (
+            <Tooltip title={`Locked. Fails: ${record.failed_login_attempts}. Unlocks in ${minutes}m ${seconds}s.`}>
+              <Tag color="red">Locked ({minutes}m {seconds}s)</Tag>
+            </Tooltip>
+          )
+        }
+        if (record.failed_login_attempts > 0) {
+          return <Tag color="orange">{record.failed_login_attempts} fail(s)</Tag>
+        }
+        return <Tag color="green">OK</Tag>
+      },
+    },
+    {
       title: 'Last Login',
       dataIndex: 'last_login_at',
       key: 'last_login_at',
@@ -382,6 +413,9 @@ const handleCleanup = async () => {
       key: 'actions',
       render: (_v: unknown, record: User) => (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {record.locked_until && <Popconfirm title="Unlock this user?" okText="Yes" cancelText="No" onConfirm={() => handleUnlock(record.id)}>
+            <Button size="small" type="primary" icon={<ReloadOutlined />} />
+          </Popconfirm>}
           <Button size="small" onClick={() => handleEdit(record)} icon={<EditOutlined />} />
           {record.auth_type !== 'ldap' && <Button size="small" onClick={() => handleResetPassword(record)} icon={<KeyOutlined />} />}
           <Popconfirm
@@ -445,10 +479,17 @@ const handleCleanup = async () => {
                   <Form.Item label="Log Retention (days)" name="retention_days">
                     <InputNumber min={1} max={3650} style={{ width: '100%' }} />
                   </Form.Item>
-<Form.Item label="Session Timeout (minutes)" name="session_timeout_min">
-                     <InputNumber min={1} max={10080} style={{ width: '100%' }} />
-                   </Form.Item>
-                   <Divider orientation="left">CORS</Divider>
+                    <Form.Item label="Session Timeout (minutes)" name="session_timeout_min">
+                      <InputNumber min={1} max={10080} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Divider orientation="left">Security</Divider>
+                    <Form.Item label="Max Failed Login Attempts" name="security_max_failed_attempts" tooltip="Number of failed login attempts before account lockout. Leave empty to use MAX_FAILED_ATTEMPTS env var or default (5).">
+                      <InputNumber min={1} max={100} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item label="Lockout Duration (minutes)" name="security_lockout_duration_min" tooltip="How long the account stays locked after reaching max failed attempts. Leave empty to use LOCKOUT_DURATION_MIN env var or default (15).">
+                      <InputNumber min={1} max={1440} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Divider orientation="left">CORS</Divider>
                    <Form.Item
                      label="Allowed CORS Origins"
                      name="cors_origins"
