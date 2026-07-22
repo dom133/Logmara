@@ -736,7 +736,7 @@ template(name="JsonLines" type="list") {
   action.resumeInterval="10"
 )
 `
-	return []byte(fmt.Sprintf(tpl, label, host, jsonEscapeForRsyslogConstant(label)))
+	return []byte(fmt.Sprintf(tpl, label, jsonEscapeForRsyslogConstant(label), host))
 }
 
 // jsonEscapeForRsyslogConstant prepares label to sit inside a JSON string
