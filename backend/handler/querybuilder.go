@@ -1,0 +1,222 @@
+package handler
+
+import (
+	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"strconv"
+	"strings"
+	"time"
+
+	"syslytics/model"
+
+	"github.com/gin-gonic/gin"
+	"github.com/lib/pq"
+)
+
+func timedQuery(name string, fn func() error) error {
+	start := time.Now()
+	err := fn()
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
+		slog.Warn("slow query", "name", name, "duration_ms", elapsed.Milliseconds())
+		recordSlowQuery(name, elapsed)
+	}
+	return err
+}
+
+type LogFilterOptions struct {
+	Hostname        string
+	FromHostIP      string
+	Severity        string
+	AppName         string
+	Search          string
+	From            string
+	To              string
+	Devices         []string
+	HasFields       bool
+	RequiredParsers []string
+}
+
+func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) {
+	clauses := []string{}
+	args := []interface{}{}
+	idx := 1
+
+	if opts.Hostname != "" {
+		clauses = append(clauses, fmt.Sprintf("hostname = $%d", idx))
+		args = append(args, opts.Hostname)
+		idx++
+	}
+
+	if opts.FromHostIP == "__unknown__" {
+		clauses = append(clauses, "(syslog_logs.fromhost_ip IS NULL OR syslog_logs.fromhost_ip = '')")
+	} else if opts.FromHostIP != "" {
+		clauses = append(clauses, fmt.Sprintf("COALESCE(syslog_logs.fromhost_ip, '') = $%d", idx))
+		args = append(args, opts.FromHostIP)
+		idx++
+	}
+
+	if opts.Severity != "" {
+		clauses = append(clauses, fmt.Sprintf("severity = $%d", idx))
+		args = append(args, opts.Severity)
+		idx++
+	}
+
+	if opts.AppName != "" {
+		clauses = append(clauses, fmt.Sprintf("app_name ILIKE $%d", idx))
+		args = append(args, "%"+opts.AppName+"%")
+		idx++
+	}
+
+	if opts.From != "" {
+		clauses = append(clauses, fmt.Sprintf("timestamp >= $%d", idx))
+		args = append(args, opts.From)
+		idx++
+	}
+
+	if opts.To != "" {
+		clauses = append(clauses, fmt.Sprintf("timestamp <= $%d", idx))
+		args = append(args, opts.To)
+		idx++
+	}
+
+	if opts.Search != "" {
+		clauses = append(clauses, fmt.Sprintf("search_vector @@ websearch_to_tsquery('english', $%d)", idx))
+		args = append(args, opts.Search)
+		idx++
+	}
+
+	if len(opts.Devices) > 0 {
+		placeholders := make([]string, len(opts.Devices))
+		for i, d := range opts.Devices {
+			placeholders[i] = "$" + strconv.Itoa(idx)
+			args = append(args, d)
+			idx++
+		}
+		clauses = append(clauses, "COALESCE(syslog_logs.fromhost_ip, '') IN ("+strings.Join(placeholders, ", ")+")")
+	}
+
+	if opts.HasFields {
+		clauses = append(clauses, "matched_parsers IS NOT NULL AND array_length(matched_parsers, 1) > 0")
+	}
+
+	// Restrict to rows actually matched by one of the parsers that own the
+	// dashboard's selected fields - HasFields alone only requires "matched
+	// by some parser", so a log parsed by an unrelated parser would
+	// otherwise still show up with blank columns for every selected field.
+	if len(opts.RequiredParsers) > 0 {
+		clauses = append(clauses, fmt.Sprintf("matched_parsers && $%d::text[]", idx))
+		args = append(args, pq.Array(opts.RequiredParsers))
+		idx++
+	}
+
+	return clauses, args, idx
+}
+
+func buildWhereSQL(clauses []string) string {
+	if len(clauses) == 0 {
+		return ""
+	}
+	return "WHERE " + strings.Join(clauses, " AND ")
+}
+
+// encodeLogCursor/decodeLogCursor implement keyset pagination on
+// (timestamp, id). Unlike OFFSET, which forces Postgres to scan and discard
+// every preceding row, a keyset cursor lets the planner seek directly via
+// the (timestamp DESC, id DESC) index/order - lookup cost stays roughly
+// constant no matter how deep into the log history the user scrolls.
+func encodeLogCursor(ts time.Time, id int64) string {
+	raw := fmt.Sprintf("%s|%d", ts.UTC().Format(time.RFC3339Nano), id)
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func decodeLogCursor(cursor string) (time.Time, int64, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("invalid cursor encoding: %w", err)
+	}
+	parts := strings.SplitN(string(raw), "|", 2)
+	if len(parts) != 2 {
+		return time.Time{}, 0, fmt.Errorf("invalid cursor format")
+	}
+	ts, err := time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("invalid cursor timestamp: %w", err)
+	}
+	id, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("invalid cursor id: %w", err)
+	}
+	return ts, id, nil
+}
+
+// cursorSupported reports whether the given sort mode can use keyset
+// pagination. Keyset row-comparison ((a,b) < (x,y)) requires every column in
+// the ORDER BY to be compared in the same direction, which holds for the
+// two timestamp-only sorts but not for "severity"/"hostname" (ASC on the
+// secondary column, DESC on timestamp) - those keep offset-based paging,
+// which is acceptable since deep pagination on a secondary sort is rare.
+func cursorSupported(sort string) bool {
+	return sort == "" || sort == "timestamp_desc" || sort == "timestamp_asc"
+}
+
+func scanLogRows(rows *sql.Rows) []model.SyslogLog {
+	var logs []model.SyslogLog
+	for rows.Next() {
+		var l model.SyslogLog
+		var rawParsed json.RawMessage
+		var parsers pq.StringArray
+		err := rows.Scan(
+			&l.ID, &l.Timestamp, &l.Hostname, &l.FromHostIP, &l.AppName,
+			&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
+			&l.Message, &l.RawMessage, &rawParsed, &parsers, &l.CreatedAt, &l.DisplayName,
+		)
+		if err != nil {
+			continue
+		}
+		l.MatchedParsers = parsers
+		if len(rawParsed) > 0 {
+			json.Unmarshal(rawParsed, &l.ParsedFields)
+		}
+		logs = append(logs, l)
+	}
+	if logs == nil {
+		logs = []model.SyslogLog{}
+	}
+	return logs
+}
+
+func getDashboardConfig(db *sql.DB, id, userID int64, isAdmin bool) (json.RawMessage, error) {
+	var raw json.RawMessage
+	if isAdmin {
+		return raw, db.QueryRow("SELECT config FROM dashboards WHERE id = $1", id).Scan(&raw)
+	}
+	return raw, db.QueryRow("SELECT config FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE)", id, userID).Scan(&raw)
+}
+
+func parseDashboardConfig(raw json.RawMessage) (*model.DashboardConfig, error) {
+	var cfg model.DashboardConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+func parsePagination(c *gin.Context, defaultLimit, maxLimit int) (int, int) {
+	limitInt, _ := strconv.Atoi(c.DefaultQuery("limit", strconv.Itoa(defaultLimit)))
+	offsetInt, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if limitInt <= 0 || limitInt > maxLimit {
+		limitInt = defaultLimit
+	}
+	return limitInt, offsetInt
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}

@@ -1,0 +1,25 @@
+FROM golang:1.24-bookworm AS builder
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY backend/ .
+RUN go mod download
+ARG JWT_SECRET
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/server .
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/* && \
+    update-ca-certificates && \
+    groupadd -r appgroup && useradd -r -g appgroup -s /sbin/nologin -m -d /app appuser
+WORKDIR /app
+COPY --from=builder /app/server .
+# Gin reads GIN_MODE at process start (gin-gonic/gin's package init calls
+# SetMode(os.Getenv("GIN_MODE"))) - unset, it defaults to "debug", which
+# dumps every registered route and a "switch to release mode in
+# production" warning to stdout on every boot. Override with
+# `environment: GIN_MODE: debug` in a compose file if you need that output
+# back for troubleshooting.
+ENV GIN_MODE=release
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:8080/api/health || exit 1
+ENTRYPOINT ["/bin/sh", "-c", "chmod -R a+r /data 2>/dev/null; exec ./server"]

@@ -1,0 +1,8 @@
+# Normalize all text files to LF in the repository and on checkout,
+# regardless of a contributor's core.autocrlf setting. Without this, Windows
+# checkouts with autocrlf=true end up with CRLF working-tree files even
+# though the committed blobs are LF, which makes gofmt (and diffs) flag
+# nearly the entire tree as "reformatted" when nothing actually changed.
+* text=auto eol=lf
+
+frontend/docker/**/*.sh text eol=lf

@@ -1,0 +1,8 @@
+frontend/dist/
+frontend/node_modules/
+frontend/package-lock.json
+backend/*.exe
+*.exe
+*.pem
+Dockerfile.frontend.local
+.opencode/

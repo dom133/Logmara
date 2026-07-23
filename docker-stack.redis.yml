@@ -1,0 +1,163 @@
+# HA Redis (Sentinel) for Docker Swarm - backs backend/sharedstate: shared
+# rate limiting, cache invalidation, tailer leader election, ingestion
+# pause/resume, and the slow-query log across multiple `api` replicas.
+#
+# OPTIONAL, additive stack. Deploy before docker-stack.app.yml (api reads
+# REDIS_SENTINEL_ADDRS at startup). Not needed at all for the single-server
+# docker-compose.yml path, or if you keep docker-stack.app.yml's api/
+# frontend at replicas: 1 - see README "High Availability Deployment".
+#
+# Deliberately NOT persistent: --save "" and no AOF, no bind-mounted data
+# directories. Everything Redis holds here (rate-limit counters, a cache-
+# invalidation ping, the ingestion pause flag, the slow-query log) is
+# disposable - losing it just means a brief reset, never data loss, since
+# Postgres remains the only source of truth for anything durable. This is
+# what makes it safe to skip node-local persistent volumes entirely.
+#
+# Prerequisites (see README "High Availability Deployment"):
+#   - Docker Swarm initialized, 3 nodes labeled cache_id=1 / cache_id=2 /
+#     cache_id=3 (can be the same nodes as app=true/edge=true on small
+#     clusters, same as pg_id in docker-stack.postgres.yml)
+#   - `docker network create -d overlay --attachable syslog_net` (already
+#     done if docker-stack.postgres.yml is deployed)
+#   - Secret created: redis_password
+#   - `docker config create redis_sentinel_cfg redis/sentinel.conf.tpl`
+#
+# Deploy with: docker stack deploy -c docker-stack.redis.yml syslog-redis
+
+version: "3.8"
+
+x-redis-logging: &redis-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  redis1:
+    image: redis:7-alpine
+    hostname: redis1
+    networks: [syslog_net]
+    entrypoint: ["sh", "-c"]
+    command:
+      - exec redis-server --requirepass "$$(cat /run/secrets/redis_password)" --save "" --appendonly no
+    secrets: [redis_password]
+    logging: *redis-logging
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [node.labels.cache_id == 1]
+
+  redis2:
+    image: redis:7-alpine
+    hostname: redis2
+    networks: [syslog_net]
+    entrypoint: ["sh", "-c"]
+    command:
+      - exec redis-server --requirepass "$$(cat /run/secrets/redis_password)" --masterauth "$$(cat /run/secrets/redis_password)" --replicaof redis1 6379 --save "" --appendonly no
+    secrets: [redis_password]
+    depends_on: [redis1]
+    logging: *redis-logging
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [node.labels.cache_id == 2]
+
+  redis3:
+    image: redis:7-alpine
+    hostname: redis3
+    networks: [syslog_net]
+    entrypoint: ["sh", "-c"]
+    command:
+      - exec redis-server --requirepass "$$(cat /run/secrets/redis_password)" --masterauth "$$(cat /run/secrets/redis_password)" --replicaof redis1 6379 --save "" --appendonly no
+    secrets: [redis_password]
+    depends_on: [redis1]
+    logging: *redis-logging
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [node.labels.cache_id == 3]
+
+  sentinel1:
+    image: redis:7-alpine
+    hostname: sentinel1
+    networks: [syslog_net]
+    entrypoint: ["sh", "-c"]
+    command:
+      - cp /etc/sentinel-template/sentinel.conf /tmp/sentinel.conf &&
+        echo "sentinel auth-pass mymaster $$(cat /run/secrets/redis_password)" >> /tmp/sentinel.conf &&
+        exec redis-sentinel /tmp/sentinel.conf
+    configs:
+      - source: redis_sentinel_cfg
+        target: /etc/sentinel-template/sentinel.conf
+    secrets: [redis_password]
+    depends_on: [redis1, redis2, redis3]
+    logging: *redis-logging
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [node.labels.cache_id == 1]
+
+  sentinel2:
+    image: redis:7-alpine
+    hostname: sentinel2
+    networks: [syslog_net]
+    entrypoint: ["sh", "-c"]
+    command:
+      - cp /etc/sentinel-template/sentinel.conf /tmp/sentinel.conf &&
+        echo "sentinel auth-pass mymaster $$(cat /run/secrets/redis_password)" >> /tmp/sentinel.conf &&
+        exec redis-sentinel /tmp/sentinel.conf
+    configs:
+      - source: redis_sentinel_cfg
+        target: /etc/sentinel-template/sentinel.conf
+    secrets: [redis_password]
+    depends_on: [redis1, redis2, redis3]
+    logging: *redis-logging
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [node.labels.cache_id == 2]
+
+  sentinel3:
+    image: redis:7-alpine
+    hostname: sentinel3
+    networks: [syslog_net]
+    entrypoint: ["sh", "-c"]
+    command:
+      - cp /etc/sentinel-template/sentinel.conf /tmp/sentinel.conf &&
+        echo "sentinel auth-pass mymaster $$(cat /run/secrets/redis_password)" >> /tmp/sentinel.conf &&
+        exec redis-sentinel /tmp/sentinel.conf
+    configs:
+      - source: redis_sentinel_cfg
+        target: /etc/sentinel-template/sentinel.conf
+    secrets: [redis_password]
+    depends_on: [redis1, redis2, redis3]
+    logging: *redis-logging
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [node.labels.cache_id == 3]
+
+networks:
+  syslog_net:
+    external: true
+
+secrets:
+  redis_password:
+    external: true
+
+configs:
+  redis_sentinel_cfg:
+    external: true
