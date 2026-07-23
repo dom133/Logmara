@@ -109,6 +109,22 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 	var entries []model.IngestEntry
 	lastFlush := time.Now()
 	lastCompaction := time.Now()
+	batchStartPos := int64(0)
+
+	defer func() {
+		// Flush any remaining entries on shutdown
+		if len(entries) > 0 {
+			slog.Info("flushing remaining entries on shutdown", "count", len(entries))
+			if err := flushBatch(db, entries); err != nil {
+				slog.Error("final flush error", "error", err)
+			} else {
+				flushedPos = batchStartPos
+				savePosition(posFile, flushedPos)
+				alerts.EvaluateBatch(db, entries)
+			}
+		}
+		slog.Info("file tailer stopped")
+	}()
 
 	for {
 		if ctx.Err() != nil {

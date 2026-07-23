@@ -5,6 +5,7 @@ package audit
 
 import (
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 
@@ -36,4 +37,18 @@ func LogAudit(db *sql.DB, userID int64, username, action, ip, details string) {
 	if e := engine.Load(); e != nil {
 		e.EvaluateConfigChange(db, action, details)
 	}
+}
+
+// LogSlowQuery logs slow queries to audit_log with action="slow_query" and
+// details containing the duration and query text.
+func LogSlowQuery(db *sql.DB, durationMs int, query string) {
+	details := fmt.Sprintf("duration_ms=%d, query=%s", durationMs, query)
+	LogAudit(db, 0, "", "slow_query", "", details)
+}
+
+// LogBulkOperation logs bulk operations like bulk delete/export with
+// action="bulk_operation" and details containing operation name and count.
+func LogBulkOperation(db *sql.DB, userID int64, username, operation string, count int) {
+	details := fmt.Sprintf("operation=%s, count=%d", operation, count)
+	LogAudit(db, userID, username, "bulk_operation", "", details)
 }

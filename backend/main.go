@@ -356,6 +356,24 @@ func main() {
 	// refresh below.
 	<-schemaReady
 
+	// Validate TLS configuration: warn if HTTPS is enabled but certificates are missing
+	if tlsEnabled := db.GetSetting(database, "https_enabled", "false"); tlsEnabled == "true" {
+		certPath := os.Getenv("TLS_CERT_PATH")
+		if certPath == "" {
+			certPath = "/etc/ssl/certs/syslytics/fullchain.pem"
+		}
+		keyPath := os.Getenv("TLS_KEY_PATH")
+		if keyPath == "" {
+			keyPath = "/etc/ssl/private/syslytics/privkey.pem"
+		}
+		if _, err := os.Stat(certPath); err != nil {
+			slog.Warn("https_enabled is true but TLS certificate not found", "path", certPath)
+		}
+		if _, err := os.Stat(keyPath); err != nil {
+			slog.Warn("https_enabled is true but TLS key not found", "path", keyPath)
+		}
+	}
+
 	authCfg, err := auth.Init(database)
 	if err != nil {
 		slog.Error("auth initialization failed", "error", err)
@@ -433,8 +451,9 @@ func main() {
 		}
 	}()
 
-	r := gin.New()
+r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID())
 	r.Use(middleware.ErrorHandler())
 	r.Use(middleware.SecurityHeaders())
 	r.Use(middleware.GzipCompress())
@@ -453,6 +472,8 @@ func main() {
 	changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute, "/data/ratelimit-change-password.json")
 
 	r.GET("/api/health", handler.HealthCheck(database))
+	r.GET("/api/metrics", handler.PrometheusMetrics(database))
+	r.GET("/api/metrics", handler.PrometheusMetrics(database))
 	r.POST("/api/auth/login", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(loginLimiter), handler.Login(database, authCfg))
 	r.POST("/api/auth/refresh", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(refreshLimiter), handler.Refresh(database, authCfg))
 	r.POST("/api/auth/logout", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.Logout(database))

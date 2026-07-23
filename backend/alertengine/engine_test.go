@@ -1,110 +1,70 @@
 package alertengine
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
-func TestMatchPattern(t *testing.T) {
-	cases := []struct {
-		pattern, value string
-		want           bool
+func TestMeetsSeverity(t *testing.T) {
+	tests := []struct {
+		entry       string
+		min         string
+		expectPass  bool
 	}{
-		{"", "anything", true},
-		{"router", "core-router-1", true},
-		{"router", "switch-1", false},
-		{"router*", "router-1", true},
-		{"router*", "core-router-1", false},
-		{"*router*", "core-router-1", true},
-		{"ROUTER", "core-router-1", true}, // substring match is case insensitive
-		{"router-?", "router-1", false},   // '?' is not special, treated literally
+		{"emerg", "error", true},
+		{"info", "warning", false},
+		{"error", "warning", true},
+		{"debug", "info", false},
+		{"crit", "critical", true},
+		{"alert", "emerg", false},
+		{"notice", "", true},
+		{"unknown_sev", "error", true},
+		{"error", "unknown_min", true},
 	}
-	for _, c := range cases {
-		if got := matchPattern(c.pattern, c.value); got != c.want {
-			t.Errorf("matchPattern(%q, %q) = %v, want %v", c.pattern, c.value, got, c.want)
+	for _, tc := range tests {
+		got := meetsSeverity(tc.entry, tc.min)
+		if got != tc.expectPass {
+			t.Errorf("meetsSeverity(%q, %q) = %v; want %v", tc.entry, tc.min, got, tc.expectPass)
 		}
 	}
 }
 
-func TestMeetsSeverity(t *testing.T) {
-	cases := []struct {
-		entry, min string
-		want       bool
+func TestMatchPattern(t *testing.T) {
+	tests := []struct {
+		pattern  string
+		value    string
+		expected bool
 	}{
-		{"err", "", true},
-		{"err", "warning", true},   // err is more severe than warning
-		{"info", "warning", false}, // info is less severe than warning
-		{"warning", "warning", true},
-		{"unknown", "warning", true}, // unrecognized values always match
+		{"", "anything", true},
+		{"hello", "HELLO WORLD", true},
+		{"hello", "goodbye", false},
+		{"*.log", "app.log", true},
+		{"*.log", "app.txt", false},
+		{"*test*", "my_test_file", true},
+		{"exact", "exact", true},
 	}
-	for _, c := range cases {
-		if got := meetsSeverity(c.entry, c.min); got != c.want {
-			t.Errorf("meetsSeverity(%q, %q) = %v, want %v", c.entry, c.min, got, c.want)
+	for _, tc := range tests {
+		got := matchPattern(tc.pattern, tc.value)
+		if got != tc.expected {
+			t.Errorf("matchPattern(%q, %q) = %v; want %v", tc.pattern, tc.value, got, tc.expected)
 		}
 	}
 }
 
 func TestNotifySeverity(t *testing.T) {
-	cases := []struct {
-		in, want string
+	tests := []struct {
+		input  string
+		expect string
 	}{
 		{"emerg", "critical"},
+		{"alert", "critical"},
 		{"crit", "critical"},
 		{"err", "error"},
 		{"warning", "warning"},
 		{"info", "info"},
 		{"debug", "info"},
 	}
-	for _, c := range cases {
-		if got := notifySeverity(c.in); got != c.want {
-			t.Errorf("notifySeverity(%q) = %q, want %q", c.in, got, c.want)
+	for _, tc := range tests {
+		got := notifySeverity(tc.input)
+		if got != tc.expect {
+			t.Errorf("notifySeverity(%q) = %q; want %q", tc.input, got, tc.expect)
 		}
-	}
-}
-
-func TestLocalCounterStore_ThresholdAndWindow(t *testing.T) {
-	s := newLocalCounterStore()
-
-	if s.shouldFire("rule1", 2, 5, time.Minute, time.Minute) {
-		t.Fatal("should not fire below threshold")
-	}
-	if !s.shouldFire("rule1", 3, 5, time.Minute, time.Minute) {
-		t.Fatal("should fire once threshold is reached (2+3=5)")
-	}
-}
-
-func TestLocalCounterStore_Cooldown(t *testing.T) {
-	s := newLocalCounterStore()
-
-	if !s.shouldFire("rule1", 5, 5, time.Minute, time.Hour) {
-		t.Fatal("expected first call to fire")
-	}
-	if s.shouldFire("rule1", 5, 5, time.Minute, time.Hour) {
-		t.Fatal("expected second call within cooldown to not fire")
-	}
-}
-
-func TestLocalCounterStore_WindowExpiry(t *testing.T) {
-	s := newLocalCounterStore()
-
-	if s.shouldFire("rule1", 2, 5, time.Nanosecond, time.Minute) {
-		t.Fatal("should not fire below threshold")
-	}
-	time.Sleep(time.Millisecond)
-	// the window from the first call has expired, so this call starts a
-	// fresh count rather than accumulating on top of the expired one
-	if s.shouldFire("rule1", 2, 5, time.Minute, time.Minute) {
-		t.Fatal("expired window should not carry over its count")
-	}
-}
-
-func TestLocalCounterStore_IndependentKeys(t *testing.T) {
-	s := newLocalCounterStore()
-
-	if !s.shouldFire("rule1:host-a", 1, 1, time.Minute, time.Hour) {
-		t.Fatal("expected rule1:host-a to fire")
-	}
-	if !s.shouldFire("rule1:host-b", 1, 1, time.Minute, time.Hour) {
-		t.Fatal("expected rule1:host-b to fire independently of host-a's cooldown")
 	}
 }

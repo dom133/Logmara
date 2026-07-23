@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func(), func()) {
+func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func(), func(), func()) {
 	vacuumInterval := getIntervalHours("VACUUM_INTERVAL_HOURS", "vacuum_interval_hours", 24)
 	mvInterval := getIntervalMinutes("MV_REFRESH_INTERVAL_MIN", "mv_refresh_interval_min", 30)
 
@@ -19,8 +19,9 @@ func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func(), 
 	stopMV := startMVScheduler(ctx, db, mvInterval)
 	stopTokenCleanup := startRefreshTokenCleanupScheduler(ctx, db, 1*time.Hour)
 	stopJWTCleanup := startJWTBlacklistCleanup(ctx, db, 1*time.Minute)
+	stopArchive := startArchiveCleanupScheduler(ctx, db, 12*time.Hour)
 
-	return stopVacuum, stopMV, stopTokenCleanup, stopJWTCleanup
+	return stopVacuum, stopMV, stopTokenCleanup, stopJWTCleanup, stopArchive
 }
 
 func startVacuumScheduler(ctx context.Context, db *sql.DB, interval time.Duration) func() {
@@ -114,6 +115,48 @@ func startJWTBlacklistCleanup(ctx context.Context, db *sql.DB, interval time.Dur
 	}()
 	return func() {
 		<-done
+	}
+}
+
+// startArchiveCleanupScheduler periodically removes archived logs older than
+// the retention period configured in app_settings (default: 30 days).
+func startArchiveCleanupScheduler(ctx context.Context, db *sql.DB, interval time.Duration) func() {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		slog.Info("archive cleanup scheduler started", "interval_hours", interval.Hours())
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("archive cleanup scheduler stopped")
+				close(done)
+				return
+			case <-ticker.C:
+				cleanupArchivedLogs(db)
+			}
+		}
+	}()
+	return func() {
+		<-done
+	}
+}
+
+// cleanupArchivedLogs deletes logs older than the configured retention period.
+func cleanupArchivedLogs(db *sql.DB) {
+	var retentionDays int
+	err := db.QueryRow(`SELECT COALESCE(value, '30')::int FROM app_settings WHERE key = 'log_retention_days'`).Scan(&retentionDays)
+	if err != nil {
+		retentionDays = 30
+	}
+
+	res, err := db.Exec("DELETE FROM syslog_logs WHERE timestamp < NOW() - ($1 || ' days')::INTERVAL", retentionDays)
+	if err != nil {
+		slog.Error("archive cleanup failed", "err", err)
+		return
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		slog.Info("archive cleanup completed", "rows_deleted", n, "retention_days", retentionDays)
 	}
 }
 

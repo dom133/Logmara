@@ -1,6 +1,6 @@
 import { useEffect, useState, createContext, useContext } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link as RouterLink } from 'react-router-dom'
-import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Space, Typography } from 'antd'
+import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Space, Typography, Skeleton } from 'antd'
 import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, BellOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined, LogoutOutlined, UserOutlined, NodeIndexOutlined } from '@ant-design/icons'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
@@ -22,12 +22,13 @@ import { useIsMobile } from './hooks/useIsMobile'
 
 const { Sider, Content, Header } = Layout
 
-function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collapsed, onClose }: {
+function NavContent({ location, user, logout, isAdmin, pinnedDashboards, loadingDashboards, collapsed, onClose }: {
   location: ReturnType<typeof useLocation>
   user: { username?: string; notifications_enabled?: boolean; relay_ingestion_enabled?: boolean } | undefined
   logout: () => void
   isAdmin: boolean
   pinnedDashboards: DashboardType[]
+  loadingDashboards: boolean
   collapsed?: boolean
   onClose?: () => void
 }) {
@@ -63,7 +64,12 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collaps
             {!collapsed && item.label}
           </RouterLink>
         ))}
-        {pinnedDashboards.length > 0 && (
+        {loadingDashboards ? (
+          <div style={{ padding: '8px 16px' }}>
+            <Skeleton.Input size="small" style={{ marginBottom: 8 }} />
+            <Skeleton.Input size="small" style={{ marginBottom: 8 }} />
+          </div>
+        ) : pinnedDashboards.length > 0 && (
           <>
             {!collapsed && (
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: token.colorTextTertiary, textTransform: 'uppercase', letterSpacing: 1 }}>
