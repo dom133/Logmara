@@ -121,7 +121,7 @@ func TestNotificationChannel(database *sql.DB, hub *notifyhub.Hub) gin.HandlerFu
 		}
 
 		if err := notify.TestChannel(database, *channel, hub.Publish); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Test notification failed: "+err.Error(), err))
+			middleware.HandleError(c, model.NewBadRequest("Test notification failed", err))
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "test notification sent"})

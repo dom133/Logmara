@@ -53,6 +53,7 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
   const fireOnEveryMatch = Form.useWatch('fire_on_every_match', form)
   const selectedParsers: string[] = Form.useWatch('parser_names', form) || []
   const selectedDevices: string[] = Form.useWatch('device_ips', form) || []
+  const fieldConditions: any[] = Form.useWatch('field_conditions', form) || []
   const selectedDevicesKey = selectedDevices.join(',')
 
   const loadData = async () => {
@@ -121,6 +122,7 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
 
   const openEdit = (a: Alert) => {
     setEditing(a)
+    form.resetFields()
     form.setFieldsValue(a)
     setModalOpen(true)
   }
@@ -238,19 +240,18 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
                 <Input placeholder="failed login" />
               </Form.Item>
 
-              <Form.Item label="Field Conditions" tooltip="Fields come from the parsers selected above, or all fields seen on the selected device(s) if no parser is selected, or every known field if neither is selected.">
-                <Form.List name="field_conditions">
-                  {(fields, { add, remove }) => (
-                    <>
-                      {fields.length > 1 && (
-                        <Form.Item name="field_conditions_logic" label="Combine conditions with" initialValue="and" style={{ maxWidth: 220 }}>
-                          <Select options={[
-                            { value: 'and', label: 'AND (all must match)' },
-                            { value: 'or', label: 'OR (any must match)' },
-                          ]} />
-                        </Form.Item>
-                      )}
-                      {fields.map((field) => (
+{ruleType === 'log_threshold' && (
+                <>
+                  <Form.Item name="field_conditions_logic" label="Combine conditions with" hidden={fieldConditions.length <= 1} style={{ maxWidth: 220, marginBottom: 8 }}>
+                      <Select options={[
+                        { value: 'and', label: 'AND (all must match)' },
+                        { value: 'or', label: 'OR (any must match)' },
+                      ]} />
+                    </Form.Item>
+                  <Form.List name="field_conditions">
+                    {(fields, { add, remove }) => (
+                      <>
+                        {fields.map((field) => (
                         <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }} wrap>
                           <Form.Item name={[field.name, 'field_name']} rules={[{ required: true, message: 'Field required' }]} noStyle>
                             <Select showSearch placeholder="Field" style={{ width: 200 }} options={fieldOptions} />
@@ -268,7 +269,8 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
                     </>
                   )}
                 </Form.List>
-              </Form.Item>
+              </>
+              )}
 
               <Form.Item name="fire_on_every_match" label="Fire on every match" valuePropName="checked" tooltip="Notify for every matching log entry as it arrives, instead of counting matches against a threshold. Ignores Threshold, Window, and Cooldown below.">
                 <Switch />

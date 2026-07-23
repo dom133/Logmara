@@ -57,7 +57,7 @@ type Alert struct {
 	// FieldConditionsLogic is how multiple FieldConditions combine:
 	// FieldConditionsLogicAnd (default, every condition must match) or
 	// FieldConditionsLogicOr (any one condition matching is enough).
-	FieldConditionsLogic string `json:"field_conditions_logic,omitempty"`
+	FieldConditionsLogic string `json:"field_conditions_logic"`
 	MessagePattern       string `json:"message_pattern,omitempty"`
 	Threshold            int    `json:"threshold"`
 	WindowMinutes        int    `json:"window_minutes"`

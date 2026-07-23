@@ -10,6 +10,8 @@ import (
 	"syslytics/auth"
 	"syslytics/db"
 	"syslytics/ldap"
+	"syslytics/middleware"
+	"syslytics/model"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -433,7 +435,7 @@ func ChangePassword(database *sql.DB) gin.HandlerFunc {
 		}
 
 		if err := auth.ValidatePassword(req.NewPassword); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewBadRequest("Password does not meet requirements", err))
 			return
 		}
 

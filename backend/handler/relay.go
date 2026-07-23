@@ -294,7 +294,7 @@ func CreateRelayWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 
 		if err := SyncRelayConfig(database); err != nil {
 			slog.Warn("relay config sync failed after whitelist add", "error", err)
-			c.JSON(http.StatusCreated, gin.H{"entry": entry, "reload_error": err.Error()})
+			c.JSON(http.StatusCreated, gin.H{"entry": entry, "reload_error": "relay config sync failed"})
 			return
 		}
 		c.JSON(http.StatusCreated, entry)
@@ -340,7 +340,7 @@ func DeleteRelayWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 
 		if err := SyncRelayConfig(database); err != nil {
 			slog.Warn("relay config sync failed after whitelist delete", "error", err)
-			c.JSON(http.StatusOK, gin.H{"message": "whitelist entry deleted", "reload_error": err.Error()})
+			c.JSON(http.StatusOK, gin.H{"message": "whitelist entry deleted", "reload_error": "relay config sync failed"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "whitelist entry deleted"})
@@ -526,7 +526,7 @@ func RevokeRelayCertificate(database *sql.DB) gin.HandlerFunc {
 
 		if err := SyncRelayConfig(database); err != nil {
 			slog.Warn("relay config sync failed after certificate revoke", "error", err)
-			c.JSON(http.StatusOK, gin.H{"message": "certificate revoked", "reload_error": err.Error()})
+			c.JSON(http.StatusOK, gin.H{"message": "certificate revoked", "reload_error": "relay config sync failed"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "certificate revoked"})

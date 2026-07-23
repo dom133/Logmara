@@ -61,7 +61,7 @@ func bindInitRequest(c *gin.Context) (*InitRequest, bool) {
 		return nil, false
 	}
 	if err := auth.ValidatePassword(req.Admin.Password); err != nil {
-		middleware.HandleError(c, model.NewBadRequest(err.Error(), nil))
+		middleware.HandleError(c, model.NewBadRequest("Password does not meet requirements", err))
 		return nil, false
 	}
 	return &req, true

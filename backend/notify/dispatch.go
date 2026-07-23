@@ -128,7 +128,7 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName, firingID string, ch 
 	if ch.Type == model.ChannelTypeInApp {
 		id, createdAt, err := db.CreateInAppNotification(d.DB, alertID, payload.Title, payload.Message, payload.Severity)
 		if err != nil {
-			status, detail = "failed", err.Error()
+			status, detail = "failed", "internal app notification failed"
 		} else {
 			inAppID = &id
 			if d.OnInApp != nil {
@@ -140,11 +140,11 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName, firingID string, ch 
 	} else {
 		secret, err := db.DecryptChannelSecret(d.DB, ch.ID)
 		if err != nil {
-			status, detail = "failed", "decrypt channel secret: "+err.Error()
+			status, detail = "failed", "decrypt channel secret failed"
 		} else if notifier, err := BuildNotifier(d.DB, ch, secret); err != nil {
-			status, detail = "failed", err.Error()
+			status, detail = "failed", "build notifier failed"
 		} else if err := notifier.Send(payload); err != nil {
-			status, detail = "failed", err.Error()
+			status, detail = "failed", "send notification failed"
 		}
 	}
 
