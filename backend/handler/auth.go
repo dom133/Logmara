@@ -189,9 +189,11 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			}
 
 			if user == nil {
-				if existing != nil {
-					db.IncrementFailedLogins(database, existing.ID)
+if existing != nil {
+				if err := db.IncrementFailedLogins(database, existing.ID); err != nil {
+					slog.Error("failed to increment failed logins", "error", err, "user_id", existing.ID)
 				}
+			}
 				audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "invalid user or inactive")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 				return
