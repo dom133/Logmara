@@ -474,7 +474,6 @@ r := gin.New()
 
 	r.GET("/api/health", handler.HealthCheck(database))
 	r.GET("/api/metrics", handler.PrometheusMetrics(database))
-	r.GET("/api/metrics", handler.PrometheusMetrics(database))
 	r.POST("/api/auth/login", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(loginLimiter), handler.Login(database, authCfg))
 	r.POST("/api/auth/refresh", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(refreshLimiter), handler.Refresh(database, authCfg))
 	r.POST("/api/auth/logout", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.Logout(database))
