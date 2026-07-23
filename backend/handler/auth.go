@@ -133,17 +133,19 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		existing, err := db.GetUserByUsername(database, req.Username)
 		if err == nil {
 			if locked, _ := db.CheckUserLockout(database, existing.ID); locked {
-				audit.LogAudit(database, existing.ID, req.Username, "login_failed_lockout", c.ClientIP(), "account locked")
-				c.JSON(http.StatusTooManyRequests, gin.H{"error": "Account temporarily locked. Try again later."})
+				audit.LogAudit(database, existing.ID, req.Username, "login_failed_lockout", c.ClientIP(), "account locked due to too many failed attempts")
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "Account temporarily locked due to too many failed login attempts. Try again later."})
 				return
 			}
-			if existing.IsActive {
-				if err := bcrypt.CompareHashAndPassword([]byte(existing.PasswordHash), []byte(req.Password)); err == nil {
-					user = existing
-				}
-			} else {
+			if !existing.IsActive {
 				dummyHash := "$2b$14$AAAAAAAAAAAAAAAAAAAAAAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 				bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(req.Password))
+				audit.LogAudit(database, existing.ID, req.Username, "login_failed_inactive", c.ClientIP(), "account deactivated by admin")
+				c.JSON(http.StatusForbidden, gin.H{"error": "Your account has been deactivated. Contact your administrator."})
+				return
+			}
+			if err := bcrypt.CompareHashAndPassword([]byte(existing.PasswordHash), []byte(req.Password)); err == nil {
+				user = existing
 			}
 		}
 
