@@ -2,15 +2,20 @@
   <img src="frontend/public/icons/icon-192.png" alt="Syslytics logo" width="120" />
 </p>
 
-<h1 align="center">Syslytics</h1>
+<h1 align="center">Syslytics 📡</h1>
 
 <p align="center">
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: AGPL-3.0 with Commons Clause](https://img.shields.io/badge/License-AGPL--3.0%20%2B%20Commons%20Clause-blue.svg)](LICENSE)
+![GitHub stars](https://img.shields.io/github/stars/dom133/Syslytics?style=social)
+![GitHub forks](https://img.shields.io/github/forks/dom133/Syslytics?style=social)
+![GitHub repo size](https://img.shields.io/github/repo-size/dom133/Syslytics)
+![GitHub top language](https://img.shields.io/github/languages/top/dom133/Syslytics)
+![GitHub last commit](https://img.shields.io/github/last-commit/dom133/Syslytics?color=red)
 
 </p>
 
-Web-based syslog monitoring, parsing, and visualization platform with Docker Compose deployment.
+**Syslytics is a self-hosted, [Docker Compose](#quick-start-single-server)-deployed platform for ingesting, parsing, and visualizing syslog data** — a live log viewer, a regex-based parser engine for structuring raw messages, custom dashboards, alerting, and an admin panel, all behind JWT auth with no external dependencies.
 
 ## Architecture
 
@@ -66,7 +71,8 @@ sudo ufw allow 514/tcp
 sudo ufw allow 514/udp
 ```
 
-`8080/tcp` (the API) is also published by `docker-compose.yml`, but only needed if you want to hit the API directly instead of through nginx on 80/443 — leave it firewalled off unless you have a specific reason to open it.
+> [!NOTE]
+> `8080/tcp` (the API) is also published by `docker-compose.yml`, but only needed if you want to hit the API directly instead of through nginx on 80/443 — leave it firewalled off unless you have a specific reason to open it.
 
 ### 3. Clone the repo and configure
 
@@ -506,7 +512,10 @@ Each relay reuses the same JSON conversion the central server already does local
   - The whitelist entry itself is left in place either way, now shown as **Blocked** on the Whitelist IP tab, rather than deleted — generate a replacement certificate for it (from either tab) to restore access.
   - Removing an IP from the **whitelist** entirely (Whitelist IP > delete) also revokes its certificate, since a device that's no longer allowed in shouldn't leave an "issued" certificate lying around either.
   - The old, revoked certificate row is always kept for the audit trail — "Regenerate" on a revoked row issues a fresh certificate (with its own fresh CommonName) for the same entry without deleting its history.
-- The private key for a relay's certificate is generated on the server but **never stored** there — it's handed to you exactly once, in the `.tar.gz` bundle the browser downloads when you generate it. If you lose it, revoke (or regenerate from) that certificate; there's no way to re-download the old key.
+- The private key for a relay's certificate is generated on the server but never stored there — see the warning below.
+
+> [!WARNING]
+> A relay's private key is handed to you **exactly once**, in the `.tar.gz` bundle the browser downloads when you generate its certificate — save it now. If you lose it, there's no way to re-download the old key; you'll need to revoke (or regenerate from) that certificate instead.
 
 ### Certificate expiry, renewal, and CA rotation
 
@@ -554,22 +563,22 @@ A [relay](#syslog-relay-optional-multi-vlan) isn't on `syslog_net` and isn't rea
 
 ## Features
 
-- **Live Log Viewer** — Browse, filter, and search ingested syslog messages in real-time
-- **Parser Engine** — Define regex-based parsers to extract structured fields from raw log lines
-- **Custom Dashboards** — Create dashboards filtered by device, severity, or parsed fields
-- **Pin Dashboards** — Pin frequently-used dashboards to the sidebar for quick access
-- **Export** — Download logs as CSV or HTML reports
-- **Statistics** — Timeline charts, severity breakdown, and per-device metrics
-- **Secure Authentication** — JWT access tokens (configurable timeout) + refresh tokens (7 days) with rotation, JWT blacklisting on logout
-- **Account Lockout** — Automatic lockout after configurable failed login attempts, admin unlock from Admin panel
-- **CSRF Protection** — Double-submit cookie pattern on all mutating endpoints
-- **LDAP/AD Integration** — Authenticate against Active Directory or OpenLDAP with TLS support
-- **Audit Logging** — Track login attempts, lockouts, unlocks, password changes, and admin actions
-- **Rate Limiting** — Login endpoint protected against brute-force attacks (Redis-shared in HA mode)
-- **CORS Protection** — Configurable allowed origins
-- **Setup Wizard** — Guided initial configuration with admin account, database, security keys, and optional LDAP/CORS
-- **Admin Panel** — User management, settings, audit log viewer, LDAP connection test
-- **Health Monitoring** — Container/Swarm service status and syslog relay liveness in one place (see [Health Monitoring](#health-monitoring))
+- 📜 **Live Log Viewer** — Browse, filter, and search ingested syslog messages in real-time
+- 🧩 **Parser Engine** — Define regex-based parsers to extract structured fields from raw log lines
+- 📊 **Custom Dashboards** — Create dashboards filtered by device, severity, or parsed fields
+- 📌 **Pin Dashboards** — Pin frequently-used dashboards to the sidebar for quick access
+- 📤 **Export** — Download logs as CSV or HTML reports
+- 📈 **Statistics** — Timeline charts, severity breakdown, and per-device metrics
+- 🔐 **Secure Authentication** — JWT access tokens (configurable timeout) + refresh tokens (7 days) with rotation, JWT blacklisting on logout
+- 🔒 **Account Lockout** — Automatic lockout after configurable failed login attempts, admin unlock from Admin panel
+- 🛡️ **CSRF Protection** — Double-submit cookie pattern on all mutating endpoints
+- 🪪 **LDAP/AD Integration** — Authenticate against Active Directory or OpenLDAP with TLS support
+- 📝 **Audit Logging** — Track login attempts, lockouts, unlocks, password changes, and admin actions
+- ⏱️ **Rate Limiting** — Login endpoint protected against brute-force attacks (Redis-shared in HA mode)
+- 🌐 **CORS Protection** — Configurable allowed origins
+- 🧙 **Setup Wizard** — Guided initial configuration with admin account, database, security keys, and optional LDAP/CORS
+- 🛠️ **Admin Panel** — User management, settings, audit log viewer, LDAP connection test
+- 🩺 **Health Monitoring** — Container/Swarm service status and syslog relay liveness in one place (see [Health Monitoring](#health-monitoring))
 
 ## GUI Configuration Guide
 
@@ -881,6 +890,24 @@ Parsers can be created through the web interface or API with the following requi
 - **Regular Expression**: Named capture groups that define extracted fields
 - **Fields Configuration**: Define labels and data types for extracted fields
 
-## License
+## License 📜
 
-MIT
+[GNU Affero General Public License v3.0](LICENSE) with the [Commons Clause](https://commonsclause.com/) license condition. You're free to use, modify, self-host, and redistribute this software (source must stay available, per AGPL) — the Commons Clause only prohibits selling the software itself, or offering it as a paid product/service, without a separate commercial license from the copyright holder.
+
+## Support 💬
+
+Questions, bug reports, or feature requests? [Open an issue](https://github.com/dom133/Syslytics/issues) on GitHub.
+
+## Star History
+
+<a href="https://star-history.com/#dom133/Syslytics&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=dom133/Syslytics&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=dom133/Syslytics&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=dom133/Syslytics&type=Date" />
+  </picture>
+</a>
+
+---
+
+Created by [Dominik Kruszewski](https://github.com/dom133)
