@@ -12,6 +12,7 @@ services:
       - -c
       - maintenance_work_mem=256MB
     environment:
+      TZ: UTC
       POSTGRES_DB: ${POSTGRES_DB:-syslog_db}
       POSTGRES_USER: ${POSTGRES_USER:-syslog}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-syslogpass}
@@ -44,7 +45,7 @@ services:
       context: .
       dockerfile: Dockerfile.rsyslog
     environment:
-      - TZ=${TZ:-Europe/Warsaw}
+      - TZ=UTC
     volumes:
       - log_data:/data
       - log_spool:/spool
@@ -110,6 +111,7 @@ services:
       args:
         JWT_SECRET: ${JWT_SECRET:-change-this-to-a-random-secret-key}
     environment:
+      TZ: UTC
       DATABASE_URL: postgres://${POSTGRES_USER:-syslog}:${POSTGRES_PASSWORD:-syslogpass}@postgres:5432/${POSTGRES_DB:-syslog_db}?sslmode=disable
       JWT_SECRET: ${JWT_SECRET:-change-this-to-a-random-secret-key}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}

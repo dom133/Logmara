@@ -101,7 +101,7 @@ services:
   rsyslog:
     image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-rsyslog:${TAG:-latest}
     environment:
-      - TZ=${TZ:-Europe/Warsaw}
+      - TZ=UTC
     volumes:
       - log_data:/data
       - log_spool:/spool
@@ -146,6 +146,7 @@ services:
   api:
     image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-api:${TAG:-latest}
     environment:
+      TZ: UTC
       # api reads these directly via os.Getenv (backend/auth/auth.go:29 etc.)
       # — unlike the spilo Postgres image, this backend has no _FILE/Docker-
       # secrets convention today (Phase 2 backlog item), so these stay plain

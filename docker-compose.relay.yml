@@ -21,6 +21,8 @@
 
 services:
   rsyslog-relay:
+    environment:
+      - TZ=UTC
     build:
       context: .
       dockerfile: Dockerfile.rsyslog-relay
