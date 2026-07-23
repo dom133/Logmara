@@ -343,12 +343,12 @@ export default function DashboardViewPage() {
     if (fields.length > 0) {
       for (const field of fields) {
         const val = detailLog.parsed_fields?.[field]
-        items.push({
-          label: field,
-          content: val
-            ? <Tag color="geekblue" style={{ maxWidth: '100%', whiteSpace: 'normal', wordBreak: 'break-all' }}>{val}</Tag>
-            : '-',
-        })
+        if (val) {
+          items.push({
+            label: field,
+            content: <Tag color="geekblue" style={{ maxWidth: '100%', whiteSpace: 'normal', wordBreak: 'break-all' }}>{val}</Tag>,
+          })
+        }
       }
     }
 
