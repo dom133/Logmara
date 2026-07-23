@@ -1108,14 +1108,14 @@ func IncrementFailedLogins(db *sql.DB, userID int64) error {
 	// When the lockout expires (locked_until < NOW), treat the user as
 	// unlocked: a single new failure can re-lock them if it reaches the threshold.
 	var curFailed int
-	var curLockedUntil time.Time
+	var curLockedUntil sql.NullTime
 	var hasLockout bool
 	err := db.QueryRow("SELECT failed_login_attempts, locked_until, locked_until IS NOT NULL FROM users WHERE id = $1", userID).Scan(&curFailed, &curLockedUntil, &hasLockout)
 	if err != nil {
 		return err
 	}
 	// Skip if actively locked
-	if hasLockout && curLockedUntil.After(time.Now()) {
+	if hasLockout && curLockedUntil.Valid && curLockedUntil.Time.After(time.Now()) {
 		return nil
 	}
 	newFailed := curFailed + 1
