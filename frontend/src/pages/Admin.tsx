@@ -45,6 +45,8 @@ export default function Admin() {
   const [certInfo, setCertInfo] = useState<any>(null)
   const [health, setHealth] = useState<ContainersHealthResponse | null>(null)
   const [healthLoading, setHealthLoading] = useState(false)
+  const [activeTab, setActiveTab] = useState('users')
+  const tabCacheRef = useRef<Map<string, { loadedAt: number }>>(new Map())
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_admin',
@@ -215,13 +217,28 @@ await testLDAPConnection({
     }
   }
 
+  const STALE_MS = 30_000
+
+  const loadTab = async (tab: string) => {
+    const cached = tabCacheRef.current.get(tab)
+    if (cached && Date.now() - cached.loadedAt < STALE_MS) return
+    if (tab === 'ldap' && !tabCacheRef.current.has('settings')) {
+      await loadSettings()
+      tabCacheRef.current.set('settings', { loadedAt: Date.now() })
+    }
+    switch (tab) {
+      case 'users': await loadUsers(); break
+      case 'settings': await loadSettings(); break
+      case 'devices': await loadDevices(); break
+      case 'slow_queries': await loadSlowQueries(); break
+      case 'health': await loadHealth(); break
+    }
+    tabCacheRef.current.set(tab, { loadedAt: Date.now() })
+  }
+
   useEffect(() => {
-    loadUsers()
-    loadSettings()
-    loadDevices()
-    loadSlowQueries()
-    loadHealth()
-  }, [])
+    loadTab(activeTab)
+  }, [activeTab])
 
 const handleCreate = async () => {
     const values = await form.validateFields()
@@ -440,7 +457,8 @@ const handleCleanup = async () => {
       </Card>
 
       <Tabs
-        defaultActiveKey="users"
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: 'users',
