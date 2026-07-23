@@ -361,11 +361,11 @@ func main() {
 	if tlsEnabled := db.GetSetting(database, "https_enabled", "false"); tlsEnabled == "true" {
 		certPath := os.Getenv("TLS_CERT_PATH")
 		if certPath == "" {
-			certPath = "/etc/ssl/certs/syslytics/fullchain.pem"
+			certPath = "/data/ssl/server.crt"
 		}
 		keyPath := os.Getenv("TLS_KEY_PATH")
 		if keyPath == "" {
-			keyPath = "/etc/ssl/private/syslytics/privkey.pem"
+			keyPath = "/data/ssl/server.key"
 		}
 		if _, err := os.Stat(certPath); err != nil {
 			slog.Warn("https_enabled is true but TLS certificate not found", "path", certPath)
