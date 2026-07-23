@@ -251,21 +251,32 @@ export default function DashboardViewPage() {
     ...(dashDevices.length === 1 ? [] : [{ label: 'By Device', value: 'hostname' }]),
   ]
 
+  const fieldsWithValues = useMemo(() => {
+    const present = new Set<string>()
+    for (const entry of logs) {
+      for (const field of fields) {
+        if (entry.parsed_fields?.[field]) {
+          present.add(field)
+        }
+      }
+    }
+    return present
+  }, [logs, fields])
+
   const buildCustomColumns = () => {
     const cols = []
-    if (fields.length > 0) {
-      for (const field of fields) {
-        cols.push({
-          title: field,
-          key: `pf_${field}`,
-          width: 120,
-          ellipsis: true,
-          render: (_v: unknown, r: LogEntry) => {
-            const val = r.parsed_fields?.[field]
-            return val ? <Tag color="geekblue" style={{ maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis' }}>{val}</Tag> : <Tag>-</Tag>
-          },
-        })
-      }
+    for (const field of fields) {
+      if (!fieldsWithValues.has(field)) continue
+      cols.push({
+        title: field,
+        key: `pf_${field}`,
+        width: 120,
+        ellipsis: true,
+        render: (_v: unknown, r: LogEntry) => {
+          const val = r.parsed_fields?.[field]
+          return val ? <Tag color="geekblue" style={{ maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis' }}>{val}</Tag> : <Tag>-</Tag>
+        },
+      })
     }
     return cols
   }
