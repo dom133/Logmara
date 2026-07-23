@@ -172,6 +172,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
   const { themeMode, toggleTheme } = useTheme()
   const location = useLocation()
   const [pinnedDashboards, setPinnedDashboards] = useState<DashboardType[]>([])
+  const [loadingDashboards, setLoadingDashboards] = useState(true)
   const [collapsed, setCollapsed] = useState(false)
   const [drawerVisible, setDrawerVisible] = useState(false)
   const isMobile = useIsMobile()
@@ -179,10 +180,13 @@ function AppLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!user) return
     const load = async () => {
+      setLoadingDashboards(true)
       try {
         const dashboards = await getDashboards()
         setPinnedDashboards(dashboards.filter((d: DashboardType) => d.pinned))
-      } catch { /* ignore */ }
+      } catch { /* ignore */ } finally {
+        setLoadingDashboards(false)
+      }
     }
     load()
     const handler = () => load()
@@ -225,7 +229,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           style={{ background: token.colorBgContainer }}
           theme={themeMode === 'dark' ? 'dark' : 'light'}
         >
-          <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} collapsed={collapsed} />
+          <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} loadingDashboards={loadingDashboards} collapsed={collapsed} />
         </Sider>
       )}
       {isMobile && (
@@ -238,7 +242,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           styles={{ body: { padding: 0 } }}
         >
           <div style={{ background: token.colorBgContainer, height: '100%' }}>
-            <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} onClose={() => setDrawerVisible(false)} />
+            <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} loadingDashboards={loadingDashboards} onClose={() => setDrawerVisible(false)} />
           </div>
         </Drawer>
       )}
