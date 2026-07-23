@@ -126,7 +126,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setupSessionWarning(res.data.expires_at)
       return { ok: true }
     } catch (error: any) {
-      return { ok: false, error: error.response?.data?.message || 'Login failed' }
+      return { ok: false, error: error.response?.data?.error || 'Login failed' }
     }
   }, [setupSessionWarning])
 
