@@ -318,8 +318,9 @@ func main() {
 	}()
 
 	ctx, maintCancel := context.WithCancel(context.Background())
-	stopVacuum, stopMV, stopTokenCleanup, stopJWTCleanup := db.StartMaintenance(ctx, database)
+	stopVacuum, stopMV, stopTokenCleanup, stopJWTCleanup, stopArchiveCleanup := db.StartMaintenance(ctx, database)
 	_ = stopJWTCleanup
+	_ = stopArchiveCleanup
 
 	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive
 	// while someone is actually logged in to look at them. With nobody logged
@@ -621,6 +622,7 @@ r := gin.New()
 	stopVacuum()
 	stopMV()
 	stopTokenCleanup()
+	stopArchiveCleanup()
 	stopIfPersistent(loginLimiter)
 	stopIfPersistent(changePasswordLimiter)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
