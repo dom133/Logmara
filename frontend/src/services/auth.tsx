@@ -66,25 +66,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSessionWarningCountdown(0)
   }, [clearAllTimers])
 
-  const loadUser = useCallback(async () => {
-    try {
-      const res = await api.get('/auth/me')
-      setUser(res.data)
-      const expiresAt = res.data.expires_at
-      if (expiresAt) {
-        sessionExpiryRef.current = expiresAt * 1000
-      }
-      setLoading(false)
-    } catch {
-      setUser(null)
-      setLoading(false)
-      clearAllTimers()
-      setIsSessionExpiringSoon(false)
-      setShowSessionWarning(false)
-      setSessionWarningCountdown(0)
-    }
-  }, [clearAllTimers])
-
   const checkSessionExpiry = useCallback(() => {
     const expiresAt = sessionExpiryRef.current
     if (expiresAt === null || extendingRef.current) return
@@ -109,6 +90,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     checkSessionExpiry()
     checkIntervalRef.current = setInterval(checkSessionExpiry, EXPIRY_CHECK_INTERVAL_MS)
   }, [clearAllTimers, checkSessionExpiry])
+
+  const loadUser = useCallback(async () => {
+    try {
+      const res = await api.get('/auth/me')
+      setUser(res.data)
+      const expiresAt = res.data.expires_at
+      if (expiresAt) {
+        setupSessionWarning(expiresAt)
+      }
+      setLoading(false)
+    } catch {
+      setUser(null)
+      setLoading(false)
+      clearAllTimers()
+      setIsSessionExpiringSoon(false)
+      setShowSessionWarning(false)
+      setSessionWarningCountdown(0)
+    }
+  }, [clearAllTimers, setupSessionWarning])
 
   const login = useCallback(async (username: string, password: string) => {
     try {

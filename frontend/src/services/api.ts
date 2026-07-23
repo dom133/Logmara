@@ -21,40 +21,17 @@ api.interceptors.request.use(config => {
   return config
 })
 
-let isRefreshing = false
-let retryQueue: Array<{ resolve: (value: unknown) => void; reject: () => void }> = []
-
-const processQueue = (error: unknown | null) => {
-  retryQueue.forEach(cb => {
-    if (error) cb.reject()
-    else cb.resolve(null)
-  })
-  retryQueue = []
-}
-
+// No silent refresh-and-retry here: token lifetime is tracked and extended
+// exclusively through AuthContext (SessionWarningModal's "Extend Session"),
+// so the countdown shown to the user always matches the token's real expiry.
+// A 401 here means the session already ran out - send the user to login
+// instead of quietly minting a new token behind the visible countdown.
 api.interceptors.response.use(
   response => response,
-  async error => {
+  error => {
     const originalRequest = error.config
-    if (error.response?.status === 401 && !originalRequest._retry && originalRequest.url !== '/auth/login' && originalRequest.url !== '/auth/refresh' && window.location.pathname !== '/login') {
-      if (isRefreshing) {
-        return new Promise((resolve, reject) => {
-          retryQueue.push({ resolve, reject })
-        }).then(() => api(originalRequest))
-      }
-      originalRequest._retry = true
-      isRefreshing = true
-      try {
-        const res = await api.post('/auth/refresh', {})
-        processQueue(null)
-        return api(originalRequest)
-      } catch (err) {
-        processQueue(err)
-        window.location.href = '/login'
-        return Promise.reject(err)
-      } finally {
-        isRefreshing = false
-      }
+    if (error.response?.status === 401 && originalRequest.url !== '/auth/login' && originalRequest.url !== '/auth/refresh' && window.location.pathname !== '/login') {
+      window.location.href = '/login'
     }
     return Promise.reject(error)
   }

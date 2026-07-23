@@ -47,6 +47,7 @@ export default function Admin() {
   const [healthLoading, setHealthLoading] = useState(false)
   const [activeTab, setActiveTab] = useState('users')
   const tabCacheRef = useRef<Map<string, { loadedAt: number }>>(new Map())
+  const [, setLockoutTick] = useState(0)
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_admin',
@@ -240,6 +241,13 @@ await testLDAPConnection({
     loadTab(activeTab)
   }, [activeTab])
 
+  // Ticks the locked-users countdown live instead of only on next fetch
+  useEffect(() => {
+    if (!users.some(u => u.locked_until && new Date(u.locked_until).getTime() > Date.now())) return
+    const id = setInterval(() => setLockoutTick(t => t + 1), 1000)
+    return () => clearInterval(id)
+  }, [users])
+
 const handleCreate = async () => {
     const values = await form.validateFields()
     if (settings['ldap_auto_provision'] === 'true') {
@@ -399,8 +407,8 @@ const handleCleanup = async () => {
       dataIndex: 'locked_until',
       key: 'locked_until',
       render: (_v: string | null, record: User) => {
-        if (record.locked_until) {
-          const remaining = Math.max(0, new Date(record.locked_until).getTime() - Date.now())
+        const remaining = record.locked_until ? new Date(record.locked_until).getTime() - Date.now() : 0
+        if (remaining > 0) {
           const minutes = Math.floor(remaining / 60000)
           const seconds = Math.floor((remaining % 60000) / 1000)
           return (
@@ -432,7 +440,7 @@ const handleCleanup = async () => {
       key: 'actions',
       render: (_v: unknown, record: User) => (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {record.locked_until && <Popconfirm title="Unlock this user?" okText="Yes" cancelText="No" onConfirm={() => handleUnlock(record.id)}>
+          {record.locked_until && new Date(record.locked_until).getTime() > Date.now() && <Popconfirm title="Unlock this user?" okText="Yes" cancelText="No" onConfirm={() => handleUnlock(record.id)}>
             <Button size="small" type="primary" icon={<ReloadOutlined />} />
           </Popconfirm>}
           <Button size="small" onClick={() => handleEdit(record)} icon={<EditOutlined />} />
