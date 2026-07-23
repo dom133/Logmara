@@ -637,7 +637,7 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 		row.Scan(&count)
 		slog.Info("purge started", "count", count)
 
-		_, err = database.Exec("TRUNCATE TABLE syslog_logs")
+		_, err := database.Exec("TRUNCATE TABLE syslog_logs")
 		if err != nil {
 			if !wasPaused {
 				ic.Resume()
