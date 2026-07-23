@@ -114,15 +114,14 @@ services:
       TZ: UTC
       DATABASE_URL: postgres://${POSTGRES_USER:-syslog}:${POSTGRES_PASSWORD:-syslogpass}@postgres:5432/${POSTGRES_DB:-syslog_db}?sslmode=disable
       JWT_SECRET: ${JWT_SECRET:-change-this-to-a-random-secret-key}
-      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
       PORT: "8080"
       LOG_FILE_PATH: /data/logs.jsonl
       NGINX_RELOAD_URL: http://frontend:8081/cgi-bin/reload.sh
       NGINX_CONF_DIR: /data/nginx
-      # Optional: pin HTTPS settings via env instead of the admin UI. Both
-      # default to disabled when unset; if set, the value is persisted to
-      # app_settings so it shows up under Settings.
+      # Optional: seeds the initial HTTPS settings (both default to disabled)
+      # the first time the database is initialized. After that, it's managed
+      # from the admin Settings UI and this env var is ignored on subsequent
+      # restarts.
       HTTPS_ENABLED: ${HTTPS_ENABLED:-}
       HTTPS_REDIRECT: ${HTTPS_REDIRECT:-}
       # Optional: seeds the initial allowed CORS origin(s) for the frontend
@@ -140,7 +139,10 @@ services:
     volumes:
       - log_data:/data
     ports:
-      - "${API_PORT:-8080}:8080"
+      # Not meant to be publicly reachable - traffic normally comes in via
+      # nginx on 80/443. Fixed (not env-configurable); only published so you
+      # can hit the API directly if you have a specific reason to.
+      - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy

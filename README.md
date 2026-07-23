@@ -1,27 +1,40 @@
-# Syslytics
+<p align="center">
+  <img src="frontend/public/icons/icon-192.png" alt="Syslytics logo" width="120" />
+</p>
+
+<h1 align="center">Syslytics</h1>
+
+<p align="center">
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+</p>
 
 Web-based syslog monitoring, parsing, and visualization platform with Docker Compose deployment.
 
 ## Architecture
 
 ```
-┌──────────┐     ┌──────────┐     ┌──────────┐
-│  Client   │────▶│ Nginx    │────▶│ Go API   │
-│  (Browser)│     │  (:80)   │     │  (:8080) │
-└──────────┘     └──────────┘     └────┬─────┘
-                                       │
-                    ┌──────────┐       │       ┌──────────────┐
-                    │ rsyslog  │       │       │   PostgreSQL   │
-                    │  (:514)  │───────┘       │    (:5432)     │
-                    └──────────┘               └──────────────┘
+Client (browser) ──HTTP/HTTPS 80/443──▶ Nginx ──proxy──▶ Go API (:8080) ──SQL──▶ PostgreSQL (:5432)
+                                                              ▲
+                                                              │ tails logs.jsonl
+Devices/senders ──syslog tcp/udp 514──▶ rsyslog ─────────────┘
+                                            ▲
+                                            │ mTLS 6514 (optional - see "Syslog Relay")
+                                     Remote syslog relay(s)
+
+docker-proxy (read-only Docker Engine API sidecar, internal-only) ◀── queried by Go API for Admin > Health
 ```
 
-| Service | Port | Description |
-|---------|------|-------------|
-| Frontend | 80 | React SPA served via Nginx |
-| API | 8080 | Gin REST API with JWT auth |
-| rsyslog | 514 (TCP/UDP) | Syslog ingestion daemon |
+`rsyslog` and the Go API don't talk to each other directly - `rsyslog` writes ingested logs as JSON lines to a shared file (`logs.jsonl` on the `log_data` volume), and the API's file tailer (`backend/tailer/`) reads and parses that file, then persists parsed entries to PostgreSQL.
+
+| Service | Port(s) | Description |
+|---------|---------|-------------|
+| Frontend | 80 (443 if HTTPS is enabled, see Admin > Settings) | React SPA served via Nginx |
+| API | 8080 | Gin REST API with JWT auth; tails rsyslog's JSONL output into PostgreSQL |
+| rsyslog | 514 (TCP/UDP); 6514 (mTLS, optional relay ingestion - see [Syslog Relay](#syslog-relay-optional-multi-vlan)) | Syslog ingestion daemon |
 | PostgreSQL | 5432 | Persistent log storage |
+| docker-proxy | *(internal only, not published to the host)* | Read-only Docker Engine API sidecar backing [Health Monitoring](#health-monitoring) |
 
 ## Quick Start (Single Server)
 
@@ -58,7 +71,7 @@ sudo ufw allow 514/udp
 ### 3. Clone the repo and configure
 
 ```bash
-git clone https://gitlab.dom133.xyz/dominik.kruszewski/syslog_gui.git
+git clone https://github.com/dom133/Syslytics.git
 cd syslog_gui
 cp .env.example .env
 ```
@@ -66,8 +79,6 @@ cp .env.example .env
 Edit `.env` and set at least these before going anywhere near production — the defaults in `.env.example` are placeholders, not secrets:
 - `POSTGRES_PASSWORD`
 - `JWT_SECRET` (e.g. `openssl rand -base64 48`)
-- `ADMIN_PASSWORD` — not actually used to create the account (see step 5), but still worth setting since it's passed to the container regardless
-- `TZ` if `Europe/Warsaw` isn't your timezone
 
 ### 4. Start it
 
@@ -232,7 +243,7 @@ Pick one manager (`pg1` here) as your "control" node — everywhere below that s
 
 ```bash
 ssh pg1
-git clone https://gitlab.dom133.xyz/dominik.kruszewski/syslog_gui.git
+git clone https://github.com/dom133/Syslytics.git
 cd syslog_gui
 
 export REGISTRY=registry.example.com/syslytics TAG=v1
@@ -333,7 +344,6 @@ Still on `pg1` (or wherever you're driving `docker stack deploy` from), export t
 export REGISTRY=registry.example.com/syslytics TAG=v1
 export NFS_SERVER=10.0.0.30
 export JWT_SECRET=$(openssl rand -base64 48)
-export ADMIN_PASSWORD=$(openssl rand -base64 16)
 export POSTGRES_PASSWORD="$PG_APP_PASS"      # from step 7
 export REDIS_PASSWORD="$REDIS_PASS"          # from step 7
 
@@ -544,22 +554,22 @@ A [relay](#syslog-relay-optional-multi-vlan) isn't on `syslog_net` and isn't rea
 
 ## Features
 
-- **Live Log Viewer** �?" Browse, filter, and search ingested syslog messages in real-time
-- **Parser Engine** �?" Define regex-based parsers to extract structured fields from raw log lines
-- **Custom Dashboards** �?" Create dashboards filtered by device, severity, or parsed fields
-- **Pin Dashboards** �?" Pin frequently-used dashboards to the sidebar for quick access
-- **Export** �?" Download logs as CSV or HTML reports
-- **Statistics** �?" Timeline charts, severity breakdown, and per-device metrics
-- **Secure Authentication** �?" JWT access tokens (configurable timeout) + refresh tokens (7 days) with rotation, JWT blacklisting on logout
-- **Account Lockout** �?" Automatic lockout after configurable failed login attempts, admin unlock from Admin panel
-- **CSRF Protection** �?" Double-submit cookie pattern on all mutating endpoints
-- **LDAP/AD Integration** �?" Authenticate against Active Directory or OpenLDAP with TLS support
-- **Audit Logging** �?" Track login attempts, lockouts, unlocks, password changes, and admin actions
-- **Rate Limiting** �?" Login endpoint protected against brute-force attacks (Redis-shared in HA mode)
-- **CORS Protection** �?" Configurable allowed origins
-- **Setup Wizard** �?" Guided initial configuration with admin account, database, security keys, and optional LDAP/CORS
-- **Admin Panel** �?" User management, settings, audit log viewer, LDAP connection test
-- **Health Monitoring** �?" Container/Swarm service status and syslog relay liveness in one place (see [Health Monitoring](#health-monitoring))
+- **Live Log Viewer** — Browse, filter, and search ingested syslog messages in real-time
+- **Parser Engine** — Define regex-based parsers to extract structured fields from raw log lines
+- **Custom Dashboards** — Create dashboards filtered by device, severity, or parsed fields
+- **Pin Dashboards** — Pin frequently-used dashboards to the sidebar for quick access
+- **Export** — Download logs as CSV or HTML reports
+- **Statistics** — Timeline charts, severity breakdown, and per-device metrics
+- **Secure Authentication** — JWT access tokens (configurable timeout) + refresh tokens (7 days) with rotation, JWT blacklisting on logout
+- **Account Lockout** — Automatic lockout after configurable failed login attempts, admin unlock from Admin panel
+- **CSRF Protection** — Double-submit cookie pattern on all mutating endpoints
+- **LDAP/AD Integration** — Authenticate against Active Directory or OpenLDAP with TLS support
+- **Audit Logging** — Track login attempts, lockouts, unlocks, password changes, and admin actions
+- **Rate Limiting** — Login endpoint protected against brute-force attacks (Redis-shared in HA mode)
+- **CORS Protection** — Configurable allowed origins
+- **Setup Wizard** — Guided initial configuration with admin account, database, security keys, and optional LDAP/CORS
+- **Admin Panel** — User management, settings, audit log viewer, LDAP connection test
+- **Health Monitoring** — Container/Swarm service status and syslog relay liveness in one place (see [Health Monitoring](#health-monitoring))
 
 ## GUI Configuration Guide
 
