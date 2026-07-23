@@ -128,21 +128,22 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			return
 		}
 
+		var user *db.User
+
 		existing, err := db.GetUserByUsername(database, req.Username)
 		if err == nil {
-			if locked, _ := db.CheckUserLockout(database, existing.ID); locked && existing.IsActive {
+			if locked, _ := db.CheckUserLockout(database, existing.ID); locked {
 				audit.LogAudit(database, existing.ID, req.Username, "login_failed_lockout", c.ClientIP(), "account locked")
 				c.JSON(http.StatusTooManyRequests, gin.H{"error": "Account temporarily locked. Try again later."})
 				return
 			}
-		}
-
-		var user *db.User
-
-		existing, err = db.GetUserByUsername(database, req.Username)
-		if err == nil && existing.IsActive {
-			if err := bcrypt.CompareHashAndPassword([]byte(existing.PasswordHash), []byte(req.Password)); err == nil {
-				user = existing
+			if existing.IsActive {
+				if err := bcrypt.CompareHashAndPassword([]byte(existing.PasswordHash), []byte(req.Password)); err == nil {
+					user = existing
+				}
+			} else {
+				dummyHash := "$2b$14$AAAAAAAAAAAAAAAAAAAAAAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+				bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(req.Password))
 			}
 		}
 
