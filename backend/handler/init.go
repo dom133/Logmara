@@ -41,6 +41,7 @@ type InitRequest struct {
 	EncryptionKey string         `json:"encryption_key" binding:"required,min=16,max=512"`
 	CORSOrigins   string         `json:"cors_origins" binding:"max=1024"`
 	LDAP          struct {
+		Enabled      bool   `json:"enabled"`
 		Server       string `json:"server" binding:"max=256"`
 		Port         int    `json:"port"`
 		UseTLS       bool   `json:"use_tls"`
@@ -49,6 +50,11 @@ type InitRequest struct {
 		BaseDN       string `json:"base_dn" binding:"max=512"`
 		BindDN       string `json:"bind_dn" binding:"max=512"`
 		BindPassword string `json:"bind_password" binding:"max=256"`
+		UserFilter   string `json:"user_filter" binding:"max=256"`
+		UsernameAttr string `json:"username_attr" binding:"max=64"`
+		EmailAttr    string `json:"email_attr" binding:"max=64"`
+		AutoProvision bool  `json:"auto_provision"`
+		DefaultRole  string `json:"default_role" binding:"max=20"`
 	} `json:"ldap"`
 }
 
@@ -110,6 +116,8 @@ func createAdminAndSettings(database *sql.DB, req *InitRequest) *model.AppError 
 		descriptions["cors_origins"] = "Allowed CORS origins"
 	}
 	if req.LDAP.Server != "" {
+		settings["ldap_enabled"] = strconv.FormatBool(req.LDAP.Enabled)
+		descriptions["ldap_enabled"] = "Enable LDAP authentication"
 		settings["ldap_server"] = req.LDAP.Server
 		descriptions["ldap_server"] = "LDAP server address"
 		settings["ldap_port"] = strconv.Itoa(req.LDAP.Port)
@@ -133,6 +141,24 @@ func createAdminAndSettings(database *sql.DB, req *InitRequest) *model.AppError 
 		if req.LDAP.BindPassword != "" {
 			settings["ldap_bind_password"] = req.LDAP.BindPassword
 			descriptions["ldap_bind_password"] = "LDAP bind password"
+		}
+		if req.LDAP.UserFilter != "" {
+			settings["ldap_user_filter"] = req.LDAP.UserFilter
+			descriptions["ldap_user_filter"] = "LDAP user search filter"
+		}
+		if req.LDAP.UsernameAttr != "" {
+			settings["ldap_username_attr"] = req.LDAP.UsernameAttr
+			descriptions["ldap_username_attr"] = "LDAP username attribute"
+		}
+		if req.LDAP.EmailAttr != "" {
+			settings["ldap_email_attr"] = req.LDAP.EmailAttr
+			descriptions["ldap_email_attr"] = "LDAP email attribute"
+		}
+		settings["ldap_auto_provision"] = strconv.FormatBool(req.LDAP.AutoProvision)
+		descriptions["ldap_auto_provision"] = "Auto-provision LDAP users"
+		if req.LDAP.DefaultRole != "" {
+			settings["ldap_default_role"] = req.LDAP.DefaultRole
+			descriptions["ldap_default_role"] = "Default role for auto-provisioned users"
 		}
 	}
 

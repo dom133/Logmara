@@ -530,6 +530,7 @@ export interface InitRequest {
 	encryption_key: string
 	cors_origins?: string
 	ldap?: {
+		enabled: boolean
 		server: string
 		port: number
 		use_tls: boolean
@@ -538,6 +539,11 @@ export interface InitRequest {
 		base_dn: string
 		bind_dn: string
 		bind_password: string
+		user_filter: string
+		username_attr: string
+		email_attr: string
+		auto_provision: boolean
+		default_role: string
 	}
 }
 
