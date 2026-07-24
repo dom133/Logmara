@@ -6,8 +6,9 @@ import {
   getAlerts, createAlert, updateAlert, deleteAlert, Alert, AlertRequest, AlertRuleType, FieldConditionOperator,
   getNotificationChannels, createNotificationChannel, updateNotificationChannel, deleteNotificationChannel, testNotificationChannel,
   NotificationChannel, NotificationChannelRequest, NotificationChannelType,
-  getNotificationHistory, clearNotificationHistory, NotificationLogEntry, TriggerLogSnapshot,
+  getNotificationHistory, clearNotificationHistory, NotificationLogEntry, TriggerLogSnapshot, AuditLogRef,
   getDevices, DeviceStats, resolveDeviceDisplayName, getParsers, Parser, getParsedFields, ParsedField,
+  getUsers, User,
 } from '../services/api'
 import { useAuth } from '../services/auth'
 import { onLiveNotification } from '../services/notificationEvents'
@@ -19,7 +20,7 @@ const { Title, Text } = Typography
 const ruleTypeLabels: Record<AlertRuleType, string> = {
   log_threshold: 'Log threshold',
   device_silence: 'Device silence',
-  config_change: 'Config change',
+  audit_log: 'Audit log',
   relay_cert_expiring: 'Syslog relay certificate expiring',
 }
 
@@ -39,7 +40,7 @@ const operatorLabels: Record<FieldConditionOperator, string> = {
   regex: 'Regex',
 }
 
-function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
+function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boolean; active: boolean }) {
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [channels, setChannels] = useState<NotificationChannel[]>([])
   const [devices, setDevices] = useState<DeviceStats[]>([])
@@ -176,7 +177,7 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
         if (r.rule_type === 'relay_cert_expiring') {
           return `warn ${r.threshold || 30} day(s) before a relay certificate expires`
         }
-        return r.audit_action_filter ? `action = ${r.audit_action_filter}` : 'any config change'
+        return r.audit_action_filter ? `action = ${r.audit_action_filter}` : 'any audit action'
       },
     },
     {
@@ -202,7 +203,7 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
         {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Alert Rule</Button>}
       </div>
-      <Table dataSource={alerts} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
+      <Table dataSource={isAdmin ? alerts : alerts.filter(a => !['audit_log', 'relay_cert_expiring'].includes(a.rule_type))} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
 
       <Modal
         title={editing ? 'Edit Alert Rule' : 'New Alert Rule'}
@@ -219,7 +220,11 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
             <Input.TextArea rows={2} />
           </Form.Item>
           <Form.Item name="rule_type" label="Rule Type" rules={[{ required: true }]}>
-            <Select options={Object.entries(ruleTypeLabels).map(([value, label]) => ({ value, label }))} />
+            <Select
+              options={Object.entries(ruleTypeLabels)
+                .filter(([key]) => isAdmin || !['audit_log', 'relay_cert_expiring'].includes(key))
+                .map(([value, label]) => ({ value, label }))}
+            />
           </Form.Item>
 
           {(ruleType === 'log_threshold' || ruleType === 'device_silence') && (
@@ -295,9 +300,44 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
             </Form.Item>
           )}
 
-          {ruleType === 'config_change' && (
-            <Form.Item name="audit_action_filter" label="Action Filter" tooltip="e.g. settings_updated, user_created - leave empty to match any admin action">
-              <Input placeholder="settings_updated" />
+          {ruleType === 'audit_log' && (
+            <Form.Item name="audit_action_filter" label="Action Filter" tooltip="Leave empty to match any audit action">
+              <Select placeholder="Select an audit action (or leave empty for all)" allowClear>
+                <Select.OptGroup label="Authentication">
+                  <Select.Option value="login_success">login_success</Select.Option>
+                  <Select.Option value="login_failed">login_failed</Select.Option>
+                  <Select.Option value="login_failed_lockout">login_failed_lockout</Select.Option>
+                  <Select.Option value="login_failed_inactive">login_failed_inactive</Select.Option>
+                  <Select.Option value="refresh_success">refresh_success</Select.Option>
+                  <Select.Option value="refresh_failed">refresh_failed</Select.Option>
+                  <Select.Option value="refresh_race_recovered">refresh_race_recovered</Select.Option>
+                  <Select.Option value="password_changed">password_changed</Select.Option>
+                </Select.OptGroup>
+                <Select.OptGroup label="User Management">
+                  <Select.Option value="user_created">user_created</Select.Option>
+                  <Select.Option value="user_updated">user_updated</Select.Option>
+                  <Select.Option value="user_deleted">user_deleted</Select.Option>
+                  <Select.Option value="password_reset_by_admin">password_reset_by_admin</Select.Option>
+                  <Select.Option value="user_unlocked">user_unlocked</Select.Option>
+                </Select.OptGroup>
+                <Select.OptGroup label="Settings">
+                  <Select.Option value="settings_updated">settings_updated</Select.Option>
+                  <Select.Option value="logs_purged">logs_purged</Select.Option>
+                </Select.OptGroup>
+                <Select.OptGroup label="SSL/TLS">
+                  <Select.Option value="ssl_cert_uploaded">ssl_cert_uploaded</Select.Option>
+                </Select.OptGroup>
+                <Select.OptGroup label="Relay">
+                  <Select.Option value="relay_certificate_issued">relay_certificate_issued</Select.Option>
+                  <Select.Option value="relay_certificate_revoked">relay_certificate_revoked</Select.Option>
+                  <Select.Option value="relay_whitelist_added">relay_whitelist_added</Select.Option>
+                  <Select.Option value="relay_whitelist_removed">relay_whitelist_removed</Select.Option>
+                </Select.OptGroup>
+                <Select.OptGroup label="System">
+                  <Select.Option value="slow_query">slow_query</Select.Option>
+                  <Select.Option value="bulk_operation">bulk_operation</Select.Option>
+                </Select.OptGroup>
+              </Select>
             </Form.Item>
           )}
 
@@ -326,7 +366,8 @@ function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
 
 function ChannelsTab({ canEdit }: { canEdit: boolean }) {
   const [channels, setChannels] = useState<NotificationChannel[]>([])
-  const [loading, setLoading] = useState(true)
+  const [users, setUsers] = useState<User[]>([])
+  const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<NotificationChannel | null>(null)
   const [testingId, setTestingId] = useState<number | null>(null)
@@ -336,7 +377,9 @@ function ChannelsTab({ canEdit }: { canEdit: boolean }) {
   const loadData = async () => {
     setLoading(true)
     try {
-      setChannels(await getNotificationChannels())
+      const [channelsData, usersData] = await Promise.all([getNotificationChannels(), getUsers()])
+      setChannels(channelsData)
+      setUsers(usersData)
     } catch {
       message.error('Failed to load notification channels')
     } finally {
@@ -353,7 +396,7 @@ function ChannelsTab({ canEdit }: { canEdit: boolean }) {
     setModalOpen(true)
   }
 
-  const openEdit = (c: NotificationChannel) => {
+const openEdit = (c: NotificationChannel) => {
     setEditing(c)
     form.resetFields()
     form.setFieldsValue({
@@ -363,6 +406,7 @@ function ChannelsTab({ canEdit }: { canEdit: boolean }) {
       to: (c.config?.to as string[] | undefined) || [],
       url: c.config?.url as string | undefined,
       webhook_url: c.config?.webhook_url as string | undefined,
+      user_ids: (c.config?.user_ids as number[] | undefined) || [],
     })
     setModalOpen(true)
   }
@@ -373,6 +417,8 @@ function ChannelsTab({ canEdit }: { canEdit: boolean }) {
     if (values.type === 'email') config.to = values.to || []
     if (values.type === 'webhook') config.url = values.url
     if (values.type === 'slack' || values.type === 'teams') config.webhook_url = values.webhook_url
+    if (values.type === 'in_app' || values.type === 'push') config.user_ids = values.user_ids || []
+    if (values.type === 'in_app' || values.type === 'push') config.user_ids = values.user_ids || []
 
     const req: NotificationChannelRequest = {
       name: values.name,
@@ -456,7 +502,10 @@ function ChannelsTab({ canEdit }: { canEdit: boolean }) {
             <Input />
           </Form.Item>
           <Form.Item name="type" label="Type" rules={[{ required: true }]}>
-            <Select options={Object.entries(channelTypeLabels).map(([value, label]) => ({ value, label }))} disabled={!!editing} />
+            <Select
+              options={Object.entries(channelTypeLabels).map(([value, label]) => ({ value, label }))}
+              disabled={!!editing}
+            />
           </Form.Item>
 
           {channelType === 'email' && (
@@ -480,10 +529,20 @@ function ChannelsTab({ canEdit }: { canEdit: boolean }) {
             </Form.Item>
           )}
           {channelType === 'in_app' && (
-            <Text type="secondary">Delivers to the notification bell for every signed-in user - no further configuration needed.</Text>
+            <>
+              <Form.Item name="user_ids" label="Target Users" tooltip="Leave empty to broadcast to all users">
+                <Select mode="multiple" placeholder="Select users or leave empty for all" options={users.map(u => ({ value: u.id, label: u.username }))} />
+              </Form.Item>
+              <Text type="secondary">Delivers to the notification bell for selected users (or all if empty).</Text>
+            </>
           )}
           {channelType === 'push' && (
-            <Text type="secondary">Delivers a browser push notification to every device subscribed via the bell menu's "Enable push notifications" toggle - no further configuration needed.</Text>
+            <>
+              <Form.Item name="user_ids" label="Target Users" tooltip="Leave empty to broadcast to all users">
+                <Select mode="multiple" placeholder="Select users or leave empty for all" options={users.map(u => ({ value: u.id, label: u.username }))} />
+              </Form.Item>
+              <Text type="secondary">Delivers a browser push notification to selected users (or all if empty).</Text>
+            </>
           )}
 
           <Form.Item name="enabled" label="Enabled" valuePropName="checked">
@@ -511,8 +570,10 @@ interface HistoryGroup {
   key: string
   alertName: string
   alertId?: number
+  ruleType: string
   createdAt: string
   triggerLog?: TriggerLogSnapshot
+  auditLogRef?: AuditLogRef
   matchedConditions?: string[]
   channels: NotificationLogEntry[]
 }
@@ -532,8 +593,10 @@ function groupHistoryEntries(entries: NotificationLogEntry[]): HistoryGroup[] {
         key,
         alertName: e.alert_name,
         alertId: e.alert_id,
+        ruleType: e.rule_type,
         createdAt: e.created_at,
         triggerLog: e.trigger_log,
+        auditLogRef: e.audit_log_ref,
         matchedConditions: e.matched_conditions,
         channels: [e],
       })
@@ -555,7 +618,7 @@ function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmi
 
   useEffect(() => { loadData() }, [])
 
-  const groups = groupHistoryEntries(entries)
+  const groups = groupHistoryEntries(entries).filter(g => isAdmin || !['audit_log', 'relay_cert_expiring'].includes(g.ruleType))
 
   // A new notification means a new row in notification_log - refresh the
   // list live while this tab is the one actually showing.
@@ -693,10 +756,31 @@ function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmi
                     </Descriptions.Item>
                   </Descriptions>
                 ) : (
-                  <Empty description="No log entry associated with this notification (e.g. a config-change alert)" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                  <Empty description="No log entry associated with this notification (e.g. an audit-log alert)" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 )}
               </div>
             </div>
+
+            {viewing.auditLogRef && (
+              <div>
+                <Text strong>Audit log context</Text>
+                <div style={{ marginTop: 8 }}>
+                  <Descriptions column={1} bordered size="small">
+                    <Descriptions.Item label="Time">{new Date(viewing.auditLogRef.timestamp).toLocaleString()}</Descriptions.Item>
+                    <Descriptions.Item label="Action">{viewing.auditLogRef.action}</Descriptions.Item>
+                    <Descriptions.Item label="User">{viewing.auditLogRef.username}</Descriptions.Item>
+                    <Descriptions.Item label="IP">{viewing.auditLogRef.user_ip}</Descriptions.Item>
+                    {viewing.auditLogRef.details && (
+                      <Descriptions.Item label="Details">
+                        <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable>
+                          {viewing.auditLogRef.details}
+                        </Typography.Paragraph>
+                      </Descriptions.Item>
+                    )}
+                  </Descriptions>
+                </div>
+              </div>
+            )}
 
             <div>
               <Text strong>Conditions met</Text>
@@ -742,7 +826,7 @@ export default function AlertsPage() {
   const [focusInAppId, setFocusInAppId] = useState<number | undefined>(initialFocusID)
 
   const items = [
-    { key: 'rules', label: 'Alert Rules', children: <RulesTab canEdit={canEdit} active={activeTab === 'rules'} /> },
+    { key: 'rules', label: 'Alert Rules', children: <RulesTab canEdit={canEdit} isAdmin={isAdmin} active={activeTab === 'rules'} /> },
     { key: 'channels', label: 'Notification Channels', children: <ChannelsTab canEdit={isAdmin} /> },
     {
       key: 'history', label: 'History',

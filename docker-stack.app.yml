@@ -147,15 +147,19 @@ services:
     image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-api:${TAG:-latest}
     environment:
       TZ: UTC
-      # api reads these directly via os.Getenv (backend/auth/auth.go:29 etc.)
-      # — unlike the spilo Postgres image, this backend has no _FILE/Docker-
-      # secrets convention today (Phase 2 backlog item), so these stay plain
-      # env vars, sourced from your shell/.env at `docker stack deploy` time,
-      # same as docker-compose.yml.
+      # api reads these from the environment, sourced from your shell/.env at
+      # `docker stack deploy` time, same as docker-compose.yml. JWT_SECRET and
+      # ENCRYPTION_KEY also support the *_FILE convention (e.g.
+      # JWT_SECRET_FILE=/run/secrets/jwt_secret) if you'd rather mount them as
+      # Docker secrets than pass them as plain env vars - see util.SecretFromEnv.
       # POSTGRES_PASSWORD must match the pg_app_password secret content used
       # by docker-stack.postgres.yml (see prerequisites comment above).
       DATABASE_URL: postgres://${POSTGRES_USER:-syslog}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, matching the pg_app_password secret}@haproxy:5000/${POSTGRES_DB:-syslog_db}?sslmode=disable
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET before deploying}
+      # Never stored in the database - a DB dump alone must not be able to
+      # decrypt stored SMTP/LDAP credentials. Generate with
+      # `openssl rand -base64 48`. See README "Security keys".
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY before deploying}
       PORT: "8080"
       LOG_FILE_PATH: /data/logs.jsonl
       # tasks.frontend (not plain "frontend") resolves to every frontend

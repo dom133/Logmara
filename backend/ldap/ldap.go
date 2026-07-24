@@ -111,7 +111,10 @@ func Authenticate(cfg *Config, username, password string) (map[string]string, er
 			return nil, err
 		}
 
-		filter := fmt.Sprintf(cfg.UserFilter, username)
+		// Escape the username before interpolating it into the search filter,
+		// otherwise LDAP metacharacters (*, (, ), \, NUL) in a login let an
+		// attacker alter the filter's meaning (LDAP injection).
+		filter := fmt.Sprintf(cfg.UserFilter, ldaplib.EscapeFilter(username))
 		searchReq := ldaplib.NewSearchRequest(
 			cfg.BaseDN,
 			ldaplib.ScopeWholeSubtree, ldaplib.NeverDerefAliases, 0, 0, false,

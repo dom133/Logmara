@@ -18,15 +18,17 @@ func CheckInitialized(database *sql.DB) gin.HandlerFunc {
 		starting := db.IsAppStarting()
 		if starting {
 			c.JSON(http.StatusOK, gin.H{
-				"initialized": false,
-				"starting":    true,
+				"initialized":     false,
+				"starting":        true,
+				"keys_configured": KeysConfigured(),
 			})
 			return
 		}
 		val := db.GetSetting(database, "is_initialized", "false")
 		c.JSON(http.StatusOK, gin.H{
-			"initialized": val == "true",
-			"starting":    false,
+			"initialized":     val == "true",
+			"starting":        false,
+			"keys_configured": KeysConfigured(),
 		})
 	}
 }
@@ -37,14 +39,25 @@ func CheckInitialized(database *sql.DB) gin.HandlerFunc {
 func CheckInitializedStandalone() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"initialized": false,
-			"starting":    false,
+			"initialized":     false,
+			"starting":        false,
+			"keys_configured": KeysConfigured(),
 		})
 	}
 }
 
-func GetDbConfig() gin.HandlerFunc {
+// GetDbConfig backs the setup wizard's Database step. It exposes the
+// (password-free) connection details derived from DATABASE_URL so the wizard
+// can pre-fill the form. Pass a live *sql.DB to gate it once the app is
+// initialized - after setup there's no legitimate caller, and leaving it open
+// would leak the DB host/name/user to unauthenticated clients. Pass nil in the
+// pre-database wizard server, where no such check is possible or needed.
+func GetDbConfig(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if database != nil && db.GetSetting(database, "is_initialized", "false") == "true" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Application already initialized"})
+			return
+		}
 		dsn := os.Getenv("DATABASE_URL")
 		if dsn == "" {
 			c.JSON(http.StatusOK, gin.H{

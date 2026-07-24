@@ -13,6 +13,7 @@ import (
 	webpush "github.com/SherClockHolmes/webpush-go"
 
 	"syslytics/db"
+	"syslytics/model"
 )
 
 // vapidSubject identifies this server to push services per RFC 8292. It
@@ -102,7 +103,7 @@ const maxPushErrorsKept = 3
 // subscription was attempted (no subscriptions registered, VAPID key
 // generation failed, etc.) - per-subscription failures are reported via the
 // returned pushResult instead.
-func dispatchPush(database *sql.DB, payload Payload) (pushResult, error) {
+func dispatchPush(database *sql.DB, payload Payload, targetUserIds []int64) (pushResult, error) {
 	subs, err := db.GetAllPushSubscriptions(database)
 	if err != nil {
 		return pushResult{}, fmt.Errorf("load push subscriptions: %w", err)
@@ -110,6 +111,28 @@ func dispatchPush(database *sql.DB, payload Payload) (pushResult, error) {
 	if len(subs) == 0 {
 		return pushResult{}, fmt.Errorf("no browsers are subscribed to push notifications")
 	}
+
+	adminOnly := payload.AlertRuleType == "audit_log" || payload.AlertRuleType == "relay_cert_expiring"
+	filtered := make([]model.PushSubscription, 0, len(subs))
+	for _, s := range subs {
+		if adminOnly && !db.IsUserAdmin(database, s.UserID) {
+			continue
+		}
+		if len(targetUserIds) > 0 {
+			found := false
+			for _, uid := range targetUserIds {
+				if uid == s.UserID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+		filtered = append(filtered, s)
+	}
+	subs = filtered
 
 	publicKey, privateKey, err := db.GetOrCreateVAPIDKeys(database)
 	if err != nil {

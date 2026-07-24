@@ -313,6 +313,9 @@ func Migrate(db *sql.DB) error {
 			created_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions (user_id)`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='notification_log' AND column_name='audit_log_ref') THEN ALTER TABLE notification_log ADD COLUMN audit_log_ref JSONB; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='notification_log' AND column_name='rule_type') THEN ALTER TABLE notification_log ADD COLUMN rule_type VARCHAR(50) DEFAULT ''; END IF; END $$`,
+		`UPDATE alerts SET rule_type = 'audit_log' WHERE rule_type = 'config_change'`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='fire_on_every_match') THEN ALTER TABLE alerts ADD COLUMN fire_on_every_match BOOLEAN NOT NULL DEFAULT FALSE; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='field_conditions_logic') THEN ALTER TABLE alerts ADD COLUMN field_conditions_logic VARCHAR(10) NOT NULL DEFAULT 'and'; END IF; END $$`,
 		`CREATE TABLE IF NOT EXISTS relay_certificates (
@@ -334,6 +337,8 @@ func Migrate(db *sql.DB) error {
 			created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
 		)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='relay_certificates' AND column_name='expires_at') THEN ALTER TABLE relay_certificates ADD COLUMN expires_at TIMESTAMPTZ; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='in_app_notifications' AND column_name='alert_rule_type') THEN ALTER TABLE in_app_notifications ADD COLUMN alert_rule_type VARCHAR(50) DEFAULT ''; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='in_app_notifications' AND column_name='target_user_ids') THEN ALTER TABLE in_app_notifications ADD COLUMN target_user_ids INT[]; END IF; END $$`,
 	}
 
 	for _, stmt := range statements {
@@ -751,13 +756,11 @@ func GetSetting(db *sql.DB, key, defaultValue string) string {
 		return defaultValue
 	}
 	if (key == "ldap_bind_password" || key == "smtp_password") && val != "" {
-		encKey := os.Getenv("ENCRYPTION_KEY")
-		if encKey == "" {
-			encKey = getSettingRaw(db, "encryption_key")
-		}
-		if encKey != "" {
-			decrypted, err := util.Decrypt(encKey, val)
-			if err == nil {
+		// Encryption key comes only from the environment (ENCRYPTION_KEY /
+		// ENCRYPTION_KEY_FILE), never the database - see util.SecretFromEnv and
+		// the "secrets at rest" note in README.
+		if encKey := util.SecretFromEnv("ENCRYPTION_KEY"); encKey != "" {
+			if decrypted, err := util.Decrypt(encKey, val); err == nil {
 				return decrypted
 			}
 		}
@@ -768,13 +771,8 @@ func GetSetting(db *sql.DB, key, defaultValue string) string {
 // UpdateSetting updates a setting value, encrypting sensitive fields
 func UpdateSetting(db *sql.DB, key, value string) error {
 	if (key == "ldap_bind_password" || key == "smtp_password") && value != "" {
-		encKey := os.Getenv("ENCRYPTION_KEY")
-		if encKey == "" {
-			encKey = getSettingRaw(db, "encryption_key")
-		}
-		if encKey != "" {
-			encrypted, err := util.Encrypt(encKey, value)
-			if err == nil {
+		if encKey := util.SecretFromEnv("ENCRYPTION_KEY"); encKey != "" {
+			if encrypted, err := util.Encrypt(encKey, value); err == nil {
 				value = encrypted
 			}
 		}
@@ -1200,6 +1198,24 @@ func GetUserByUsername(db *sql.DB, username string) (*User, error) {
 	return &u, nil
 }
 
+func GetUserByID(db *sql.DB, id int64) (*User, error) {
+	var u User
+	err := db.QueryRow(
+		"SELECT id, username, email, password_hash, role, is_admin, is_active, created_at, last_login_at FROM users WHERE id = $1",
+		id,
+	).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func IsUserAdmin(db *sql.DB, userID int64) bool {
+	var isAdmin bool
+	err := db.QueryRow("SELECT is_admin FROM users WHERE id = $1", userID).Scan(&isAdmin)
+	return err == nil && isAdmin
+}
+
 func RefreshMaterializedViews(db *sql.DB) {
 	slog.Info("refreshing materialized views")
 	_, err1 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_summary")
@@ -1210,4 +1226,79 @@ func RefreshMaterializedViews(db *sql.DB) {
 		slog.Error("materialized view refresh failed", "err1", err1, "err2", err2, "err3", err3, "err4", err4)
 	}
 	slog.Info("materialized views refreshed")
+}
+
+type AuditLogFilter struct {
+	Username string
+	Action   string
+	From     string
+	To       string
+	Limit    int
+	Offset   int
+}
+
+func GetAuditLogs(db *sql.DB, filter AuditLogFilter) ([]AuditLog, int64, error) {
+	whereConditions := []string{}
+	args := []interface{}{}
+	argIdx := 1
+
+	if filter.Username != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("username ILIKE $%d", argIdx))
+		args = append(args, "%"+filter.Username+"%")
+		argIdx++
+	}
+	if filter.Action != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("action = $%d", argIdx))
+		args = append(args, filter.Action)
+		argIdx++
+	}
+	if filter.From != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("created_at >= $%d", argIdx))
+		args = append(args, filter.From)
+		argIdx++
+	}
+	if filter.To != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("created_at <= $%d", argIdx))
+		args = append(args, filter.To)
+		argIdx++
+	}
+
+	whereClause := ""
+	if len(whereConditions) > 0 {
+		whereClause = "WHERE " + strings.Join(whereConditions, " AND ")
+	}
+
+	countArgs := make([]interface{}, len(args))
+	copy(countArgs, args)
+	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM audit_log %s", whereClause)
+	var total int64
+	if err := db.QueryRow(countSQL, countArgs...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	queryArgs := make([]interface{}, len(args)+2)
+	copy(queryArgs, args)
+	queryArgs[len(args)] = filter.Limit
+	queryArgs[len(args)+1] = filter.Offset
+	querySQL := fmt.Sprintf(
+		"SELECT id, user_id, username, action, ip, details, created_at FROM audit_log %s ORDER BY created_at DESC LIMIT $%d OFFSET $%d",
+		whereClause, argIdx, argIdx+1,
+	)
+
+	rows, err := db.Query(querySQL, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var logs []AuditLog
+	for rows.Next() {
+		var a AuditLog
+		if err := rows.Scan(&a.ID, &a.UserID, &a.Username, &a.Action, &a.IP, &a.Details, &a.CreatedAt); err != nil {
+			continue
+		}
+		logs = append(logs, a)
+	}
+
+	return logs, total, rows.Err()
 }

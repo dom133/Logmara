@@ -16,6 +16,14 @@ import (
 	"github.com/lib/pq"
 )
 
+// filteredQueryTimeout bounds queries that carry user-supplied field filters
+// (notably the "regex" operator, which runs as Postgres' backtracking `~` and
+// could otherwise be driven into catastrophic runtime by a crafted pattern).
+// lib/pq propagates context cancellation to the server as a query-cancel
+// request, so this caps the actual database-side work, not just the HTTP wait.
+// Deliberately generous so legitimate large scans still complete.
+const filteredQueryTimeout = 20 * time.Second
+
 func timedQuery(name string, fn func() error) error {
 	start := time.Now()
 	err := fn()
@@ -38,6 +46,7 @@ type LogFilterOptions struct {
 	Devices         []string
 	HasFields       bool
 	RequiredParsers []string
+	FieldFilters    []model.FieldFilter
 }
 
 func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) {
@@ -113,7 +122,127 @@ func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) 
 		idx++
 	}
 
+	// Dynamic field filters for parsed_fields and static columns
+	if len(opts.FieldFilters) > 0 {
+		staticFields := map[string]bool{
+			"hostname": true, "fromhost_ip": true, "severity": true,
+			"app_name": true, "facility": true, "process_id": true,
+			"msg_id": true, "message": true, "raw_message": true,
+		}
+		for _, ff := range opts.FieldFilters {
+			fieldCol := ff.Field
+			if !staticFields[fieldCol] {
+				fieldCol = fmt.Sprintf("parsed_fields->>'%s'", strings.ReplaceAll(ff.Field, "'", "''"))
+			}
+			op := normalizeOperator(ff.Operator)
+			switch op {
+			case "eq":
+				if len(ff.Values) == 0 { continue }
+				clauses = append(clauses, fmt.Sprintf("%s = $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			case "neq":
+				if len(ff.Values) == 0 { continue }
+				clauses = append(clauses, fmt.Sprintf("%s <> $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			case "contains":
+				if len(ff.Values) == 0 { continue }
+				clauses = append(clauses, fmt.Sprintf("%s ILIKE $%d", fieldCol, idx))
+				args = append(args, "%"+ff.Values[0]+"%")
+				idx++
+			case "in":
+				if len(ff.Values) == 0 { continue }
+				placeholders := make([]string, len(ff.Values))
+				for i, v := range ff.Values {
+					placeholders[i] = fmt.Sprintf("$%d", idx)
+					args = append(args, v)
+					idx++
+				}
+				clauses = append(clauses, fmt.Sprintf("%s IN (%s)", fieldCol, strings.Join(placeholders, ", ")))
+			case "notin":
+				if len(ff.Values) == 0 { continue }
+				placeholders := make([]string, len(ff.Values))
+				for i, v := range ff.Values {
+					placeholders[i] = fmt.Sprintf("$%d", idx)
+					args = append(args, v)
+					idx++
+				}
+				clauses = append(clauses, fmt.Sprintf("%s NOT IN (%s)", fieldCol, strings.Join(placeholders, ", ")))
+			case "startswith":
+				if len(ff.Values) == 0 { continue }
+				clauses = append(clauses, fmt.Sprintf("%s ILIKE $%d", fieldCol, idx))
+				args = append(args, ff.Values[0]+"%")
+				idx++
+			case "endswith":
+				if len(ff.Values) == 0 { continue }
+				clauses = append(clauses, fmt.Sprintf("%s ILIKE $%d", fieldCol, idx))
+				args = append(args, "%"+ff.Values[0])
+				idx++
+			case "gt":
+				if len(ff.Values) == 0 { continue }
+				clauses = append(clauses, fmt.Sprintf("%s > $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			case "gte":
+				if len(ff.Values) == 0 { continue }
+				clauses = append(clauses, fmt.Sprintf("%s >= $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			case "lt":
+				if len(ff.Values) == 0 { continue }
+				clauses = append(clauses, fmt.Sprintf("%s < $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			case "lte":
+				if len(ff.Values) == 0 { continue }
+				clauses = append(clauses, fmt.Sprintf("%s <= $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			case "not_contains":
+				if len(ff.Values) == 0 { continue }
+				clauses = append(clauses, fmt.Sprintf("%s NOT ILIKE $%d", fieldCol, idx))
+				args = append(args, "%"+ff.Values[0]+"%")
+				idx++
+			case "regex":
+				if len(ff.Values) == 0 { continue }
+				clauses = append(clauses, fmt.Sprintf("%s ~ $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			case "is_empty":
+				clauses = append(clauses, fmt.Sprintf("(%s IS NULL OR %s = '')", fieldCol, fieldCol))
+			case "is_not_empty":
+				clauses = append(clauses, fmt.Sprintf("(%s IS NOT NULL AND %s != '')", fieldCol, fieldCol))
+			default:
+				if len(ff.Values) == 0 {
+					continue
+				}
+				clauses = append(clauses, fmt.Sprintf("%s = $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			}
+		}
+	}
+
 	return clauses, args, idx
+}
+
+func normalizeOperator(op string) string {
+	if op == "" {
+		return "eq"
+	}
+	switch op {
+	case "not_in":
+		return "notin"
+	case "starts_with":
+		return "startswith"
+	case "ends_with":
+		return "endswith"
+	case "not_contains":
+		return "not_contains"
+	default:
+		return op
+	}
 }
 
 func buildWhereSQL(clauses []string) string {
@@ -210,6 +339,18 @@ func parsePagination(c *gin.Context, defaultLimit, maxLimit int) (int, int) {
 	offsetInt, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	if limitInt <= 0 || limitInt > maxLimit {
 		limitInt = defaultLimit
+	}
+	return limitInt, offsetInt
+}
+
+func parsePaginationFromStrings(limitStr, offsetStr string, defaultLimit, maxLimit int) (int, int) {
+	limitInt, _ := strconv.Atoi(limitStr)
+	offsetInt, _ := strconv.Atoi(offsetStr)
+	if limitInt <= 0 || limitInt > maxLimit {
+		limitInt = defaultLimit
+	}
+	if offsetInt < 0 {
+		offsetInt = 0
 	}
 	return limitInt, offsetInt
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	"syslytics/db"
@@ -128,13 +127,17 @@ func TestNotificationChannel(database *sql.DB, hub *notifyhub.Hub) gin.HandlerFu
 	}
 }
 
+type NotificationHistoryRequest struct {
+	Limit int `json:"limit"`
+}
+
 func GetNotificationHistory(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		limit := DefaultAdminLimit
-		if v := c.Query("limit"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil {
-				limit = n
-			}
+		var req NotificationHistoryRequest
+		_ = c.ShouldBindJSON(&req)
+		limit := req.Limit
+		if limit <= 0 {
+			limit = DefaultAdminLimit
 		}
 
 		entries, err := db.GetNotificationHistory(database, limit)
@@ -166,18 +169,19 @@ func ClearNotificationHistory(database *sql.DB) gin.HandlerFunc {
 func GetNotifications(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetInt64("user_id")
+		isAdmin := db.IsUserAdmin(database, userID)
 
 		lastRead, err := db.GetLastReadID(database, userID)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to load notifications", err))
 			return
 		}
-		count, lastID, err := db.GetUnreadNotificationCount(database, userID)
+		count, lastID, err := db.GetUnreadNotificationCount(database, userID, isAdmin)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to load notifications", err))
 			return
 		}
-		items, err := db.GetInAppNotifications(database, lastRead, 20)
+		items, err := db.GetInAppNotifications(database, lastRead, 20, isAdmin, userID)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to load notifications", err))
 			return
@@ -218,7 +222,7 @@ func MarkNotificationsRead(database *sql.DB) gin.HandlerFunc {
 // connection open and pushes each new in-app notification as it's
 // published, via notifyhub.Hub (which itself fans out over Redis pub/sub
 // when running with multiple api replicas).
-func StreamNotifications(hub *notifyhub.Hub) gin.HandlerFunc {
+func StreamNotifications(hub *notifyhub.Hub, database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		flusher, ok := c.Writer.(http.Flusher)
 		if !ok {
@@ -233,6 +237,9 @@ func StreamNotifications(hub *notifyhub.Hub) gin.HandlerFunc {
 		// prematurely closed connection". Disable it for just this
 		// connection; every other route keeps the 15s limit.
 		_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
+
+		userID := c.GetInt64("user_id")
+		isAdmin := db.IsUserAdmin(database, userID)
 
 		c.Writer.Header().Set("Content-Type", "text/event-stream")
 		c.Writer.Header().Set("Cache-Control", "no-cache")
@@ -252,6 +259,21 @@ func StreamNotifications(hub *notifyhub.Hub) gin.HandlerFunc {
 			case <-c.Request.Context().Done():
 				return
 			case n := <-ch:
+				if !isAdmin && (n.AlertRuleType == "audit_log" || n.AlertRuleType == "relay_cert_expiring") {
+					continue
+				}
+				if len(n.TargetUserIds) > 0 {
+					found := false
+					for _, uid := range n.TargetUserIds {
+						if uid == userID {
+							found = true
+							break
+						}
+					}
+					if !found {
+						continue
+					}
+				}
 				b, err := json.Marshal(n)
 				if err != nil {
 					continue

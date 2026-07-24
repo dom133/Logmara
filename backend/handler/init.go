@@ -36,10 +36,8 @@ type InitRequest struct {
 	// Database is only required when the server has no DATABASE_URL of its
 	// own (see InitializeStandalone) - when a connection is already
 	// established via env, this is ignored.
-	Database      DatabaseConfig `json:"database"`
-	JWTSecret     string         `json:"jwt_secret" binding:"required,min=16,max=512"`
-	EncryptionKey string         `json:"encryption_key" binding:"required,min=16,max=512"`
-	CORSOrigins   string         `json:"cors_origins" binding:"max=1024"`
+	Database    DatabaseConfig `json:"database"`
+	CORSOrigins string         `json:"cors_origins" binding:"max=1024"`
 	LDAP          struct {
 		Enabled      bool   `json:"enabled"`
 		Server       string `json:"server" binding:"max=256"`
@@ -70,7 +68,37 @@ func bindInitRequest(c *gin.Context) (*InitRequest, bool) {
 		middleware.HandleError(c, model.NewBadRequest("Password does not meet requirements", err))
 		return nil, false
 	}
+	// The JWT and encryption keys are configured via the environment
+	// (never stored in the database - see the README "Security keys"
+	// section). Refuse to initialize until both are present, otherwise the
+	// admin account would be created against a server that can't sign tokens
+	// or encrypt secrets.
+	if err := keysConfiguredErr(); err != nil {
+		middleware.HandleError(c, model.NewBadRequest(err.Error(), nil))
+		return nil, false
+	}
 	return &req, true
+}
+
+// keysConfiguredErr reports whether JWT_SECRET and ENCRYPTION_KEY are both
+// present and valid in the environment, returning a user-facing error message
+// (with remediation) if not. Used by the setup wizard's pre-flight check and,
+// via KeysConfigured, by the status endpoint that drives the wizard UI.
+func keysConfiguredErr() error {
+	if _, err := auth.ResolveJWTSecret(); err != nil {
+		return err
+	}
+	if util.SecretFromEnv("ENCRYPTION_KEY") == "" {
+		return fmt.Errorf("ENCRYPTION_KEY is not set; generate one (e.g. `openssl rand -base64 48`) and provide it via the ENCRYPTION_KEY env var or ENCRYPTION_KEY_FILE - see README")
+	}
+	return nil
+}
+
+// KeysConfigured reports whether both security keys are available in the
+// environment. The status endpoint exposes this so the setup wizard can hide
+// (or, when missing, block) the key configuration step accordingly.
+func KeysConfigured() bool {
+	return keysConfiguredErr() == nil
 }
 
 // createAdminAndSettings creates the initial admin user and persists the
@@ -101,15 +129,14 @@ func createAdminAndSettings(database *sql.DB, req *InitRequest) *model.AppError 
 		return model.NewInternal("Could not create admin user", err)
 	}
 
+	// jwt_secret and encryption_key are deliberately NOT stored here - they
+	// live only in the environment (see keysConfiguredErr / util.SecretFromEnv)
+	// so a database dump alone can neither forge tokens nor decrypt secrets.
 	settings := map[string]string{
 		"is_initialized": "true",
-		"jwt_secret":     req.JWTSecret,
-		"encryption_key": req.EncryptionKey,
 	}
 	descriptions := map[string]string{
 		"is_initialized": "Application initialization flag",
-		"jwt_secret":     "JWT signing secret key",
-		"encryption_key": "Encryption key for sensitive data",
 	}
 	if req.CORSOrigins != "" {
 		settings["cors_origins"] = req.CORSOrigins

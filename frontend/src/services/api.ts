@@ -131,13 +131,13 @@ export async function getLogsCount(params: {
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {
-  const res = await api.get('/stats/dashboard')
+  const res = await api.post('/stats/dashboard', {})
   return (res.data || {}) as DashboardStats
 }
 
 export async function getTimeline(interval = '1h', from?: string, to?: string) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const res = await api.get('/stats/timeline', { params: { interval, from, to, tz } })
+  const res = await api.post('/stats/timeline', { interval, from, to, tz })
   return (res.data?.timeline || []) as TimelinePoint[]
 }
 
@@ -161,13 +161,13 @@ export async function updateDeviceAlias(ip: string, displayName: string) {
 }
 
 export async function getSeverityStats(from?: string, to?: string) {
-  const res = await api.get('/stats/severity', { params: { from, to } })
+  const res = await api.post('/stats/severity', { from, to })
   return (res.data?.stats || []) as Array<{ severity: string; count: number }>
 }
 
 export async function exportCSV(params: Record<string, string>) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const res = await api.get('/export/csv', { params: { ...params, tz }, responseType: 'blob' })
+  const res = await api.post('/export/csv', { ...params, tz }, { responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -178,7 +178,7 @@ export async function exportCSV(params: Record<string, string>) {
 
 export async function exportHTML(params: Record<string, string>) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const res = await api.get('/export/html', { params: { ...params, tz }, responseType: 'blob' })
+  const res = await api.post('/export/html', { ...params, tz }, { responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -189,7 +189,7 @@ export async function exportHTML(params: Record<string, string>) {
 
 export async function exportDashboardCSV(id: number, params: Record<string, string>) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const res = await api.get(`/dashboards/${id}/export/csv`, { params: { ...params, tz }, responseType: 'blob' })
+  const res = await api.post(`/dashboards/${id}/export/csv`, { ...params, tz }, { responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -200,7 +200,7 @@ export async function exportDashboardCSV(id: number, params: Record<string, stri
 
 export async function exportDashboardHTML(id: number, params: Record<string, string>) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const res = await api.get(`/dashboards/${id}/export/html`, { params: { ...params, tz }, responseType: 'blob' })
+  const res = await api.post(`/dashboards/${id}/export/html`, { ...params, tz }, { responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -246,11 +246,18 @@ export interface ParserTestResponse {
 }
 
 // --- Dashboard types ---
+export interface FieldFilter {
+  field: string
+  operator: string
+  values: string[]
+}
+
 export interface DashboardFilters {
   severity: string
   from: string
   to: string
   search: string
+  fieldFilters?: FieldFilter[]
 }
 
 export interface DashboardConfig {
@@ -337,11 +344,11 @@ export async function reparseUnparsed(hostname?: string, from?: string, to?: str
 }
 
 export async function getParsedFields(hostnames?: string[]) {
-  const params: Record<string, string> = {}
+  const body: Record<string, string> = {}
   if (hostnames && hostnames.length > 0) {
-    params.hostnames = hostnames.join(',')
+    body.hostnames = hostnames.join(',')
   }
-  const res = await api.get('/parsers/fields', { params })
+  const res = await api.post('/parsers/fields', body)
   return (res.data || []) as ParsedField[]
 }
 
@@ -379,14 +386,22 @@ export async function deleteDashboard(id: number) {
   return res.data
 }
 
-export async function getDashboardData(id: number, limit = 100, cursor = '', search = '', severity = '', from = '', to = '', sort = 'timestamp_desc', offset = 0, fromHostIp = '') {
-	const res = await api.get(`/dashboards/${id}/data`, { params: { limit, cursor: cursor || undefined, search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined, sort: sort || undefined, offset: (!sortSupportsCursor(sort) && offset) || undefined, fromhost_ip: fromHostIp || undefined } })
+export async function getDashboardData(id: number, limit = 100, cursor = '', search = '', severity = '', from = '', to = '', sort = 'timestamp_desc', offset = 0, fromHostIp = '', fieldFilters?: FieldFilter[]) {
+	const body: Record<string, any> = { limit, cursor: cursor || undefined, search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined, sort: sort || undefined, offset: (!sortSupportsCursor(sort) && offset) || undefined, fromhost_ip: fromHostIp || undefined }
+	if (fieldFilters && fieldFilters.length > 0) {
+		body.field_filters = JSON.stringify(fieldFilters)
+	}
+	const res = await api.post(`/dashboards/${id}/data`, body)
 	const d = res.data || {}
 	return { logs: d.logs || [], has_more: d.has_more || false, next_cursor: d.next_cursor || '', fields: d.fields || [], devices: d.devices || [] } as DashboardDataResponse
 }
 
-export async function getDashboardDataCount(id: number, search = '', severity = '', from = '', to = '', fromHostIp = ''): Promise<number> {
-	const res = await api.get(`/dashboards/${id}/count`, { params: { search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined, fromhost_ip: fromHostIp || undefined } })
+export async function getDashboardDataCount(id: number, search = '', severity = '', from = '', to = '', fromHostIp = '', fieldFilters?: FieldFilter[]): Promise<number> {
+	const body: Record<string, any> = { search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined, fromhost_ip: fromHostIp || undefined }
+	if (fieldFilters && fieldFilters.length > 0) {
+		body.field_filters = JSON.stringify(fieldFilters)
+	}
+	const res = await api.post(`/dashboards/${id}/count`, body)
 	return res.data?.total || 0
 }
 
@@ -445,6 +460,40 @@ export async function unlockUser(id: number) {
 	return res.data
 }
 
+export interface AuditLog {
+	id: number
+	user_id: number | null
+	username: string
+	action: string
+	ip: string | null
+	details: string | null
+	created_at: string
+}
+
+export interface AuditLogsResponse {
+	data: AuditLog[]
+	total: number
+}
+
+export async function getAuditLogs(params: {
+	limit?: number
+	offset?: number
+	username?: string
+	action?: string
+	from?: string
+	to?: string
+}) {
+	const body: Record<string, any> = {}
+	if (params.limit !== undefined) body.limit = params.limit
+	if (params.offset !== undefined) body.offset = params.offset
+	if (params.username) body.username = params.username
+	if (params.action) body.action = params.action
+	if (params.from) body.from = params.from
+	if (params.to) body.to = params.to
+	const res = await api.post('/admin/audit-logs', body)
+	return res.data as AuditLogsResponse
+}
+
 export async function getSettings() {
 	const res = await api.get('/admin/settings')
 	return res.data as Record<string, string>
@@ -482,12 +531,10 @@ export async function testLDAPConnection(data: {
 // --- Init / Setup ---
 export async function checkInitialized() {
 	const res = await api.get('/status/initialized')
-	return res.data as { initialized: boolean; starting: boolean }
-}
-
-export async function generateKeys() {
-	const res = await api.get('/init/generate-keys')
-	return res.data as { jwt_secret: string; encryption_key: string }
+	// keys_configured reports whether JWT_SECRET and ENCRYPTION_KEY are present
+	// in the server environment. The setup wizard hides its key step when true
+	// and blocks initialization when false (keys are env-only, never stored).
+	return res.data as { initialized: boolean; starting: boolean; keys_configured?: boolean }
 }
 
 export interface InitRequest {
@@ -503,8 +550,6 @@ export interface InitRequest {
 		user: string
 		password: string
 	}
-	jwt_secret: string
-	encryption_key: string
 	cors_origins?: string
 	ldap?: {
 		enabled: boolean
@@ -747,7 +792,7 @@ export async function revokeRelayCertificate(id: number) {
 
 // --- Alerts & Notifications ---
 
-export type AlertRuleType = 'log_threshold' | 'device_silence' | 'config_change' | 'relay_cert_expiring'
+export type AlertRuleType = 'log_threshold' | 'device_silence' | 'audit_log' | 'relay_cert_expiring'
 export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app' | 'push'
 export type FieldConditionOperator = 'equals' | 'contains' | 'not_equals' | 'regex'
 
@@ -876,6 +921,14 @@ export interface TriggerLogSnapshot {
 	message: string
 }
 
+export interface AuditLogRef {
+	action: string
+	username: string
+	user_ip: string
+	details: string
+	timestamp: string
+}
+
 export interface NotificationLogEntry {
 	id: number
 	alert_id?: number
@@ -887,13 +940,15 @@ export interface NotificationLogEntry {
 	status: 'sent' | 'partial' | 'failed' | 'no_channel'
 	detail?: string
 	trigger_log?: TriggerLogSnapshot
+	audit_log_ref?: AuditLogRef
+	rule_type: string
 	in_app_notification_id?: number
 	matched_conditions?: string[]
 	created_at: string
 }
 
 export async function getNotificationHistory(limit = 100) {
-	const res = await api.get('/admin/notifications/history', { params: { limit } })
+	const res = await api.post('/admin/notifications/history', { limit })
 	return (res.data || []) as NotificationLogEntry[]
 }
 

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
-import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
-import { getUsers, createUser, updateUser, deleteUser, resetPassword, unlockUser, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, User, DeviceStats, SlowQueryRecord, ContainersHealthResponse } from '../services/api'
+import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip, Drawer } from 'antd'
+import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined } from '@ant-design/icons'
+import { getUsers, createUser, updateUser, deleteUser, resetPassword, unlockUser, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, User, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
@@ -45,6 +45,13 @@ export default function Admin() {
   const [certInfo, setCertInfo] = useState<any>(null)
   const [health, setHealth] = useState<ContainersHealthResponse | null>(null)
   const [healthLoading, setHealthLoading] = useState(false)
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
+  const [auditLogsTotal, setAuditLogsTotal] = useState(0)
+  const [auditLogsLoading, setAuditLogsLoading] = useState(false)
+  const [auditLogsOffset, setAuditLogsOffset] = useState(0)
+  const [auditLogsFilters, setAuditLogsFilters] = useState<{ username: string; action: string; from: string; to: string }>({ username: '', action: '', from: '', to: '' })
+  const [auditDetailOpen, setAuditDetailOpen] = useState(false)
+  const [auditDetailRecord, setAuditDetailRecord] = useState<AuditLog | null>(null)
   const [activeTab, setActiveTab] = useState('users')
   const tabCacheRef = useRef<Map<string, { loadedAt: number }>>(new Map())
   const [, setLockoutTick] = useState(0)
@@ -186,6 +193,27 @@ await testLDAPConnection({
     }
   }
 
+  const loadAuditLogs = async (offset: number = 0) => {
+    setAuditLogsLoading(true)
+    try {
+      const data = await getAuditLogs({
+        limit: 50,
+        offset: offset,
+        username: auditLogsFilters.username,
+        action: auditLogsFilters.action,
+        from: auditLogsFilters.from,
+        to: auditLogsFilters.to,
+      })
+      setAuditLogs(data.data)
+      setAuditLogsTotal(data.total)
+      setAuditLogsOffset(offset)
+    } catch {
+      message.error('Failed to load audit logs')
+    } finally {
+      setAuditLogsLoading(false)
+    }
+  }
+
   const handleClearSlowQueries = async () => {
     try {
       await clearSlowQueries()
@@ -233,6 +261,7 @@ await testLDAPConnection({
       case 'devices': await loadDevices(); break
       case 'slow_queries': await loadSlowQueries(); break
       case 'health': await loadHealth(); break
+      case 'audit_logs': await loadAuditLogs(0); break
     }
     tabCacheRef.current.set(tab, { loadedAt: Date.now() })
   }
@@ -1137,6 +1166,96 @@ const handleCleanup = async () => {
               </div>
             ),
           },
+          {
+            key: 'audit_logs',
+            label: 'Audit Logs',
+            children: (
+              <Card
+                title="Audit Logs"
+                extra={
+                  <Button icon={<ReloadOutlined />} loading={auditLogsLoading} onClick={() => loadAuditLogs(0)}>
+                    Refresh
+                  </Button>
+                }
+              >
+                <Space style={{ marginBottom: 16 }} wrap>
+                  <Select
+                    placeholder="Filter by username"
+                    value={auditLogsFilters.username || undefined}
+                    style={{ width: 180 }}
+                    allowClear
+                    showSearch
+                    onChange={(val) => { setAuditLogsFilters({ ...auditLogsFilters, username: val || '' }); loadAuditLogs(0) }}
+                    options={users.map((u) => ({ label: u.username, value: u.username }))}
+                  />
+                  <Select
+                    placeholder="Filter by action"
+                    value={auditLogsFilters.action || undefined}
+                    style={{ width: 200 }}
+                    allowClear
+                    onChange={(val) => { setAuditLogsFilters({ ...auditLogsFilters, action: val || '' }); loadAuditLogs(0) }}
+                    options={[
+                      { label: 'login', value: 'login' },
+                      { label: 'logout', value: 'logout' },
+                      { label: 'create_user', value: 'create_user' },
+                      { label: 'update_user', value: 'update_user' },
+                      { label: 'delete_user', value: 'delete_user' },
+                      { label: 'reset_password', value: 'reset_password' },
+                      { label: 'update_settings', value: 'update_settings' },
+                      { label: 'cleanup_logs', value: 'cleanup_logs' },
+                      { label: 'purge_all_logs', value: 'purge_all_logs' },
+                    ]}
+                  />
+                  <Input
+                    type="datetime-local"
+                    value={auditLogsFilters.from}
+                    onChange={(e) => setAuditLogsFilters({ ...auditLogsFilters, from: e.target.value })}
+                    style={{ width: 220 }}
+                  />
+                  <Input
+                    type="datetime-local"
+                    value={auditLogsFilters.to}
+                    onChange={(e) => setAuditLogsFilters({ ...auditLogsFilters, to: e.target.value })}
+                    style={{ width: 220 }}
+                  />
+                  <Button type="primary" onClick={() => loadAuditLogs(0)}>Apply</Button>
+                  <Button onClick={() => { setAuditLogsFilters({ username: '', action: '', from: '', to: '' }); loadAuditLogs(0) }}>Clear</Button>
+                </Space>
+                <Table
+                  rowKey="id"
+                  columns={[
+                    { title: 'Timestamp', dataIndex: 'created_at', key: 'created_at', width: 200, render: (v: string) => new Date(v).toLocaleString() },
+                    { title: 'User', dataIndex: 'username', key: 'username', width: 150 },
+                    { title: 'Action', dataIndex: 'action', key: 'action', width: 160, render: (v: string) => <Tag>{v.replace(/_/g, ' ')}</Tag> },
+                    { title: 'IP', dataIndex: 'ip', key: 'ip', width: 140, render: (v: string | null) => v || '-' },
+                    {
+                      title: 'Details',
+                      key: 'details',
+                      width: 200,
+                      ellipsis: true,
+                      render: (_: unknown, record: AuditLog) => (
+                        <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => { setAuditDetailRecord(record); setAuditDetailOpen(true) }}>
+                          {record.details || '-'}
+                        </Button>
+                      ),
+                    },
+                  ]}
+                  dataSource={auditLogs}
+                  loading={auditLogsLoading}
+                  pagination={{
+                    current: Math.floor(auditLogsOffset / 50) + 1,
+                    pageSize: 50,
+                    total: auditLogsTotal,
+                    showSizeChanger: false,
+                    showTotal: (total) => `${total} entries`,
+                  }}
+                  onChange={(pag) => { if (pag.current) loadAuditLogs((pag.current - 1) * 50) }}
+                  tableLayout="fixed"
+                  scroll={{ x: 'max-content' }}
+                />
+              </Card>
+            ),
+          },
         ]}
       />
 
@@ -1225,6 +1344,23 @@ const handleCleanup = async () => {
           </Form.Item>
         </Form>
       </Modal>
+
+      <Drawer
+        title="Audit Log Details"
+        open={auditDetailOpen}
+        onClose={() => setAuditDetailOpen(false)}
+        width={520}
+      >
+        {auditDetailRecord && (
+          <Descriptions bordered column={1} size="small">
+            <Descriptions.Item label="Timestamp">{new Date(auditDetailRecord.created_at).toLocaleString()}</Descriptions.Item>
+            <Descriptions.Item label="User">{auditDetailRecord.username}</Descriptions.Item>
+            <Descriptions.Item label="Action">{auditDetailRecord.action.replace(/_/g, ' ')}</Descriptions.Item>
+            <Descriptions.Item label="IP">{auditDetailRecord.ip || '-'}</Descriptions.Item>
+            <Descriptions.Item label="Details">{auditDetailRecord.details || '-'}</Descriptions.Item>
+          </Descriptions>
+        )}
+      </Drawer>
     </div>
   )
 }

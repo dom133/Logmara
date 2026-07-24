@@ -9,7 +9,7 @@ import (
 const (
 	RuleTypeLogThreshold      = "log_threshold"
 	RuleTypeDeviceSilence     = "device_silence"
-	RuleTypeConfigChange      = "config_change"
+RuleTypeAuditLog = "audit_log"
 	RuleTypeRelayCertExpiring = "relay_cert_expiring"
 )
 
@@ -78,7 +78,7 @@ type Alert struct {
 type AlertRequest struct {
 	Name                 string                `json:"name" binding:"required,max=255"`
 	Description          string                `json:"description"`
-	RuleType             string                `json:"rule_type" binding:"required,oneof=log_threshold device_silence config_change relay_cert_expiring"`
+	RuleType             string                `json:"rule_type" binding:"required,oneof=log_threshold device_silence audit_log relay_cert_expiring"`
 	Severity             string                `json:"severity"`
 	DeviceIPs            []string              `json:"device_ips"`
 	ParserNames          []string              `json:"parser_names"`
@@ -127,6 +127,17 @@ type TriggerLogSnapshot struct {
 	Message    string `json:"message"`
 }
 
+// AuditLogRef stores structured context from the audit log entry that
+// triggered an audit_log alert. Stored in notification_log so the history
+// panel can show who did what, from where, and when.
+type AuditLogRef struct {
+	Action    string `json:"action"`
+	Username  string `json:"username"`
+	UserIP    string `json:"user_ip"`
+	Details   string `json:"details"`
+	Timestamp string `json:"timestamp"`
+}
+
 type NotificationLogEntry struct {
 	ID        int64  `json:"id"`
 	AlertID   *int64 `json:"alert_id,omitempty"`
@@ -144,20 +155,28 @@ type NotificationLogEntry struct {
 	Status      string              `json:"status"`
 	Detail      string              `json:"detail,omitempty"`
 	TriggerLog  *TriggerLogSnapshot `json:"trigger_log,omitempty"`
+	// AuditLogRef holds structured audit context (action, user, IP) for
+	// audit_log-type alerts. Nil for other alert types.
+	AuditLogRef *AuditLogRef `json:"audit_log_ref,omitempty"`
 	// InAppNotificationID links this row back to the in_app_notifications
 	// row shown in the bell dropdown (set only when ChannelType is
 	// "in_app"), so clicking a bell notification can jump straight to and
 	// open this same entry in the alert History tab.
 	InAppNotificationID *int64    `json:"in_app_notification_id,omitempty"`
+	RuleType            string    `json:"rule_type"`
 	MatchedConditions   []string  `json:"matched_conditions,omitempty"`
 	CreatedAt           time.Time `json:"created_at"`
 }
 
 type InAppNotification struct {
-	ID        int64     `json:"id"`
-	AlertID   *int64    `json:"alert_id,omitempty"`
-	Title     string    `json:"title"`
-	Message   string    `json:"message"`
-	Severity  string    `json:"severity"`
-	CreatedAt time.Time `json:"created_at"`
+	ID            int64     `json:"id"`
+	AlertID       int64     `json:"alert_id"`
+	Title         string    `json:"title"`
+	Message       string    `json:"message"`
+	Severity      string    `json:"severity"`
+	AlertRuleType string    `json:"alert_rule_type"`
+	TargetUserIds []int64   `json:"target_user_ids,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	IsRead        bool      `json:"is_read"`
+	IsDismissed   bool      `json:"is_dismissed"`
 }

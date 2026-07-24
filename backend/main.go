@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"syslytics/parser"
 	"syslytics/sharedstate"
 	"syslytics/tailer"
+	"syslytics/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -381,6 +383,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The encryption key (like the JWT secret validated by auth.Init above)
+	// comes only from the environment and is never stored in the database, so
+	// a database dump alone can't decrypt stored SMTP/LDAP credentials. Fail
+	// fast if it's missing rather than silently returning ciphertext later.
+	if util.SecretFromEnv("ENCRYPTION_KEY") == "" {
+		slog.Error("ENCRYPTION_KEY is not set; generate one (e.g. `openssl rand -base64 48`) and provide it via ENCRYPTION_KEY or ENCRYPTION_KEY_FILE - see README")
+		os.Exit(1)
+	}
+
 	engine := parser.NewEngine(database)
 	ic := control.New(ctx, sharedClient)
 
@@ -453,6 +464,7 @@ func main() {
 	}()
 
 r := gin.New()
+	configureTrustedProxies(r)
 	r.Use(gin.Recovery())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.ErrorHandler())
@@ -480,7 +492,7 @@ r := gin.New()
 	r.GET("/api/status/initialized", handler.CheckInitialized(database))
 	r.POST("/api/init", middleware.RequireJSON(), middleware.MaxRequestBodySize(8*1024), rateLimitMiddleware(initLimiter), handler.Initialize(database))
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
-	r.GET("/api/init/db-config", handler.GetDbConfig())
+	r.GET("/api/init/db-config", handler.GetDbConfig(database))
 
 	authGroup := r.Group("/api")
 	authGroup.Use(authCfg.JWTRequired())
@@ -489,13 +501,13 @@ r := gin.New()
 		authGroup.POST("/logs", handler.GetLogs(database))
 		authGroup.POST("/logs/count", handler.GetLogsCount(database))
 
-		authGroup.GET("/stats/dashboard", handler.GetDashboardStats(database))
-		authGroup.GET("/stats/devices", handler.GetDeviceStats(database))
-		authGroup.GET("/stats/severity", handler.GetSeverityStats(database))
-		authGroup.GET("/stats/timeline", handler.GetTimelineStats(database))
+		authGroup.POST("/stats/dashboard", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDashboardStats(database))
+		authGroup.POST("/stats/devices", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDeviceStats(database))
+		authGroup.POST("/stats/severity", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetSeverityStats(database))
+		authGroup.POST("/stats/timeline", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetTimelineStats(database))
 		authGroup.GET("/devices", handler.GetDevices(database))
-		authGroup.GET("/export/csv", handler.ExportCSV(database))
-		authGroup.GET("/export/html", handler.ExportHTML(database))
+		authGroup.POST("/export/csv", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportCSV(database))
+		authGroup.POST("/export/html", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportHTML(database))
 		authGroup.GET("/auth/me", handler.GetMe(database))
 		authGroup.POST("/auth/change-password", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
 
@@ -506,20 +518,20 @@ r := gin.New()
 		// hides itself. mark-read is harmless either way.
 		authGroup.GET("/notifications", handler.GetNotifications(database))
 		authGroup.POST("/notifications/mark-read", handler.MarkNotificationsRead(database))
-		authGroup.GET("/notifications/stream", notificationsGate, handler.StreamNotifications(notifHub))
+		authGroup.GET("/notifications/stream", notificationsGate, handler.StreamNotifications(notifHub, database))
 
 		authGroup.GET("/push/vapid-public-key", notificationsGate, handler.GetVAPIDPublicKey(database))
 		authGroup.POST("/push/subscribe", notificationsGate, handler.SubscribePush(database))
 		authGroup.POST("/push/unsubscribe", notificationsGate, handler.UnsubscribePush(database))
 
 		authGroup.GET("/parsers", handler.ListParsers(engine))
-		authGroup.GET("/parsers/fields", handler.ListParsedFields(engine))
+		authGroup.POST("/parsers/fields", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ListParsedFields(engine))
 		authGroup.GET("/dashboards", handler.ListDashboards(database))
 		authGroup.GET("/dashboards/:id", handler.GetDashboard(database))
-		authGroup.GET("/dashboards/:id/data", handler.GetDashboardData(database))
-		authGroup.GET("/dashboards/:id/count", handler.GetDashboardDataCount(database))
-		authGroup.GET("/dashboards/:id/export/csv", handler.ExportDashboardCSV(database))
-		authGroup.GET("/dashboards/:id/export/html", handler.ExportDashboardHTML(database))
+		authGroup.POST("/dashboards/:id/data", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDashboardData(database))
+		authGroup.POST("/dashboards/:id/count", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDashboardDataCount(database))
+		authGroup.POST("/dashboards/:id/export/csv", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportDashboardCSV(database))
+		authGroup.POST("/dashboards/:id/export/html", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportDashboardHTML(database))
 		authGroup.PATCH("/dashboards/:id/pin", handler.TogglePinDashboard(database))
 
 		editorGroup := authGroup.Group("")
@@ -560,7 +572,8 @@ r := gin.New()
 			adminGroup.POST("/ingestion/resume", handler.ResumeIngestion(ic))
 			adminGroup.GET("/ingestion/status", handler.GetIngestionStatus(ic))
 			adminGroup.POST("/ldap/test", handler.TestLDAP(database))
-			adminGroup.GET("/audit-log", handler.GetAuditLog(database))
+			adminGroup.POST("/audit-log", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetAuditLog(database))
+			adminGroup.POST("/audit-logs", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetAuditLogsHandler(database))
 			adminGroup.GET("/slow-queries", handler.GetSlowQueries())
 			adminGroup.DELETE("/slow-queries", handler.ClearSlowQueriesHandler())
 			adminGroup.GET("/health/containers", handler.GetContainersHealth(database))
@@ -592,7 +605,7 @@ r := gin.New()
 		adminReadGroup.Use(auth.RoleRequired("admin", "editor"))
 		{
 			adminReadGroup.GET("/notification-channels", notificationsGate, handler.ListNotificationChannels(database))
-			adminReadGroup.GET("/notifications/history", notificationsGate, handler.GetNotificationHistory(database))
+			adminReadGroup.POST("/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
 		}
 	}
 
@@ -641,6 +654,7 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	ready := make(chan *sql.DB, 1)
 
 	r := gin.New()
+	configureTrustedProxies(r)
 	r.Use(gin.Recovery())
 	r.Use(middleware.ErrorHandler())
 	r.Use(middleware.SecurityHeaders())
@@ -651,7 +665,7 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	r.GET("/api/health", handler.HealthCheckStandalone())
 	r.GET("/api/status/initialized", handler.CheckInitializedStandalone())
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
-	r.GET("/api/init/db-config", handler.GetDbConfig())
+	r.GET("/api/init/db-config", handler.GetDbConfig(nil))
 	r.POST("/api/init/test-db", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(testDbLimiter), handler.TestDatabaseConfig())
 	r.POST("/api/init", middleware.RequireJSON(), middleware.MaxRequestBodySize(8*1024), rateLimitMiddleware(initLimiter), handler.InitializeStandalone(ready))
 
@@ -681,6 +695,42 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	}
 
 	return database
+}
+
+// defaultTrustedProxies covers the private/loopback ranges a reverse proxy
+// (this app's own nginx frontend, plus any Docker bridge/overlay network)
+// realistically sits in. It intentionally does NOT include public ranges, so
+// a client reaching nginx from the internet cannot spoof its source IP via
+// X-Forwarded-For: nginx appends the real (public) peer address, which falls
+// outside these ranges and is therefore what c.ClientIP() returns.
+var defaultTrustedProxies = []string{
+	"127.0.0.1/8", "::1/128",
+	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",
+}
+
+// configureTrustedProxies replaces Gin's insecure default (trust every proxy,
+// which makes X-Forwarded-For fully client-controlled) with an explicit list.
+// Override with TRUSTED_PROXIES (comma-separated CIDRs or IPs) for deployments
+// whose proxy sits in a different range. Empty/"none" disables proxy trust
+// entirely, so the direct TCP peer is always used as the client IP.
+func configureTrustedProxies(r *gin.Engine) {
+	proxies := defaultTrustedProxies
+	if v := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); v != "" {
+		if strings.EqualFold(v, "none") {
+			proxies = nil
+		} else {
+			proxies = nil
+			for _, p := range strings.Split(v, ",") {
+				if p = strings.TrimSpace(p); p != "" {
+					proxies = append(proxies, p)
+				}
+			}
+		}
+	}
+	if err := r.SetTrustedProxies(proxies); err != nil {
+		slog.Error("failed to set trusted proxies; falling back to trusting none", "error", err)
+		_ = r.SetTrustedProxies(nil)
+	}
 }
 
 func rateLimitMiddleware(rl RateLimiter) gin.HandlerFunc {
