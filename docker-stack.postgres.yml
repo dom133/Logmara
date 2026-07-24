@@ -204,7 +204,7 @@ services:
     image: haproxy:2.9-alpine
     networks: [syslog_net]
     configs:
-      - source: haproxy_pg_cfg
+      - source: haproxy_pg_cfg_1784921589
         target: /usr/local/etc/haproxy/haproxy.cfg
     ports:
       # Published on every "app" node via host mode; point api's
@@ -235,5 +235,5 @@ secrets:
     external: true
 
 configs:
-  haproxy_pg_cfg:
+  haproxy_pg_cfg_1784921589:
     external: true
