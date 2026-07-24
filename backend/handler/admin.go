@@ -737,6 +737,48 @@ func GetAuditLog(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
+func GetAuditLogsHandler(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		limit := 50
+		if l := c.Query("limit"); l != "" {
+			if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 1000 {
+				limit = n
+			}
+		}
+
+		offset := 0
+		if o := c.Query("offset"); o != "" {
+			if n, err := strconv.Atoi(o); err == nil && n >= 0 {
+				offset = n
+			}
+		}
+
+		filter := db.AuditLogFilter{
+			Username: c.Query("username"),
+			Action:   c.Query("action"),
+			From:     c.Query("from"),
+			To:       c.Query("to"),
+			Limit:    limit,
+			Offset:   offset,
+		}
+
+		logs, total, err := db.GetAuditLogs(database, filter)
+		if err != nil {
+			middleware.HandleError(c, model.NewInternal("Failed to fetch audit logs", err))
+			return
+		}
+
+		if logs == nil {
+			logs = []db.AuditLog{}
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"data":  logs,
+			"total": total,
+		})
+	}
+}
+
 func PauseIngestion(ic control.IngestionController) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ic.Pause()

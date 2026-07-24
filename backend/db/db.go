@@ -1211,3 +1211,78 @@ func RefreshMaterializedViews(db *sql.DB) {
 	}
 	slog.Info("materialized views refreshed")
 }
+
+type AuditLogFilter struct {
+	Username string
+	Action   string
+	From     string
+	To       string
+	Limit    int
+	Offset   int
+}
+
+func GetAuditLogs(db *sql.DB, filter AuditLogFilter) ([]AuditLog, int64, error) {
+	whereConditions := []string{}
+	args := []interface{}{}
+	argIdx := 1
+
+	if filter.Username != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("username ILIKE $%s", argIdx))
+		args = append(args, "%"+filter.Username+"%")
+		argIdx++
+	}
+	if filter.Action != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("action = $%s", argIdx))
+		args = append(args, filter.Action)
+		argIdx++
+	}
+	if filter.From != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("created_at >= $%s", argIdx))
+		args = append(args, filter.From)
+		argIdx++
+	}
+	if filter.To != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("created_at <= $%s", argIdx))
+		args = append(args, filter.To)
+		argIdx++
+	}
+
+	whereClause := ""
+	if len(whereConditions) > 0 {
+		whereClause = "WHERE " + strings.Join(whereConditions, " AND ")
+	}
+
+	countArgs := make([]interface{}, len(args))
+	copy(countArgs, args)
+	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM audit_log %s", whereClause)
+	var total int64
+	if err := db.QueryRow(countSQL, countArgs...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	queryArgs := make([]interface{}, len(args)+2)
+	copy(queryArgs, args)
+	queryArgs[len(args)] = filter.Limit
+	queryArgs[len(args)+1] = filter.Offset
+	querySQL := fmt.Sprintf(
+		"SELECT id, user_id, username, action, ip, details, created_at FROM audit_log %s ORDER BY created_at DESC LIMIT $%d OFFSET $%d",
+		whereClause, argIdx, argIdx+1,
+	)
+
+	rows, err := db.Query(querySQL, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var logs []AuditLog
+	for rows.Next() {
+		var a AuditLog
+		if err := rows.Scan(&a.ID, &a.UserID, &a.Username, &a.Action, &a.IP, &a.Details, &a.CreatedAt); err != nil {
+			continue
+		}
+		logs = append(logs, a)
+	}
+
+	return logs, total, rows.Err()
+}

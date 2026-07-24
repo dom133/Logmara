@@ -445,6 +445,40 @@ export async function unlockUser(id: number) {
 	return res.data
 }
 
+export interface AuditLog {
+	id: number
+	user_id: number | null
+	username: string
+	action: string
+	ip: string | null
+	details: string | null
+	created_at: string
+}
+
+export interface AuditLogsResponse {
+	data: AuditLog[]
+	total: number
+}
+
+export async function getAuditLogs(params: {
+	limit?: number
+	offset?: number
+	username?: string
+	action?: string
+	from?: string
+	to?: string
+}) {
+	const queryParams = new URLSearchParams()
+	if (params.limit !== undefined) queryParams.set('limit', String(params.limit))
+	if (params.offset !== undefined) queryParams.set('offset', String(params.offset))
+	if (params.username) queryParams.set('username', params.username)
+	if (params.action) queryParams.set('action', params.action)
+	if (params.from) queryParams.set('from', params.from)
+	if (params.to) queryParams.set('to', params.to)
+	const res = await api.get(`/admin/audit-logs?${queryParams.toString()}`)
+	return res.data as AuditLogsResponse
+}
+
 export async function getSettings() {
 	const res = await api.get('/admin/settings')
 	return res.data as Record<string, string>
@@ -477,6 +511,29 @@ export async function testLDAPConnection(data: {
 }) {
 	const res = await api.post('/admin/ldap/test', data)
 	return res.data
+}
+
+// --- Audit Logs ---
+export interface AuditLog {
+	id: number
+	user_id: number | null
+	username: string
+	action: string
+	ip: string | null
+	details: string | null
+	created_at: string
+}
+
+export async function getAuditLogs(params: {
+	limit?: number
+	offset?: number
+	username?: string
+	action?: string
+	from?: string
+	to?: string
+}) {
+	const res = await api.get('/admin/audit-logs', { params })
+	return res.data as { data: AuditLog[]; total: number }
 }
 
 // --- Init / Setup ---
