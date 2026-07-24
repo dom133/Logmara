@@ -138,11 +138,7 @@ services:
       DOCKER_PROXY_URL: http://docker-proxy:2375
     volumes:
       - log_data:/data
-    ports:
-      # Not meant to be publicly reachable - traffic normally comes in via
-      # nginx on 80/443. Fixed (not env-configurable); only published so you
-      # can hit the API directly if you have a specific reason to.
-      - "8080:8080"
+    
     depends_on:
       postgres:
         condition: service_healthy
