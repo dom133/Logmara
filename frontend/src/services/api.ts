@@ -131,7 +131,7 @@ export async function getLogsCount(params: {
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {
-  const res = await api.get('/stats/dashboard')
+  const res = await api.post('/stats/dashboard', {})
   return (res.data || {}) as DashboardStats
 }
 
