@@ -61,7 +61,10 @@ self.addEventListener('push', (event) => {
   const options = {
     body: payload.body || payload.message || '',
     icon: '/icons/icon-192.png',
-    badge: '/icons/icon-192.png',
+    // Android renders the badge (status-bar small icon) as a silhouette from
+    // the alpha channel only, so a full-colour icon comes out as a solid white
+    // blob. Use a dedicated monochrome, transparent-background icon instead.
+    badge: '/icons/notification-badge.png',
     tag: payload.tag || `syslytics-alert-${Date.now()}`,
     renotify: !!payload.tag,
     data: { url: payload.url || payload.link || '/' },
