@@ -60,15 +60,18 @@ func Connect(dsn string) (*sql.DB, error) {
 
 	slog.Info("db pool configured", "max_open", maxOpen, "max_idle", maxIdle, "max_lifetime", maxLifeTime, "max_idle_time", maxIdleTime)
 
+	var lastErr error
 	for i := 0; i < 5; i++ {
 		if err := db.Ping(); err == nil {
 			return db, nil
+		} else {
+			lastErr = err
 		}
-		slog.Warn("waiting for database", "attempt", i+1)
+		slog.Warn("waiting for database", "attempt", i+1, "error", lastErr)
 		time.Sleep(2 * time.Second)
 	}
 
-	return nil, fmt.Errorf("could not connect to database after 5 attempts")
+	return nil, fmt.Errorf("could not connect to database after 5 attempts: %w", lastErr)
 }
 
 // migrationLockKey is an arbitrary constant used as a Postgres advisory
