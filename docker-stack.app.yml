@@ -238,8 +238,18 @@ services:
       restart_policy:
         condition: any
         delay: 5s
+      # host-mode published ports (above) mean each replica binds :80/:443
+      # directly on its node - with exactly one replica per app node
+      # (replicas == number of app==true nodes), start-first can never
+      # succeed: the new task needs the same host port the old task on
+      # that same node is still holding, and there's no spare node to
+      # place it on in the meantime, so it hangs in Pending forever
+      # ("host-mode port already in use") while the old task keeps
+      # serving stale code indefinitely. stop-first is the only strategy
+      # that actually completes here, at the cost of a brief drop on that
+      # node's replica during the swap.
       update_config:
-        order: start-first
+        order: stop-first
         parallelism: 1
       resources:
         limits:
