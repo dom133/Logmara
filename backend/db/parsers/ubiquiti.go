@@ -88,7 +88,7 @@ func init() {
 			DeviceType:  "ubiquiti",
 			MatchType:   "message",
 			MatchValue:  "|544|Network Accessed|",
-			Regex:       `^0\|Ubiquiti\|UniFi Network\|([^|]+)\|544\|Network Accessed\|\d+\|UNIFIcategory=(\S+) UNIFIhost=(.+?) UNIFIaccessMethod=(\S+) UNIFIadmin=(\S+) src=(\d+\.\d+\.\d+\.\d+) UNIFIutcTime=(\S+) msg=(.*)$`,
+			Regex:       `^(?:\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s+\S+\s+(?:CEF:)?)?0\|Ubiquiti\|UniFi Network\|([^|]+)\|544\|Network Accessed\|\d+\|UNIFIcategory=(\S+) UNIFIhost=(.+?) UNIFIaccessMethod=(\S+) UNIFIadmin=(\S+) src=(\d+\.\d+\.\d+\.\d+) UNIFIutcTime=(\S+) msg=(.*)$`,
 			Fields: []FieldSeed{
 				{Name: "device_id", Label: "Device ID", Type: "string"},
 				{Name: "category", Label: "Category", Type: "string"},
@@ -106,7 +106,7 @@ func init() {
 			DeviceType:  "ubiquiti",
 			MatchType:   "message",
 			MatchValue:  "|1000|Admin Accessed UniFi OS|",
-			Regex:       `^(?:CEF:)?0\|Ubiquiti\|UniFi OS\|([^|]+)\|1000\|Admin Accessed UniFi OS\|\d+\|UNIFIhost=(\S+) UNIFIdeviceName=(.+?) UNIFIdeviceModel=(\S+) UNIFIdeviceIp=(\d+\.\d+\.\d+\.\d+) UNIFIdeviceMac=(\S+) UNIFIdeviceVersion=(\S+) UNIFIadmin=(\S+) UNIFIaccessMethod=(\S+) msg=(.*)$`,
+			Regex:       `^(?:\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s+\S+\s+(?:CEF:)?)?0\|Ubiquiti\|UniFi OS\|([^|]+)\|1000\|Admin Accessed UniFi OS\|\d+\|UNIFIhost=(\S+) UNIFIdeviceName=(.+?) UNIFIdeviceModel=(\S+) UNIFIdeviceIp=(\d+\.\d+\.\d+\.\d+) UNIFIdeviceMac=(\S+) UNIFIdeviceVersion=(\S+) UNIFIadmin=(\S+) UNIFIaccessMethod=(\S+) msg=(.*)$`,
 			Fields: []FieldSeed{
 				{Name: "device_version", Label: "Device Version", Type: "string"},
 				{Name: "host", Label: "Host", Type: "string"},
