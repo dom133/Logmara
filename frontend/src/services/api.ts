@@ -30,7 +30,7 @@ api.interceptors.response.use(
   response => response,
   error => {
     const originalRequest = error.config
-    if (error.response?.status === 401 && originalRequest.url !== '/auth/login' && originalRequest.url !== '/auth/refresh' && window.location.pathname !== '/login') {
+    if (error.response?.status === 401 && originalRequest.url !== '/auth/login' && originalRequest.url !== '/auth/refresh' && originalRequest.url !== '/auth/me' && window.location.pathname !== '/login') {
       window.location.href = '/login'
     }
     return Promise.reject(error)
