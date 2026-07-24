@@ -129,18 +129,22 @@ func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) 
 			op := normalizeOperator(ff.Operator)
 			switch op {
 			case "eq":
+				if len(ff.Values) == 0 { continue }
 				clauses = append(clauses, fmt.Sprintf("%s = $%d", fieldCol, idx))
 				args = append(args, ff.Values[0])
 				idx++
 			case "neq":
+				if len(ff.Values) == 0 { continue }
 				clauses = append(clauses, fmt.Sprintf("%s <> $%d", fieldCol, idx))
 				args = append(args, ff.Values[0])
 				idx++
 			case "contains":
+				if len(ff.Values) == 0 { continue }
 				clauses = append(clauses, fmt.Sprintf("%s ILIKE $%d", fieldCol, idx))
 				args = append(args, "%"+ff.Values[0]+"%")
 				idx++
 			case "in":
+				if len(ff.Values) == 0 { continue }
 				placeholders := make([]string, len(ff.Values))
 				for i, v := range ff.Values {
 					placeholders[i] = fmt.Sprintf("$%d", idx)
@@ -149,6 +153,7 @@ func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) 
 				}
 				clauses = append(clauses, fmt.Sprintf("%s IN (%s)", fieldCol, strings.Join(placeholders, ", ")))
 			case "notin":
+				if len(ff.Values) == 0 { continue }
 				placeholders := make([]string, len(ff.Values))
 				for i, v := range ff.Values {
 					placeholders[i] = fmt.Sprintf("$%d", idx)
@@ -157,34 +162,42 @@ func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) 
 				}
 				clauses = append(clauses, fmt.Sprintf("%s NOT IN (%s)", fieldCol, strings.Join(placeholders, ", ")))
 			case "startswith":
+				if len(ff.Values) == 0 { continue }
 				clauses = append(clauses, fmt.Sprintf("%s ILIKE $%d", fieldCol, idx))
 				args = append(args, ff.Values[0]+"%")
 				idx++
 			case "endswith":
+				if len(ff.Values) == 0 { continue }
 				clauses = append(clauses, fmt.Sprintf("%s ILIKE $%d", fieldCol, idx))
 				args = append(args, "%"+ff.Values[0])
 				idx++
 			case "gt":
+				if len(ff.Values) == 0 { continue }
 				clauses = append(clauses, fmt.Sprintf("%s > $%d", fieldCol, idx))
 				args = append(args, ff.Values[0])
 				idx++
 			case "gte":
+				if len(ff.Values) == 0 { continue }
 				clauses = append(clauses, fmt.Sprintf("%s >= $%d", fieldCol, idx))
 				args = append(args, ff.Values[0])
 				idx++
 			case "lt":
+				if len(ff.Values) == 0 { continue }
 				clauses = append(clauses, fmt.Sprintf("%s < $%d", fieldCol, idx))
 				args = append(args, ff.Values[0])
 				idx++
 			case "lte":
+				if len(ff.Values) == 0 { continue }
 				clauses = append(clauses, fmt.Sprintf("%s <= $%d", fieldCol, idx))
 				args = append(args, ff.Values[0])
 				idx++
 			case "not_contains":
+				if len(ff.Values) == 0 { continue }
 				clauses = append(clauses, fmt.Sprintf("%s NOT ILIKE $%d", fieldCol, idx))
 				args = append(args, "%"+ff.Values[0]+"%")
 				idx++
 			case "regex":
+				if len(ff.Values) == 0 { continue }
 				clauses = append(clauses, fmt.Sprintf("%s ~ $%d", fieldCol, idx))
 				args = append(args, ff.Values[0])
 				idx++
