@@ -436,7 +436,7 @@ export default function DashboardsPage() {
           <Form.Item label="Field Filters">
             <Space direction="vertical" style={{ width: '100%' }}>
               <Form.Item name={['config', 'filters', 'fieldFilters']} noStyle>
-                <DashboardFieldFilters availableFields={allFields.map(f => f.name)} />
+                <DashboardFieldFilters availableFields={parsedFields.map(f => f.name)} />
               </Form.Item>
             </Space>
           </Form.Item>

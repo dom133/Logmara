@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { Input, Select, Button, Space, Tag, Tooltip } from 'antd'
 import { PlusOutlined, CloseOutlined, InfoCircleOutlined } from '@ant-design/icons'
 import type { FieldFilter } from '../services/api'
@@ -23,28 +23,35 @@ const OPERATORS = [
 
 interface DashboardFieldFiltersProps {
   availableFields: string[]
-  value: FieldFilter[]
-  onChange: (filters: FieldFilter[]) => void
+  value?: FieldFilter[]
+  onChange?: (filters: FieldFilter[]) => void
 }
 
 export default function DashboardFieldFilters({ availableFields, value, onChange }: DashboardFieldFiltersProps) {
+  const [internalFilters, setInternalFilters] = useState<FieldFilter[]>([])
   const [adding, setAdding] = useState(false)
+
+  const controlled = onChange !== undefined
+  const filters = controlled ? (value || []) : internalFilters
+  const setFilters = controlled
+    ? (f: FieldFilter[]) => { onChange!(f) }
+    : setInternalFilters
 
   const addFilter = useCallback(() => {
     if (availableFields.length === 0) return
-    onChange([...value, { field: availableFields[0], operator: 'eq', value: '' }])
+    setFilters([...filters, { field: availableFields[0], operator: 'eq', value: '' }])
     setAdding(false)
-  }, [availableFields, value, onChange])
+  }, [availableFields, filters, setFilters])
 
   const removeFilter = useCallback((idx: number) => {
-    onChange(value.filter((_, i) => i !== idx))
-  }, [value, onChange])
+    setFilters(filters.filter((_, i) => i !== idx))
+  }, [filters, setFilters])
 
   const updateFilter = useCallback((idx: number, key: keyof FieldFilter, val: string) => {
-    const next = [...value]
+    const next = [...filters]
     next[idx] = { ...next[idx], [key]: val }
-    onChange(next)
-  }, [value, onChange])
+    setFilters(next)
+  }, [filters, setFilters])
 
   if (availableFields.length === 0) {
     return (
@@ -74,7 +81,7 @@ export default function DashboardFieldFilters({ availableFields, value, onChange
               options={availableFields.map(f => ({ label: f, value: f }))}
               placeholder="Pick field"
               onChange={(f) => {
-                onChange([...value, { field: f, operator: 'eq', value: '' }])
+                setFilters([...filters, { field: f, operator: 'eq', value: '' }])
                 setAdding(false)
               }}
               autoFocus
@@ -85,7 +92,7 @@ export default function DashboardFieldFilters({ availableFields, value, onChange
           <Button size="small" icon={<PlusOutlined />} onClick={() => setAdding(true)}>Add Filter</Button>
         )}
       </Space>
-      {value.map((ff, idx) => (
+      {filters.map((ff, idx) => (
         <Space key={idx} style={{ display: 'flex', marginBottom: 4, alignItems: 'center' }} wrap>
           <Tag closable onClose={() => removeFilter(idx)} style={{ marginRight: 0 }}>{ff.field}</Tag>
           <Select
