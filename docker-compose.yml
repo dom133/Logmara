@@ -115,8 +115,8 @@ services:
       # alone must not be able to forge tokens or decrypt secrets). Generate
       # each with `openssl rand -base64 48` and put them in .env. See README
       # "Security keys".
-      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env - generate with: openssl rand -base64 48}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env - generate with: openssl rand -base64 48}
+      JWT_SECRET: "${JWT_SECRET:?set JWT_SECRET in .env - generate with openssl rand -base64 48}"
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env - generate with openssl rand -base64 48}"
       PORT: "8080"
       LOG_FILE_PATH: /data/logs.jsonl
       NGINX_RELOAD_URL: http://frontend:8081/cgi-bin/reload.sh
