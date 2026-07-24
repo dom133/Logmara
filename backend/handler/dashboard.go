@@ -297,9 +297,7 @@ type DashboardFilterRequest struct {
 // resolveDashboardFilters loads a dashboard's config and merges it with
 // the POST body overrides, returning filter options ready for
 // buildLogWhereClauses.
-func resolveDashboardFilters(db *sql.DB, c *gin.Context) (*model.DashboardConfig, LogFilterOptions, error) {
-	var req DashboardFilterRequest
-	_ = c.ShouldBindJSON(&req)
+func resolveDashboardFilters(db *sql.DB, c *gin.Context, req DashboardFilterRequest) (*model.DashboardConfig, LogFilterOptions, error) {
 
 	id, err := parseIDParam(c.Param("id"))
 	if err != nil {
@@ -408,7 +406,15 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 		var req DashboardDataRequest
 		_ = c.ShouldBindJSON(&req)
 
-		cfg, opts, err := resolveDashboardFilters(db, c)
+		filterReq := DashboardFilterRequest{
+			Severity:     req.Severity,
+			From:         req.From,
+			To:           req.To,
+			Search:       req.Search,
+			FromHostIP:   req.FromHostIP,
+			FieldFilters: req.FieldFilters,
+		}
+		cfg, opts, err := resolveDashboardFilters(db, c, filterReq)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
@@ -510,7 +516,9 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 // filter change instead of one per page (see GetLogsCount).
 func GetDashboardDataCount(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		_, opts, err := resolveDashboardFilters(db, c)
+		var req DashboardFilterRequest
+		_ = c.ShouldBindJSON(&req)
+		_, opts, err := resolveDashboardFilters(db, c, req)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
@@ -545,7 +553,15 @@ func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
 		var req DashboardExportRequest
 		_ = c.ShouldBindJSON(&req)
 
-		cfg, opts, err := resolveDashboardFilters(db, c)
+		filterReq := DashboardFilterRequest{
+			Severity:     req.Severity,
+			From:         req.From,
+			To:           req.To,
+			Search:       req.Search,
+			FromHostIP:   req.FromHostIP,
+			FieldFilters: req.FieldFilters,
+		}
+		cfg, opts, err := resolveDashboardFilters(db, c, filterReq)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
@@ -573,7 +589,9 @@ func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
 // GetDashboardData.
 func ExportDashboardHTML(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		cfg, opts, err := resolveDashboardFilters(db, c)
+		var req DashboardFilterRequest
+		_ = c.ShouldBindJSON(&req)
+		cfg, opts, err := resolveDashboardFilters(db, c, req)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
