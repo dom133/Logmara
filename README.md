@@ -404,19 +404,63 @@ watch docker service ls   # wait for api and frontend at 2/2, rsyslog global at 
 
 #### 11. Set up keepalived on the edge nodes
 
-On each of `app1` and `app2` (outside Swarm — VRRP needs direct L2 access the overlay network doesn't provide):
+keepalived runs on the host (outside Swarm — VRRP needs direct L2 access the overlay network doesn't provide) on both `app1` and `app2`. The config is rendered from [`keepalived/keepalived.conf.tpl`](keepalived/keepalived.conf.tpl) with `envsubst`.
+
+First pick **one** VRRP auth password and use the *same* value on both nodes (keepalived truncates it to 8 characters, so keep it to 8):
 
 ```bash
-sudo apt-get install -y keepalived
+openssl rand -hex 4   # 8 chars - copy the output, you'll paste it on both nodes
 ```
 
-Render `keepalived/keepalived.conf.tpl` for this node (see the template's own comments for each placeholder) and write it to `/etc/keepalived/keepalived.conf`. On `app1` (`STATE=MASTER`, higher `PRIORITY`) and `app2` (`STATE=BACKUP`, lower `PRIORITY`), pointing `unicast_peer` at each other's real IP and both at the same floating `VIP` (e.g. `10.0.0.100`). Also copy `keepalived/check_rsyslog.sh` to `/etc/keepalived/check_rsyslog.sh` and `chmod +x` it.
+Then, **on `app1`** (the MASTER — higher priority). Substitute your real interface name (`ip -br addr` to find it) and the auth password from above:
 
 ```bash
+ssh app1
+sudo apt-get install -y keepalived gettext-base git
+git clone https://github.com/dom133/Syslytics.git ~/syslog_gui 2>/dev/null || (cd ~/syslog_gui && git pull)
+cd ~/syslog_gui
+
+export STATE=MASTER PRIORITY=150 \
+       MY_IP=10.0.0.21 \
+       PEER_IPS="        10.0.0.22" \
+       VIP=10.0.0.100 VIP_CIDR=24 INTERFACE=eth0 \
+       VRRP_AUTH_PASS=<the-8-char-pass-from-above>
+
+envsubst < keepalived/keepalived.conf.tpl | sudo tee /etc/keepalived/keepalived.conf > /dev/null
+sudo cp keepalived/check_rsyslog.sh /etc/keepalived/check_rsyslog.sh
+sudo chmod +x /etc/keepalived/check_rsyslog.sh
 sudo systemctl enable --now keepalived
 ```
 
-Point syslog senders at the VIP (`10.0.0.100:514`, tcp or udp) and, if you're routing browser/API traffic through it too, point clients/DNS at the same VIP for `80`/`443`.
+Then, **on `app2`** (the BACKUP — lower priority). Identical except `STATE`, `PRIORITY`, `MY_IP`, and `PEER_IPS` (which now points back at `app1`); `VIP` and `VRRP_AUTH_PASS` must match `app1` exactly:
+
+```bash
+ssh app2
+sudo apt-get install -y keepalived gettext-base git
+git clone https://github.com/dom133/Syslytics.git ~/syslog_gui 2>/dev/null || (cd ~/syslog_gui && git pull)
+cd ~/syslog_gui
+
+export STATE=BACKUP PRIORITY=100 \
+       MY_IP=10.0.0.22 \
+       PEER_IPS="        10.0.0.21" \
+       VIP=10.0.0.100 VIP_CIDR=24 INTERFACE=eth0 \
+       VRRP_AUTH_PASS=<the-same-8-char-pass>
+
+envsubst < keepalived/keepalived.conf.tpl | sudo tee /etc/keepalived/keepalived.conf > /dev/null
+sudo cp keepalived/check_rsyslog.sh /etc/keepalived/check_rsyslog.sh
+sudo chmod +x /etc/keepalived/check_rsyslog.sh
+sudo systemctl enable --now keepalived
+```
+
+Confirm the VIP came up on the MASTER (`app1`):
+
+```bash
+ip -br addr show eth0   # should list 10.0.0.100 on app1, not on app2
+```
+
+For a third/fourth edge node, repeat the `app2` block with a unique lower `PRIORITY` (e.g. `90`, `80`) and `PEER_IPS` listing every *other* edge node's IP, one per indented line.
+
+Finally, point syslog senders at the VIP (`10.0.0.100:514`, tcp or udp) and, if you're routing browser/API traffic through it too, point clients/DNS at the same VIP for `80`/`443`.
 
 #### 12. First login
 
