@@ -38,6 +38,7 @@ type LogFilterOptions struct {
 	Devices         []string
 	HasFields       bool
 	RequiredParsers []string
+	FieldFilters    []model.FieldFilter
 }
 
 func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) {
@@ -111,6 +112,75 @@ func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) 
 		clauses = append(clauses, fmt.Sprintf("matched_parsers && $%d::text[]", idx))
 		args = append(args, pq.Array(opts.RequiredParsers))
 		idx++
+	}
+
+	// Dynamic field filters for parsed_fields and static columns
+	if len(opts.FieldFilters) > 0 {
+		staticFields := map[string]bool{
+			"hostname": true, "fromhost_ip": true, "severity": true,
+			"app_name": true, "facility": true, "process_id": true,
+			"msg_id": true, "message": true, "raw_message": true,
+		}
+		for _, ff := range opts.FieldFilters {
+			fieldCol := ff.Field
+			if !staticFields[fieldCol] {
+				fieldCol = fmt.Sprintf("parsed_fields->>'%s'", strings.ReplaceAll(ff.Field, "'", "''"))
+			}
+			op := ff.Operator
+			if op == "" {
+				op = "eq"
+			}
+			switch op {
+			case "eq":
+				clauses = append(clauses, fmt.Sprintf("%s = $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			case "neq":
+				clauses = append(clauses, fmt.Sprintf("%s <> $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			case "contains":
+				clauses = append(clauses, fmt.Sprintf("%s ILIKE $%d", fieldCol, idx))
+				args = append(args, "%"+ff.Values[0]+"%")
+				idx++
+			case "in":
+				placeholders := make([]string, len(ff.Values))
+				for i, v := range ff.Values {
+					placeholders[i] = fmt.Sprintf("$%d", idx)
+					args = append(args, v)
+					idx++
+				}
+				clauses = append(clauses, fmt.Sprintf("%s IN (%s)", fieldCol, strings.Join(placeholders, ", ")))
+			case "notin":
+				placeholders := make([]string, len(ff.Values))
+				for i, v := range ff.Values {
+					placeholders[i] = fmt.Sprintf("$%d", idx)
+					args = append(args, v)
+					idx++
+				}
+				clauses = append(clauses, fmt.Sprintf("%s NOT IN (%s)", fieldCol, strings.Join(placeholders, ", ")))
+			case "startswith":
+				clauses = append(clauses, fmt.Sprintf("%s ILIKE $%d", fieldCol, idx))
+				args = append(args, ff.Values[0]+"%")
+				idx++
+			case "endswith":
+				clauses = append(clauses, fmt.Sprintf("%s ILIKE $%d", fieldCol, idx))
+				args = append(args, "%"+ff.Values[0])
+				idx++
+			case "gt":
+				clauses = append(clauses, fmt.Sprintf("%s > $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			case "lt":
+				clauses = append(clauses, fmt.Sprintf("%s < $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			default:
+				clauses = append(clauses, fmt.Sprintf("%s = $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			}
+		}
 	}
 
 	return clauses, args, idx

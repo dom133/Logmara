@@ -322,6 +322,7 @@ func resolveDashboardFilters(db *sql.DB, c *gin.Context) (*model.DashboardConfig
 		Search:          firstNonEmpty(c.DefaultQuery("search", ""), cfg.Filters.Search),
 		Devices:         cfg.Devices,
 		RequiredParsers: requiredParsers,
+		FieldFilters:    cfg.Filters.FieldFilters,
 	}
 
 	// A device narrowed down via the live filter must stay within the

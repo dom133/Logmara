@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, message, Popconfirm, Typography, List, Spin } from 'antd'
 import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
-import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardConfig, ParsedField } from '../services/api'
+import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardConfig, ParsedField, FieldFilter } from '../services/api'
 import { getDevices, getParsedFields, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import { useAuth } from '../services/auth'
+import DashboardFieldFilters from '../components/DashboardFieldFilters'
 import { getErrorMessage } from '../utils/error'
 
 const { Title } = Typography
@@ -428,6 +429,14 @@ export default function DashboardsPage() {
                 <Form.Item name={['config', 'filters', 'search']} noStyle>
                   <Input placeholder="Filter by keyword in message/hostname" />
                 </Form.Item>
+              </Form.Item>
+            </Space>
+          </Form.Item>
+
+          <Form.Item label="Field Filters">
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Form.Item name={['config', 'filters', 'fieldFilters']} noStyle>
+                <DashboardFieldFilters availableFields={allFields.map(f => f.name)} />
               </Form.Item>
             </Space>
           </Form.Item>
