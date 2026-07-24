@@ -23,6 +23,7 @@ export POSTGRES_USER="${POSTGRES_USER:-syslog}"
 export POSTGRES_DB="${POSTGRES_DB:-syslog_db}"
 
 mkdir -p /home/postgres/pgdata
+chown postgres:postgres /home/postgres
 chown -R postgres:postgres /home/postgres/pgdata
 
 envsubst < /patroni.yml.tpl > /patroni.yml
