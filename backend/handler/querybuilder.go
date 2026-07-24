@@ -16,6 +16,14 @@ import (
 	"github.com/lib/pq"
 )
 
+// filteredQueryTimeout bounds queries that carry user-supplied field filters
+// (notably the "regex" operator, which runs as Postgres' backtracking `~` and
+// could otherwise be driven into catastrophic runtime by a crafted pattern).
+// lib/pq propagates context cancellation to the server as a query-cancel
+// request, so this caps the actual database-side work, not just the HTTP wait.
+// Deliberately generous so legitimate large scans still complete.
+const filteredQueryTimeout = 20 * time.Second
+
 func timedQuery(name string, fn func() error) error {
 	start := time.Now()
 	err := fn()
@@ -206,6 +214,9 @@ func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) 
 			case "is_not_empty":
 				clauses = append(clauses, fmt.Sprintf("(%s IS NOT NULL AND %s != '')", fieldCol, fieldCol))
 			default:
+				if len(ff.Values) == 0 {
+					continue
+				}
 				clauses = append(clauses, fmt.Sprintf("%s = $%d", fieldCol, idx))
 				args = append(args, ff.Values[0])
 				idx++

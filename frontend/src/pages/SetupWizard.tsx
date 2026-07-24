@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Layout, Card, Form, Input, Button, message, Typography, Steps, Space, Divider, Switch, Checkbox, Spin, Select } from 'antd'
+import { Layout, Card, Form, Input, Button, message, Typography, Steps, Space, Divider, Switch, Checkbox, Spin, Select, Alert } from 'antd'
 import { UploadOutlined, CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons'
-import { generateKeys, initialize, getDbConfig, testDbConfig, testLDAPConnection, InitRequest } from '../services/api'
+import { checkInitialized, initialize, getDbConfig, testDbConfig, testLDAPConnection, InitRequest } from '../services/api'
 import { getErrorMessage } from '../utils/error'
 
 const { Title, Text } = Typography
@@ -14,6 +14,11 @@ export default function SetupWizard() {
   const [loading, setLoading] = useState(false)
   const [configLoaded, setConfigLoaded] = useState(false)
   const [dbConfigured, setDbConfigured] = useState(false)
+  // Whether the server already has JWT_SECRET + ENCRYPTION_KEY in its
+  // environment. When true (the expected production case) the wizard skips the
+  // key step entirely; when false it shows a blocking notice, since keys are
+  // env-only and can't be entered here.
+  const [keysConfigured, setKeysConfigured] = useState(true)
   const [dbTestStatus, setDbTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle')
   const [dbTestMessage, setDbTestMessage] = useState('')
   const [ldapTestStatus, setLdapTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle')
@@ -27,8 +32,6 @@ export default function SetupWizard() {
     db_name: '',
     db_user: '',
     db_password: '',
-    jwt_secret: '',
-    encryption_key: '',
     cors_origins: '',
     ldap_enabled: false,
     ldap_server: '',
@@ -48,6 +51,9 @@ export default function SetupWizard() {
   const navigate = useNavigate()
 
   useEffect(() => {
+    checkInitialized()
+      .then((s) => setKeysConfigured(s.keys_configured !== false))
+      .catch(() => setKeysConfigured(true))
     getDbConfig().then((dbConfig) => {
       if (!dbConfig.configured && (dbConfig.host || dbConfig.name || dbConfig.user)) {
         form.setFieldsValue({
@@ -78,25 +84,15 @@ export default function SetupWizard() {
     { key: 'optional', title: 'Optional Settings', description: 'LDAP & CORS configuration' },
     { key: 'review', title: 'Review & Submit', description: 'Confirm and initialize' },
   ]
-  const steps = dbConfigured ? allSteps.filter(s => s.key !== 'database') : allSteps
+  const steps = allSteps.filter(s => {
+    if (s.key === 'database' && dbConfigured) return false
+    // Security keys come from the server environment. Only surface the step
+    // when they're missing (as a blocking notice) - never as an input.
+    if (s.key === 'security' && keysConfigured) return false
+    return true
+  })
   const stepKey = steps[current]?.key
   const lastStep = steps.length - 1
-
-  const handleGenerateKeys = async () => {
-    setLoading(true)
-    try {
-      const keys = await generateKeys()
-      form.setFieldsValue({
-        jwt_secret: keys.jwt_secret,
-        encryption_key: keys.encryption_key,
-      })
-      setCollectedData(prev => ({ ...prev, jwt_secret: keys.jwt_secret, encryption_key: keys.encryption_key }))
-      message.success('Keys generated')
-    } catch (e) {
-      message.error('Failed to generate keys')
-    }
-    setLoading(false)
-  }
 
   const handleTestDb = async () => {
     try {
@@ -169,8 +165,6 @@ export default function SetupWizard() {
         user: collectedData.db_user || '',
         password: collectedData.db_password || '',
       },
-      jwt_secret: collectedData.jwt_secret,
-      encryption_key: collectedData.encryption_key,
       cors_origins: collectedData.cors_origins || undefined,
       ldap: collectedData.ldap_enabled ? {
         enabled: collectedData.ldap_enabled,
@@ -225,14 +219,9 @@ export default function SetupWizard() {
         message.error('Please fill in all required fields')
       }
     } else if (stepKey === 'security') {
-      try {
-        await form.validateFields(['jwt_secret', 'encryption_key'])
-        const values = form.getFieldsValue(['jwt_secret', 'encryption_key'])
-        setCollectedData(prev => ({ ...prev, ...values }))
-        setCurrent(current + 1)
-      } catch {
-        message.error('Please fill in all required fields')
-      }
+      // Only reached when keys are missing from the environment; the operator
+      // must set them and restart, so there is nothing to advance to.
+      message.error('Set JWT_SECRET and ENCRYPTION_KEY in the server environment, then restart')
     } else if (stepKey === 'optional') {
       const values = form.getFieldsValue([
         'cors_origins', 'ldap_enabled', 'ldap_server', 'ldap_port',
@@ -327,22 +316,26 @@ export default function SetupWizard() {
         )
       case 'security':
         return (
-          <>
-            <Form.Item name="jwt_secret" label="JWT Secret" rules={[{ required: true, min: 16 }]}>
-              <Input.Password size="large" placeholder="32+ character secret key" />
-            </Form.Item>
-            <Form.Item name="encryption_key" label="Encryption Key" rules={[{ required: true, min: 16 }]}>
-              <Input.Password size="large" placeholder="32+ character encryption key" />
-            </Form.Item>
-            <Button
-              type="primary"
-              onClick={handleGenerateKeys}
-              loading={loading}
-              style={{ marginBottom: 16, width: '100%' }}
-            >
-              Generate Both Keys
-            </Button>
-          </>
+          <Alert
+            type="warning"
+            showIcon
+            message="Security keys are not configured"
+            description={
+              <>
+                <p style={{ marginTop: 0 }}>
+                  This server has no <code>JWT_SECRET</code> and/or <code>ENCRYPTION_KEY</code> in its
+                  environment. For security these keys are never stored in the database, so they
+                  can't be entered here.
+                </p>
+                <p style={{ marginBottom: 0 }}>
+                  Generate each one (e.g. <code>openssl rand -base64 48</code>), set them via the
+                  <code> JWT_SECRET</code> and <code>ENCRYPTION_KEY</code> environment variables
+                  (or their <code>*_FILE</code> equivalents), restart the server, then reload this
+                  page. See the README "Security keys" section.
+                </p>
+              </>
+            }
+          />
         )
       case 'optional':
         return (
@@ -471,8 +464,7 @@ export default function SetupWizard() {
               </>
             )}
             <Title level={5}>Security</Title>
-            <Text><strong>JWT Secret:</strong> {'•'.repeat(Math.min(collectedData.jwt_secret?.length || 0, 32))} ({collectedData.jwt_secret?.length || 0} chars)</Text><br />
-            <Text><strong>Encryption Key:</strong> {'•'.repeat(Math.min(collectedData.encryption_key?.length || 0, 32))} ({collectedData.encryption_key?.length || 0} chars)</Text>
+            <Text type="success"><CheckCircleFilled /> JWT &amp; encryption keys loaded from the server environment</Text>
             <br />
             {collectedData.cors_origins && (
               <>
@@ -544,7 +536,7 @@ export default function SetupWizard() {
                   type="primary"
                   size="large"
                   loading={loading}
-                  disabled={(stepKey === 'database' && dbTestStatus !== 'success') || (stepKey === 'optional' && collectedData.ldap_enabled && ldapTestStatus !== 'success')}
+                  disabled={stepKey === 'security' || (stepKey === 'database' && dbTestStatus !== 'success') || (stepKey === 'optional' && collectedData.ldap_enabled && ldapTestStatus !== 'success')}
                   onClick={next}
                 >
                   {current === lastStep ? 'Initialize' : current === lastStep - 1 ? 'Review' : 'Next'}

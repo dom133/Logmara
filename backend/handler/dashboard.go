@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -479,9 +480,12 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			args = append(args, limitInt+1, offsetInt)
 		}
 
+		ctx, cancel := context.WithTimeout(c.Request.Context(), filteredQueryTimeout)
+		defer cancel()
+
 		var logs []model.SyslogLog
 		_ = timedQuery("dashboard_data_logs", func() error {
-			rows, err := db.Query(logsQuery, args...)
+			rows, err := db.QueryContext(ctx, logsQuery, args...)
 			if err != nil {
 				return err
 			}
@@ -527,9 +531,12 @@ func GetDashboardDataCount(db *sql.DB) gin.HandlerFunc {
 		whereClauses, args, _ := buildLogWhereClauses(opts)
 		whereSQL := buildWhereSQL(whereClauses)
 
+		ctx, cancel := context.WithTimeout(c.Request.Context(), filteredQueryTimeout)
+		defer cancel()
+
 		var total int64
 		_ = timedQuery("dashboard_data_count", func() error {
-			return db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL), args...).Scan(&total)
+			return db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL), args...).Scan(&total)
 		})
 
 		c.JSON(http.StatusOK, gin.H{"total": total})

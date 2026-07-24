@@ -82,9 +82,10 @@ cd syslog_gui
 cp .env.example .env
 ```
 
-Edit `.env` and set at least these before going anywhere near production — the defaults in `.env.example` are placeholders, not secrets:
+Edit `.env` and set at least these — the app **will not start** until the two security keys are set (they have no defaults, by design; see [Security keys](#security-keys)):
 - `POSTGRES_PASSWORD`
-- `JWT_SECRET` (e.g. `openssl rand -base64 48`)
+- `JWT_SECRET` — generate with `openssl rand -base64 48`
+- `ENCRYPTION_KEY` — generate with `openssl rand -base64 48` (use a *separate* value from `JWT_SECRET`)
 
 ### 4. Start it
 
@@ -102,7 +103,7 @@ docker compose logs -f     # follow logs if something looks wrong
 
 ### 5. First login
 
-Open `http://<server-ip>` in a browser and complete the Setup Wizard (creates the admin account and finalizes database/security settings). On subsequent launches, log in with the account you created there.
+Open `http://<server-ip>` in a browser and complete the Setup Wizard (creates the admin account and, if `DATABASE_URL` wasn't set, the database connection). The JWT and encryption keys are taken from the environment (step 3), so the wizard has no key step — if they're missing it shows a notice instead and initialization is blocked until you set them and restart. On subsequent launches, log in with the account you created there.
 
 ### Updating later
 
@@ -118,8 +119,8 @@ Copy `.env.example` and adjust values:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | *(none)* | PostgreSQL connection string. In `docker-compose.yml` this is always set. If unset, the API serves only the setup wizard until it's submitted with database settings, then connects and continues booting on its own |
-| `JWT_SECRET` | *(auto-generated)* | JWT signing key — set explicitly in production |
-| `ENCRYPTION_KEY` | *(auto-generated)* | AES-256 key for encrypting sensitive settings |
+| `JWT_SECRET` | *(required)* | JWT signing key (min 32 chars). Env-only, never stored in the DB. Also accepts `JWT_SECRET_FILE`. See [Security keys](#security-keys) |
+| `ENCRYPTION_KEY` | *(required)* | AES-256 key for encrypting sensitive settings (SMTP/LDAP passwords, channel secrets). Env-only, never stored in the DB. Also accepts `ENCRYPTION_KEY_FILE` |
 | `PORT` | `8080` | API server port |
 | `LOG_FILE_PATH` | `/data/logs.jsonl` | Path to rsyslog JSON output |
 | `CORS_ORIGINS` | *(none)* | Comma-separated allowed origins for CORS. Only seeds the initial value in the database on first initialization — afterwards it's managed from the admin Settings UI |
@@ -132,6 +133,49 @@ Copy `.env.example` and adjust values:
 | `LDAP_BIND_DN` | *(none)* | Bind DN for LDAP queries |
 | `LDAP_BIND_PASSWORD` | *(none)* | Bind password for LDAP queries |
 | `DOCKER_PROXY_URL` | `http://docker-proxy:2375` | Base URL of the `docker-proxy` sidecar backing Admin > Health — see [Health Monitoring](#health-monitoring) |
+
+### Security keys
+
+Syslytics uses two secrets that are read **only from the environment** and are **never written to the database**:
+
+- **`JWT_SECRET`** — signs session tokens. Anyone who has it can forge a login for any user.
+- **`ENCRYPTION_KEY`** — AES-256 key that encrypts sensitive settings at rest (SMTP/LDAP bind passwords, notification-channel secrets).
+
+Keeping them out of the database is deliberate: it means a database dump on its own can neither forge tokens nor decrypt stored credentials — the attacker would also need the environment. Because of this, **there is no auto-generation and no setup-wizard step for them** — you generate them yourself before the first start, and the app refuses to start (or to finish first-time setup) until both are present.
+
+**Generate them** (use a *different* value for each; minimum 32 characters):
+
+```bash
+openssl rand -base64 48   # use the output as JWT_SECRET
+openssl rand -base64 48   # run again, use the output as ENCRYPTION_KEY
+```
+
+**Single-server (`docker-compose.yml`)** — put both in `.env`:
+
+```bash
+echo "JWT_SECRET=$(openssl rand -base64 48)"     >> .env
+echo "ENCRYPTION_KEY=$(openssl rand -base64 48)" >> .env
+```
+
+**High Availability (`docker-stack.*.yml`)** — export them in the shell you run `docker stack deploy` from (or keep them in the same `.env` you source), so every node's `api` replica receives them:
+
+```bash
+export JWT_SECRET=$(openssl rand -base64 48)
+export ENCRYPTION_KEY=$(openssl rand -base64 48)
+```
+
+**File-based secrets (optional)** — instead of the plain env var, point `JWT_SECRET_FILE` / `ENCRYPTION_KEY_FILE` at a mounted file (e.g. a Docker/Swarm secret at `/run/secrets/jwt_secret`). The value is read from the file, trimmed of trailing newlines. This keeps the secret off the process environment (which leaks via `docker inspect` and `/proc`).
+
+> [!IMPORTANT]
+> Keep both values **stable**. Changing `JWT_SECRET` logs everyone out; changing `ENCRYPTION_KEY` makes every previously-encrypted setting unreadable (you'd have to re-enter SMTP/LDAP passwords and channel secrets).
+
+> [!NOTE]
+> **Upgrading an older install** that let the app auto-generate these into the database? Before updating, copy the existing values out into your environment so sessions and encrypted settings keep working:
+> ```bash
+> docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+>   "SELECT key || '=' || value FROM app_settings WHERE key IN ('jwt_secret','encryption_key')"
+> ```
+> Put the two printed values into `.env` as `JWT_SECRET=` / `ENCRYPTION_KEY=`, then `docker compose up -d --build`. The old rows left in `app_settings` are ignored from then on and can be deleted.
 
 ## High Availability Deployment (Multi-Node, Optional)
 
@@ -350,6 +394,7 @@ Still on `pg1` (or wherever you're driving `docker stack deploy` from), export t
 export REGISTRY=registry.example.com/syslytics TAG=v1
 export NFS_SERVER=10.0.0.30
 export JWT_SECRET=$(openssl rand -base64 48)
+export ENCRYPTION_KEY=$(openssl rand -base64 48)   # separate value; see "Security keys"
 export POSTGRES_PASSWORD="$PG_APP_PASS"      # from step 7
 export REDIS_PASSWORD="$REDIS_PASS"          # from step 7
 

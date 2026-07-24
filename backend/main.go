@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"syslytics/parser"
 	"syslytics/sharedstate"
 	"syslytics/tailer"
+	"syslytics/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -381,6 +383,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The encryption key (like the JWT secret validated by auth.Init above)
+	// comes only from the environment and is never stored in the database, so
+	// a database dump alone can't decrypt stored SMTP/LDAP credentials. Fail
+	// fast if it's missing rather than silently returning ciphertext later.
+	if util.SecretFromEnv("ENCRYPTION_KEY") == "" {
+		slog.Error("ENCRYPTION_KEY is not set; generate one (e.g. `openssl rand -base64 48`) and provide it via ENCRYPTION_KEY or ENCRYPTION_KEY_FILE - see README")
+		os.Exit(1)
+	}
+
 	engine := parser.NewEngine(database)
 	ic := control.New(ctx, sharedClient)
 
@@ -453,6 +464,7 @@ func main() {
 	}()
 
 r := gin.New()
+	configureTrustedProxies(r)
 	r.Use(gin.Recovery())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.ErrorHandler())
@@ -480,7 +492,7 @@ r := gin.New()
 	r.GET("/api/status/initialized", handler.CheckInitialized(database))
 	r.POST("/api/init", middleware.RequireJSON(), middleware.MaxRequestBodySize(8*1024), rateLimitMiddleware(initLimiter), handler.Initialize(database))
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
-	r.GET("/api/init/db-config", handler.GetDbConfig())
+	r.GET("/api/init/db-config", handler.GetDbConfig(database))
 
 	authGroup := r.Group("/api")
 	authGroup.Use(authCfg.JWTRequired())
@@ -642,6 +654,7 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	ready := make(chan *sql.DB, 1)
 
 	r := gin.New()
+	configureTrustedProxies(r)
 	r.Use(gin.Recovery())
 	r.Use(middleware.ErrorHandler())
 	r.Use(middleware.SecurityHeaders())
@@ -652,7 +665,7 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	r.GET("/api/health", handler.HealthCheckStandalone())
 	r.GET("/api/status/initialized", handler.CheckInitializedStandalone())
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
-	r.GET("/api/init/db-config", handler.GetDbConfig())
+	r.GET("/api/init/db-config", handler.GetDbConfig(nil))
 	r.POST("/api/init/test-db", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(testDbLimiter), handler.TestDatabaseConfig())
 	r.POST("/api/init", middleware.RequireJSON(), middleware.MaxRequestBodySize(8*1024), rateLimitMiddleware(initLimiter), handler.InitializeStandalone(ready))
 
@@ -682,6 +695,42 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	}
 
 	return database
+}
+
+// defaultTrustedProxies covers the private/loopback ranges a reverse proxy
+// (this app's own nginx frontend, plus any Docker bridge/overlay network)
+// realistically sits in. It intentionally does NOT include public ranges, so
+// a client reaching nginx from the internet cannot spoof its source IP via
+// X-Forwarded-For: nginx appends the real (public) peer address, which falls
+// outside these ranges and is therefore what c.ClientIP() returns.
+var defaultTrustedProxies = []string{
+	"127.0.0.1/8", "::1/128",
+	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",
+}
+
+// configureTrustedProxies replaces Gin's insecure default (trust every proxy,
+// which makes X-Forwarded-For fully client-controlled) with an explicit list.
+// Override with TRUSTED_PROXIES (comma-separated CIDRs or IPs) for deployments
+// whose proxy sits in a different range. Empty/"none" disables proxy trust
+// entirely, so the direct TCP peer is always used as the client IP.
+func configureTrustedProxies(r *gin.Engine) {
+	proxies := defaultTrustedProxies
+	if v := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); v != "" {
+		if strings.EqualFold(v, "none") {
+			proxies = nil
+		} else {
+			proxies = nil
+			for _, p := range strings.Split(v, ",") {
+				if p = strings.TrimSpace(p); p != "" {
+					proxies = append(proxies, p)
+				}
+			}
+		}
+	}
+	if err := r.SetTrustedProxies(proxies); err != nil {
+		slog.Error("failed to set trusted proxies; falling back to trusting none", "error", err)
+		_ = r.SetTrustedProxies(nil)
+	}
 }
 
 func rateLimitMiddleware(rl RateLimiter) gin.HandlerFunc {
