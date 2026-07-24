@@ -136,7 +136,7 @@ services:
     volumes:
       - type: bind
         source: /srv/syslog-ha/pg
-        target: /home/postgres/pgdata
+        target: /home/postgres
     healthcheck: *patroni-healthcheck
     logging: *patroni-logging
     depends_on: [etcd1, etcd2, etcd3]
@@ -161,7 +161,7 @@ services:
     volumes:
       - type: bind
         source: /srv/syslog-ha/pg
-        target: /home/postgres/pgdata
+        target: /home/postgres
     healthcheck: *patroni-healthcheck
     logging: *patroni-logging
     depends_on: [etcd1, etcd2, etcd3]
@@ -186,7 +186,7 @@ services:
     volumes:
       - type: bind
         source: /srv/syslog-ha/pg
-        target: /home/postgres/pgdata
+        target: /home/postgres
     healthcheck: *patroni-healthcheck
     logging: *patroni-logging
     depends_on: [etcd1, etcd2, etcd3]
