@@ -506,7 +506,7 @@ r := gin.New()
 		// hides itself. mark-read is harmless either way.
 		authGroup.GET("/notifications", handler.GetNotifications(database))
 		authGroup.POST("/notifications/mark-read", handler.MarkNotificationsRead(database))
-		authGroup.GET("/notifications/stream", notificationsGate, handler.StreamNotifications(notifHub))
+		authGroup.GET("/notifications/stream", notificationsGate, handler.StreamNotifications(notifHub, database))
 
 		authGroup.GET("/push/vapid-public-key", notificationsGate, handler.GetVAPIDPublicKey(database))
 		authGroup.POST("/push/subscribe", notificationsGate, handler.SubscribePush(database))

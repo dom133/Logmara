@@ -781,7 +781,7 @@ export async function revokeRelayCertificate(id: number) {
 
 // --- Alerts & Notifications ---
 
-export type AlertRuleType = 'log_threshold' | 'device_silence' | 'config_change' | 'relay_cert_expiring'
+export type AlertRuleType = 'log_threshold' | 'device_silence' | 'audit_log' | 'relay_cert_expiring'
 export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app' | 'push'
 export type FieldConditionOperator = 'equals' | 'contains' | 'not_equals' | 'regex'
 
@@ -910,6 +910,14 @@ export interface TriggerLogSnapshot {
 	message: string
 }
 
+export interface AuditLogRef {
+	action: string
+	username: string
+	user_ip: string
+	details: string
+	timestamp: string
+}
+
 export interface NotificationLogEntry {
 	id: number
 	alert_id?: number
@@ -921,6 +929,8 @@ export interface NotificationLogEntry {
 	status: 'sent' | 'partial' | 'failed' | 'no_channel'
 	detail?: string
 	trigger_log?: TriggerLogSnapshot
+	audit_log_ref?: AuditLogRef
+	rule_type: string
 	in_app_notification_id?: number
 	matched_conditions?: string[]
 	created_at: string

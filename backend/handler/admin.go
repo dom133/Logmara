@@ -147,6 +147,12 @@ func UpdateUser(database *sql.DB) gin.HandlerFunc {
 			}
 		}
 
+		oldUser, err := db.GetUserByID(database, id)
+		if err != nil {
+			middleware.HandleError(c, model.NewBadRequest("User not found", err))
+			return
+		}
+
 		user, err := db.UpdateUser(database, id, req.Role, req.IsActive)
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequest("Failed to update user", err))
@@ -154,7 +160,18 @@ func UpdateUser(database *sql.DB) gin.HandlerFunc {
 		}
 
 		actorID, actorName := actorFromContext(c)
-		audit.LogAudit(database, actorID, actorName, "user_updated", c.ClientIP(), fmt.Sprintf("updated user %s", user.Username))
+		var changes []string
+		if req.Role != nil && oldUser.Role != *req.Role {
+			changes = append(changes, fmt.Sprintf("role: %s -> %s", oldUser.Role, *req.Role))
+		}
+		if req.IsActive != nil && oldUser.IsActive != *req.IsActive {
+			changes = append(changes, fmt.Sprintf("is_active: %v -> %v", oldUser.IsActive, *req.IsActive))
+		}
+		details := fmt.Sprintf("updated user %s", user.Username)
+		if len(changes) > 0 {
+			details += fmt.Sprintf(" | changes: %s", strings.Join(changes, ", "))
+		}
+		audit.LogAudit(database, actorID, actorName, "user_updated", c.ClientIP(), details)
 		c.JSON(http.StatusOK, user)
 	}
 }
@@ -315,6 +332,12 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 			}
 		}
 
+		// Capture old values BEFORE updating
+		oldValues := make(map[string]string)
+		for k := range settings {
+			oldValues[k] = db.GetSetting(database, k, "<unset>")
+		}
+
 		for k, v := range settings {
 			if err := db.UpdateSetting(database, k, v); err != nil {
 				middleware.HandleError(c, model.NewBadRequest("Failed to update setting: "+k, err))
@@ -322,8 +345,34 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 			}
 		}
 
+		// List of sensitive setting keys - never log their values
+		sensitiveKeys := map[string]bool{
+			"smtp_password": true, "ldap_bind_password": true,
+			"jwt_secret": true, "encryption_key": true,
+			"db_password": true, "redis_password": true,
+		}
+
+		// Build audit details showing what changed
+		var changes []string
+		for k, v := range settings {
+			oldVal := oldValues[k]
+			if oldVal != v {
+				var change string
+				if sensitiveKeys[k] {
+					change = fmt.Sprintf("%s: (value hidden)", k)
+				} else {
+					change = fmt.Sprintf("%s: %q -> %q", k, oldVal, v)
+				}
+				changes = append(changes, change)
+			}
+		}
+		auditDetails := ""
+		if len(changes) > 0 {
+			auditDetails = strings.Join(changes, "; ")
+		}
+
 		actorID, actorName := actorFromContext(c)
-		audit.LogAudit(database, actorID, actorName, "settings_updated", c.ClientIP(), "")
+		audit.LogAudit(database, actorID, actorName, "settings_updated", c.ClientIP(), auditDetails)
 
 		nginxConfigChanged := oldHttpsEnabled != newHttpsEnabled || oldHttpsRedirect != newHttpsRedirect || oldCorsOrigins != newCorsOrigins
 

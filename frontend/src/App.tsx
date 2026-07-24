@@ -311,8 +311,9 @@ function AppLayout({ children }: { children: React.ReactNode }) {
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
+  const location = useLocation()
   if (loading) return null
-  if (!user) return <Navigate to="/login" replace />
+  if (!user) return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />
   return <AppLayout>{children}</AppLayout>
 }
 

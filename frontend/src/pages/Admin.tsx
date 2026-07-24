@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
+import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip, Drawer } from 'antd'
+import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined } from '@ant-design/icons'
 import { getUsers, createUser, updateUser, deleteUser, resetPassword, unlockUser, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, User, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
@@ -50,6 +50,8 @@ export default function Admin() {
   const [auditLogsLoading, setAuditLogsLoading] = useState(false)
   const [auditLogsOffset, setAuditLogsOffset] = useState(0)
   const [auditLogsFilters, setAuditLogsFilters] = useState<{ username: string; action: string; from: string; to: string }>({ username: '', action: '', from: '', to: '' })
+  const [auditDetailOpen, setAuditDetailOpen] = useState(false)
+  const [auditDetailRecord, setAuditDetailRecord] = useState<AuditLog | null>(null)
   const [activeTab, setActiveTab] = useState('users')
   const tabCacheRef = useRef<Map<string, { loadedAt: number }>>(new Map())
   const [, setLockoutTick] = useState(0)
@@ -204,6 +206,7 @@ await testLDAPConnection({
       })
       setAuditLogs(data.data)
       setAuditLogsTotal(data.total)
+      setAuditLogsOffset(offset)
     } catch {
       message.error('Failed to load audit logs')
     } finally {
@@ -1176,12 +1179,14 @@ const handleCleanup = async () => {
                 }
               >
                 <Space style={{ marginBottom: 16 }} wrap>
-                  <Input
+                  <Select
                     placeholder="Filter by username"
-                    value={auditLogsFilters.username}
-                    onChange={(e) => setAuditLogsFilters({ ...auditLogsFilters, username: e.target.value })}
+                    value={auditLogsFilters.username || undefined}
                     style={{ width: 180 }}
-                    onPressEnter={() => loadAuditLogs(0)}
+                    allowClear
+                    showSearch
+                    onChange={(val) => { setAuditLogsFilters({ ...auditLogsFilters, username: val || '' }); loadAuditLogs(0) }}
+                    options={users.map((u) => ({ label: u.username, value: u.username }))}
                   />
                   <Select
                     placeholder="Filter by action"
@@ -1223,7 +1228,17 @@ const handleCleanup = async () => {
                     { title: 'User', dataIndex: 'username', key: 'username', width: 150 },
                     { title: 'Action', dataIndex: 'action', key: 'action', width: 160, render: (v: string) => <Tag>{v.replace(/_/g, ' ')}</Tag> },
                     { title: 'IP', dataIndex: 'ip', key: 'ip', width: 140, render: (v: string | null) => v || '-' },
-                    { title: 'Details', dataIndex: 'details', key: 'details', ellipsis: true, render: (v: string | null) => v || '-' },
+                    {
+                      title: 'Details',
+                      key: 'details',
+                      width: 200,
+                      ellipsis: true,
+                      render: (_: unknown, record: AuditLog) => (
+                        <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => { setAuditDetailRecord(record); setAuditDetailOpen(true) }}>
+                          {record.details || '-'}
+                        </Button>
+                      ),
+                    },
                   ]}
                   dataSource={auditLogs}
                   loading={auditLogsLoading}
@@ -1329,6 +1344,23 @@ const handleCleanup = async () => {
           </Form.Item>
         </Form>
       </Modal>
+
+      <Drawer
+        title="Audit Log Details"
+        open={auditDetailOpen}
+        onClose={() => setAuditDetailOpen(false)}
+        width={520}
+      >
+        {auditDetailRecord && (
+          <Descriptions bordered column={1} size="small">
+            <Descriptions.Item label="Timestamp">{new Date(auditDetailRecord.created_at).toLocaleString()}</Descriptions.Item>
+            <Descriptions.Item label="User">{auditDetailRecord.username}</Descriptions.Item>
+            <Descriptions.Item label="Action">{auditDetailRecord.action.replace(/_/g, ' ')}</Descriptions.Item>
+            <Descriptions.Item label="IP">{auditDetailRecord.ip || '-'}</Descriptions.Item>
+            <Descriptions.Item label="Details">{auditDetailRecord.details || '-'}</Descriptions.Item>
+          </Descriptions>
+        )}
+      </Drawer>
     </div>
   )
 }

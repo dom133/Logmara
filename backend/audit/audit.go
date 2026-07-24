@@ -1,5 +1,5 @@
 // Package audit centralizes writes to the audit_log table so that every
-// audited action can also be checked against active config_change alert
+// audited action can also be checked against active audit_log alert
 // rules in one place, rather than wiring that check into each handler.
 package audit
 
@@ -21,7 +21,7 @@ func SetAlertEngine(e *alertengine.Engine) {
 	engine.Store(e)
 }
 
-// LogAudit records an entry in audit_log and, if a config_change alert rule
+// LogAudit records an entry in audit_log and, if an audit_log alert rule
 // matches action, fires it. Failures are logged, not returned - audit
 // logging must never block or fail the request that triggered it.
 func LogAudit(db *sql.DB, userID int64, username, action, ip, details string) {
@@ -35,7 +35,7 @@ func LogAudit(db *sql.DB, userID int64, username, action, ip, details string) {
 	}
 
 	if e := engine.Load(); e != nil {
-		e.EvaluateConfigChange(db, action, details)
+		e.EvaluateAuditLog(db, action, userID, username, ip, details)
 	}
 }
 

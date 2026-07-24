@@ -1,6 +1,6 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Layout, Card, Form, Input, Button, message, Typography } from 'antd'
 import { useAuth } from '../services/auth'
 import { useTheme } from '../App'
@@ -12,10 +12,18 @@ export default function Login() {
   const { login, user } = useAuth()
   const { themeMode } = useTheme()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const redirectPath = useMemo(() => {
+    const redirect = searchParams.get('redirect')
+    if (redirect && redirect.startsWith('/') && !['/login', '/setup'].includes(redirect)) {
+      return redirect
+    }
+    return '/'
+  }, [searchParams])
 
   useEffect(() => {
     if (user) {
-      navigate('/', { replace: true })
+      navigate(redirectPath, { replace: true })
     }
   }, [user, navigate])
 
@@ -25,7 +33,7 @@ export default function Login() {
     setLoading(false)
     if (result.ok) {
       message.success('Logged in successfully')
-      navigate('/')
+      navigate(redirectPath)
     } else {
       message.error(result.error || 'Invalid credentials')
     }

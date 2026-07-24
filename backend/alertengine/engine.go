@@ -248,16 +248,16 @@ func describeMatchedConditions(rule model.Alert, entry model.IngestEntry) []stri
 	return lines
 }
 
-// EvaluateConfigChange fires any active config_change alert rule whose
+// EvaluateAuditLog fires any active audit_log alert rule whose
 // AuditActionFilter matches (or is empty, meaning "any action"). Unlike
-// log_threshold rules, config changes have no count/window - each matching
-// action fires immediately, subject only to the rule's cooldown.
-func (e *Engine) EvaluateConfigChange(database *sql.DB, action, details string) {
+// log_threshold rules, audit log events have no count/window - each
+// matching action fires immediately, subject only to the rule's cooldown.
+func (e *Engine) EvaluateAuditLog(database *sql.DB, action string, userID int64, username, ip, details string) {
 	if db.GetSetting(database, "notifications_enabled", "true") != "true" {
 		return
 	}
 
-	rules, err := db.GetActiveAlertsByType(database, model.RuleTypeConfigChange)
+	rules, err := db.GetActiveAlertsByType(database, model.RuleTypeAuditLog)
 	if err != nil || len(rules) == 0 {
 		return
 	}
@@ -279,9 +279,10 @@ func (e *Engine) EvaluateConfigChange(database *sql.DB, action, details string) 
 			conditionDesc = fmt.Sprintf("Audit action matches: %s", rule.AuditActionFilter)
 		}
 		e.dispatcher.DispatchAlert(rule, notify.Payload{
-			Title:             fmt.Sprintf("Config change: %s", action),
+			Title:             fmt.Sprintf("Audit log: %s", action),
 			Message:           fmt.Sprintf("Action '%s' was performed. %s", action, details),
 			Severity:          "warning",
+			AuditLogRef:       &model.AuditLogRef{Timestamp: time.Now().UTC().Format(time.RFC3339), Action: action, Username: username, UserIP: ip, Details: details},
 			MatchedConditions: []string{conditionDesc, fmt.Sprintf("Action performed: %s", action)},
 		})
 	}

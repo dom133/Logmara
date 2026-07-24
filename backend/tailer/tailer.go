@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -20,6 +21,11 @@ import (
 	"syslytics/parser"
 	"syslytics/sharedstate"
 )
+
+// truncatedISORe matches app_name values that are actually truncated ISO 8601
+// timestamps (e.g. "2026-07-23T20") caused by rsyslog mis-parsing non-RFC3164
+// syslog headers from certain UniFi devices.
+var truncatedISORe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}$`)
 
 const (
 	compactionInterval = 30 * time.Minute
@@ -205,11 +211,20 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 				}
 			}
 
-			if entry.Hostname == "" {
-				continue
-			}
+if entry.Hostname == "" {
+			continue
+		}
 
-			appName := entry.AppName
+		// Fix rsyslog mis-parse: when a device sends an ISO 8601 timestamp in its
+		// syslog header (non-RFC3164), rsyslog treats the truncated date part
+		// (e.g. "2026-07-23T20") as programname and the rest ("11:40.246Z ...")
+		// as the message. Restore the original message by merging them back.
+		if truncatedISORe.MatchString(entry.AppName) {
+			entry.Message = entry.AppName + ":" + entry.Message
+			entry.AppName = ""
+		}
+
+		appName := entry.AppName
 			result := engine.Parse(entry.Hostname, appName, entry.Message)
 			if result != nil {
 				jsonData, err := json.Marshal(result.Fields)
