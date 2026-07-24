@@ -289,7 +289,27 @@ sudo apt-get install -y nfs-common
 
 #### 4. Clone the repo and build/push images
 
-Pick one manager (`pg1` here) as your "control" node — everywhere below that says "run on a manager", run it there, over SSH, against `pg1`'s local Docker socket. You'll also need a container registry every node can pull from (private registry, GHCR, ECR, etc.).
+Pick one manager (`pg1` here) as your "control" node — everywhere below that says "run on a manager", run it there, over SSH, against `pg1`'s local Docker socket. You'll also need a container image registry every node can pull from.
+
+**Registry options:**
+- A managed registry (GHCR, ECR, Docker Hub, ...) — simplest if your nodes have internet access. `docker login` on every node, add `--with-registry-auth` to the `docker stack deploy` commands later.
+- A private `registry:2` container, if they don't. Run it **on a Postgres/manager node (`pg1`-`pg3`), never on `app1`/`app2`** — `docker-stack.app.yml`'s `haproxy` service publishes port `5000` in `mode: host` on every `app=true` node, and the stock `registry:2` image also defaults to port `5000`; running both on the same node means whichever starts second fails to bind the port and gets stuck at a reduced replica count.
+
+  On `pg1`:
+  ```bash
+  sudo mkdir -p /srv/syslog-ha/registry
+  docker run -d --name registry --restart=always -p 5000:5000 \
+    -v /srv/syslog-ha/registry:/var/lib/registry registry:2
+  ```
+
+  This serves plain HTTP (no TLS), so every node that builds or pulls images needs to be told to trust it — on **every** swarm node (`pg1`-`pg3`, `app1`-`app2`):
+  ```bash
+  echo '{ "insecure-registries": ["<pg1-ip>:5000"] }' | sudo tee /etc/docker/daemon.json
+  sudo systemctl restart docker
+  ```
+  If `/etc/docker/daemon.json` already has other content, merge the key in by hand instead of overwriting the file. Verify with `docker info --format '{{.RegistryConfig.IndexConfigs}}'` — it should list `<pg1-ip>:5000` with `Secure:false`.
+
+  Use `REGISTRY=<pg1-ip>:5000/syslytics` in place of `registry.example.com/syslytics` everywhere below.
 
 ```bash
 ssh pg1
@@ -385,6 +405,21 @@ watch docker service ls   # wait for redis1/2/3 and sentinel1/2/3 at 1/1
 ```
 
 Sanity-check leader election worked: `docker exec -it $(docker ps -qf name=syslog-pg_postgres1) curl -s localhost:8008/` should show `"role": "master"` on exactly one of `postgres1/2/3`.
+
+**Troubleshooting: a replica is stuck at `0/1` and never joins.** `docker service logs syslog-pg_postgres<N>` repeatedly shows `bootstrap from leader '...' in progress` followed by `Cancelling long running task` and `pg_basebackup exited with code=-15` every ~30-40s. This isn't the replica's own network or disk — a raw `iperf3`/`dd` test between the same two hosts will look perfectly healthy. Two things worth checking, in order:
+
+1. **Stuck replication backends on the leader.** After several failed/killed bootstrap attempts, check for backends that never got cleaned up:
+   ```bash
+   docker exec $(docker ps -qf name=syslog-pg_postgres<leader>) sh -c \
+     'PGPASSWORD=$(cat /run/secrets/pg_superuser_password) psql -U postgres -h localhost \
+      -c "SELECT pid, application_name, client_addr, state, wait_event FROM pg_stat_activity WHERE usename='"'"'replicator'"'"';"'
+   ```
+   A backend sitting in `state=active`, `wait_event=ClientWrite` for far longer than a base backup should take means the client already gave up but the TCP connection was never torn down (the leader is still blocked trying to write to a socket nobody's reading). Terminate it and drop the now-stale slot before retrying:
+   ```sql
+   SELECT pg_terminate_backend(<pid>);
+   SELECT pg_drop_replication_slot('postgres<N>');
+   ```
+2. **Swarm's default VIP/IPVS service load-balancing stalling large transfers.** `docker-stack.postgres.yml` already sets `endpoint_mode: dnsrr` on `postgres1/2/3` for this reason — each is a single-replica, node-pinned service, so there's nothing lost by resolving the service name straight to its one task IP instead of routing through a virtual IP. `haproxy.cfg`'s `resolvers docker` block already re-resolves those names periodically, so it isn't affected by `dnsrr` lacking a stable IP. If you've changed that setting back to the default `vip` and see this symptom, that's the first thing to revert.
 
 #### 10. Deploy the app tier
 
