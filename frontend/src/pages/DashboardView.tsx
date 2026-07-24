@@ -164,6 +164,10 @@ export default function DashboardViewPage() {
   }
 
   useEffect(() => {
+    setFieldFilters([])
+  }, [dashboardId])
+
+  useEffect(() => {
     loadDashboard()
     loadDevices()
     const interval = setInterval(() => {

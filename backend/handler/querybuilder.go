@@ -126,10 +126,7 @@ func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) 
 			if !staticFields[fieldCol] {
 				fieldCol = fmt.Sprintf("parsed_fields->>'%s'", strings.ReplaceAll(ff.Field, "'", "''"))
 			}
-			op := ff.Operator
-			if op == "" {
-				op = "eq"
-			}
+			op := normalizeOperator(ff.Operator)
 			switch op {
 			case "eq":
 				clauses = append(clauses, fmt.Sprintf("%s = $%d", fieldCol, idx))
@@ -171,10 +168,30 @@ func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) 
 				clauses = append(clauses, fmt.Sprintf("%s > $%d", fieldCol, idx))
 				args = append(args, ff.Values[0])
 				idx++
+			case "gte":
+				clauses = append(clauses, fmt.Sprintf("%s >= $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
 			case "lt":
 				clauses = append(clauses, fmt.Sprintf("%s < $%d", fieldCol, idx))
 				args = append(args, ff.Values[0])
 				idx++
+			case "lte":
+				clauses = append(clauses, fmt.Sprintf("%s <= $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			case "not_contains":
+				clauses = append(clauses, fmt.Sprintf("%s NOT ILIKE $%d", fieldCol, idx))
+				args = append(args, "%"+ff.Values[0]+"%")
+				idx++
+			case "regex":
+				clauses = append(clauses, fmt.Sprintf("%s ~ $%d", fieldCol, idx))
+				args = append(args, ff.Values[0])
+				idx++
+			case "is_empty":
+				clauses = append(clauses, fmt.Sprintf("(%s IS NULL OR %s = '')", fieldCol, fieldCol))
+			case "is_not_empty":
+				clauses = append(clauses, fmt.Sprintf("(%s IS NOT NULL AND %s != '')", fieldCol, fieldCol))
 			default:
 				clauses = append(clauses, fmt.Sprintf("%s = $%d", fieldCol, idx))
 				args = append(args, ff.Values[0])
@@ -184,6 +201,24 @@ func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) 
 	}
 
 	return clauses, args, idx
+}
+
+func normalizeOperator(op string) string {
+	if op == "" {
+		return "eq"
+	}
+	switch op {
+	case "not_in":
+		return "notin"
+	case "starts_with":
+		return "startswith"
+	case "ends_with":
+		return "endswith"
+	case "not_contains":
+		return "not_contains"
+	default:
+		return op
+	}
 }
 
 func buildWhereSQL(clauses []string) string {

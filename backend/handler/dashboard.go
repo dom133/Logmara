@@ -325,6 +325,14 @@ func resolveDashboardFilters(db *sql.DB, c *gin.Context) (*model.DashboardConfig
 		FieldFilters:    cfg.Filters.FieldFilters,
 	}
 
+	// field_filters query param overrides config-level field filters
+	if ffStr := c.Query("field_filters"); ffStr != "" {
+		var ff []model.FieldFilter
+		if err := json.Unmarshal([]byte(ffStr), &ff); err == nil && len(ff) > 0 {
+			opts.FieldFilters = ff
+		}
+	}
+
 	// A device narrowed down via the live filter must stay within the
 	// dashboard's own device scope - otherwise a viewer of a public,
 	// multi-device dashboard could pass an arbitrary fromhost_ip and see
