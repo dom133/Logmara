@@ -332,6 +332,18 @@ func parsePagination(c *gin.Context, defaultLimit, maxLimit int) (int, int) {
 	return limitInt, offsetInt
 }
 
+func parsePaginationFromStrings(limitStr, offsetStr string, defaultLimit, maxLimit int) (int, int) {
+	limitInt, _ := strconv.Atoi(limitStr)
+	offsetInt, _ := strconv.Atoi(offsetStr)
+	if limitInt <= 0 || limitInt > maxLimit {
+		limitInt = defaultLimit
+	}
+	if offsetInt < 0 {
+		offsetInt = 0
+	}
+	return limitInt, offsetInt
+}
+
 func firstNonEmpty(a, b string) string {
 	if a != "" {
 		return a

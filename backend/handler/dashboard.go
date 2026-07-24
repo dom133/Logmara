@@ -285,13 +285,22 @@ func DeleteDashboard(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// resolveDashboardFilters loads a dashboard's config (enforcing the same
-// owner/public/admin visibility rule as every other dashboard endpoint) and
-// merges it with the live query-string overrides (search/severity/from/to),
-// returning filter options ready for buildLogWhereClauses. Shared by
-// GetDashboardData, GetDashboardDataCount and the dashboard export handlers
-// so the device/field scoping from cfg can't be forgotten in one of them.
+type DashboardFilterRequest struct {
+	Severity     string           `json:"severity"`
+	From         string           `json:"from"`
+	To           string           `json:"to"`
+	Search       string           `json:"search"`
+	FromHostIP   string           `json:"fromhost_ip"`
+	FieldFilters string           `json:"field_filters"`
+}
+
+// resolveDashboardFilters loads a dashboard's config and merges it with
+// the POST body overrides, returning filter options ready for
+// buildLogWhereClauses.
 func resolveDashboardFilters(db *sql.DB, c *gin.Context) (*model.DashboardConfig, LogFilterOptions, error) {
+	var req DashboardFilterRequest
+	_ = c.ShouldBindJSON(&req)
+
 	id, err := parseIDParam(c.Param("id"))
 	if err != nil {
 		return nil, LogFilterOptions{}, model.NewBadRequest("invalid id", nil)
@@ -316,28 +325,23 @@ func resolveDashboardFilters(db *sql.DB, c *gin.Context) (*model.DashboardConfig
 	}
 
 	opts := LogFilterOptions{
-		Severity:        firstNonEmpty(c.DefaultQuery("severity", ""), cfg.Filters.Severity),
-		From:            firstNonEmpty(c.DefaultQuery("from", ""), cfg.Filters.From),
-		To:              firstNonEmpty(c.DefaultQuery("to", ""), cfg.Filters.To),
-		Search:          firstNonEmpty(c.DefaultQuery("search", ""), cfg.Filters.Search),
+		Severity:        firstNonEmpty(req.Severity, cfg.Filters.Severity),
+		From:            firstNonEmpty(req.From, cfg.Filters.From),
+		To:              firstNonEmpty(req.To, cfg.Filters.To),
+		Search:          firstNonEmpty(req.Search, cfg.Filters.Search),
 		Devices:         cfg.Devices,
 		RequiredParsers: requiredParsers,
 		FieldFilters:    cfg.Filters.FieldFilters,
 	}
 
-	// field_filters query param overrides config-level field filters
-	if ffStr := c.Query("field_filters"); ffStr != "" {
+	if ffStr := req.FieldFilters; ffStr != "" {
 		var ff []model.FieldFilter
 		if err := json.Unmarshal([]byte(ffStr), &ff); err == nil && len(ff) > 0 {
 			opts.FieldFilters = ff
 		}
 	}
 
-	// A device narrowed down via the live filter must stay within the
-	// dashboard's own device scope - otherwise a viewer of a public,
-	// multi-device dashboard could pass an arbitrary fromhost_ip and see
-	// logs from a device the dashboard was never scoped to.
-	if fromHostIP := c.Query("fromhost_ip"); fromHostIP != "" {
+	if fromHostIP := req.FromHostIP; fromHostIP != "" {
 		if len(cfg.Devices) == 0 || containsString(cfg.Devices, fromHostIP) {
 			opts.Devices = []string{fromHostIP}
 		}
@@ -386,17 +390,38 @@ func resolveParsersForFields(db *sql.DB, fields []string) ([]string, error) {
 	return names, nil
 }
 
+type DashboardDataRequest struct {
+	Severity     string           `json:"severity"`
+	From         string           `json:"from"`
+	To           string           `json:"to"`
+	Search       string           `json:"search"`
+	FromHostIP   string           `json:"fromhost_ip"`
+	FieldFilters string           `json:"field_filters"`
+	Limit        string           `json:"limit"`
+	Offset       string           `json:"offset"`
+	Cursor       string           `json:"cursor"`
+	Sort         string           `json:"sort"`
+}
+
 func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		var req DashboardDataRequest
+		_ = c.ShouldBindJSON(&req)
+
 		cfg, opts, err := resolveDashboardFilters(db, c)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
 		}
 
-		limitInt, offsetInt := parsePagination(c, DefaultPageLimit, MaxPageLimit)
-		cursor := c.Query("cursor")
-		sort := c.DefaultQuery("sort", "timestamp_desc")
+		limitStr := req.Limit
+		offsetStr := req.Offset
+		limitInt, offsetInt := parsePaginationFromStrings(limitStr, offsetStr, DefaultPageLimit, MaxPageLimit)
+		cursor := req.Cursor
+		sort := req.Sort
+		if sort == "" {
+			sort = "timestamp_desc"
+		}
 
 		whereClauses, args, argIdx := buildLogWhereClauses(opts)
 
@@ -505,15 +530,31 @@ func GetDashboardDataCount(db *sql.DB) gin.HandlerFunc {
 
 // ExportDashboardCSV exports a dashboard's log view as CSV, honoring the
 // same device/field scoping and filter overrides as GetDashboardData.
+type DashboardExportRequest struct {
+	Severity     string           `json:"severity"`
+	From         string           `json:"from"`
+	To           string           `json:"to"`
+	Search       string           `json:"search"`
+	FromHostIP   string           `json:"fromhost_ip"`
+	FieldFilters string           `json:"field_filters"`
+	Limit        string           `json:"limit"`
+}
+
 func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		var req DashboardExportRequest
+		_ = c.ShouldBindJSON(&req)
+
 		cfg, opts, err := resolveDashboardFilters(db, c)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
 		}
 
-		limitStr := c.DefaultQuery("limit", "100000")
+		limitStr := req.Limit
+		if limitStr == "" {
+			limitStr = "100000"
+		}
 		limit, err := strconv.Atoi(limitStr)
 		if err != nil || limit <= 0 {
 			limit = DefaultExportLimit

@@ -310,11 +310,16 @@ func ReparseUnparsed(engine *parser.Engine) gin.HandlerFunc {
 	}
 }
 
+type ParsedFieldsRequest struct {
+	Hostnames string `json:"hostnames"`
+}
+
 func ListParsedFields(engine *parser.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		hostnamesRaw := c.Query("hostnames")
-		if hostnamesRaw != "" {
-			hostnames := strings.Split(hostnamesRaw, ",")
+		var req ParsedFieldsRequest
+		_ = c.ShouldBindJSON(&req)
+		if req.Hostnames != "" {
+			hostnames := strings.Split(req.Hostnames, ",")
 			for i, h := range hostnames {
 				hostnames[i] = strings.TrimSpace(h)
 			}

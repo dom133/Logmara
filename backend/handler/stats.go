@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,10 +49,17 @@ func statsInvalidateAll() {
 	severityStatsCacheMu.Unlock()
 }
 
+type DashboardStatsRequest struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 func GetDashboardStats(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		from := c.Query("from")
-		to := c.Query("to")
+		var req DashboardStatsRequest
+		_ = c.ShouldBindJSON(&req)
+		from := req.From
+		to := req.To
 
 		dashboardCacheMu.RLock()
 		if time.Since(dashboardCacheTime) < dashboardTTL && from == "" && to == "" {
@@ -276,11 +282,16 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 	return stats
 }
 
+type DeviceStatsRequest struct {
+	Limit int `json:"limit"`
+}
+
 func GetDeviceStats(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		limitStr := c.DefaultQuery("limit", "100")
-		limit, err := strconv.Atoi(limitStr)
-		if err != nil || limit <= 0 {
+		var req DeviceStatsRequest
+		_ = c.ShouldBindJSON(&req)
+		limit := req.Limit
+		if limit <= 0 {
 			limit = 100
 		}
 		if limit > 1000 {
@@ -350,10 +361,17 @@ func fetchDeviceStats(db *sql.DB, limit int) []model.DeviceStats {
 	return devices
 }
 
+type SeverityRequest struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 func GetSeverityStats(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		from := c.Query("from")
-		to := c.Query("to")
+		var req SeverityRequest
+		_ = c.ShouldBindJSON(&req)
+		from := req.From
+		to := req.To
 
 		if from == "" && to == "" {
 			severityStatsCacheMu.RLock()
@@ -457,18 +475,27 @@ func fetchSeverityStatsRange(db *sql.DB, from, to string) []model.SeverityStats 
 	return stats
 }
 
+type TimelineRequest struct {
+	Interval string `json:"interval"`
+	From     string `json:"from"`
+	To       string `json:"to"`
+	TZ       string `json:"tz"`
+}
+
 func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		interval := c.DefaultQuery("interval", "hour")
-		from := c.Query("from")
-		to := c.Query("to")
-		// tz is the visitor's IANA timezone (e.g. "Europe/Warsaw"), sent by the
-		// frontend from Intl.DateTimeFormat().resolvedOptions().timeZone, so
-		// that bucket boundaries (day/week/month, and hour in half/quarter-hour
-		// offset zones) land on the visitor's local calendar instead of the
-		// database server's timezone. An invalid/unknown name is rejected by
-		// Postgres at query time, so queryWithTZFallback retries with "UTC".
-		tz := c.DefaultQuery("tz", "UTC")
+		var req TimelineRequest
+		_ = c.ShouldBindJSON(&req)
+		interval := req.Interval
+		if interval == "" {
+			interval = "hour"
+		}
+		from := req.From
+		to := req.To
+		tz := req.TZ
+		if tz == "" {
+			tz = "UTC"
+		}
 
 		fieldMap := map[string]string{"1m": "minute", "5m": "minute", "15m": "minute", "30m": "minute", "1h": "hour", "6h": "hour", "1d": "day", "1w": "week", "1mon": "month", "minute": "minute", "hour": "hour", "day": "day", "week": "week", "month": "month"}
 		field, ok := fieldMap[interval]
