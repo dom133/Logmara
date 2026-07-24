@@ -141,6 +141,7 @@ services:
     logging: *patroni-logging
     depends_on: [etcd1, etcd2, etcd3]
     deploy:
+      endpoint_mode: dnsrr
       replicas: 1
       restart_policy:
         condition: on-failure
@@ -166,6 +167,7 @@ services:
     logging: *patroni-logging
     depends_on: [etcd1, etcd2, etcd3]
     deploy:
+      endpoint_mode: dnsrr
       replicas: 1
       restart_policy:
         condition: on-failure
@@ -191,6 +193,7 @@ services:
     logging: *patroni-logging
     depends_on: [etcd1, etcd2, etcd3]
     deploy:
+      endpoint_mode: dnsrr
       replicas: 1
       restart_policy:
         condition: on-failure
