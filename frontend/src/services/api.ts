@@ -249,7 +249,7 @@ export interface ParserTestResponse {
 export interface FieldFilter {
   field: string
   operator: string
-  value: string
+  values: string[]
 }
 
 export interface DashboardFilters {

@@ -39,7 +39,7 @@ export default function DashboardFieldFilters({ availableFields, value, onChange
 
   const addFilter = useCallback(() => {
     if (availableFields.length === 0) return
-    setFilters([...filters, { field: availableFields[0], operator: 'eq', value: '' }])
+    setFilters([...filters, { field: availableFields[0], operator: 'eq', values: [''] }])
     setAdding(false)
   }, [availableFields, filters, setFilters])
 
@@ -47,7 +47,7 @@ export default function DashboardFieldFilters({ availableFields, value, onChange
     setFilters(filters.filter((_, i) => i !== idx))
   }, [filters, setFilters])
 
-  const updateFilter = useCallback((idx: number, key: keyof FieldFilter, val: string) => {
+  const updateFilter = useCallback((idx: number, key: keyof FieldFilter, val: string | string[]) => {
     const next = [...filters]
     next[idx] = { ...next[idx], [key]: val }
     setFilters(next)
@@ -81,7 +81,7 @@ export default function DashboardFieldFilters({ availableFields, value, onChange
               options={availableFields.map(f => ({ label: f, value: f }))}
               placeholder="Pick field"
               onChange={(f) => {
-                setFilters([...filters, { field: f, operator: 'eq', value: '' }])
+                setFilters([...filters, { field: f, operator: 'eq', values: [''] }])
                 setAdding(false)
               }}
               autoFocus
@@ -107,8 +107,8 @@ export default function DashboardFieldFilters({ availableFields, value, onChange
               size="small"
               style={{ width: 200 }}
               placeholder="value"
-              value={ff.value}
-              onChange={(e) => updateFilter(idx, 'value', e.target.value)}
+              value={ff.values?.[0] || ''}
+              onChange={(e) => updateFilter(idx, 'values', [e.target.value])}
             />
           )}
           <Button type="link" danger size="small" icon={<CloseOutlined />} onClick={() => removeFilter(idx)} />
