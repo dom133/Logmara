@@ -513,29 +513,6 @@ export async function testLDAPConnection(data: {
 	return res.data
 }
 
-// --- Audit Logs ---
-export interface AuditLog {
-	id: number
-	user_id: number | null
-	username: string
-	action: string
-	ip: string | null
-	details: string | null
-	created_at: string
-}
-
-export async function getAuditLogs(params: {
-	limit?: number
-	offset?: number
-	username?: string
-	action?: string
-	from?: string
-	to?: string
-}) {
-	const res = await api.get('/admin/audit-logs', { params })
-	return res.data as { data: AuditLog[]; total: number }
-}
-
 // --- Init / Setup ---
 export async function checkInitialized() {
 	const res = await api.get('/status/initialized')
