@@ -595,17 +595,22 @@ func postReload(url string) error {
 	return nil
 }
 
-// reloadNginxWithRetry retries reloadNginx a few times with a fixed delay,
+// reloadNginxWithRetry retries reloadNginx with exponential backoff,
 // smoothing over the brief window (container startup, or an admin action
 // that races it) where the frontend's reload sidecar isn't listening yet.
 func reloadNginxWithRetry(httpsEnabled, redirectEnabled bool, corsOrigins string, attempts int, delay time.Duration) error {
 	var err error
+	backoff := delay
 	for i := 0; i < attempts; i++ {
 		if err = reloadNginx(httpsEnabled, redirectEnabled, corsOrigins); err == nil {
 			return nil
 		}
 		if i < attempts-1 {
-			time.Sleep(delay)
+			time.Sleep(backoff)
+			backoff = backoff * 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
 		}
 	}
 	return err

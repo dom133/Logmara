@@ -10,7 +10,10 @@ import (
 	"syslytics/sharedstate"
 )
 
-const redisOpTimeout = 2 * time.Second
+const (
+	redisOpTimeout     = 2 * time.Second
+	pauseRefreshPeriod = 10 * time.Second
+)
 
 // IngestionController gates whether the log tailer is actively processing
 // new lines. New reports two implementations behind this interface: a
@@ -80,18 +83,42 @@ type redisController struct {
 	client      *sharedstate.Client
 	broadcaster *sharedstate.Broadcaster
 	cached      atomic.Bool
+	refreshCtx context.Context
+	refreshCancel context.CancelFunc
 }
 
 func newRedisController(ctx context.Context, client *sharedstate.Client) *redisController {
+	refreshCtx, cancel := context.WithCancel(context.Background())
 	c := &redisController{
-		client:      client,
-		broadcaster: sharedstate.NewBroadcaster(client),
+		client:         client,
+		broadcaster:    sharedstate.NewBroadcaster(client),
+		cached:         atomic.Bool{},
+		refreshCtx:     refreshCtx,
+		refreshCancel:  cancel,
 	}
 	c.cached.Store(c.readPaused(ctx))
 
 	go c.broadcaster.Subscribe(ctx, ingestionControlChannel, func(payload string) {
 		c.cached.Store(payload == "1")
 	})
+
+	go func() {
+		ticker := time.NewTicker(pauseRefreshPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-refreshCtx.Done():
+				return
+			case <-ticker.C:
+				wasPaused := c.cached.Load()
+				newPaused := c.readPaused(refreshCtx)
+				if newPaused != wasPaused {
+					slog.Info("ingestion: pause state drifted, corrected", "was", wasPaused, "now", newPaused)
+				}
+				c.cached.Store(newPaused)
+			}
+		}
+	}()
 
 	return c
 }
@@ -120,6 +147,10 @@ func (c *redisController) Pause() {
 
 func (c *redisController) Resume() {
 	c.setPaused(false)
+}
+
+func (c *redisController) Close() {
+	c.refreshCancel()
 }
 
 func (c *redisController) setPaused(paused bool) {

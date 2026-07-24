@@ -247,18 +247,22 @@ func SyncRelayConfig(database *sql.DB) error {
 	return reloadRelayConfig()
 }
 
-// SyncRelayConfigWithRetry retries SyncRelayConfig a few times with a fixed
-// delay, smoothing over the brief window where the rsyslog container's
-// reload sidecar isn't listening yet (startup race, same as
-// reloadNginxWithRetry).
+// SyncRelayConfigWithRetry retries SyncRelayConfig with exponential backoff,
+// smoothing over the window where the rsyslog container's reload sidecar
+// isn't listening yet or Docker DNS hasn't resolved the hostname.
 func SyncRelayConfigWithRetry(database *sql.DB, attempts int, delay time.Duration) error {
 	var err error
+	backoff := delay
 	for i := 0; i < attempts; i++ {
 		if err = SyncRelayConfig(database); err == nil {
 			return nil
 		}
 		if i < attempts-1 {
-			time.Sleep(delay)
+			time.Sleep(backoff)
+			backoff = backoff * 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
 		}
 	}
 	return err
