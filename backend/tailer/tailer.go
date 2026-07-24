@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -220,8 +221,15 @@ if entry.Hostname == "" {
 		// (e.g. "2026-07-23T20") as programname and the rest ("11:40.246Z ...")
 		// as the message. Restore the original message by merging them back.
 		if truncatedISORe.MatchString(entry.AppName) {
-			entry.Message = entry.AppName + ":" + entry.Message
-			entry.AppName = ""
+			fullMsg := entry.AppName + ":" + entry.Message
+			entry.Message = fullMsg
+			entry.RawMessage = fullMsg
+			// If the restored message contains a known structured format, set app
+			if idx := strings.Index(fullMsg, "CEF:"); idx >= 0 {
+				entry.AppName = "CEF"
+			} else {
+				entry.AppName = ""
+			}
 		}
 
 		appName := entry.AppName
