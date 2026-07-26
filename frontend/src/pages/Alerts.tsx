@@ -8,7 +8,7 @@ import {
   NotificationChannel, NotificationChannelRequest, NotificationChannelType,
   getNotificationHistory, clearNotificationHistory, NotificationLogEntry, TriggerLogSnapshot, AuditLogRef,
   getDevices, DeviceStats, resolveDeviceDisplayName, getParsers, Parser, getParsedFields, ParsedField,
-  getUsers, User,
+  getUserDirectory, UserSummary,
 } from '../services/api'
 import { useAuth } from '../services/auth'
 import { onLiveNotification } from '../services/notificationEvents'
@@ -22,7 +22,12 @@ const ruleTypeLabels: Record<AlertRuleType, string> = {
   device_silence: 'Device silence',
   audit_log: 'Audit log',
   relay_cert_expiring: 'Syslog relay certificate expiring',
+  malformed_json: 'Malformed JSON (ingestion)',
 }
+
+// Rule types whose notifications are admin-only (see the matching lists in
+// the backend: notify/push.go, db/alerts.go, handler/notifications.go).
+const adminOnlyRuleTypes = ['audit_log', 'relay_cert_expiring', 'malformed_json']
 
 const channelTypeLabels: Record<NotificationChannelType, string> = {
   email: 'Email',
@@ -177,6 +182,9 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
         if (r.rule_type === 'relay_cert_expiring') {
           return `warn ${r.threshold || 30} day(s) before a relay certificate expires`
         }
+        if (r.rule_type === 'malformed_json') {
+          return r.fire_on_every_match ? 'every malformed JSON line during ingestion' : 'any malformed JSON line during ingestion'
+        }
         return r.audit_action_filter ? `action = ${r.audit_action_filter}` : 'any audit action'
       },
     },
@@ -203,7 +211,7 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
         {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Alert Rule</Button>}
       </div>
-      <Table dataSource={isAdmin ? alerts : alerts.filter(a => !['audit_log', 'relay_cert_expiring'].includes(a.rule_type))} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
+      <Table dataSource={isAdmin ? alerts : alerts.filter(a => !adminOnlyRuleTypes.includes(a.rule_type))} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
 
       <Modal
         title={editing ? 'Edit Alert Rule' : 'New Alert Rule'}
@@ -222,7 +230,7 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
           <Form.Item name="rule_type" label="Rule Type" rules={[{ required: true }]}>
             <Select
               options={Object.entries(ruleTypeLabels)
-                .filter(([key]) => isAdmin || !['audit_log', 'relay_cert_expiring'].includes(key))
+                .filter(([key]) => isAdmin || !adminOnlyRuleTypes.includes(key))
                 .map(([value, label]) => ({ value, label }))}
             />
           </Form.Item>
@@ -347,7 +355,13 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
             </Form.Item>
           )}
 
-          {!(ruleType === 'log_threshold' && fireOnEveryMatch) && (
+          {ruleType === 'malformed_json' && (
+            <Form.Item name="fire_on_every_match" label="Fire on every match" valuePropName="checked" tooltip="Notify for every malformed JSON line encountered during ingestion, instead of at most once per cooldown period below.">
+              <Switch />
+            </Form.Item>
+          )}
+
+          {!((ruleType === 'log_threshold' || ruleType === 'malformed_json') && fireOnEveryMatch) && (
             <Form.Item name="cooldown_minutes" label="Cooldown (minutes)" tooltip="Minimum time between repeat notifications for this rule" rules={[{ required: true }]}>
               <InputNumber min={1} style={{ width: '100%' }} />
             </Form.Item>
@@ -364,9 +378,9 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
   )
 }
 
-function ChannelsTab({ canEdit }: { canEdit: boolean }) {
+function ChannelsTab({ canManage, isAdmin, currentUserId }: { canManage: boolean; isAdmin: boolean; currentUserId?: number }) {
   const [channels, setChannels] = useState<NotificationChannel[]>([])
-  const [users, setUsers] = useState<User[]>([])
+  const [users, setUsers] = useState<UserSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<NotificationChannel | null>(null)
@@ -377,9 +391,17 @@ function ChannelsTab({ canEdit }: { canEdit: boolean }) {
   const loadData = async () => {
     setLoading(true)
     try {
-      const [channelsData, usersData] = await Promise.all([getNotificationChannels(), getUsers()])
-      setChannels(channelsData)
-      setUsers(usersData)
+      setChannels(await getNotificationChannels())
+      // The user list only backs the "Target Users" picker in the
+      // create/edit modal, which only canManage ever opens - skip it for
+      // viewer instead of failing the whole tab over a 403.
+      if (canManage) {
+        try {
+          setUsers(await getUserDirectory())
+        } catch {
+          // Non-fatal: the picker just shows no options if this fails.
+        }
+      }
     } catch {
       message.error('Failed to load notification channels')
     } finally {
@@ -387,7 +409,7 @@ function ChannelsTab({ canEdit }: { canEdit: boolean }) {
     }
   }
 
-  useEffect(() => { loadData() }, [])
+  useEffect(() => { loadData() }, [canManage])
 
   const openCreate = () => {
     setEditing(null)
@@ -470,23 +492,39 @@ const openEdit = (c: NotificationChannel) => {
     { title: 'Type', dataIndex: 'type', key: 'type', render: (v: NotificationChannelType) => <Tag color="blue">{channelTypeLabels[v]}</Tag> },
     { title: 'Status', dataIndex: 'enabled', key: 'enabled', render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? 'Enabled' : 'Disabled'}</Tag> },
     {
+      title: 'Owner', dataIndex: 'created_by_username', key: 'created_by_username',
+      render: (username: string | undefined) => {
+        if (username) return username
+        // No recorded owner: the channel predates the created_by column, or
+        // its creator's account was since deleted (the column is ON DELETE
+        // SET NULL, so this case is indistinguishable from the first).
+        return <Tag color="default">No owner</Tag>
+      },
+    },
+    {
       title: 'Actions', key: 'actions',
-      render: (_v: unknown, r: NotificationChannel) => (
-        <Space>
-          <Button size="small" icon={<ExperimentOutlined />} loading={testingId === r.id} onClick={() => handleTest(r.id)}>Test</Button>
-          {canEdit && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />}
-          {canEdit && <Popconfirm title="Delete channel?" onConfirm={() => handleDelete(r.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>}
-        </Space>
-      ),
+      render: (_v: unknown, r: NotificationChannel) => {
+        // Mirrors backend.callerCanModifyChannel: a channel with no recorded
+        // owner (predates the created_by column) can only be claimed/edited
+        // by an admin, not by any editor who happens to click it first.
+        const canEditRow = r.created_by != null ? canManage && r.created_by === currentUserId : isAdmin
+        return (
+          <Space>
+            <Button size="small" icon={<ExperimentOutlined />} loading={testingId === r.id} onClick={() => handleTest(r.id)}>Test</Button>
+            {canEditRow && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />}
+            {canEditRow && <Popconfirm title="Delete channel?" onConfirm={() => handleDelete(r.id)}>
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Popconfirm>}
+          </Space>
+        )
+      },
     },
   ]
 
   return (
     <>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Channel</Button>}
+        {canManage && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Channel</Button>}
       </div>
       <Table dataSource={channels} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
 
@@ -605,7 +643,7 @@ function groupHistoryEntries(entries: NotificationLogEntry[]): HistoryGroup[] {
   return Array.from(groups.values())
 }
 
-function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmin: boolean; active: boolean; focusInAppId?: number; onFocusConsumed: () => void }) {
+function HistoryTab({ isAdmin, active, focusInAppId, focusFiringId, onFocusConsumed }: { isAdmin: boolean; active: boolean; focusInAppId?: number; focusFiringId?: string; onFocusConsumed: () => void }) {
   const [entries, setEntries] = useState<NotificationLogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
@@ -618,7 +656,7 @@ function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmi
 
   useEffect(() => { loadData() }, [])
 
-  const groups = groupHistoryEntries(entries).filter(g => isAdmin || !['audit_log', 'relay_cert_expiring'].includes(g.ruleType))
+  const groups = groupHistoryEntries(entries).filter(g => isAdmin || !adminOnlyRuleTypes.includes(g.ruleType))
 
   // A new notification means a new row in notification_log - refresh the
   // list live while this tab is the one actually showing.
@@ -634,15 +672,17 @@ function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmi
   // recorded in history at all - either way, tell the user instead of
   // silently leaving the tab with nothing selected.
   useEffect(() => {
-    if (!focusInAppId || loading) return
-    const match = groups.find((g) => g.channels.some((c) => c.in_app_notification_id === focusInAppId))
+    if ((!focusInAppId && !focusFiringId) || loading) return
+    const match = focusFiringId
+      ? groups.find((g) => g.key === focusFiringId)
+      : groups.find((g) => g.channels.some((c) => c.in_app_notification_id === focusInAppId))
     if (match) {
       setViewing(match)
     } else {
       message.info('No matching history entry was found for that notification (it may be too old, or a test notification, which is never recorded in history).')
     }
     onFocusConsumed()
-  }, [focusInAppId, loading, entries, onFocusConsumed])
+  }, [focusInAppId, focusFiringId, loading, entries, onFocusConsumed])
 
   const handleClear = async () => {
     setClearing(true)
@@ -819,15 +859,20 @@ export default function AlertsPage() {
   // Deep-linked from a notification bell click (see NotificationBell's
   // goToHistoryDetail): ?tab=history&notification=<in_app_notification_id>
   // opens straight to History with that entry's Details already showing.
+  // Push notifications instead deep-link via ?tab=history&firing=<firing_id>
+  // (see notify.Dispatcher.DispatchAlert / Payload.Link) since a push-only
+  // alert (no in_app channel) never gets an in_app_notification_id to match on.
   const [searchParams] = useSearchParams()
   const initialTab = searchParams.get('tab') === 'history' ? 'history' : 'rules'
   const initialFocusID = Number(searchParams.get('notification')) || undefined
+  const initialFocusFiringID = searchParams.get('firing') || undefined
   const [activeTab, setActiveTab] = useState(initialTab)
   const [focusInAppId, setFocusInAppId] = useState<number | undefined>(initialFocusID)
+  const [focusFiringId, setFocusFiringId] = useState<string | undefined>(initialFocusFiringID)
 
   const items = [
     { key: 'rules', label: 'Alert Rules', children: <RulesTab canEdit={canEdit} isAdmin={isAdmin} active={activeTab === 'rules'} /> },
-    { key: 'channels', label: 'Notification Channels', children: <ChannelsTab canEdit={isAdmin} /> },
+    { key: 'channels', label: 'Notification Channels', children: <ChannelsTab canManage={canEdit} isAdmin={isAdmin} currentUserId={user?.id} /> },
     {
       key: 'history', label: 'History',
       children: (
@@ -835,7 +880,8 @@ export default function AlertsPage() {
           isAdmin={isAdmin}
           active={activeTab === 'history'}
           focusInAppId={focusInAppId}
-          onFocusConsumed={() => setFocusInAppId(undefined)}
+          focusFiringId={focusFiringId}
+          onFocusConsumed={() => { setFocusInAppId(undefined); setFocusFiringId(undefined) }}
         />
       ),
     },

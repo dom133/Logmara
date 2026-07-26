@@ -3,7 +3,7 @@ package alertengine
 import (
 	"testing"
 
-	"syslytics/model"
+	"logmara/model"
 )
 
 func TestMatchDevice(t *testing.T) {

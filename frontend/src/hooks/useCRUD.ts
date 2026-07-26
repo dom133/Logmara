@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { message, FormInstance } from 'antd'
 
 export interface CrudState<T> {
@@ -70,6 +70,10 @@ export function useCrud<T, CreateData, UpdateData>(options: UseCrudOptions<T, Cr
       setState(prev => ({ ...prev, loading: false }))
     }
   }, [loadData])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
 
   const openCreate = useCallback(() => {
     setState(prev => ({ ...prev, modalOpen: true, editing: null }))

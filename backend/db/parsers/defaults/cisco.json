@@ -1,0 +1,77 @@
+[
+  {
+    "name": "Cisco IOS Interface",
+    "description": "Matches Cisco IOS interface up/down %LINK messages",
+    "device_type": "cisco",
+    "match_type": "hostname",
+    "match_value": "cisco*",
+    "regex": "%LINK-(\\d+)-(UPDN):\\s+Interface\\s+(\\S+),\\s+(change|condition)\\s+(is\\s+\\S+|state\\s+\\S+)",
+    "fields": [
+      {
+        "name": "msec",
+        "label": "MSEC Code",
+        "type": "string"
+      },
+      {
+        "name": "interface",
+        "label": "Interface",
+        "type": "string"
+      },
+      {
+        "name": "status",
+        "label": "Status",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Cisco IOS BGP",
+    "description": "Matches Cisco IOS BGP state change messages",
+    "device_type": "cisco",
+    "match_type": "hostname",
+    "match_value": "cisco*",
+    "regex": "%BGP-5-ADJCHANGE:\\s+Neighbor\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)\\s+session\\s+(Down|Up)",
+    "fields": [
+      {
+        "name": "neighbor_ip",
+        "label": "Neighbor IP",
+        "type": "string"
+      },
+      {
+        "name": "session_state",
+        "label": "Session State",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Cisco IOS Authentication",
+    "description": "Matches Cisco authentication success/failure",
+    "device_type": "cisco",
+    "match_type": "hostname",
+    "match_value": "cisco*",
+    "regex": "%SEC_LOGIN-\\d+-(\\S+):\\s+User=\\S+,\\s+Method=(\\S+),\\s+Reason=(\\S+),\\s+Info=(\\S+)",
+    "fields": [
+      {
+        "name": "auth_result",
+        "label": "Result",
+        "type": "string"
+      },
+      {
+        "name": "method",
+        "label": "Method",
+        "type": "string"
+      },
+      {
+        "name": "reason",
+        "label": "Reason",
+        "type": "string"
+      },
+      {
+        "name": "info",
+        "label": "Info",
+        "type": "string"
+      }
+    ]
+  }
+]

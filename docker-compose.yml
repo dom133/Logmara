@@ -1,3 +1,5 @@
+name: logmara
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -139,9 +141,14 @@ services:
       RELAY_CENTRAL_HOST: ${RELAY_CENTRAL_HOST:-}
       # Backs Admin > Health - see the docker-proxy service above.
       DOCKER_PROXY_URL: http://docker-proxy:2375
+      # Directory the builtin parser JSON definitions (backend/db/parsers)
+      # are bootstrapped into and re-read from on every start, so they can
+      # be edited/added/removed without rebuilding the image.
+      PARSER_DEFS_DIR: /parsers
     volumes:
       - log_data:/data
-    
+      - parser_defs:/parsers
+
     depends_on:
       postgres:
         condition: service_healthy
@@ -194,6 +201,7 @@ volumes:
   pg_data:
   log_data:
   log_spool:
+  parser_defs:
 
 networks:
   syslog_net:

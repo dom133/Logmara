@@ -1,19 +1,17 @@
 package parsers
 
-var AllParsers []ParserSeed
-
 type FieldSeed struct {
-	Name  string
-	Label string
-	Type  string
+	Name  string `json:"name"`
+	Label string `json:"label"`
+	Type  string `json:"type"`
 }
 
 type ParserSeed struct {
-	Name        string
-	Description string
-	DeviceType  string
-	MatchType   string
-	MatchValue  string
-	Regex       string
-	Fields      []FieldSeed
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	DeviceType  string      `json:"device_type"`
+	MatchType   string      `json:"match_type"`
+	MatchValue  string      `json:"match_value"`
+	Regex       string      `json:"regex"`
+	Fields      []FieldSeed `json:"fields"`
 }

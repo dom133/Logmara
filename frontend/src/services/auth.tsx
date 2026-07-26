@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
-import { api } from './api'
+import { api, checkSession } from './api'
 
 interface User {
   id: number
@@ -14,7 +14,7 @@ interface User {
 interface AuthContextType {
   user: User | null
   loading: boolean
-  login: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>
+  login: (username: string, password: string, remember?: boolean) => Promise<{ ok: boolean; error?: string }>
   logout: () => Promise<void>
   isAdmin: boolean
   canEdit: boolean
@@ -52,12 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionExpiryRef.current = null
   }, [])
 
-  const logout = useCallback(async () => {
-    try {
-      await api.post('/auth/logout', {})
-    } catch (e) {
-      console.error('Error during logout:', e)
-    }
+  const resetToLoggedOut = useCallback(() => {
     setUser(null)
     setLoading(false)
     clearAllTimers()
@@ -65,6 +60,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setShowSessionWarning(false)
     setSessionWarningCountdown(0)
   }, [clearAllTimers])
+
+  const logout = useCallback(async () => {
+    try {
+      await api.post('/auth/logout', {})
+    } catch (e) {
+      console.error('Error during logout:', e)
+    }
+    resetToLoggedOut()
+  }, [resetToLoggedOut])
 
   const checkSessionExpiry = useCallback(() => {
     const expiresAt = sessionExpiryRef.current
@@ -101,18 +105,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       setLoading(false)
     } catch {
-      setUser(null)
-      setLoading(false)
-      clearAllTimers()
-      setIsSessionExpiringSoon(false)
-      setShowSessionWarning(false)
-      setSessionWarningCountdown(0)
+      // Access token missing/expired on boot (browser reopened, tab reloaded
+      // after its short TTL). Try the refresh token once before giving up -
+      // this is what makes "remember this device" persist. The silent header
+      // tells the backend to reject this when the session wasn't set up with
+      // "remember" (see handler.Refresh) - those sessions are only meant to
+      // last as long as the access token / an actively open, extended tab.
+      try {
+        const refreshRes = await api.post('/auth/refresh', {}, { headers: { 'X-Silent-Refresh': 'true' } })
+        const meRes = await api.get('/auth/me')
+        setUser(meRes.data)
+        if (refreshRes.data.expires_at) {
+          setupSessionWarning(refreshRes.data.expires_at)
+        }
+        setLoading(false)
+      } catch {
+        resetToLoggedOut()
+      }
     }
-  }, [clearAllTimers, setupSessionWarning])
+  }, [resetToLoggedOut, setupSessionWarning])
 
-  const login = useCallback(async (username: string, password: string) => {
+  const login = useCallback(async (username: string, password: string, remember?: boolean) => {
     try {
-      const res = await api.post('/auth/login', { username, password })
+      const res = await api.post('/auth/login', { username, password, remember: !!remember })
       const userData = res.data.user
       setUser({
         id: userData.id,
@@ -159,6 +174,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
   }, [checkSessionExpiry])
+
+  // Poll GET /auth/session-check every 30s while logged in, purely to
+  // notice a server-side revocation (Admin, another device's "Sign out" in
+  // My Sessions, or this session's own Logout) quickly instead of waiting
+  // for the access token's own natural expiry. A 401 here is already
+  // handled by the axios response interceptor (redirects to /login), so
+  // this just needs to fire the request - errors are swallowed rather than
+  // handled twice.
+  useEffect(() => {
+    if (!user) return
+    const interval = setInterval(() => {
+      checkSession().catch(() => { /* handled by the response interceptor */ })
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [user])
 
   const isAdmin = user?.is_admin || false
   const canEdit = user?.role === 'admin' || user?.role === 'editor'

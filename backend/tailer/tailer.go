@@ -2,6 +2,7 @@ package tailer
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -15,14 +16,33 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lib/pq"
-	"syslytics/alertengine"
-	"syslytics/control"
-	"syslytics/model"
-	"syslytics/parser"
-	"syslytics/sharedstate"
+	"logmara/alertengine"
+	"logmara/control"
+	"logmara/model"
+	"logmara/parser"
+	"logmara/sharedstate"
 )
+
+// sanitizeForPostgres repairs invalid UTF-8 byte sequences (a misbehaving
+// device sending non-UTF-8 encoded text) and strips embedded NUL bytes. NUL
+// is otherwise perfectly valid UTF-8 (U+0000), but Postgres's text/jsonb
+// storage rejects it outright ("invalid byte sequence for encoding UTF8:
+// 0x00") regardless of the surrounding text's validity - and because
+// flushBatch commits a whole batch in one transaction, a single such value
+// anywhere in a batch aborted the transaction and silently dropped every
+// other (perfectly valid) entry queued alongside it.
+func sanitizeForPostgres(s string) string {
+	if s == "" {
+		return s
+	}
+	if !strings.ContainsRune(s, 0) && utf8.ValidString(s) {
+		return s
+	}
+	return strings.ReplaceAll(strings.ToValidUTF8(s, "�"), "\x00", "")
+}
 
 // truncatedISORe matches app_name values that are actually truncated ISO 8601
 // timestamps (e.g. "2026-07-23T20") caused by rsyslog mis-parsing non-RFC3164
@@ -33,7 +53,30 @@ const (
 	compactionInterval = 30 * time.Minute
 	maxFileSize        = 100 * 1024 * 1024 // 100 MB
 	positionFileName   = ".tailer_pos"
+	maxLineSize        = 10 * 1024 * 1024 // cap a single ingested "line" at 10MB
 )
+
+// splitCappedLines behaves like bufio.ScanLines, except that if no newline
+// shows up within maxLineSize bytes it force-cuts a token there instead of
+// growing the buffer further. Plain ScanLines would instead make Scan()
+// return bufio.ErrTooLong and stop for good - since every device's syslog
+// output is interleaved into one shared file processed strictly in order, a
+// single oversized/newline-less message (crafted or just a device bug) would
+// otherwise wedge the scanner at that byte offset forever, blocking
+// ingestion for every other host sharing the file. Forcing progress instead
+// turns it into a handful of "[MALFORMED JSON]" entries for that one device.
+func splitCappedLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, data[0:i], nil
+	}
+	if len(data) >= maxLineSize {
+		return maxLineSize, data[0:maxLineSize], nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
 
 // Run starts the log tailer. When elector is nil (single-server/single-
 // replica deployments, i.e. Redis not configured), it runs the ingestion
@@ -42,22 +85,22 @@ const (
 // NFS), only the replica that currently holds the elected lock actually
 // tails/flushes/compacts; the others wait, ready to take over the moment
 // the lock becomes available (leader crash, node loss, etc.).
-func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine) {
+func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter) {
 	if elector == nil {
-		runIngestionLoop(ctx, db, filePath, engine, ic, alerts)
+		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate)
 		return
 	}
-	runWithLeaderElection(ctx, db, filePath, engine, ic, elector, alerts)
+	runWithLeaderElection(ctx, db, filePath, engine, ic, elector, alerts, rate)
 }
 
 const (
-	leaderRetryInterval   = 5 * time.Second
-	leaderRetryJitter     = 1 * time.Second
-	leaderRenewInterval   = 5 * time.Second
-	leaderMaxRenewFails   = 3
+	leaderRetryInterval = 5 * time.Second
+	leaderRetryJitter   = 1 * time.Second
+	leaderRenewInterval = 5 * time.Second
+	leaderMaxRenewFails = 3
 )
 
-func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine) {
+func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -76,7 +119,7 @@ func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, eng
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			runIngestionLoop(leaderCtx, db, filePath, engine, ic, alerts)
+			runIngestionLoop(leaderCtx, db, filePath, engine, ic, alerts, rate)
 		}()
 
 		consecutiveFails := 0
@@ -119,7 +162,7 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine) {
+func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter) {
 	slog.Info("file tailer started", "path", filePath)
 	batchSize := 500
 	batchInterval := 2 * time.Second
@@ -136,7 +179,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		// Flush any remaining entries on shutdown
 		if len(entries) > 0 {
 			slog.Info("flushing remaining entries on shutdown", "count", len(entries))
-			if err := flushBatch(db, entries); err != nil {
+			if err := flushBatch(db, entries, rate); err != nil {
 				slog.Error("final flush error", "error", err)
 			} else {
 				flushedPos = batchStartPos
@@ -198,8 +241,9 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		}
 
 		scanner := bufio.NewScanner(f)
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 1024*1024)
+		buf := make([]byte, 0, maxLineSize)
+		scanner.Buffer(buf, maxLineSize)
+		scanner.Split(splitCappedLines)
 
 		batchStartPos := filePos
 		scanned := false
@@ -219,37 +263,57 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			var entry model.IngestEntry
 			if err := json.Unmarshal([]byte(line), &entry); err != nil {
 				slog.Error("invalid JSON", "error", err)
+				sanitizedLine := sanitizeForPostgres(line)
 				entry = model.IngestEntry{
 					Timestamp: time.Now().Format(time.RFC3339),
 					Hostname:  "unknown",
 					Severity:  "error",
-					Message:   fmt.Sprintf("[MALFORMED JSON] %s", line),
+					Message:   fmt.Sprintf("[MALFORMED JSON] %s", sanitizedLine),
+				}
+				alerts.EvaluateMalformedJSON(db, sanitizedLine)
+			}
+
+			// A device sending a NUL byte in its message unmarshals from JSON
+			// just fine, but Postgres refuses to store it in any text/jsonb
+			// column - sanitize every string field before it's used for
+			// parsing or insertion, whichever branch above produced entry.
+			entry.Hostname = sanitizeForPostgres(entry.Hostname)
+			entry.FromHostIP = sanitizeForPostgres(entry.FromHostIP)
+			entry.AppName = sanitizeForPostgres(entry.AppName)
+			entry.ProcessID = sanitizeForPostgres(entry.ProcessID)
+			entry.MsgID = sanitizeForPostgres(entry.MsgID)
+			entry.Severity = sanitizeForPostgres(entry.Severity)
+			entry.Facility = sanitizeForPostgres(entry.Facility)
+			entry.Message = sanitizeForPostgres(entry.Message)
+			entry.RawMessage = sanitizeForPostgres(entry.RawMessage)
+			entry.ViaRelay = sanitizeForPostgres(entry.ViaRelay)
+
+			if entry.Hostname == "" {
+				continue
+			}
+
+			// Fix rsyslog mis-parse: when a device sends an ISO 8601 timestamp in its
+			// syslog header (non-RFC3164), rsyslog treats the truncated date part
+			// (e.g. "2026-07-23T20") as programname and the rest ("11:40.246Z ...")
+			// as the message. Restore the original message by merging them back.
+			if truncatedISORe.MatchString(entry.AppName) {
+				fullMsg := entry.AppName + ":" + entry.Message
+				entry.Message = fullMsg
+				entry.RawMessage = fullMsg
+				// If the restored message contains a known structured format, set app
+				if idx := strings.Index(fullMsg, "CEF:"); idx >= 0 {
+					entry.AppName = "CEF"
+				} else {
+					entry.AppName = ""
 				}
 			}
 
-if entry.Hostname == "" {
-			continue
-		}
-
-		// Fix rsyslog mis-parse: when a device sends an ISO 8601 timestamp in its
-		// syslog header (non-RFC3164), rsyslog treats the truncated date part
-		// (e.g. "2026-07-23T20") as programname and the rest ("11:40.246Z ...")
-		// as the message. Restore the original message by merging them back.
-		if truncatedISORe.MatchString(entry.AppName) {
-			fullMsg := entry.AppName + ":" + entry.Message
-			entry.Message = fullMsg
-			entry.RawMessage = fullMsg
-			// If the restored message contains a known structured format, set app
-			if idx := strings.Index(fullMsg, "CEF:"); idx >= 0 {
-				entry.AppName = "CEF"
-			} else {
-				entry.AppName = ""
-			}
-		}
-
-		appName := entry.AppName
+			appName := entry.AppName
 			result := engine.Parse(entry.Hostname, appName, entry.Message)
 			if result != nil {
+				for k, v := range result.Fields {
+					result.Fields[k] = sanitizeForPostgres(v)
+				}
 				jsonData, err := json.Marshal(result.Fields)
 				if err == nil {
 					entry.ParsedFields = jsonData
@@ -262,7 +326,7 @@ if entry.Hostname == "" {
 			now := time.Now()
 			if len(entries) >= batchSize || now.Sub(lastFlush) >= batchInterval {
 				if !ic.IsPaused() {
-					if err := flushBatch(db, entries); err != nil {
+					if err := flushBatch(db, entries, rate); err != nil {
 						slog.Error("flush error", "error", err)
 					} else {
 						curPos, seekErr := f.Seek(0, 1)
@@ -283,8 +347,23 @@ if entry.Hostname == "" {
 			}
 		}
 
+		if err := scanner.Err(); err != nil {
+			slog.Error("tailer: scan error", "error", err)
+		}
+
 		if scanned {
-			curPos, err := f.Seek(0, 2)
+			// SEEK_CUR (how far this fd has actually read), not SEEK_END
+			// (wherever the file happens to end right now). If rsyslog is
+			// still mid-write on the last line when the scan loop above
+			// hits real EOF, SEEK_END can return a position further along
+			// than what was actually read - past the not-yet-finished
+			// remainder of that in-progress line. filePos then resumes
+			// there next time, splitting that line at an arbitrary byte
+			// offset instead of its start: the first "line" read next is
+			// really just that line's tail, which fails JSON unmarshal and
+			// surfaces as a spurious "[MALFORMED JSON]" entry for data that
+			// was never actually malformed.
+			curPos, err := f.Seek(0, 1)
 			if err == nil {
 				filePos = curPos
 			}
@@ -292,7 +371,7 @@ if entry.Hostname == "" {
 		f.Close()
 
 		if len(entries) > 0 && !ic.IsPaused() {
-			if err := flushBatch(db, entries); err != nil {
+			if err := flushBatch(db, entries, rate); err != nil {
 				slog.Error("flush error", "error", err)
 			} else {
 				flushedPos = batchStartPos
@@ -354,20 +433,25 @@ func compactFile(f *os.File, flushedPos int64, filePath string) error {
 	return nil
 }
 
-func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
+// flushBatch inserts entries one at a time, each its own implicit
+// transaction (no shared batch transaction). A prior version wrapped the
+// whole batch in one transaction with a SAVEPOINT around each row so a bad
+// row could be rolled back without losing the rest - in practice, once one
+// row aborted the transaction, ROLLBACK TO SAVEPOINT did not reliably
+// return the connection to a usable state (subsequent rows kept failing
+// with "current transaction is aborted" even though they were individually
+// fine), so a single Postgres-rejected row could still take an entire
+// multi-hundred-row batch down with it. Committing independently per row
+// costs some throughput but makes that structurally impossible: nothing
+// about one row's failure can touch any other row's outcome.
+func flushBatch(db *sql.DB, entries []model.IngestEntry, rate sharedstate.RateCounter) error {
 	if len(entries) == 0 {
 		return nil
 	}
 
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
 	query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, via_relay)
 		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
-	stmt, err := tx.Prepare(query)
+	stmt, err := db.Prepare(query)
 	if err != nil {
 		return fmt.Errorf("prepare: %w", err)
 	}
@@ -392,21 +476,17 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 			parsedFields = entry.ParsedFields
 		}
 
-		_, err = stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
-			entry.Severity, facility, entry.Message, rawMsg, parsedFields, pq.StringArray(entry.MatchedParsers), viaRelay)
-		if err != nil {
+		if _, err := stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
+			entry.Severity, facility, entry.Message, rawMsg, parsedFields, pq.StringArray(entry.MatchedParsers), viaRelay); err != nil {
 			slog.Error("insert error", "error", err)
 			continue
 		}
 		ingested++
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
-
 	if ingested > 0 {
 		slog.Info("flushed logs", "count", ingested)
+		rate.Incr(ingested)
 	}
 
 	return nil

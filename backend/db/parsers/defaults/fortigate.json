@@ -1,0 +1,107 @@
+[
+  {
+    "name": "FortiGate Traffic",
+    "description": "Matches FortiGate traffic log entries",
+    "device_type": "fortigate",
+    "match_type": "hostname",
+    "match_value": "fgt*",
+    "regex": "traffic.*?src=(\\d+\\.\\d+\\.\\d+\\.\\d+).*?dst=(\\d+\\.\\d+\\.\\d+\\.\\d+).*?srcport=(\\d+).*?dstport=(\\d+).*?action=(\\S+).*?policyid=(\\d+).*?sessionid=(\\d+).*?proto=(\\d+).*?service=(\\S+).*?devpriority=(\\S+).*?utmstatus=(\\S+)",
+    "fields": [
+      {
+        "name": "src_ip",
+        "label": "Source IP",
+        "type": "string"
+      },
+      {
+        "name": "dst_ip",
+        "label": "Destination IP",
+        "type": "string"
+      },
+      {
+        "name": "src_port",
+        "label": "Source Port",
+        "type": "string"
+      },
+      {
+        "name": "dst_port",
+        "label": "Destination Port",
+        "type": "string"
+      },
+      {
+        "name": "action",
+        "label": "Action",
+        "type": "string"
+      },
+      {
+        "name": "policy_id",
+        "label": "Policy ID",
+        "type": "string"
+      },
+      {
+        "name": "session_id",
+        "label": "Session ID",
+        "type": "string"
+      },
+      {
+        "name": "proto",
+        "label": "Protocol",
+        "type": "string"
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "string"
+      },
+      {
+        "name": "device_priority",
+        "label": "Priority",
+        "type": "string"
+      },
+      {
+        "name": "utm_status",
+        "label": "UTM Status",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "FortiGate Threat",
+    "description": "Matches FortiGate threat/security log entries",
+    "device_type": "fortigate",
+    "match_type": "hostname",
+    "match_value": "fgt*",
+    "regex": "threat.*?src=(\\d+\\.\\d+\\.\\d+\\.\\d+).*?dst=(\\d+\\.\\d+\\.\\d+\\.\\d+).*?action=(\\S+).*?policyid=(\\d+).*?utmstatus=(\\S+).*?msg=\"([^\"]*)\"",
+    "fields": [
+      {
+        "name": "src_ip",
+        "label": "Source IP",
+        "type": "string"
+      },
+      {
+        "name": "dst_ip",
+        "label": "Destination IP",
+        "type": "string"
+      },
+      {
+        "name": "action",
+        "label": "Action",
+        "type": "string"
+      },
+      {
+        "name": "policy_id",
+        "label": "Policy ID",
+        "type": "string"
+      },
+      {
+        "name": "utm_status",
+        "label": "UTM Status",
+        "type": "string"
+      },
+      {
+        "name": "msg",
+        "label": "Message",
+        "type": "string"
+      }
+    ]
+  }
+]

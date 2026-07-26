@@ -16,11 +16,11 @@ import (
 	"strings"
 	"time"
 
-	"syslytics/audit"
-	"syslytics/db"
-	"syslytics/middleware"
-	"syslytics/model"
-	"syslytics/relaypki"
+	"logmara/audit"
+	"logmara/db"
+	"logmara/middleware"
+	"logmara/model"
+	"logmara/relaypki"
 
 	"github.com/gin-gonic/gin"
 )

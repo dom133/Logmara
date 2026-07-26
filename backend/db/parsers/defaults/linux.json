@@ -1,0 +1,267 @@
+[
+  {
+    "name": "SSHD Auth",
+    "description": "Matches successful SSH authentication",
+    "device_type": "linux",
+    "match_type": "app_name",
+    "match_value": "sshd",
+    "regex": "Accepted\\s+(\\w+)\\s+for\\s+(\\S+)\\s+from\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)\\s+port\\s+(\\d+)",
+    "fields": [
+      {
+        "name": "auth_method",
+        "label": "Auth Method",
+        "type": "string"
+      },
+      {
+        "name": "username",
+        "label": "Username",
+        "type": "string"
+      },
+      {
+        "name": "src_ip",
+        "label": "Source IP",
+        "type": "string"
+      },
+      {
+        "name": "src_port",
+        "label": "Source Port",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "SSHD Failed Auth",
+    "description": "Matches failed SSH authentication attempts",
+    "device_type": "linux",
+    "match_type": "app_name",
+    "match_value": "sshd",
+    "regex": "Failed\\s+(\\w+)\\s+for\\s+(invalid user\\s+)?(\\S+)\\s+from\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)\\s+port\\s+(\\d+)",
+    "fields": [
+      {
+        "name": "auth_type",
+        "label": "Auth Type",
+        "type": "string"
+      },
+      {
+        "name": "username",
+        "label": "Username",
+        "type": "string"
+      },
+      {
+        "name": "src_ip",
+        "label": "Source IP",
+        "type": "string"
+      },
+      {
+        "name": "src_port",
+        "label": "Source Port",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Systemd Service",
+    "description": "Matches systemd service start/stop events",
+    "device_type": "linux",
+    "match_type": "app_name",
+    "match_value": "systemd",
+    "regex": "(Starting|Started|Stopping|Stopped|Finished|Collected)\\s+([\\w.-]+\\.service)",
+    "fields": [
+      {
+        "name": "action",
+        "label": "Action",
+        "type": "string"
+      },
+      {
+        "name": "service",
+        "label": "Service Name",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Systemd Service Status",
+    "description": "Matches systemd service status messages (service: action)",
+    "device_type": "linux",
+    "match_type": "app_name",
+    "match_value": "systemd",
+    "regex": "([\\w.-]+\\.service)\\s*:\\s*(Deactivating|Deactivated|Activating|Activated)",
+    "fields": [
+      {
+        "name": "service",
+        "label": "Service Name",
+        "type": "string"
+      },
+      {
+        "name": "action",
+        "label": "Action",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Kernel Network",
+    "description": "Matches kernel network interface events",
+    "device_type": "linux",
+    "match_type": "app_name",
+    "match_value": "kernel",
+    "regex": "(\\S+):\\s+link\\s+beacon\\s+(\\S+)\\s+speed\\s+(\\d+)\\s+Mbps",
+    "fields": [
+      {
+        "name": "interface",
+        "label": "Interface",
+        "type": "string"
+      },
+      {
+        "name": "status",
+        "label": "Status",
+        "type": "string"
+      },
+      {
+        "name": "speed",
+        "label": "Speed Mbps",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Sudo Command",
+    "description": "Matches sudo command execution",
+    "device_type": "linux",
+    "match_type": "app_name",
+    "match_value": "sudo",
+    "regex": "(\\S+)[\\[:\\s]+COMMAND\\s+=\\s*(\\S+)\\s+;?\\s*TTY=(\\S+)\\s+PWD=(\\S+)\\s+USER=(\\S+)",
+    "fields": [
+      {
+        "name": "username",
+        "label": "Username",
+        "type": "string"
+      },
+      {
+        "name": "command",
+        "label": "Command",
+        "type": "string"
+      },
+      {
+        "name": "tty",
+        "label": "TTY",
+        "type": "string"
+      },
+      {
+        "name": "pwd",
+        "label": "Working Dir",
+        "type": "string"
+      },
+      {
+        "name": "run_as",
+        "label": "Run As",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Cron Job",
+    "description": "Matches cron job execution",
+    "device_type": "linux",
+    "match_type": "app_name",
+    "match_value": "CRON",
+    "regex": "\\((\\w+)\\)\\s+CMD\\s+\\((.+)\\)",
+    "fields": [
+      {
+        "name": "user",
+        "label": "User",
+        "type": "string"
+      },
+      {
+        "name": "command",
+        "label": "Command",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "NetworkManager",
+    "description": "Matches NetworkManager device state changes",
+    "device_type": "linux",
+    "match_type": "app_name",
+    "match_value": "NetworkManager",
+    "regex": "device\\s+(\\S+)\\s+(\\S+)\\s+(:\\s+.+)?",
+    "fields": [
+      {
+        "name": "device",
+        "label": "Device",
+        "type": "string"
+      },
+      {
+        "name": "state",
+        "label": "State",
+        "type": "string"
+      },
+      {
+        "name": "details",
+        "label": "Details",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "DHCP Client",
+    "description": "Matches dhclient lease events",
+    "device_type": "linux",
+    "match_type": "app_name",
+    "match_value": "dhclient",
+    "regex": "DHCP(\\s+\\S+)*\\s+(\\S+)\\s+of\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)\\s+on\\s+(\\S+)/",
+    "fields": [
+      {
+        "name": "action",
+        "label": "Action",
+        "type": "string"
+      },
+      {
+        "name": "ip_address",
+        "label": "IP Address",
+        "type": "string"
+      },
+      {
+        "name": "interface",
+        "label": "Interface",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Firewall Drop",
+    "description": "Matches kernel firewall drop/reject messages",
+    "device_type": "linux",
+    "match_type": "app_name",
+    "match_value": "kernel",
+    "regex": "(\\S+)\\s+IN=(\\S+)\\s+OUT=(\\S*)\\s+SRC=(\\d+\\.\\d+\\.\\d+\\.\\d+)\\s+DST=(\\d+\\.\\d+\\.\\d+\\.\\d+)",
+    "fields": [
+      {
+        "name": "action",
+        "label": "Action",
+        "type": "string"
+      },
+      {
+        "name": "in_iface",
+        "label": "In Interface",
+        "type": "string"
+      },
+      {
+        "name": "out_iface",
+        "label": "Out Interface",
+        "type": "string"
+      },
+      {
+        "name": "src_ip",
+        "label": "Source IP",
+        "type": "string"
+      },
+      {
+        "name": "dst_ip",
+        "label": "Dest IP",
+        "type": "string"
+      }
+    ]
+  }
+]

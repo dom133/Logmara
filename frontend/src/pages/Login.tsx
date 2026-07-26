@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Layout, Card, Form, Input, Button, message, Typography } from 'antd'
+import { Layout, Card, Form, Input, Button, Checkbox, message, Typography } from 'antd'
 import { useAuth } from '../services/auth'
 import { useTheme } from '../App'
 
@@ -27,9 +27,9 @@ export default function Login() {
     }
   }, [user, navigate])
 
-  const handleLogin = async (values: { username: string; password: string }) => {
+  const handleLogin = async (values: { username: string; password: string; remember?: boolean }) => {
     setLoading(true)
-    const result = await login(values.username, values.password)
+    const result = await login(values.username, values.password, values.remember)
     setLoading(false)
     if (result.ok) {
       message.success('Logged in successfully')
@@ -44,8 +44,8 @@ export default function Login() {
       <Card style={{ width: '100%', maxWidth: 400, boxShadow: '0 2px 8px rgba(0,0,0,0.1)', background: themeMode === 'dark' ? '#1f1f1f' : '#fff' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <Title level={3} style={{ margin: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-            <img src="/icons/icon-192.png" alt="Syslytics" style={{ width: 28, height: 28, borderRadius: 6 }} />
-            Syslytics
+            <img src="/icons/icon-192.png" alt="Logmara" style={{ width: 28, height: 28, borderRadius: 6 }} />
+            Logmara
           </Title>
           <Text type="secondary">Syslog collector & analyzer</Text>
         </div>
@@ -55,6 +55,9 @@ export default function Login() {
           </Form.Item>
           <Form.Item name="password" label="Password" rules={[{ required: true }]}>
             <Input.Password size="large" placeholder="Password" />
+          </Form.Item>
+          <Form.Item name="remember" valuePropName="checked" style={{ marginBottom: 12 }}>
+            <Checkbox>Remember this device</Checkbox>
           </Form.Item>
           <Form.Item>
             <Button type="primary" htmlType="submit" loading={loading} size="large" block>

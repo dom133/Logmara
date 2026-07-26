@@ -49,6 +49,10 @@ describe('useCRUD', () => {
     expect(result.current.items).toEqual([])
     expect(result.current.modalOpen).toBe(false)
     expect(result.current.editing).toBeNull()
+
+    // flush the mount-triggered refresh() so its state update isn't left
+    // dangling outside act() once the test exits
+    await act(async () => {})
   })
 
   it('loads data on mount', async () => {

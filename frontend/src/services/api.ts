@@ -135,6 +135,11 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   return (res.data || {}) as DashboardStats
 }
 
+export async function getLogsRate(): Promise<number> {
+  const res = await api.get('/stats/rate')
+  return (res.data?.logs_per_sec || 0) as number
+}
+
 export async function getTimeline(interval = '1h', from?: string, to?: string) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
   const res = await api.post('/stats/timeline', { interval, from, to, tz })
@@ -430,9 +435,54 @@ export interface User {
 	locked_until: string | null
 }
 
+export interface Session {
+	id: number
+	device_id?: string
+	user_agent?: string
+	ip?: string
+	remember: boolean
+	created_at: string
+	last_used_at?: string | null
+	expires_at: string
+	is_current: boolean
+}
+
+export async function getSessions() {
+	const res = await api.get('/auth/sessions')
+	return res.data as Session[]
+}
+
+export async function revokeSession(id: number) {
+	const res = await api.delete(`/auth/sessions/${id}`)
+	return res.data as { message: string }
+}
+
+// Polled periodically while logged in (see auth.tsx) purely to notice a
+// server-side session revocation (Admin, another device's "Sign out", or
+// this session's own Logout) quickly - a 401 here is handled by the axios
+// response interceptor's existing "redirect to /login on 401" behavior, so
+// callers don't need to do anything with the resolved/rejected value.
+export async function checkSession() {
+	await api.get('/auth/session-check')
+}
+
 export async function getUsers() {
 	const res = await api.get('/admin/users')
 	return (res.data || []) as User[]
+}
+
+export interface UserSummary {
+	id: number
+	username: string
+}
+
+// Minimal, non-sensitive user list (id + username only) for admin/editor -
+// backs pickers like the notification channel's "Target Users" selector,
+// without exposing the account-management data getUsers()/GET /admin/users
+// carries (which stays admin-only).
+export async function getUserDirectory() {
+	const res = await api.get('/users/directory')
+	return (res.data || []) as UserSummary[]
 }
 
 export async function createUser(data: { username: string; email: string; password: string; role: string; auth_type: string }) {
@@ -792,7 +842,7 @@ export async function revokeRelayCertificate(id: number) {
 
 // --- Alerts & Notifications ---
 
-export type AlertRuleType = 'log_threshold' | 'device_silence' | 'audit_log' | 'relay_cert_expiring'
+export type AlertRuleType = 'log_threshold' | 'device_silence' | 'audit_log' | 'relay_cert_expiring' | 'malformed_json'
 export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app' | 'push'
 export type FieldConditionOperator = 'equals' | 'contains' | 'not_equals' | 'regex'
 
@@ -875,6 +925,8 @@ export interface NotificationChannel {
 	config: Record<string, unknown>
 	has_secret: boolean
 	enabled: boolean
+	created_by?: number
+	created_by_username?: string
 	created_at: string
 	updated_at: string
 }

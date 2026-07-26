@@ -19,7 +19,7 @@ func (n *TeamsNotifier) Send(payload Payload) error {
 		card["potentialAction"] = []map[string]any{
 			{
 				"@type":   "OpenUri",
-				"name":    "View in Syslytics",
+				"name":    "View in Logmara",
 				"targets": []map[string]string{{"os": "default", "uri": payload.Link}},
 			},
 		}

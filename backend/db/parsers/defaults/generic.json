@@ -1,0 +1,37 @@
+[
+  {
+    "name": "Generic IP Extraction",
+    "description": "Generic catch-all for IP addresses in log messages",
+    "device_type": "generic",
+    "match_type": "all",
+    "match_value": "",
+    "regex": "(?:src|source|SRC|from)=(\\d+\\.\\d+\\.\\d+\\.\\d+).*?(?:dst|dest|DEST|to)=(\\d+\\.\\d+\\.\\d+\\.\\d+)",
+    "fields": [
+      {
+        "name": "src_ip",
+        "label": "Source IP",
+        "type": "string"
+      },
+      {
+        "name": "dst_ip",
+        "label": "Destination IP",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Generic MAC Extraction",
+    "description": "Generic catch-all for MAC addresses in log messages",
+    "device_type": "generic",
+    "match_type": "all",
+    "match_value": "",
+    "regex": "(?:mac|MAC|ether|hwaddr|client)=([0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2})",
+    "fields": [
+      {
+        "name": "mac_address",
+        "label": "MAC Address",
+        "type": "string"
+      }
+    ]
+  }
+]

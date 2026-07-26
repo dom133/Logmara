@@ -12,13 +12,13 @@ import (
 	"strings"
 	"time"
 
-	"syslytics/audit"
-	"syslytics/auth"
-	"syslytics/control"
-	"syslytics/db"
-	"syslytics/ldap"
-	"syslytics/middleware"
-	"syslytics/model"
+	"logmara/audit"
+	"logmara/auth"
+	"logmara/control"
+	"logmara/db"
+	"logmara/ldap"
+	"logmara/middleware"
+	"logmara/model"
 
 	"github.com/gin-gonic/gin"
 )
@@ -43,6 +43,23 @@ type ResetPasswordRequest struct {
 func ListUsers(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 users, err := db.GetAllUsers(database)
+		if err != nil {
+			middleware.HandleError(c, model.NewInternal("Failed to list users", err))
+			return
+		}
+		c.JSON(http.StatusOK, users)
+	}
+}
+
+// ListUserDirectory returns just {id, username} for every user - enough to
+// populate a "pick a user" control (e.g. the in_app/push notification
+// channel's target-user selector) without exposing the account management
+// data (email, role, lockout status, ...) that GET /admin/users carries and
+// which is why that endpoint stays admin-only. Available to admin and
+// editor - anyone who can create a notification channel needs this.
+func ListUserDirectory(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		users, err := db.GetUserDirectory(database)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to list users", err))
 			return

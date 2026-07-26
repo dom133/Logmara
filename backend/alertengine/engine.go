@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"syslytics/db"
-	"syslytics/model"
-	"syslytics/notify"
-	"syslytics/sharedstate"
+	"logmara/db"
+	"logmara/model"
+	"logmara/notify"
+	"logmara/sharedstate"
 )
 
 var severityRank = map[string]int{
@@ -284,6 +284,53 @@ func (e *Engine) EvaluateAuditLog(database *sql.DB, action string, userID int64,
 			Severity:          "warning",
 			AuditLogRef:       &model.AuditLogRef{Timestamp: time.Now().UTC().Format(time.RFC3339), Action: action, Username: username, UserIP: ip, Details: details},
 			MatchedConditions: []string{conditionDesc, fmt.Sprintf("Action performed: %s", action)},
+		})
+	}
+}
+
+// maxMalformedJSONSnippet caps how much of an offending raw line is embedded
+// in the alert message - lines can be up to maxLineSize (10MB, see tailer.go)
+// and there's no value in mailing/Slacking someone megabytes of garbage.
+const maxMalformedJSONSnippet = 500
+
+// EvaluateMalformedJSON fires any active malformed_json alert rule when the
+// tailer encounters a syslog line that fails to unmarshal as JSON. This is
+// admin-only by convention (see notify.Payload.AlertRuleType), same as
+// audit_log and relay_cert_expiring. By default (FireOnEveryMatch unset)
+// each occurrence fires immediately, subject only to the rule's cooldown -
+// same as audit_log. With FireOnEveryMatch set, the cooldown is bypassed
+// entirely and the rule notifies once per malformed line, no matter how
+// close together they arrive.
+func (e *Engine) EvaluateMalformedJSON(database *sql.DB, rawLine string) {
+	if db.GetSetting(database, "notifications_enabled", "true") != "true" {
+		return
+	}
+
+	rules, err := db.GetActiveAlertsByType(database, model.RuleTypeMalformedJSON)
+	if err != nil || len(rules) == 0 {
+		return
+	}
+
+	snippet := rawLine
+	if len(snippet) > maxMalformedJSONSnippet {
+		snippet = snippet[:maxMalformedJSONSnippet] + "..."
+	}
+
+	for _, rule := range rules {
+		if !rule.FireOnEveryMatch {
+			key := fmt.Sprintf("%d", rule.ID)
+			cooldown := time.Duration(rule.CooldownMinutes) * time.Minute
+			if !e.store.shouldFire(key, 1, 1, time.Minute, cooldown) {
+				continue
+			}
+		}
+
+		_ = db.MarkAlertFired(database, rule.ID)
+		e.dispatcher.DispatchAlert(rule, notify.Payload{
+			Title:             fmt.Sprintf("Alert: %s", rule.Name),
+			Message:           fmt.Sprintf("A syslog line failed to parse as JSON during ingestion: %s", snippet),
+			Severity:          "warning",
+			MatchedConditions: []string{"Malformed JSON line encountered during ingestion"},
 		})
 	}
 }

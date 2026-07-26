@@ -9,8 +9,8 @@ import (
 
 	"github.com/lib/pq"
 
-	"syslytics/model"
-	"syslytics/util"
+	"logmara/model"
+	"logmara/util"
 )
 
 // encryptionKey returns the AES key used to encrypt notification-channel
@@ -319,7 +319,7 @@ func MarkAlertFired(db *sql.DB, id int64) error {
 
 // ---- Notification channels ----
 
-func CreateNotificationChannel(database *sql.DB, req model.NotificationChannelRequest) (*model.NotificationChannel, error) {
+func CreateNotificationChannel(database *sql.DB, req model.NotificationChannelRequest, createdBy int64) (*model.NotificationChannel, error) {
 	enabled := true
 	if req.Enabled != nil {
 		enabled = *req.Enabled
@@ -338,11 +338,16 @@ func CreateNotificationChannel(database *sql.DB, req model.NotificationChannelRe
 		secret = sql.NullString{String: enc, Valid: true}
 	}
 
+	var createdByVal sql.NullInt64
+	if createdBy != 0 {
+		createdByVal = sql.NullInt64{Int64: createdBy, Valid: true}
+	}
+
 	var id int64
 	err := database.QueryRow(
-		`INSERT INTO notification_channels (name, type, config, secret, enabled, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING id`,
-		req.Name, req.Type, []byte(config), secret, enabled,
+		`INSERT INTO notification_channels (name, type, config, secret, enabled, created_by, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING id`,
+		req.Name, req.Type, []byte(config), secret, enabled, createdByVal,
 	).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("create notification channel: %w", err)
@@ -396,18 +401,35 @@ func scanChannel(row *sql.Rows) (model.NotificationChannel, error) {
 	var ch model.NotificationChannel
 	var config []byte
 	var secret sql.NullString
-	if err := row.Scan(&ch.ID, &ch.Name, &ch.Type, &config, &secret, &ch.Enabled, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
+	var createdBy sql.NullInt64
+	var createdByUsername sql.NullString
+	if err := row.Scan(&ch.ID, &ch.Name, &ch.Type, &config, &secret, &ch.Enabled, &createdBy, &createdByUsername, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
 		return ch, err
 	}
 	ch.Config = config
 	ch.HasSecret = secret.Valid && secret.String != ""
+	if createdBy.Valid {
+		ch.CreatedBy = &createdBy.Int64
+	}
+	if createdByUsername.Valid {
+		ch.CreatedByUsername = &createdByUsername.String
+	}
 	return ch, nil
 }
 
-const channelColumns = `id, name, type, config, secret, enabled, created_at, updated_at`
+// channelSelectBase resolves each channel's owner username via a LEFT JOIN
+// (so a channel predating the created_by column, or whose creator was since
+// deleted, still returns a row with a NULL username rather than none at
+// all) - lets every role show a plain "Owner" column without a separate,
+// admin/editor-only user-list lookup.
+const channelSelectBase = `
+	SELECT nc.id, nc.name, nc.type, nc.config, nc.secret, nc.enabled, nc.created_by, u.username, nc.created_at, nc.updated_at
+	FROM notification_channels nc
+	LEFT JOIN users u ON u.id = nc.created_by
+`
 
 func GetAllNotificationChannels(db *sql.DB) ([]model.NotificationChannel, error) {
-	rows, err := db.Query(`SELECT ` + channelColumns + ` FROM notification_channels ORDER BY created_at DESC`)
+	rows, err := db.Query(channelSelectBase + ` ORDER BY nc.created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list notification channels: %w", err)
 	}
@@ -425,7 +447,7 @@ func GetAllNotificationChannels(db *sql.DB) ([]model.NotificationChannel, error)
 }
 
 func GetNotificationChannel(db *sql.DB, id int64) (*model.NotificationChannel, error) {
-	rows, err := db.Query(`SELECT `+channelColumns+` FROM notification_channels WHERE id=$1`, id)
+	rows, err := db.Query(channelSelectBase+` WHERE nc.id=$1`, id)
 	if err != nil {
 		return nil, fmt.Errorf("get notification channel: %w", err)
 	}
@@ -446,7 +468,7 @@ func GetNotificationChannel(db *sql.DB, id int64) (*model.NotificationChannel, e
 // go through DecryptChannelSecret for the one they intend to send through.
 func GetChannelsForAlert(database *sql.DB, alertID int64) ([]model.NotificationChannel, error) {
 	rows, err := database.Query(
-		`SELECT nc.`+channelColumns+` FROM notification_channels nc
+		channelSelectBase+`
 		 JOIN alert_channels ac ON ac.channel_id = nc.id
 		 WHERE ac.alert_id = $1 AND nc.enabled = TRUE`, alertID)
 	if err != nil {
@@ -591,7 +613,7 @@ func GetInAppNotifications(db *sql.DB, sinceID int64, limit int, isAdmin bool, u
 	query := `SELECT id, alert_id, title, message, severity, alert_rule_type, target_user_ids, created_at FROM in_app_notifications
 		WHERE id > $1 AND (target_user_ids IS NULL OR $3 = ANY(target_user_ids))`
 	if !isAdmin {
-		query += ` AND alert_rule_type NOT IN ('audit_log', 'relay_cert_expiring')`
+		query += ` AND alert_rule_type NOT IN ('audit_log', 'relay_cert_expiring', 'malformed_json')`
 	}
 	query += ` ORDER BY id DESC LIMIT $2`
 	rows, err := db.Query(query, sinceID, limit, userID)
@@ -622,7 +644,7 @@ func GetUnreadNotificationCount(db *sql.DB, userID int64, isAdmin bool) (count i
 
 	query := "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM in_app_notifications WHERE id > $1 AND (target_user_ids IS NULL OR $2 = ANY(target_user_ids))"
 	if !isAdmin {
-		query += " AND alert_rule_type NOT IN ('audit_log', 'relay_cert_expiring')"
+		query += " AND alert_rule_type NOT IN ('audit_log', 'relay_cert_expiring', 'malformed_json')"
 	}
 	err = db.QueryRow(query, lastRead, userID).Scan(&count, &lastID)
 	if err != nil {

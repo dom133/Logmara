@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"syslytics/model"
+	"logmara/model"
 
 	"github.com/gin-gonic/gin"
 )

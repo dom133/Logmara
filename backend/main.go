@@ -14,18 +14,18 @@ import (
 	"syscall"
 	"time"
 
-	"syslytics/alertengine"
-	"syslytics/audit"
-	"syslytics/auth"
-	"syslytics/control"
-	"syslytics/db"
-	"syslytics/handler"
-	"syslytics/middleware"
-	"syslytics/notifyhub"
-	"syslytics/parser"
-	"syslytics/sharedstate"
-	"syslytics/tailer"
-	"syslytics/util"
+	"logmara/alertengine"
+	"logmara/audit"
+	"logmara/auth"
+	"logmara/control"
+	"logmara/db"
+	"logmara/handler"
+	"logmara/middleware"
+	"logmara/notifyhub"
+	"logmara/parser"
+	"logmara/sharedstate"
+	"logmara/tailer"
+	"logmara/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -249,7 +249,11 @@ func main() {
 	// call sites explicitly wrapped in timedQuery.
 	db.SetSlowQueryHook(handler.RecordSlowQuery)
 
-	dsn := os.Getenv("DATABASE_URL")
+	// Supports DATABASE_URL_FILE, or POSTGRES_HOST + POSTGRES_PASSWORD_FILE,
+	// as well as the plain DATABASE_URL env var, so a Swarm deployment can
+	// keep the DB password out of the deploy-time environment - see
+	// util.ResolveDatabaseURL.
+	dsn := util.ResolveDatabaseURL()
 
 	var database *sql.DB
 	if dsn != "" {
@@ -417,7 +421,14 @@ func main() {
 	audit.SetAlertEngine(alertEngine)
 	notifHub := notifyhub.NewHub(ctx, sharedClient)
 	alertEngine.SetOnInApp(notifHub.Publish)
-	go tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine)
+
+	// Redis-backed (shared across replicas) when sharedClient is set, so the
+	// dashboard's logs/sec figure is the same regardless of which replica
+	// answers the request - falls back to in-memory otherwise, same as
+	// everything else gated on sharedClient above.
+	logRate := sharedstate.NewRateCounter(sharedClient, "lograte")
+	handler.SetLogRateCounter(logRate)
+	go tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine, logRate)
 
 	// Device silence checks run independently on every replica: the read
 	// (mv_device_stats) is cheap and the per-rule-per-device cooldown key in
@@ -505,11 +516,15 @@ r := gin.New()
 		authGroup.POST("/stats/devices", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDeviceStats(database))
 		authGroup.POST("/stats/severity", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetSeverityStats(database))
 		authGroup.POST("/stats/timeline", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetTimelineStats(database))
+		authGroup.GET("/stats/rate", handler.GetLogsRate())
 		authGroup.GET("/devices", handler.GetDevices(database))
 		authGroup.POST("/export/csv", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportCSV(database))
 		authGroup.POST("/export/html", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportHTML(database))
 		authGroup.GET("/auth/me", handler.GetMe(database))
 		authGroup.POST("/auth/change-password", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
+		authGroup.GET("/auth/sessions", handler.ListSessions(database))
+		authGroup.DELETE("/auth/sessions/:id", handler.RevokeSession(database))
+		authGroup.GET("/auth/session-check", handler.CheckSession(database))
 
 		notificationsGate := handler.RequireNotificationsEnabled(database)
 
@@ -523,6 +538,12 @@ r := gin.New()
 		authGroup.GET("/push/vapid-public-key", notificationsGate, handler.GetVAPIDPublicKey(database))
 		authGroup.POST("/push/subscribe", notificationsGate, handler.SubscribePush(database))
 		authGroup.POST("/push/unsubscribe", notificationsGate, handler.UnsubscribePush(database))
+
+		// Readable by every authenticated role (including viewer) - channel
+		// secrets are never included in the response, only config + a
+		// has_secret flag, so there's nothing sensitive to gate here. Creating,
+		// editing and deleting channels stays admin-only (adminGroup below).
+		authGroup.GET("/admin/notification-channels", notificationsGate, handler.ListNotificationChannels(database))
 
 		authGroup.GET("/parsers", handler.ListParsers(engine))
 		authGroup.POST("/parsers/fields", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ListParsedFields(engine))
@@ -553,6 +574,8 @@ r := gin.New()
 			editorGroup.POST("/alerts", notificationsGate, handler.CreateAlert(database))
 			editorGroup.PUT("/alerts/:id", notificationsGate, handler.UpdateAlert(database))
 			editorGroup.DELETE("/alerts/:id", notificationsGate, handler.DeleteAlert(database))
+
+			editorGroup.GET("/users/directory", handler.ListUserDirectory(database))
 		}
 
 		adminGroup := authGroup.Group("/admin")
@@ -590,22 +613,25 @@ r := gin.New()
 			adminGroup.DELETE("/relay/certificates/:id", handler.RevokeRelayCertificate(database))
 			adminGroup.POST("/relay/certificates/:id/regenerate", handler.RegenerateRelayCertificate(database))
 
-			adminGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))
-			adminGroup.PUT("/notification-channels/:id", notificationsGate, handler.UpdateNotificationChannel(database))
-			adminGroup.DELETE("/notification-channels/:id", notificationsGate, handler.DeleteNotificationChannel(database))
-			adminGroup.POST("/notification-channels/:id/test", notificationsGate, handler.TestNotificationChannel(database, notifHub))
 			adminGroup.DELETE("/notifications/history", notificationsGate, handler.ClearNotificationHistory(database))
 		}
 
-		// Same /admin path prefix as adminGroup above, but readable by editors
-		// too - they can already create alert rules (editorGroup), so they
-		// need to see which channels exist to assign and whether their rules
-		// actually fired. Channel secrets and mutations stay admin-only.
-		adminReadGroup := authGroup.Group("/admin")
-		adminReadGroup.Use(auth.RoleRequired("admin", "editor"))
+		// Same /admin path prefix as adminGroup above, but readable/usable by
+		// editors too - they can already create alert rules (editorGroup), so
+		// they need to see whether their rules actually fired, and to create
+		// their own notification channels to assign to those rules.
+		// Create/update/delete are further restricted to the channel's own
+		// creator at the handler level (see handler.channelOwnedByCaller) -
+		// an editor (or admin) can only ever modify a channel they made
+		// themselves, or one predating the created_by column entirely.
+		adminEditorGroup := authGroup.Group("/admin")
+		adminEditorGroup.Use(auth.RoleRequired("admin", "editor"))
 		{
-			adminReadGroup.GET("/notification-channels", notificationsGate, handler.ListNotificationChannels(database))
-			adminReadGroup.POST("/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
+			adminEditorGroup.POST("/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
+			adminEditorGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))
+			adminEditorGroup.PUT("/notification-channels/:id", notificationsGate, handler.UpdateNotificationChannel(database))
+			adminEditorGroup.DELETE("/notification-channels/:id", notificationsGate, handler.DeleteNotificationChannel(database))
+			adminEditorGroup.POST("/notification-channels/:id/test", notificationsGate, handler.TestNotificationChannel(database, notifHub))
 		}
 	}
 

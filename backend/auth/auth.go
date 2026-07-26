@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"time"
 
-	"syslytics/db"
-	"syslytics/util"
+	"logmara/db"
+	"logmara/util"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -121,13 +121,31 @@ func (cfg *Config) ValidateToken(tokenString string) (*jwt.MapClaims, error) {
 	return nil, fmt.Errorf("invalid token")
 }
 
-// GenerateRefreshToken returns a random refresh token with 7-day expiry.
-func GenerateRefreshToken(userID int) (string, time.Time) {
+// RememberedRefreshTokenTTL is how long a refresh token lives when the user
+// checked "remember this device" at login, versus the normal 7 days.
+const RememberedRefreshTokenTTL = 60 * 24 * time.Hour
+const DefaultRefreshTokenTTL = 7 * 24 * time.Hour
+
+// GenerateRefreshToken returns a random refresh token. remember extends its
+// expiry from the normal 7 days to 60 days, for "remember this device" logins.
+func GenerateRefreshToken(userID int, remember bool) (string, time.Time) {
 	b := make([]byte, 32)
 	rand.Read(b)
 	token := hex.EncodeToString(b)
-	exp := time.Now().Add(7 * 24 * time.Hour)
+	ttl := DefaultRefreshTokenTTL
+	if remember {
+		ttl = RememberedRefreshTokenTTL
+	}
+	exp := time.Now().Add(ttl)
 	return token, exp
+}
+
+// GenerateDeviceID returns a random identifier for a "remember this device"
+// cookie, stable across logins/logouts on the same browser.
+func GenerateDeviceID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // HashPassword hashes a password with bcrypt (cost 14).
