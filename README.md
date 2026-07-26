@@ -23,17 +23,9 @@
 
 ## Architecture
 
-```
-Client (browser) ──HTTP/HTTPS 80/443──▶ Nginx ──proxy──▶ Go API (:8080) ──SQL──▶ PostgreSQL (:5432)
-                                                              ▲
-                                                              │ tails logs.jsonl
-Devices/senders ──syslog tcp/udp 514──▶ rsyslog ─────────────┘
-                                            ▲
-                                            │ mTLS 6514 (optional - see "Syslog Relay")
-                                     Remote syslog relay(s)
-
-docker-proxy (read-only Docker Engine API sidecar, internal-only) ◀── queried by Go API for Admin > Health
-```
+<p align="center">
+  <img src="docs/architecture-single-server.svg" alt="Syslytics single-server architecture: browser to Nginx to Go API to PostgreSQL, with rsyslog writing logs.jsonl that the API's tailer reads, and a docker-proxy sidecar queried by the API for Admin health" width="900" />
+</p>
 
 `rsyslog` and the Go API don't talk to each other directly - `rsyslog` writes ingested logs as JSON lines to a shared file (`logs.jsonl` on the `log_data` volume), and the API's file tailer (`backend/tailer/`) reads and parses that file, then persists parsed entries to PostgreSQL.
 
@@ -189,6 +181,10 @@ An additional, opt-in deployment path for surviving the loss of an entire server
 **Scope**: this gives *true* horizontal scale-out for `api`/`frontend` (multiple replicas serving traffic concurrently, not just failover) and *true* HA for PostgreSQL (automatic leader election/failover via Patroni) and Redis (automatic leader election/failover via Sentinel). `rsyslog` remains single-active-writer by design (see below), which is a correctness requirement, not a current limitation.
 
 Getting here required backend code changes (not just Docker config) — see "How multi-replica safety works" below for what changed and why.
+
+<p align="center">
+  <img src="docs/architecture-ha-swarm.svg" alt="Multi-node Docker Swarm HA architecture: a floating keepalived VIP fronts an app/edge tier (app1, app2) running haproxy-app, frontend, api, rsyslog and keepalived, backed by a data tier (pg1-pg3) running Patroni-managed Postgres, etcd, Redis and Sentinel behind HAProxy, plus a shared NFS server for log_data, log_spool and parser_defs" width="1000" />
+</p>
 
 ### Requirements
 
@@ -774,15 +770,9 @@ There's no automatic fencing (STONITH) set up here — for a deployment where ev
 
 Lets one or more small, standalone rsyslog hosts sit in VLANs that don't route directly to the central server, collect syslog from local devices, and forward it over an authenticated, encrypted channel (mTLS on port 6514) to this server's normal ingestion pipeline. The central server keeps accepting direct syslog on 514 from its own VLAN exactly as in the Quick Start — relays are additive, not a replacement, and any number of them can point at the same central server. This works the same whether the central side is a single server (`docker-compose.yml`) or the [High Availability](#high-availability-deployment-multi-node-optional) multi-node stack above.
 
-```
-VLAN A (devices)          VLAN B (DMZ/relay)              VLAN C (central)
- device1 ─┐
- device2 ─┼─► syslog-relay ──mTLS 6514/tcp──► rsyslog ──► logs.jsonl ──► tailer
- device3 ─┘   (small server,                      ▲        (unchanged)
-               forward-only)                       │
-VLAN D (DMZ/relay 2)                                │
- device4 ──► syslog-relay-2 ──────mTLS 6514/tcp──────┘
-```
+<p align="center">
+  <img src="docs/architecture-syslog-relay.svg" alt="Syslog relay architecture: devices in VLAN A forward to syslog-relay in VLAN B, and device4 in VLAN D forwards to syslog-relay-2, both relaying over mTLS on port 6514/tcp to rsyslog in the central VLAN C, which writes logs.jsonl for the tailer" width="900" />
+</p>
 
 Each relay reuses the same JSON conversion the central server already does locally (`rsyslog/syslog.conf`'s `JsonLines` template), so `fromhost_ip` stays the real device IP — the field parser matching and per-device stats rely on — instead of becoming the relay's own IP.
 
