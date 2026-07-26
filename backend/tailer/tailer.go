@@ -2,6 +2,7 @@ package tailer
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -33,7 +34,30 @@ const (
 	compactionInterval = 30 * time.Minute
 	maxFileSize        = 100 * 1024 * 1024 // 100 MB
 	positionFileName   = ".tailer_pos"
+	maxLineSize        = 10 * 1024 * 1024 // cap a single ingested "line" at 10MB
 )
+
+// splitCappedLines behaves like bufio.ScanLines, except that if no newline
+// shows up within maxLineSize bytes it force-cuts a token there instead of
+// growing the buffer further. Plain ScanLines would instead make Scan()
+// return bufio.ErrTooLong and stop for good - since every device's syslog
+// output is interleaved into one shared file processed strictly in order, a
+// single oversized/newline-less message (crafted or just a device bug) would
+// otherwise wedge the scanner at that byte offset forever, blocking
+// ingestion for every other host sharing the file. Forcing progress instead
+// turns it into a handful of "[MALFORMED JSON]" entries for that one device.
+func splitCappedLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, data[0:i], nil
+	}
+	if len(data) >= maxLineSize {
+		return maxLineSize, data[0:maxLineSize], nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
 
 // Run starts the log tailer. When elector is nil (single-server/single-
 // replica deployments, i.e. Redis not configured), it runs the ingestion
@@ -198,8 +222,9 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		}
 
 		scanner := bufio.NewScanner(f)
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 1024*1024)
+		buf := make([]byte, 0, maxLineSize)
+		scanner.Buffer(buf, maxLineSize)
+		scanner.Split(splitCappedLines)
 
 		batchStartPos := filePos
 		scanned := false
@@ -281,6 +306,10 @@ if entry.Hostname == "" {
 				}
 				lastFlush = now
 			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			slog.Error("tailer: scan error", "error", err)
 		}
 
 		if scanned {
