@@ -54,11 +54,16 @@ services:
     ports:
       - "${RSYSLOG_PORT:-514}:514"
       - "${RSYSLOG_PORT:-514}:514/udp"
+      # Direct TLS ingestion, no client certificate required - same
+      # ingestion as :514 above, just wrapped in server-side TLS for
+      # senders that want an encrypted transport without going through a
+      # relay. Not gated by the relay whitelist/ACL (see rsyslog/syslog.conf).
+      - "${SYSLOG_TLS_PORT:-6514}:6514"
       # mTLS listener for remote syslog relays (Admin > Settings > enable
       # relay ingestion). Safe to leave published even when unused: with no
       # relay certificate issued and none whitelisted, every connection is
       # dropped at the ACL (see rsyslog/syslog.conf and README "Syslog Relay").
-      - "${RELAY_MTLS_PORT:-6514}:6514"
+      - "${RELAY_MTLS_PORT:-6515}:6515"
     depends_on:
       api:
         condition: service_healthy

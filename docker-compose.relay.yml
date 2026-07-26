@@ -17,7 +17,7 @@
 #   4. docker compose -f docker-compose.relay.yml up -d --build
 #
 # See README "Syslog Relay" for the full walkthrough, including the
-# firewall rule this needs (outbound 6514/tcp to the central server only).
+# firewall rule this needs (outbound 6515/tcp to the central server only).
 
 services:
   rsyslog-relay:

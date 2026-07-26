@@ -9,7 +9,7 @@ mkdir -p "$RELAY_DIR"
 # (handler.SyncRelayConfig calls relaypki.EnsureCA at its own startup and
 # hourly thereafter), but this container can start before that has ever
 # happened (first `docker compose up`, or the feature simply never turned
-# on) - the mTLS listener on 6514 still needs *some* valid cert to bind.
+# on) - the mTLS listener on 6515 still needs *some* valid cert to bind.
 # relaybootstrap is a tiny CLI wrapped around that exact same EnsureCA
 # function (see backend/cmd/relaybootstrap) - not a separate reimplementation
 # - so there is exactly one piece of code that knows how to generate/renew
@@ -34,7 +34,7 @@ if [ ! -f "$RELAY_DIR/allowed-relays.conf" ]; then
 ruleset(name="relayIngest") {
     stop
 }
-input(type="imtcp" port="6514" ruleset="relayIngest"
+input(type="imtcp" port="6515" ruleset="relayIngest"
   StreamDriver.Name="gtls"
   StreamDriver.Mode="1"
   StreamDriver.AuthMode="x509/name"
@@ -56,9 +56,10 @@ busybox httpd -f -p 8082 -h /srv/reload-sidecar &
 # reload-sidecar/cgi-bin/reload.sh can force a real restart - the only way
 # rsyslog actually picks up a new config - by killing just this child,
 # without taking the whole container (and this httpd sidecar) down with
-# it. Every such restart briefly drops connections on BOTH port 514 and
-# 6514, since one process serves both - by design, not a bug: it's the
-# same cost any rsyslog config change pays outside Docker too.
+# it. Every such restart briefly drops connections on port 514, the
+# direct-TLS listener on 6514, and the mTLS relay listener on 6515, since
+# one process serves all three - by design, not a bug: it's the same cost
+# any rsyslog config change pays outside Docker too.
 #
 # set -e (above) would otherwise abort this whole script - and so kill the
 # container - the moment rsyslogd exits for any reason, since a killed or

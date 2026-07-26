@@ -52,7 +52,7 @@
   <rect x="246" y="300" width="120" height="30" rx="8" fill="#fefce8" stroke="#ca8a04" stroke-width="1.5"/>
   <text x="306" y="320" text-anchor="middle" font-size="11" fill="#713f12">rsyslog :514</text>
 
-  <text x="90" y="380" font-size="10.5" fill="#0c4a6e">rsyslog mode: global (VIP-holder only receives 514/6514 traffic)</text>
+  <text x="90" y="380" font-size="10.5" fill="#0c4a6e">rsyslog mode: global (VIP-holder only receives 514/6514/6515 traffic)</text>
 
   <!-- app2 -->
   <rect x="590" y="222" width="460" height="176" rx="12" fill="#f0f9ff" stroke="#0284c7" stroke-width="2"/>

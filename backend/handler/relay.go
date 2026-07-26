@@ -78,7 +78,7 @@ func rsyslogStringLiteral(s string) string {
 // writeRelayACL regenerates allowed-relays.conf, which is include()d at
 // the top level of rsyslog/syslog.conf and supplies BOTH the ruleset that
 // gates the mTLS relay listener by source IP AND the input() listener
-// itself (port 6514) - the latter has to live here too, not statically in
+// itself (port 6515) - the latter has to live here too, not statically in
 // syslog.conf, because pinning the TLS handshake to the exact
 // currently-issued certificate per relay (StreamDriver.AuthMode="x509/name"
 // + PermittedPeer, matched against the CommonName relaypki.IssueClientCert
@@ -147,7 +147,7 @@ func writeRelayACL(database *sql.DB) error {
 		content.WriteString(comment + "\n")
 	}
 	fmt.Fprintf(&content, "ruleset(name=%q) {\n%s}\n\n", relayListenerRuleset, rulesetBody)
-	fmt.Fprintf(&content, "input(type=\"imtcp\" port=\"6514\" ruleset=%q\n", relayListenerRuleset)
+	fmt.Fprintf(&content, "input(type=\"imtcp\" port=\"6515\" ruleset=%q\n", relayListenerRuleset)
 	content.WriteString("  StreamDriver.Name=\"gtls\"\n  StreamDriver.Mode=\"1\"\n  StreamDriver.AuthMode=\"x509/name\"\n")
 	fmt.Fprintf(&content, "  PermittedPeer=[%s]\n)\n", strings.Join(peerLiterals, ", "))
 
@@ -168,7 +168,7 @@ func writeRelayACL(database *sql.DB) error {
 // has no lightweight config reload, so the sidecar's reload.sh actually
 // kills the rsyslogd child and entrypoint.sh's supervisor loop restarts it
 // against the regenerated allowed-relays.conf, briefly interrupting syslog
-// ingestion on both 514 and 6514 while it comes back up) so the
+// ingestion on 514, 6514, and 6515 while it comes back up) so the
 // regenerated ACL takes effect. RSYSLOG_RELOAD_TARGETS_HOST mirrors
 // NGINX_RELOAD_TARGETS_HOST: unset for the single-server/single-rsyslog
 // case (docker-compose.yml), set to a DNS name resolving to every edge
@@ -727,7 +727,7 @@ template(name="JsonLines" type="list") {
 }
 
 *.* action(type="omfwd"
-  target=%q port="6514" protocol="tcp"
+  target=%q port="6515" protocol="tcp"
   template="JsonLines"
   StreamDriver="gtls"
   StreamDriverMode="1"
