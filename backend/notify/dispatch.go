@@ -105,6 +105,15 @@ func (d *Dispatcher) DispatchAlert(alert model.Alert, payload Payload) {
 	// showing one row per channel per firing.
 	firingID := uuid.New().String()
 
+	// Deep link back into this firing's Details view in the alert history -
+	// used by push notifications (see notify/push.go) and any other channel
+	// that renders Payload.Link. Set here (not by callers in alertengine)
+	// because firingID doesn't exist until now. Only filled in when a caller
+	// hasn't already set a more specific link.
+	if payload.Link == "" {
+		payload.Link = fmt.Sprintf("/alerts?tab=history&firing=%s", firingID)
+	}
+
 	if len(channels) == 0 {
 		// The rule fired but has nothing to deliver to - record that it fired
 		// at all, otherwise there is no trace of it anywhere in the history.

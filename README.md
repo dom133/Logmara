@@ -133,6 +133,7 @@ Copy `.env.example` and adjust values:
 | `LDAP_BIND_DN` | *(none)* | Bind DN for LDAP queries |
 | `LDAP_BIND_PASSWORD` | *(none)* | Bind password for LDAP queries |
 | `DOCKER_PROXY_URL` | `http://docker-proxy:2375` | Base URL of the `docker-proxy` sidecar backing Admin > Health — see [Health Monitoring](#health-monitoring) |
+| `PARSER_DEFS_DIR` | *(none — embedded defaults only)* | Directory the builtin parser definitions (`backend/db/parsers`) are bootstrapped into and re-read from on every start. Set this (and mount a persistent volume there) to edit/add/remove builtin parsers without rebuilding the image — see [Built-in Parsers](#built-in-parsers) |
 
 ### Security keys
 
@@ -373,14 +374,16 @@ PG_SUPERUSER_PASS=$(openssl rand -base64 32)
 PG_REPLICATION_PASS=$(openssl rand -base64 32)
 PG_APP_PASS=$(openssl rand -base64 32)
 REDIS_PASS=$(openssl rand -base64 32)
-# Save these somewhere safe (e.g. a password manager) - you'll need
-# PG_APP_PASS and REDIS_PASS again in step 10.
+JWT_SECRET_VAL=$(openssl rand -base64 48)
+ENCRYPTION_KEY_VAL=$(openssl rand -base64 48)   # separate value; see "Security keys"
 
 ./scripts/swarm-bootstrap.sh secrets "$PG_SUPERUSER_PASS" "$PG_REPLICATION_PASS" "$PG_APP_PASS"
 ./scripts/swarm-bootstrap.sh redis-secret "$REDIS_PASS"
+./scripts/swarm-bootstrap.sh app-secrets "$JWT_SECRET_VAL" "$ENCRYPTION_KEY_VAL"
 ./scripts/swarm-bootstrap.sh haproxy-config
 ./scripts/swarm-bootstrap.sh redis-sentinel-config
 ```
+All four passwords/keys now live only as Swarm secrets (mounted into the relevant containers at `/run/secrets/*`) - none of them need to be exported as shell env vars again in step 10, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later.
 
 #### 8. Create local data directories on the Postgres nodes
 
@@ -423,15 +426,11 @@ Sanity-check leader election worked: `docker exec -it $(docker ps -qf name=syslo
 
 #### 10. Deploy the app tier
 
-Still on `pg1` (or wherever you're driving `docker stack deploy` from), export the values from step 7:
+Still on `pg1` (or wherever you're driving `docker stack deploy` from) - the app tier's credentials (JWT signing key, encryption key, and the Postgres/Redis app passwords) all come from the Swarm secrets created in step 7, so nothing sensitive needs exporting here, only deployment parameters:
 
 ```bash
 export REGISTRY=registry.example.com/syslytics TAG=v1
 export NFS_SERVER=10.0.0.30
-export JWT_SECRET=$(openssl rand -base64 48)
-export ENCRYPTION_KEY=$(openssl rand -base64 48)   # separate value; see "Security keys"
-export POSTGRES_PASSWORD="$PG_APP_PASS"      # from step 7
-export REDIS_PASSWORD="$REDIS_PASS"          # from step 7
 
 docker stack deploy -c docker-stack.app.yml syslog-app
 watch docker service ls   # wait for api and frontend at 2/2, rsyslog global at 2/2
@@ -647,6 +646,19 @@ Each relay reuses the same JSON conversion the central server already does local
 - **Get warned before it happens**: add an Alert rule (Alerts > New Alert Rule) with type "Syslog relay certificate expiring" and a "Warn Before Expiry (days)" threshold — it's checked hourly against every relay certificate and fires (through whichever notification channels you assign, same as any other alert) once a certificate falls inside that window, subject to the rule's cooldown so it doesn't renotify every hour.
 - **The CA and the central listener's own server certificate renew themselves automatically** — the CA is valid 15 years, the server certificate 10, and neither needs any admin action: `relaypki.EnsureCA` checks both on every relay config sync (every whitelist/certificate change, plus an hourly background check — see `backend/main.go`) and re-signs whichever is within its renewal window (1 year out for the CA, 90 days for the server certificate). The CA specifically is re-signed **using the same private key**, just with a fresh validity window — TLS chain verification only needs the issuer's public key and a currently-valid, name-matching trust anchor, not the exact certificate object presented when a given relay certificate was originally signed, so every previously issued relay certificate keeps validating without being reissued or redistributed. This only handles ordinary expiry, not a suspected key compromise — that needs a real rotation (delete `/data/relay/ca.*` and `server.*`, restart, then reissue and redistribute a certificate to every relay), which isn't automatic and isn't something you should need to do on a routine basis.
 
+> [!NOTE]
+> **Rotating the relay CA.** `backend/relaypki.EnsureCA` is the single implementation that generates/renews the CA, called both by the `api` service and by the central `rsyslog` container (via the `relaybootstrap` CLI — see [Limitations](#limitations)), so it always produces an RSA 4096-bit key as of this version. If your deployment was first set up on an older version — before `relaybootstrap` replaced `rsyslog/entrypoint.sh`'s separate `openssl`-based placeholder — its CA may have ended up EC (prime256v1) instead if that placeholder won the startup race. Check with:
+> ```bash
+> docker compose exec rsyslog openssl x509 -in /data/relay/ca.crt -noout -text | grep -A1 "Public Key Algorithm"
+> # expect: Public Key Algorithm: rsaEncryption ... Public-Key: (4096 bit)
+> ```
+> Neither generator ever replaces an existing key — only creates one if missing — so an old EC CA stays EC indefinitely (auto-renewal re-signs it with the *same* key, see above) until you rotate it on purpose. To force RSA 4096:
+> ```bash
+> docker compose exec rsyslog rm /data/relay/ca.key /data/relay/ca.crt /data/relay/server.key /data/relay/server.crt
+> docker compose restart rsyslog api
+> ```
+> This is a real rotation, not the automatic in-place renewal above: every previously-issued relay client certificate stops validating against the new CA. Reissue and redistribute a fresh certificate (Admin > Syslog Relay > Certificates > Regenerate) to every relay right after.
+
 ### Enabling it
 
 1. Admin > Settings > **Syslog Relay** > turn on "Enable Syslog Relay Ingestion". This starts accepting mTLS connections on port 6514 (still gated by the whitelist below, so nothing gets in until you add a relay).
@@ -668,7 +680,7 @@ The relay only ever needs one outbound rule: **relay → central, 6514/tcp**. It
 
 - One relay is a single small server with no built-in failover (unlike the edge nodes in the HA section above) — if it goes down, its VLAN stops forwarding until it's back. Run more than one relay (in different VLANs, or the same one) if that's not acceptable; each gets its own certificate and whitelist entry.
 - The relay buffers to disk (`queue.type="LinkedList"` with `queue.saveOnShutdown` in the generated `relay.conf`) if the link to the central server drops, and catches up once it's back — but a full disk stops accepting new logs until the backlog is delivered.
-- On a relay's very first boot, if the central server's own CA/server certificate hasn't been generated yet, `rsyslog/entrypoint.sh` on the central side generates a throwaway placeholder so its listener can still start; whichever of that script or the API's own cert generation runs first "wins" and both sides converge on the same CA. This only matters during the very first `docker compose up` after enabling the feature.
+- On the very first `docker compose up`, before an admin has ever enabled relay ingestion, both the `api` service and the central `rsyslog` container's `entrypoint.sh` (via the `relaybootstrap` CLI, wrapping the exact same `relaypki.EnsureCA` code - not a separate implementation) may race to generate the CA/server certificate so the mTLS listener has something to bind. Whichever gets there first wins; the other is a no-op. Since it's the same code either way, the result is always identical (RSA 4096) - there's nothing to reconcile.
 
 ## Health Monitoring
 
@@ -693,7 +705,8 @@ A [relay](#syslog-relay-optional-multi-vlan) isn't on `syslog_net` and isn't rea
 - 📌 **Pin Dashboards** — Pin frequently-used dashboards to the sidebar for quick access
 - 📤 **Export** — Download logs as CSV or HTML reports
 - 📈 **Statistics** — Timeline charts, severity breakdown, and per-device metrics
-- 🔐 **Secure Authentication** — JWT access tokens (configurable timeout) + refresh tokens (7 days) with rotation, JWT blacklisting on logout
+- 🔐 **Secure Authentication** — JWT access tokens (configurable timeout) + refresh tokens (7 days, or 60 with "remember this device" at login) with rotation, JWT blacklisting on logout
+- 📱 **Session Management** — Review and sign out your own active sessions/devices from the navbar (`GET`/`DELETE /api/auth/sessions`)
 - 🔒 **Account Lockout** — Automatic lockout after configurable failed login attempts, admin unlock from Admin panel
 - 🛡️ **CSRF Protection** — Double-submit cookie pattern on all mutating endpoints
 - 🪪 **LDAP/AD Integration** — Authenticate against Active Directory or OpenLDAP with TLS support
@@ -727,7 +740,7 @@ Navigate to the **Alerts** tab to create and manage alert rules. Alerts monitor 
 
 - **Rule Types**: Choose from predefined alert types:
   - `log_threshold`: Triggers when a specific field value exceeds a threshold.
-  - `device_silence`: Triggers when a device stops sending logs for a configured period.
+  - `device_silence`: Triggers when a device stops sending logs for a configured period. Severity escalates the longer it stays silent (warning → error → critical at 2x/4x the threshold), and a "back online" notice fires once it resumes logging. The Admin > Devices table shows each device's silence status against its matching rule(s).
   - `config_change`: Triggers when a configuration change is detected in logs.
   - `relay_cert_expiring`: Triggers when a syslog relay certificate is nearing expiration.
 - **Conditions**: Define the matching criteria using:
@@ -849,11 +862,13 @@ POST /api/parsers/test
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/auth/login` | Authenticate and receive JWT + refresh token |
+| POST | `/api/auth/login` | Authenticate and receive JWT + refresh token. Accepts `remember: true` for a long-lived (60-day), per-device session instead of the normal 7-day one |
 | POST | `/api/auth/refresh` | Refresh access token using refresh token |
 | POST | `/api/auth/logout` | Invalidate refresh token |
 | GET | `/api/auth/me` | Get current user profile |
 | POST | `/api/auth/change-password` | Change user password |
+| GET | `/api/auth/sessions` | List the caller's own active sessions/devices |
+| DELETE | `/api/auth/sessions/:id` | Sign out one of the caller's own sessions |
 
 ### Initialization
 
@@ -936,6 +951,7 @@ POST /api/parsers/test
 ├── backend/
 │   ├── main.go              # Entry point, route setup, rate limiter, CORS
 │   ├── auth/                 # JWT middleware, refresh tokens, bcrypt
+│   ├── cmd/relaybootstrap/   # One-shot CLI wrapping relaypki.EnsureCA, built into the rsyslog image
 │   ├── db/                   # Database connection, migrations, builtin parsers
 │   ├── handler/              # HTTP handlers (auth, logs, parsers, dashboards, admin, init, relay)
 │   ├── ldap/                 # LDAP/AD authentication with TLS
@@ -999,12 +1015,9 @@ Syslytics includes a robust parser engine that allows you to extract structured 
 4. **Dashboard Integration**: Extracted fields can be used for filtering and visualization in dashboards
 
 ### Built-in Parsers
-The system includes several built-in parsers that detect common log formats:
-- SSH login attempts
-- Nginx access logs  
-- Apache access logs
-- Firewall events
-- System service messages
+The system ships with several dozen built-in parsers covering common log sources: Linux (SSHD auth, systemd, sudo, cron, NetworkManager, DHCP, kernel firewall drops), Cisco IOS, MikroTik, Palo Alto, FortiGate, pfSense/Suricata, Ubiquiti/UniFi, plus a couple of generic IP/MAC extractors.
+
+They're defined as JSON files in [`backend/db/parsers/defaults/`](backend/db/parsers/defaults/) (one per vendor, e.g. `linux.json`, `cisco.json`), embedded into the binary as factory defaults. At startup, if `PARSER_DEFS_DIR` is set (see [Configuration](#configuration)), that directory is bootstrapped from the embedded defaults on first run and then re-read on every subsequent start — so you can edit, add, or remove builtin parser definitions on disk (same `name`/`description`/`device_type`/`match_type`/`match_value`/`regex`/`fields` shape as the API's parser objects) without rebuilding the image. A malformed file is skipped with a warning in the logs rather than blocking startup.
 
 ### Creating Parsers
 Parsers can be created through the web interface or API with the following requirements:

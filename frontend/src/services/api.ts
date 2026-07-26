@@ -430,6 +430,28 @@ export interface User {
 	locked_until: string | null
 }
 
+export interface Session {
+	id: number
+	device_id?: string
+	user_agent?: string
+	ip?: string
+	remember: boolean
+	created_at: string
+	last_used_at?: string | null
+	expires_at: string
+	is_current: boolean
+}
+
+export async function getSessions() {
+	const res = await api.get('/auth/sessions')
+	return res.data as Session[]
+}
+
+export async function revokeSession(id: number) {
+	const res = await api.delete(`/auth/sessions/${id}`)
+	return res.data as { message: string }
+}
+
 export async function getUsers() {
 	const res = await api.get('/admin/users')
 	return (res.data || []) as User[]
@@ -875,6 +897,7 @@ export interface NotificationChannel {
 	config: Record<string, unknown>
 	has_secret: boolean
 	enabled: boolean
+	created_by?: number
 	created_at: string
 	updated_at: string
 }

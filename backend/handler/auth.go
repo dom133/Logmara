@@ -22,7 +22,31 @@ const (
 	AccessTokenCookieName  = "accessToken"
 	RefreshTokenCookieName = "refreshToken"
 	CSRFTokenCookieName    = "csrf_token"
+	DeviceIDCookieName     = "device_id"
+	deviceIDCookieMaxAge   = 400 * 24 * 60 * 60 // ~400 days, the practical cap browsers enforce on cookie lifetime
 )
+
+// deviceID returns the long-lived per-browser identifier used to group
+// "remember this device" refresh tokens into sessions a user can review and
+// revoke individually. It reads the existing device_id cookie, or mints and
+// sets a new one if this is the browser's first login.
+func deviceID(c *gin.Context) string {
+	if id, err := c.Cookie(DeviceIDCookieName); err == nil && id != "" {
+		return id
+	}
+	id := auth.GenerateDeviceID()
+	secure := c.GetHeader("X-Forwarded-Proto") == "https"
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     DeviceIDCookieName,
+		Value:    id,
+		Path:     "/",
+		MaxAge:   deviceIDCookieMaxAge,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+	return id
+}
 
 func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpiry, refreshExpiry time.Time) {
 	csrf := generateCSRFToken()
@@ -103,6 +127,7 @@ func clearAuthCookies(c *gin.Context) {
 type LoginRequest struct {
 	Username string `json:"username" binding:"required,max=100"`
 	Password string `json:"password" binding:"required,max=128"`
+	Remember bool   `json:"remember"`
 }
 
 type LoginResponse struct {
@@ -213,8 +238,17 @@ if existing != nil {
 		}
 		_ = jti
 
-		refreshToken, refreshExpiresAt := auth.GenerateRefreshToken(int(user.ID))
-		if err := insertRefreshToken(database, int(user.ID), refreshToken, refreshExpiresAt); err != nil {
+		refreshToken, refreshExpiresAt := auth.GenerateRefreshToken(int(user.ID), req.Remember)
+		devID := deviceID(c)
+		if err := insertRefreshToken(database, refreshTokenParams{
+			userID:    int(user.ID),
+			token:     refreshToken,
+			expiresAt: refreshExpiresAt,
+			deviceID:  devID,
+			userAgent: c.Request.UserAgent(),
+			ip:        c.ClientIP(),
+			remember:  req.Remember,
+		}); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
 
@@ -270,16 +304,19 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		}
 
 		var userID int
+		var deviceIDVal sql.NullString
+		var remember bool
 		claimErr := database.QueryRow(
 			`UPDATE refresh_tokens SET used = true, used_at = NOW()
 			 WHERE token = $1 AND used = false AND expires_at > NOW()
-			 RETURNING user_id`,
+			 RETURNING user_id, device_id, remember`,
 			refreshToken,
-		).Scan(&userID)
+		).Scan(&userID, &deviceIDVal, &remember)
 
 		var replacementToken string
+		var replacementExpiry time.Time
 		if claimErr != nil {
-			recoveredUserID, recoveredToken, recovered := recoverRacedRefresh(database, refreshToken)
+			recoveredUserID, recoveredToken, recoveredExpiry, recovered := recoverRacedRefresh(database, refreshToken)
 			if !recovered {
 				clearAuthCookies(c)
 				audit.LogAudit(database, 0, "", "refresh_failed", c.ClientIP(), "invalid, expired, or reused refresh token")
@@ -288,6 +325,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			}
 			userID = recoveredUserID
 			replacementToken = recoveredToken
+			replacementExpiry = recoveredExpiry
 		}
 
 		user, err := getUserByID(database, userID)
@@ -305,14 +343,21 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 
 		if replacementToken != "" {
 			audit.LogAudit(database, user.ID, user.Username, "refresh_race_recovered", c.ClientIP(), "")
-			replacementExpiry := time.Now().Add(7 * 24 * time.Hour)
 			setAuthCookies(c, token, replacementToken, accessExpiresAt, replacementExpiry)
 			c.JSON(http.StatusOK, gin.H{"success": true, "expires_at": accessExpiresAt.Unix()})
 			return
 		}
 
-		newRefreshToken, newExpiresAt := auth.GenerateRefreshToken(userID)
-		if err := insertRefreshToken(database, userID, newRefreshToken, newExpiresAt); err != nil {
+		newRefreshToken, newExpiresAt := auth.GenerateRefreshToken(userID, remember)
+		if err := insertRefreshToken(database, refreshTokenParams{
+			userID:    userID,
+			token:     newRefreshToken,
+			expiresAt: newExpiresAt,
+			deviceID:  deviceIDVal.String,
+			userAgent: c.Request.UserAgent(),
+			ip:        c.ClientIP(),
+			remember:  remember,
+		}); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
 		if _, err := database.Exec("UPDATE refresh_tokens SET replaced_by = $1 WHERE token = $2", newRefreshToken, refreshToken); err != nil {
@@ -330,7 +375,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 // rotated moments ago (used=true, linked to a replacement) and, if so,
 // within the grace window, hands back the replacement token instead of
 // treating this as a stale/replayed refresh token.
-func recoverRacedRefresh(database *sql.DB, token string) (userID int, replacementToken string, ok bool) {
+func recoverRacedRefresh(database *sql.DB, token string) (userID int, replacementToken string, replacementExpiry time.Time, ok bool) {
 	var replacedBy sql.NullString
 	var usedAt sql.NullTime
 	err := database.QueryRow(
@@ -338,22 +383,22 @@ func recoverRacedRefresh(database *sql.DB, token string) (userID int, replacemen
 		token,
 	).Scan(&userID, &usedAt, &replacedBy)
 	if err != nil || !replacedBy.Valid || !usedAt.Valid {
-		return 0, "", false
+		return 0, "", time.Time{}, false
 	}
 	if time.Since(usedAt.Time) > refreshReuseGraceWindow {
-		return 0, "", false
+		return 0, "", time.Time{}, false
 	}
 
-	var stillValid bool
+	var expiresAt time.Time
 	err = database.QueryRow(
-		"SELECT expires_at > NOW() FROM refresh_tokens WHERE token = $1",
+		"SELECT expires_at FROM refresh_tokens WHERE token = $1 AND expires_at > NOW()",
 		replacedBy.String,
-	).Scan(&stillValid)
-	if err != nil || !stillValid {
-		return 0, "", false
+	).Scan(&expiresAt)
+	if err != nil {
+		return 0, "", time.Time{}, false
 	}
 
-	return userID, replacedBy.String, true
+	return userID, replacedBy.String, expiresAt, true
 }
 
 func getUserByID(database *sql.DB, userID int) (*db.User, error) {
@@ -472,10 +517,21 @@ func ChangePassword(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func insertRefreshToken(db *sql.DB, userID int, token string, expiresAt time.Time) error {
+type refreshTokenParams struct {
+	userID    int
+	token     string
+	expiresAt time.Time
+	deviceID  string
+	userAgent string
+	ip        string
+	remember  bool
+}
+
+func insertRefreshToken(db *sql.DB, p refreshTokenParams) error {
 	_, err := db.Exec(
-		"INSERT INTO refresh_tokens (user_id, token, expires_at, used) VALUES ($1, $2, $3, false)",
-		userID, token, expiresAt,
+		`INSERT INTO refresh_tokens (user_id, token, expires_at, used, device_id, user_agent, ip, remember, last_used_at)
+		 VALUES ($1, $2, $3, false, $4, $5, $6, $7, NOW())`,
+		p.userID, p.token, p.expiresAt, p.deviceID, p.userAgent, p.ip, p.remember,
 	)
 	return err
 }

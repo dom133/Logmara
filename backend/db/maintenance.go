@@ -172,9 +172,12 @@ func cleanupExpiredRefreshTokens(db *sql.DB) {
 		slog.Info("refresh token cleanup completed", "rows_deleted", n)
 	}
 
+	// "Remember this device" tokens (remember = true) are exempt: they're
+	// meant to keep a session alive across days/weeks of not opening the
+	// app, not just within a single active-browsing window.
 	timeoutMin := getInactivityTimeoutMin(db)
 	res, err = db.Exec(
-		"UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE used = false AND created_at < NOW() - ($1 || ' minutes')::INTERVAL",
+		"UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE used = false AND remember = false AND created_at < NOW() - ($1 || ' minutes')::INTERVAL",
 		timeoutMin,
 	)
 	if err != nil {

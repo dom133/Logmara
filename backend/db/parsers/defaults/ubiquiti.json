@@ -1,0 +1,542 @@
+[
+  {
+    "name": "Ubiquiti AP Event",
+    "description": "Matches Ubiquiti UniFi AP connect/disconnect/reboot events",
+    "device_type": "ubiquiti",
+    "match_type": "hostname",
+    "match_value": "ubnt*",
+    "regex": "AP\\s+([0-9A-Fa-f:]+)\\s+(\\S+)\\s+on\\s+(\\S+)",
+    "fields": [
+      {
+        "name": "mac_address",
+        "label": "MAC Address",
+        "type": "string"
+      },
+      {
+        "name": "event_type",
+        "label": "Event Type",
+        "type": "string"
+      },
+      {
+        "name": "site",
+        "label": "Site",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Ubiquiti Client Connect",
+    "description": "Matches Ubiquiti client association events",
+    "device_type": "ubiquiti",
+    "match_type": "hostname",
+    "match_value": "ubnt*",
+    "regex": "client\\s+([0-9A-Fa-f:]+)\\s+(\\S+)\\s+on\\s+(\\S+)\\s+channel\\s+(\\d+)$",
+    "fields": [
+      {
+        "name": "client_mac",
+        "label": "Client MAC",
+        "type": "string"
+      },
+      {
+        "name": "action",
+        "label": "Action",
+        "type": "string"
+      },
+      {
+        "name": "ssid",
+        "label": "SSID",
+        "type": "string"
+      },
+      {
+        "name": "channel",
+        "label": "Channel",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Ubiquiti Firewall Log",
+    "description": "Matches Ubiquiti EdgeRouter/Dream Machine iptables-style firewall logs",
+    "device_type": "ubiquiti",
+    "match_type": "message",
+    "match_value": "DESCR=",
+    "regex": "\\[(\\S+)\\]\\s+DESCR=\"([^\"]+)\"\\s+IN=(\\S*)\\s+OUT=(\\S*)\\s+MAC=(\\S*)\\s+SRC=(\\d+\\.\\d+\\.\\d+\\.\\d+)\\s+DST=(\\d+\\.\\d+\\.\\d+\\.\\d+)\\s+.*?LEN=(\\d+)\\s+.*?PROTO=(\\S+)(?:\\s+SPT=(\\d+))?(?:\\s+DPT=(\\d+))?",
+    "fields": [
+      {
+        "name": "rule_id",
+        "label": "Rule ID",
+        "type": "string"
+      },
+      {
+        "name": "description",
+        "label": "Description",
+        "type": "string"
+      },
+      {
+        "name": "in_iface",
+        "label": "In Interface",
+        "type": "string"
+      },
+      {
+        "name": "out_iface",
+        "label": "Out Interface",
+        "type": "string"
+      },
+      {
+        "name": "mac_address",
+        "label": "MAC Address",
+        "type": "string"
+      },
+      {
+        "name": "src_ip",
+        "label": "Source IP",
+        "type": "string"
+      },
+      {
+        "name": "dst_ip",
+        "label": "Dest IP",
+        "type": "string"
+      },
+      {
+        "name": "packet_len",
+        "label": "Packet Length",
+        "type": "string"
+      },
+      {
+        "name": "proto",
+        "label": "Protocol",
+        "type": "string"
+      },
+      {
+        "name": "src_port",
+        "label": "Source Port",
+        "type": "string"
+      },
+      {
+        "name": "dst_port",
+        "label": "Dest Port",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "UniFi Network WiFi Client Connected",
+    "description": "Matches UniFi Network controller CEF events for WiFi client association (signature 400)",
+    "device_type": "ubiquiti",
+    "match_type": "message",
+    "match_value": "|400|WiFi Client Connected|",
+    "regex": "^0\\|Ubiquiti\\|UniFi Network\\|[^|]*\\|400\\|WiFi Client Connected\\|\\d+\\|UNIFIcategory=(.*?) UNIFIhost=(.*?) UNIFIconnectedToDeviceName=(.*?) UNIFIconnectedToDeviceIp=(\\S+) UNIFIconnectedToDeviceMac=(\\S+) UNIFIconnectedToDeviceModel=(\\S+) UNIFIconnectedToDeviceVersion=(\\S+) UNIFIclientAlias=(.*?) UNIFIclientHostname=(\\S+) UNIFIclientIp=(\\S+) UNIFIclientMac=(\\S+) UNIFIwifiChannel=(\\S+) UNIFIwifiChannelWidth=(\\S+) UNIFIwifiName=(.*?) UNIFIwifiBand=(\\S+) UNIFIauthMethod=(\\S+) UNIFIWiFiRssi=(-?\\d+) UNIFInetworkName=(\\S+) UNIFInetworkSubnet=(\\S+) UNIFInetworkVlan=(\\S+) UNIFIutcTime=(\\S+) msg=(.*)$",
+    "fields": [
+      {
+        "name": "category",
+        "label": "Category",
+        "type": "string"
+      },
+      {
+        "name": "unifi_host",
+        "label": "UniFi Host",
+        "type": "string"
+      },
+      {
+        "name": "ap_name",
+        "label": "AP Name",
+        "type": "string"
+      },
+      {
+        "name": "ap_ip",
+        "label": "AP IP",
+        "type": "string"
+      },
+      {
+        "name": "ap_mac",
+        "label": "AP MAC",
+        "type": "string"
+      },
+      {
+        "name": "ap_model",
+        "label": "AP Model",
+        "type": "string"
+      },
+      {
+        "name": "ap_version",
+        "label": "AP Version",
+        "type": "string"
+      },
+      {
+        "name": "client_alias",
+        "label": "Client Alias",
+        "type": "string"
+      },
+      {
+        "name": "client_hostname",
+        "label": "Client Hostname",
+        "type": "string"
+      },
+      {
+        "name": "client_ip",
+        "label": "Client IP",
+        "type": "string"
+      },
+      {
+        "name": "client_mac",
+        "label": "Client MAC",
+        "type": "string"
+      },
+      {
+        "name": "wifi_channel",
+        "label": "WiFi Channel",
+        "type": "string"
+      },
+      {
+        "name": "wifi_channel_width",
+        "label": "WiFi Channel Width",
+        "type": "string"
+      },
+      {
+        "name": "wifi_name",
+        "label": "WiFi Name (SSID)",
+        "type": "string"
+      },
+      {
+        "name": "wifi_band",
+        "label": "WiFi Band",
+        "type": "string"
+      },
+      {
+        "name": "auth_method",
+        "label": "Auth Method",
+        "type": "string"
+      },
+      {
+        "name": "wifi_rssi",
+        "label": "WiFi RSSI",
+        "type": "string"
+      },
+      {
+        "name": "network_name",
+        "label": "Network Name",
+        "type": "string"
+      },
+      {
+        "name": "network_subnet",
+        "label": "Network Subnet",
+        "type": "string"
+      },
+      {
+        "name": "network_vlan",
+        "label": "Network VLAN",
+        "type": "string"
+      },
+      {
+        "name": "utc_time",
+        "label": "UTC Time",
+        "type": "string"
+      },
+      {
+        "name": "msg",
+        "label": "Message",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "UniFi Network Admin Access",
+    "description": "Matches UniFi Network controller audit events for admin login (signature 544)",
+    "device_type": "ubiquiti",
+    "match_type": "message",
+    "match_value": "|544|Network Accessed|",
+    "regex": "^(?:\\d{4}-\\d{2}-\\d{2}T[\\d:.]+Z?\\s+[^C]+\\s*CEF:)?0\\|Ubiquiti\\|UniFi Network\\|([^|]+)\\|544\\|Network Accessed\\|\\d+\\|UNIFIcategory=(\\S+) UNIFIhost=(.+?) UNIFIaccessMethod=(.+?) UNIFIadmin=(\\S+) src=(\\d+\\.\\d+\\.\\d+\\.\\d+) UNIFIutcTime=(\\S+) msg=(.*)$",
+    "fields": [
+      {
+        "name": "device_id",
+        "label": "Device ID",
+        "type": "string"
+      },
+      {
+        "name": "category",
+        "label": "Category",
+        "type": "string"
+      },
+      {
+        "name": "host",
+        "label": "Host",
+        "type": "string"
+      },
+      {
+        "name": "access_method",
+        "label": "Access Method",
+        "type": "string"
+      },
+      {
+        "name": "admin",
+        "label": "Admin",
+        "type": "string"
+      },
+      {
+        "name": "src_ip",
+        "label": "Source IP",
+        "type": "string"
+      },
+      {
+        "name": "utc_time",
+        "label": "UTC Time",
+        "type": "string"
+      },
+      {
+        "name": "msg",
+        "label": "Message",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "UniFi OS Admin Access",
+    "description": "Matches UniFi OS admin access events (signature 1000)",
+    "device_type": "ubiquiti",
+    "match_type": "message",
+    "match_value": "|1000|Admin Accessed UniFi OS|",
+    "regex": "^(?:\\d{4}-\\d{2}-\\d{2}T[\\d:.]+Z?\\s+[^C]+\\s*CEF:)?0\\|Ubiquiti\\|UniFi OS\\|([^|]+)\\|1000\\|Admin Accessed UniFi OS\\|\\d+\\|UNIFIhost=(\\S+) UNIFIdeviceName=(.+?) UNIFIdeviceModel=(\\S+) UNIFIdeviceIp=(\\d+\\.\\d+\\.\\d+\\.\\d+) UNIFIdeviceMac=(\\S+) UNIFIdeviceVersion=(\\S+) UNIFIadmin=(\\S+) UNIFIaccessMethod=(.+?) msg=(.*)$",
+    "fields": [
+      {
+        "name": "device_version",
+        "label": "Device Version",
+        "type": "string"
+      },
+      {
+        "name": "host",
+        "label": "Host",
+        "type": "string"
+      },
+      {
+        "name": "device_name",
+        "label": "Device Name",
+        "type": "string"
+      },
+      {
+        "name": "device_model",
+        "label": "Device Model",
+        "type": "string"
+      },
+      {
+        "name": "device_ip",
+        "label": "Device IP",
+        "type": "string"
+      },
+      {
+        "name": "device_mac",
+        "label": "Device MAC",
+        "type": "string"
+      },
+      {
+        "name": "device_ver",
+        "label": "Device Version",
+        "type": "string"
+      },
+      {
+        "name": "admin",
+        "label": "Admin",
+        "type": "string"
+      },
+      {
+        "name": "access_method",
+        "label": "Access Method",
+        "type": "string"
+      },
+      {
+        "name": "msg",
+        "label": "Message",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "UniFi Network Generic CEF",
+    "description": "Generic UniFi Network controller CEF parser for all signatures not covered by specific parsers",
+    "device_type": "ubiquiti",
+    "match_type": "message",
+    "match_value": "Ubiquiti|UniFi Network|",
+    "regex": "^(\\d)\\|([^|]+)\\|([^|]+)\\|([^|]+)\\|(\\d+)\\|([^|]+)\\|(\\d+)\\|(.+)$",
+    "fields": [
+      {
+        "name": "sequence",
+        "label": "Sequence",
+        "type": "string"
+      },
+      {
+        "name": "vendor",
+        "label": "Vendor",
+        "type": "string"
+      },
+      {
+        "name": "product",
+        "label": "Product",
+        "type": "string"
+      },
+      {
+        "name": "device_id",
+        "label": "Device ID",
+        "type": "string"
+      },
+      {
+        "name": "port",
+        "label": "Port",
+        "type": "string"
+      },
+      {
+        "name": "event",
+        "label": "Event",
+        "type": "string"
+      },
+      {
+        "name": "severity",
+        "label": "Severity",
+        "type": "string"
+      },
+      {
+        "name": "raw_kv",
+        "label": "Raw Key-Value",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "UniFi Network WiFi Client Disconnected",
+    "description": "Matches UniFi Network controller CEF events for WiFi client disconnection (signature 401)",
+    "device_type": "ubiquiti",
+    "match_type": "message",
+    "match_value": "|401|WiFi Client Disconnected|",
+    "regex": "^0\\|Ubiquiti\\|UniFi Network\\|[^|]*\\|401\\|WiFi Client Disconnected\\|\\d+\\|UNIFIcategory=(.*?) UNIFIhost=(.*?) UNIFIlastConnectedToDeviceName=(.*?) UNIFIlastConnectedToDeviceIp=(\\S+) UNIFIlastConnectedToDeviceMac=(\\S+) UNIFIlastConnectedToDeviceModel=(\\S+) UNIFIlastConnectedToDeviceVersion=(\\S+) UNIFIclientAlias=(.*?) UNIFIclientHostname=(\\S+) UNIFIclientIp=(\\S+) UNIFIclientMac=(\\S+) UNIFIwifiChannel=(\\S+) UNIFIwifiChannelWidth=(\\S+) UNIFIwifiName=(.*?) UNIFIwifiBand=(\\S+) UNIFIwifiAirtimeUtilization=(\\S+) UNIFIwifiInterference=(\\S+) UNIFIlastConnectedToWiFiRssi=(-?\\d+) UNIFIduration=(.*?) UNIFIusageDown=(.*?) UNIFIusageUp=(.*?) UNIFInetworkName=(\\S+) UNIFInetworkSubnet=(\\S+) UNIFInetworkVlan=(\\S+) UNIFIutcTime=(\\S+) msg=(.*)$",
+    "fields": [
+      {
+        "name": "category",
+        "label": "Category",
+        "type": "string"
+      },
+      {
+        "name": "unifi_host",
+        "label": "UniFi Host",
+        "type": "string"
+      },
+      {
+        "name": "last_ap_name",
+        "label": "Last AP Name",
+        "type": "string"
+      },
+      {
+        "name": "last_ap_ip",
+        "label": "Last AP IP",
+        "type": "string"
+      },
+      {
+        "name": "last_ap_mac",
+        "label": "Last AP MAC",
+        "type": "string"
+      },
+      {
+        "name": "last_ap_model",
+        "label": "Last AP Model",
+        "type": "string"
+      },
+      {
+        "name": "last_ap_version",
+        "label": "Last AP Version",
+        "type": "string"
+      },
+      {
+        "name": "client_alias",
+        "label": "Client Alias",
+        "type": "string"
+      },
+      {
+        "name": "client_hostname",
+        "label": "Client Hostname",
+        "type": "string"
+      },
+      {
+        "name": "client_ip",
+        "label": "Client IP",
+        "type": "string"
+      },
+      {
+        "name": "client_mac",
+        "label": "Client MAC",
+        "type": "string"
+      },
+      {
+        "name": "wifi_channel",
+        "label": "WiFi Channel",
+        "type": "string"
+      },
+      {
+        "name": "wifi_channel_width",
+        "label": "WiFi Channel Width",
+        "type": "string"
+      },
+      {
+        "name": "wifi_name",
+        "label": "WiFi Name (SSID)",
+        "type": "string"
+      },
+      {
+        "name": "wifi_band",
+        "label": "WiFi Band",
+        "type": "string"
+      },
+      {
+        "name": "wifi_airtime_utilization",
+        "label": "WiFi Airtime Utilization",
+        "type": "string"
+      },
+      {
+        "name": "wifi_interference",
+        "label": "WiFi Interference",
+        "type": "string"
+      },
+      {
+        "name": "last_wifi_rssi",
+        "label": "Last WiFi RSSI",
+        "type": "string"
+      },
+      {
+        "name": "duration",
+        "label": "Duration",
+        "type": "string"
+      },
+      {
+        "name": "usage_down",
+        "label": "Usage Down",
+        "type": "string"
+      },
+      {
+        "name": "usage_up",
+        "label": "Usage Up",
+        "type": "string"
+      },
+      {
+        "name": "network_name",
+        "label": "Network Name",
+        "type": "string"
+      },
+      {
+        "name": "network_subnet",
+        "label": "Network Subnet",
+        "type": "string"
+      },
+      {
+        "name": "network_vlan",
+        "label": "Network VLAN",
+        "type": "string"
+      },
+      {
+        "name": "utc_time",
+        "label": "UTC Time",
+        "type": "string"
+      },
+      {
+        "name": "msg",
+        "label": "Message",
+        "type": "string"
+      }
+    ]
+  }
+]

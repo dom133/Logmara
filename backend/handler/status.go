@@ -4,11 +4,11 @@ import (
 	"database/sql"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 
 	"syslytics/db"
+	"syslytics/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -58,7 +58,7 @@ func GetDbConfig(database *sql.DB) gin.HandlerFunc {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Application already initialized"})
 			return
 		}
-		dsn := os.Getenv("DATABASE_URL")
+		dsn := util.ResolveDatabaseURL()
 		if dsn == "" {
 			c.JSON(http.StatusOK, gin.H{
 				"configured": false,

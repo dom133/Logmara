@@ -15,6 +15,7 @@ import SyslogRelay from './pages/SyslogRelay'
 import SetupWizard from './pages/SetupWizard'
 import ErrorBoundary from './components/ErrorBoundary'
 import { SessionWarningModal } from './components/SessionWarningModal'
+import { SessionsModal } from './components/SessionsModal'
 import { NotificationBell } from './components/NotificationBell'
 import { AuthProvider, useAuth } from './services/auth'
 import { getDashboards, getDashboard, Dashboard as DashboardType, checkInitialized } from './services/api'
@@ -175,6 +176,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
   const [loadingDashboards, setLoadingDashboards] = useState(true)
   const [collapsed, setCollapsed] = useState(false)
   const [drawerVisible, setDrawerVisible] = useState(false)
+  const [sessionsModalOpen, setSessionsModalOpen] = useState(false)
   const isMobile = useIsMobile()
 
   useEffect(() => {
@@ -274,9 +276,14 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'nowrap', overflow: 'hidden' }}>
             <NotificationBell />
-            <span style={{ fontSize: 13, color: token.colorTextSecondary, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+            <Button
+              type="text"
+              onClick={() => setSessionsModalOpen(true)}
+              style={{ fontSize: 13, color: token.colorTextSecondary, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
+              title="My Sessions"
+            >
               <UserOutlined /> {user?.username}
-            </span>
+            </Button>
             <Button
               type="text"
               icon={themeMode === 'dark' ? <SunOutlined /> : <MoonOutlined />}
@@ -305,15 +312,17 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           onLogout={logout}
         />
       )}
+      <SessionsModal open={sessionsModalOpen} onClose={() => setSessionsModalOpen(false)} />
     </Layout>
   )
 }
 
-function PrivateRoute({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth()
+function PrivateRoute({ children, requireAdmin }: { children: React.ReactNode; requireAdmin?: boolean }) {
+  const { user, isAdmin, loading } = useAuth()
   const location = useLocation()
   if (loading) return null
   if (!user) return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />
+  if (requireAdmin && !isAdmin) return <Navigate to="/" replace />
   return <AppLayout>{children}</AppLayout>
 }
 
@@ -384,8 +393,8 @@ export default function App() {
               <Route path="/dashboards" element={<PrivateRoute><DashboardsPage /></PrivateRoute>} />
               <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
               <Route path="/alerts" element={<PrivateRoute><AlertsPage /></PrivateRoute>} />
-              <Route path="/admin" element={<PrivateRoute><Admin /></PrivateRoute>} />
-              <Route path="/relay" element={<PrivateRoute><SyslogRelay /></PrivateRoute>} />
+              <Route path="/admin" element={<PrivateRoute requireAdmin><Admin /></PrivateRoute>} />
+              <Route path="/relay" element={<PrivateRoute requireAdmin><SyslogRelay /></PrivateRoute>} />
               <Route path="*" element={<PrivateRoute><Result status="404" title="404" subTitle="Page not found" /></PrivateRoute>} />
             </>
           )}

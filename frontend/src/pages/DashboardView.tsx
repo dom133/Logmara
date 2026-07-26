@@ -571,27 +571,29 @@ export default function DashboardViewPage() {
           const detail = renderDetailContent()
           if (!detail) return null
           return (
-            <Descriptions bordered column={1} size="small">
-              {detail.metadata.map((item, i) => (
-                <Descriptions.Item key={i} label={item.label}>
-                  {item.content}
+            <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
+              <Descriptions bordered column={1} layout="vertical" size="small">
+                {detail.metadata.map((item, i) => (
+                  <Descriptions.Item key={i} label={item.label}>
+                    {item.content}
+                  </Descriptions.Item>
+                ))}
+                <Descriptions.Item label="Full Message">
+                  <pre style={{
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-all',
+                    width: '100%',
+                    maxWidth: '100%',
+                    fontFamily: 'Consolas, Monaco, monospace',
+                    fontSize: 12,
+                    lineHeight: 1.4,
+                    margin: 0,
+                  }}>
+                    {detail.message}
+                  </pre>
                 </Descriptions.Item>
-              ))}
-              <Descriptions.Item label="Full Message">
-                <pre style={{
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-all',
-                  width: '100%',
-                  maxWidth: '100%',
-                  fontFamily: 'Consolas, Monaco, monospace',
-                  fontSize: 12,
-                  lineHeight: 1.4,
-                  margin: 0,
-                }}>
-                  {detail.message}
-                </pre>
-              </Descriptions.Item>
-            </Descriptions>
+              </Descriptions>
+            </div>
           )
         })()}
       </Modal>

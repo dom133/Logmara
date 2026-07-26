@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Layout, Card, Form, Input, Button, message, Typography } from 'antd'
+import { Layout, Card, Form, Input, Button, Checkbox, message, Typography } from 'antd'
 import { useAuth } from '../services/auth'
 import { useTheme } from '../App'
 
@@ -27,9 +27,9 @@ export default function Login() {
     }
   }, [user, navigate])
 
-  const handleLogin = async (values: { username: string; password: string }) => {
+  const handleLogin = async (values: { username: string; password: string; remember?: boolean }) => {
     setLoading(true)
-    const result = await login(values.username, values.password)
+    const result = await login(values.username, values.password, values.remember)
     setLoading(false)
     if (result.ok) {
       message.success('Logged in successfully')
@@ -55,6 +55,9 @@ export default function Login() {
           </Form.Item>
           <Form.Item name="password" label="Password" rules={[{ required: true }]}>
             <Input.Password size="large" placeholder="Password" />
+          </Form.Item>
+          <Form.Item name="remember" valuePropName="checked" style={{ marginBottom: 12 }}>
+            <Checkbox>Remember this device</Checkbox>
           </Form.Item>
           <Form.Item>
             <Button type="primary" htmlType="submit" loading={loading} size="large" block>

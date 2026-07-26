@@ -51,6 +51,12 @@ Commands (run on the indicated node):
       docker-stack.redis.yml. Its value must match REDIS_PASSWORD passed to
       docker-stack.app.yml.
 
+  app-secrets <jwt-secret> <encryption-key>
+      Run on a manager, once: creates the jwt_secret and encryption_key
+      secrets consumed by the api service in docker-stack.app.yml (instead
+      of passing JWT_SECRET/ENCRYPTION_KEY as plain deploy-time env vars).
+      Generate both with `openssl rand -base64 48`, do not reuse examples.
+
   haproxy-config
       Run on a manager, once (and again any time haproxy/haproxy.cfg
       changes — configs are immutable, so this recreates it with a new
@@ -120,6 +126,14 @@ case "$cmd" in
     printf '%s' "$pass" | docker secret create redis_password -
     echo "Created redis_password."
     echo "Remember: its value must match REDIS_PASSWORD used when deploying docker-stack.app.yml."
+    ;;
+
+  app-secrets)
+    jwt="${2:?usage: app-secrets <jwt-secret> <encryption-key>}"
+    enc="${3:?usage: app-secrets <jwt-secret> <encryption-key>}"
+    printf '%s' "$jwt" | docker secret create jwt_secret -
+    printf '%s' "$enc" | docker secret create encryption_key -
+    echo "Created jwt_secret, encryption_key."
     ;;
 
   haproxy-config)

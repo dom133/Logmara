@@ -239,6 +239,16 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='device_aliases' AND column_name='old_hostname') THEN ALTER TABLE device_aliases ADD COLUMN old_hostname VARCHAR(255); END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='used_at') THEN ALTER TABLE refresh_tokens ADD COLUMN used_at TIMESTAMPTZ; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='replaced_by') THEN ALTER TABLE refresh_tokens ADD COLUMN replaced_by VARCHAR(255); END IF; END $$`,
+		// Per-device "remember me" support: device_id identifies the browser
+		// (a long-lived cookie set on first login), remember marks the token
+		// as exempt from the inactivity-based expiry in maintenance.go, and
+		// user_agent/ip/last_used_at back the "active sessions" self-service
+		// list/revoke endpoints.
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='device_id') THEN ALTER TABLE refresh_tokens ADD COLUMN device_id VARCHAR(64); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='user_agent') THEN ALTER TABLE refresh_tokens ADD COLUMN user_agent VARCHAR(500); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='ip') THEN ALTER TABLE refresh_tokens ADD COLUMN ip VARCHAR(100); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='remember') THEN ALTER TABLE refresh_tokens ADD COLUMN remember BOOLEAN NOT NULL DEFAULT FALSE; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='last_used_at') THEN ALTER TABLE refresh_tokens ADD COLUMN last_used_at TIMESTAMPTZ; END IF; END $$`,
 		`DELETE FROM app_settings WHERE key = 'jwt_expiry'`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='rule_type') THEN ALTER TABLE alerts ADD COLUMN rule_type VARCHAR(30) NOT NULL DEFAULT 'log_threshold'; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='severity') THEN ALTER TABLE alerts ADD COLUMN severity VARCHAR(20); END IF; END $$`,
@@ -262,6 +272,17 @@ func Migrate(db *sql.DB) error {
 			value VARCHAR(500) NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_alert_field_conditions_alert ON alert_field_conditions (alert_id)`,
+		// Tracks which (device_silence rule, device) pairs are currently
+		// silent, so alertengine.CheckDeviceSilence can detect the
+		// silent->recovered transition (to send a "back online" notice) and
+		// escalate severity the longer a device stays silent - see silence.go.
+		`CREATE TABLE IF NOT EXISTS device_silence_state (
+			rule_id INTEGER REFERENCES alerts(id) ON DELETE CASCADE,
+			device_ip VARCHAR(64) NOT NULL,
+			silent_since TIMESTAMPTZ NOT NULL,
+			last_severity VARCHAR(20) NOT NULL DEFAULT 'warning',
+			PRIMARY KEY (rule_id, device_ip)
+		)`,
 		`CREATE TABLE IF NOT EXISTS notification_channels (
 			id SERIAL PRIMARY KEY,
 			name VARCHAR(255) NOT NULL,
@@ -272,6 +293,7 @@ func Migrate(db *sql.DB) error {
 			created_at TIMESTAMPTZ DEFAULT NOW(),
 			updated_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='notification_channels' AND column_name='created_by') THEN ALTER TABLE notification_channels ADD COLUMN created_by INTEGER REFERENCES users(id) ON DELETE SET NULL; END IF; END $$`,
 		`CREATE TABLE IF NOT EXISTS alert_channels (
 			alert_id INTEGER REFERENCES alerts(id) ON DELETE CASCADE,
 			channel_id INTEGER REFERENCES notification_channels(id) ON DELETE CASCADE,
@@ -539,7 +561,10 @@ END $$`,
 }
 
 func seedParsers(db *sql.DB) error {
-	allParsers := parsers.AllParsers
+	allParsers, loadErrs := parsers.LoadAll(os.Getenv("PARSER_DEFS_DIR"))
+	for _, e := range loadErrs {
+		slog.Warn("skipping malformed builtin parser definition", "error", e)
+	}
 
 	rows, err := db.Query("SELECT id, name FROM parsers WHERE is_builtin")
 	if err != nil {

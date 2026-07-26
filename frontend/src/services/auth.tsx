@@ -14,7 +14,7 @@ interface User {
 interface AuthContextType {
   user: User | null
   loading: boolean
-  login: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>
+  login: (username: string, password: string, remember?: boolean) => Promise<{ ok: boolean; error?: string }>
   logout: () => Promise<void>
   isAdmin: boolean
   canEdit: boolean
@@ -110,9 +110,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [clearAllTimers, setupSessionWarning])
 
-  const login = useCallback(async (username: string, password: string) => {
+  const login = useCallback(async (username: string, password: string, remember?: boolean) => {
     try {
-      const res = await api.post('/auth/login', { username, password })
+      const res = await api.post('/auth/login', { username, password, remember: !!remember })
       const userData = res.data.user
       setUser({
         id: userData.id,

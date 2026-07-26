@@ -319,7 +319,7 @@ func MarkAlertFired(db *sql.DB, id int64) error {
 
 // ---- Notification channels ----
 
-func CreateNotificationChannel(database *sql.DB, req model.NotificationChannelRequest) (*model.NotificationChannel, error) {
+func CreateNotificationChannel(database *sql.DB, req model.NotificationChannelRequest, createdBy int64) (*model.NotificationChannel, error) {
 	enabled := true
 	if req.Enabled != nil {
 		enabled = *req.Enabled
@@ -338,11 +338,16 @@ func CreateNotificationChannel(database *sql.DB, req model.NotificationChannelRe
 		secret = sql.NullString{String: enc, Valid: true}
 	}
 
+	var createdByVal sql.NullInt64
+	if createdBy != 0 {
+		createdByVal = sql.NullInt64{Int64: createdBy, Valid: true}
+	}
+
 	var id int64
 	err := database.QueryRow(
-		`INSERT INTO notification_channels (name, type, config, secret, enabled, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING id`,
-		req.Name, req.Type, []byte(config), secret, enabled,
+		`INSERT INTO notification_channels (name, type, config, secret, enabled, created_by, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING id`,
+		req.Name, req.Type, []byte(config), secret, enabled, createdByVal,
 	).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("create notification channel: %w", err)
@@ -396,15 +401,19 @@ func scanChannel(row *sql.Rows) (model.NotificationChannel, error) {
 	var ch model.NotificationChannel
 	var config []byte
 	var secret sql.NullString
-	if err := row.Scan(&ch.ID, &ch.Name, &ch.Type, &config, &secret, &ch.Enabled, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
+	var createdBy sql.NullInt64
+	if err := row.Scan(&ch.ID, &ch.Name, &ch.Type, &config, &secret, &ch.Enabled, &createdBy, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
 		return ch, err
 	}
 	ch.Config = config
 	ch.HasSecret = secret.Valid && secret.String != ""
+	if createdBy.Valid {
+		ch.CreatedBy = &createdBy.Int64
+	}
 	return ch, nil
 }
 
-const channelColumns = `id, name, type, config, secret, enabled, created_at, updated_at`
+const channelColumns = `id, name, type, config, secret, enabled, created_by, created_at, updated_at`
 
 func GetAllNotificationChannels(db *sql.DB) ([]model.NotificationChannel, error) {
 	rows, err := db.Query(`SELECT ` + channelColumns + ` FROM notification_channels ORDER BY created_at DESC`)

@@ -49,7 +49,14 @@ func CreateNotificationChannel(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		channel, err := db.CreateNotificationChannel(database, req)
+		var createdBy int64
+		if uid, ok := c.Get("user_id"); ok {
+			if id, ok := uid.(int64); ok {
+				createdBy = id
+			}
+		}
+
+		channel, err := db.CreateNotificationChannel(database, req, createdBy)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to create notification channel", err))
 			return
@@ -58,11 +65,40 @@ func CreateNotificationChannel(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
+// channelOwnedByCaller loads the channel and checks that the caller either
+// created it or that it has no recorded owner (channels seeded before the
+// created_by column existed). Returns nil and writes an error response if
+// the check fails.
+func channelOwnedByCaller(c *gin.Context, database *sql.DB, id int64) (*model.NotificationChannel, bool) {
+	channel, err := db.GetNotificationChannel(database, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			middleware.HandleError(c, model.NewNotFound("Notification channel not found", nil))
+			return nil, false
+		}
+		middleware.HandleError(c, model.NewInternal("Failed to load notification channel", err))
+		return nil, false
+	}
+	if channel.CreatedBy != nil {
+		uid, ok := c.Get("user_id")
+		callerID, okType := uid.(int64)
+		if !ok || !okType || *channel.CreatedBy != callerID {
+			middleware.HandleError(c, model.NewForbidden("You can only modify notification channels you created", nil))
+			return nil, false
+		}
+	}
+	return channel, true
+}
+
 func UpdateNotificationChannel(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			return
+		}
+
+		if _, ok := channelOwnedByCaller(c, database, id); !ok {
 			return
 		}
 
@@ -90,6 +126,10 @@ func DeleteNotificationChannel(database *sql.DB) gin.HandlerFunc {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			return
+		}
+
+		if _, ok := channelOwnedByCaller(c, database, id); !ok {
 			return
 		}
 

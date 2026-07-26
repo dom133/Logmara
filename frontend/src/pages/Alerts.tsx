@@ -364,7 +364,7 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
   )
 }
 
-function ChannelsTab({ canEdit }: { canEdit: boolean }) {
+function ChannelsTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserId?: number }) {
   const [channels, setChannels] = useState<NotificationChannel[]>([])
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(false)
@@ -471,22 +471,25 @@ const openEdit = (c: NotificationChannel) => {
     { title: 'Status', dataIndex: 'enabled', key: 'enabled', render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? 'Enabled' : 'Disabled'}</Tag> },
     {
       title: 'Actions', key: 'actions',
-      render: (_v: unknown, r: NotificationChannel) => (
-        <Space>
-          <Button size="small" icon={<ExperimentOutlined />} loading={testingId === r.id} onClick={() => handleTest(r.id)}>Test</Button>
-          {canEdit && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />}
-          {canEdit && <Popconfirm title="Delete channel?" onConfirm={() => handleDelete(r.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>}
-        </Space>
-      ),
+      render: (_v: unknown, r: NotificationChannel) => {
+        const canEditRow = isAdmin && (r.created_by == null || r.created_by === currentUserId)
+        return (
+          <Space>
+            <Button size="small" icon={<ExperimentOutlined />} loading={testingId === r.id} onClick={() => handleTest(r.id)}>Test</Button>
+            {canEditRow && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />}
+            {canEditRow && <Popconfirm title="Delete channel?" onConfirm={() => handleDelete(r.id)}>
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Popconfirm>}
+          </Space>
+        )
+      },
     },
   ]
 
   return (
     <>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Channel</Button>}
+        {isAdmin && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Channel</Button>}
       </div>
       <Table dataSource={channels} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
 
@@ -605,7 +608,7 @@ function groupHistoryEntries(entries: NotificationLogEntry[]): HistoryGroup[] {
   return Array.from(groups.values())
 }
 
-function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmin: boolean; active: boolean; focusInAppId?: number; onFocusConsumed: () => void }) {
+function HistoryTab({ isAdmin, active, focusInAppId, focusFiringId, onFocusConsumed }: { isAdmin: boolean; active: boolean; focusInAppId?: number; focusFiringId?: string; onFocusConsumed: () => void }) {
   const [entries, setEntries] = useState<NotificationLogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
@@ -634,15 +637,17 @@ function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmi
   // recorded in history at all - either way, tell the user instead of
   // silently leaving the tab with nothing selected.
   useEffect(() => {
-    if (!focusInAppId || loading) return
-    const match = groups.find((g) => g.channels.some((c) => c.in_app_notification_id === focusInAppId))
+    if ((!focusInAppId && !focusFiringId) || loading) return
+    const match = focusFiringId
+      ? groups.find((g) => g.key === focusFiringId)
+      : groups.find((g) => g.channels.some((c) => c.in_app_notification_id === focusInAppId))
     if (match) {
       setViewing(match)
     } else {
       message.info('No matching history entry was found for that notification (it may be too old, or a test notification, which is never recorded in history).')
     }
     onFocusConsumed()
-  }, [focusInAppId, loading, entries, onFocusConsumed])
+  }, [focusInAppId, focusFiringId, loading, entries, onFocusConsumed])
 
   const handleClear = async () => {
     setClearing(true)
@@ -819,15 +824,20 @@ export default function AlertsPage() {
   // Deep-linked from a notification bell click (see NotificationBell's
   // goToHistoryDetail): ?tab=history&notification=<in_app_notification_id>
   // opens straight to History with that entry's Details already showing.
+  // Push notifications instead deep-link via ?tab=history&firing=<firing_id>
+  // (see notify.Dispatcher.DispatchAlert / Payload.Link) since a push-only
+  // alert (no in_app channel) never gets an in_app_notification_id to match on.
   const [searchParams] = useSearchParams()
   const initialTab = searchParams.get('tab') === 'history' ? 'history' : 'rules'
   const initialFocusID = Number(searchParams.get('notification')) || undefined
+  const initialFocusFiringID = searchParams.get('firing') || undefined
   const [activeTab, setActiveTab] = useState(initialTab)
   const [focusInAppId, setFocusInAppId] = useState<number | undefined>(initialFocusID)
+  const [focusFiringId, setFocusFiringId] = useState<string | undefined>(initialFocusFiringID)
 
   const items = [
     { key: 'rules', label: 'Alert Rules', children: <RulesTab canEdit={canEdit} isAdmin={isAdmin} active={activeTab === 'rules'} /> },
-    { key: 'channels', label: 'Notification Channels', children: <ChannelsTab canEdit={isAdmin} /> },
+    { key: 'channels', label: 'Notification Channels', children: <ChannelsTab isAdmin={isAdmin} currentUserId={user?.id} /> },
     {
       key: 'history', label: 'History',
       children: (
@@ -835,7 +845,8 @@ export default function AlertsPage() {
           isAdmin={isAdmin}
           active={activeTab === 'history'}
           focusInAppId={focusInAppId}
-          onFocusConsumed={() => setFocusInAppId(undefined)}
+          focusFiringId={focusFiringId}
+          onFocusConsumed={() => { setFocusInAppId(undefined); setFocusFiringId(undefined) }}
         />
       ),
     },

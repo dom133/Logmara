@@ -101,6 +101,7 @@ type NotificationChannel struct {
 	Config    json.RawMessage `json:"config"`
 	HasSecret bool            `json:"has_secret"`
 	Enabled   bool            `json:"enabled"`
+	CreatedBy *int64          `json:"created_by,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
 }

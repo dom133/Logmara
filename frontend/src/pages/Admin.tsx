@@ -1,13 +1,24 @@
 import { useState, useEffect, useRef } from 'react'
-import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip, Drawer } from 'antd'
+import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip } from 'antd'
 import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined } from '@ant-design/icons'
-import { getUsers, createUser, updateUser, deleteUser, resetPassword, unlockUser, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, User, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse } from '../services/api'
+import { getUsers, createUser, updateUser, deleteUser, resetPassword, unlockUser, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, User, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
 import { useAuth } from '../services/auth'
 
 const { Option } = Select
+
+function formatDurationAgo(ms: number): string {
+  if (ms < 0) ms = 0
+  const minutes = Math.floor(ms / 60000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ${minutes % 60}m ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ${hours % 24}h ago`
+}
 
 export default function Admin() {
   const { refreshUser } = useAuth()
@@ -22,6 +33,7 @@ export default function Admin() {
   const [settingsForm] = Form.useForm()
   const [devices, setDevices] = useState<DeviceStats[]>([])
   const [devicesLoading, setDevicesLoading] = useState(false)
+  const [silenceRules, setSilenceRules] = useState<AlertRule[]>([])
   const [editDevice, setEditDevice] = useState<DeviceStats | null>(null)
   const [editDeviceForm] = Form.useForm()
   const [ldapEnabled, setLdapEnabled] = useState(false)
@@ -147,13 +159,33 @@ await testLDAPConnection({
   const loadDevices = async () => {
     setDevicesLoading(true)
     try {
-      const data = await getDeviceStats()
+      const [data, alerts] = await Promise.all([
+        getDeviceStats(),
+        getAlerts().catch(() => [] as AlertRule[]),
+      ])
       setDevices(data)
+      setSilenceRules(alerts.filter(a => a.rule_type === 'device_silence' && a.is_active !== false))
     } catch {
       message.error('Failed to load devices')
     } finally {
       setDevicesLoading(false)
     }
+  }
+
+  // Silence rules with an empty device_ips list watch every device; others
+  // only watch the IPs listed. Picks the smallest (most sensitive) threshold
+  // among the rules that apply to ip, since that's the one that'll fire first.
+  const silenceInfoFor = (ip: string): { thresholdMin: number; ruleId: number } | null => {
+    let best: { thresholdMin: number; ruleId: number } | null = null
+    for (const rule of silenceRules) {
+      const applies = !rule.device_ips || rule.device_ips.length === 0 || rule.device_ips.includes(ip)
+      if (!applies) continue
+      const thresholdMin = rule.threshold > 0 ? rule.threshold : 15
+      if (!best || thresholdMin < best.thresholdMin) {
+        best = { thresholdMin, ruleId: rule.id }
+      }
+    }
+    return best
   }
 
   const handleEditDeviceSave = async () => {
@@ -238,7 +270,6 @@ await testLDAPConnection({
       if (result.cert_info) {
         setCertInfo(result.cert_info)
       }
-      loadSettings()
     } catch (e: unknown) {
       message.error(getErrorMessage(e, 'Failed to upload SSL certificates'))
     } finally {
@@ -619,6 +650,23 @@ const handleCleanup = async () => {
                         {sslUploading ? 'Uploading...' : 'Upload Certificates'}
                       </Button>
                     </Form.Item>
+                    {certInfo && (
+                      <Result
+                        status={certInfo.error ? 'error' : 'success'}
+                        icon={<SafetyCertificateOutlined />}
+                        title={certInfo.error || 'Certificate Verified'}
+                        subTitle={certInfo.subject}
+                      >
+                        <Descriptions bordered column={1} size="small">
+                          <Descriptions.Item label="Subject"><span style={{ wordBreak: 'break-all' }}>{certInfo.subject || '-'}</span></Descriptions.Item>
+                          <Descriptions.Item label="Issuer"><span style={{ wordBreak: 'break-all' }}>{certInfo.issuer || '-'}</span></Descriptions.Item>
+                          <Descriptions.Item label="Valid From">{certInfo.valid_from || '-'}</Descriptions.Item>
+                          <Descriptions.Item label="Valid To">{certInfo.valid_to || '-'}</Descriptions.Item>
+                          <Descriptions.Item label="DNS Names"><span style={{ wordBreak: 'break-all' }}>{Array.isArray(certInfo.dns_names) && certInfo.dns_names.length > 0 ? certInfo.dns_names.join(', ') : '-'}</span></Descriptions.Item>
+                          {certInfo.error && <Descriptions.Item label="Error"><span style={{ wordBreak: 'break-all' }}>{certInfo.error}</span></Descriptions.Item>}
+                        </Descriptions>
+                      </Result>
+                    )}
                     <Divider orientation="left">Notifications</Divider>
                     <Form.Item label="Enable Notifications" name="notifications_enabled" valuePropName="checked" tooltip="Master switch for alert rule evaluation and delivery through any channel">
                       <Switch />
@@ -660,23 +708,6 @@ const handleCleanup = async () => {
                     >
                       <Input placeholder="e.g. syslog.example.com or 10.0.0.5" disabled={!relayEnabled} />
                     </Form.Item>
-                    {certInfo && (
-                      <Result
-                        status={certInfo.error ? 'error' : 'success'}
-                        icon={<SafetyCertificateOutlined />}
-                        title={certInfo.error || 'Certificate Verified'}
-                        subTitle={certInfo.subject}
-                      >
-                        <Descriptions bordered column={1} size="small">
-                          <Descriptions.Item label="Subject"><span style={{ wordBreak: 'break-all' }}>{certInfo.subject || '-'}</span></Descriptions.Item>
-                          <Descriptions.Item label="Issuer"><span style={{ wordBreak: 'break-all' }}>{certInfo.issuer || '-'}</span></Descriptions.Item>
-                          <Descriptions.Item label="Valid From">{certInfo.valid_from || '-'}</Descriptions.Item>
-                          <Descriptions.Item label="Valid To">{certInfo.valid_to || '-'}</Descriptions.Item>
-                          <Descriptions.Item label="DNS Names"><span style={{ wordBreak: 'break-all' }}>{Array.isArray(certInfo.dns_names) && certInfo.dns_names.length > 0 ? certInfo.dns_names.join(', ') : '-'}</span></Descriptions.Item>
-                          {certInfo.error && <Descriptions.Item label="Error"><span style={{ wordBreak: 'break-all' }}>{certInfo.error}</span></Descriptions.Item>}
-                        </Descriptions>
-                      </Result>
-                    )}
                   <Divider />
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <Button type="primary" htmlType="submit">
@@ -886,9 +917,41 @@ const handleCleanup = async () => {
                       title: 'Last Seen',
                       dataIndex: 'last_seen',
                       key: 'last_seen',
-                      width: 170,
-                      render: (date: string) => date ? new Date(date).toLocaleString() : '-',
+                      width: 200,
+                      render: (date: string) => {
+                        if (!date) return '-'
+                        const ago = formatDurationAgo(Date.now() - new Date(date).getTime())
+                        return (
+                          <span>
+                            {new Date(date).toLocaleString()}
+                            <br />
+                            <span style={{ color: '#999', fontSize: 12 }}>{ago}</span>
+                          </span>
+                        )
+                      },
                       sorter: (a: DeviceStats, b: DeviceStats) => new Date(a.last_seen).getTime() - new Date(b.last_seen).getTime(),
+                    },
+                    {
+                      title: 'Silence Status',
+                      key: 'silence_status',
+                      width: 160,
+                      render: (_v: unknown, record: DeviceStats) => {
+                        const info = silenceInfoFor(record.fromhost_ip)
+                        if (!info) {
+                          return <Tag>No rule</Tag>
+                        }
+                        const minutesSinceLastSeen = record.last_seen
+                          ? (Date.now() - new Date(record.last_seen).getTime()) / 60000
+                          : Infinity
+                        const isSilent = minutesSinceLastSeen >= info.thresholdMin
+                        return (
+                          <Tooltip title={`Watched by an alert rule with a ${info.thresholdMin}m threshold. Detection can lag up to ~30m behind real time (device stats refresh interval) on top of that.`}>
+                            <a onClick={() => window.location.href = '/alerts'}>
+                              <Tag color={isSilent ? 'red' : 'green'}>{isSilent ? 'Silent' : 'OK'}</Tag>
+                            </a>
+                          </Tooltip>
+                        )
+                      },
                     },
                     {
                       title: 'Severity',
@@ -1345,22 +1408,27 @@ const handleCleanup = async () => {
         </Form>
       </Modal>
 
-      <Drawer
+      <Modal
         title="Audit Log Details"
         open={auditDetailOpen}
-        onClose={() => setAuditDetailOpen(false)}
-        width={520}
+        onCancel={() => setAuditDetailOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setAuditDetailOpen(false)} style={{ width: '100%' }}>Close</Button>
+        ]}
+        width={{ sm: '90%', md: 700 }}
       >
         {auditDetailRecord && (
-          <Descriptions bordered column={1} size="small">
-            <Descriptions.Item label="Timestamp">{new Date(auditDetailRecord.created_at).toLocaleString()}</Descriptions.Item>
-            <Descriptions.Item label="User">{auditDetailRecord.username}</Descriptions.Item>
-            <Descriptions.Item label="Action">{auditDetailRecord.action.replace(/_/g, ' ')}</Descriptions.Item>
-            <Descriptions.Item label="IP">{auditDetailRecord.ip || '-'}</Descriptions.Item>
-            <Descriptions.Item label="Details">{auditDetailRecord.details || '-'}</Descriptions.Item>
-          </Descriptions>
+          <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
+            <Descriptions bordered column={1} size="small">
+              <Descriptions.Item label="Timestamp">{new Date(auditDetailRecord.created_at).toLocaleString()}</Descriptions.Item>
+              <Descriptions.Item label="User">{auditDetailRecord.username}</Descriptions.Item>
+              <Descriptions.Item label="Action">{auditDetailRecord.action.replace(/_/g, ' ')}</Descriptions.Item>
+              <Descriptions.Item label="IP">{auditDetailRecord.ip || '-'}</Descriptions.Item>
+              <Descriptions.Item label="Details"><span style={{ wordBreak: 'break-all' }}>{auditDetailRecord.details || '-'}</span></Descriptions.Item>
+            </Descriptions>
+          </div>
         )}
-      </Drawer>
+      </Modal>
     </div>
   )
 }

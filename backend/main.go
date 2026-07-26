@@ -249,7 +249,11 @@ func main() {
 	// call sites explicitly wrapped in timedQuery.
 	db.SetSlowQueryHook(handler.RecordSlowQuery)
 
-	dsn := os.Getenv("DATABASE_URL")
+	// Supports DATABASE_URL_FILE, or POSTGRES_HOST + POSTGRES_PASSWORD_FILE,
+	// as well as the plain DATABASE_URL env var, so a Swarm deployment can
+	// keep the DB password out of the deploy-time environment - see
+	// util.ResolveDatabaseURL.
+	dsn := util.ResolveDatabaseURL()
 
 	var database *sql.DB
 	if dsn != "" {
@@ -510,6 +514,8 @@ r := gin.New()
 		authGroup.POST("/export/html", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportHTML(database))
 		authGroup.GET("/auth/me", handler.GetMe(database))
 		authGroup.POST("/auth/change-password", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
+		authGroup.GET("/auth/sessions", handler.ListSessions(database))
+		authGroup.DELETE("/auth/sessions/:id", handler.RevokeSession(database))
 
 		notificationsGate := handler.RequireNotificationsEnabled(database)
 
@@ -523,6 +529,12 @@ r := gin.New()
 		authGroup.GET("/push/vapid-public-key", notificationsGate, handler.GetVAPIDPublicKey(database))
 		authGroup.POST("/push/subscribe", notificationsGate, handler.SubscribePush(database))
 		authGroup.POST("/push/unsubscribe", notificationsGate, handler.UnsubscribePush(database))
+
+		// Readable by every authenticated role (including viewer) - channel
+		// secrets are never included in the response, only config + a
+		// has_secret flag, so there's nothing sensitive to gate here. Creating,
+		// editing and deleting channels stays admin-only (adminGroup below).
+		authGroup.GET("/admin/notification-channels", notificationsGate, handler.ListNotificationChannels(database))
 
 		authGroup.GET("/parsers", handler.ListParsers(engine))
 		authGroup.POST("/parsers/fields", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ListParsedFields(engine))
@@ -599,12 +611,10 @@ r := gin.New()
 
 		// Same /admin path prefix as adminGroup above, but readable by editors
 		// too - they can already create alert rules (editorGroup), so they
-		// need to see which channels exist to assign and whether their rules
-		// actually fired. Channel secrets and mutations stay admin-only.
+		// need to see whether their rules actually fired.
 		adminReadGroup := authGroup.Group("/admin")
 		adminReadGroup.Use(auth.RoleRequired("admin", "editor"))
 		{
-			adminReadGroup.GET("/notification-channels", notificationsGate, handler.ListNotificationChannels(database))
 			adminReadGroup.POST("/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
 		}
 	}

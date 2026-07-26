@@ -1,0 +1,62 @@
+[
+  {
+    "name": "Palo Alto Threat",
+    "description": "Matches Palo Alto threat log entries",
+    "device_type": "palo_alto",
+    "match_type": "hostname",
+    "match_value": "pan*",
+    "regex": "threat.*?src=(\\d+\\.\\d+\\.\\d+\\.\\d+).*?dst=(\\d+\\.\\d+\\.\\d+\\.\\d+).*?action=(\\S+).*?category=(\\S+)",
+    "fields": [
+      {
+        "name": "src_ip",
+        "label": "Source IP",
+        "type": "string"
+      },
+      {
+        "name": "dst_ip",
+        "label": "Destination IP",
+        "type": "string"
+      },
+      {
+        "name": "action",
+        "label": "Action",
+        "type": "string"
+      },
+      {
+        "name": "category",
+        "label": "Category",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Palo Alto Traffic",
+    "description": "Matches Palo Alto traffic log entries",
+    "device_type": "palo_alto",
+    "match_type": "hostname",
+    "match_value": "pan*",
+    "regex": "traffic.*?src=(\\d+\\.\\d+\\.\\d+\\.\\d+).*?dst=(\\d+\\.\\d+\\.\\d+\\.\\d+).*?proto=(\\S+).*?action=(\\S+)",
+    "fields": [
+      {
+        "name": "src_ip",
+        "label": "Source IP",
+        "type": "string"
+      },
+      {
+        "name": "dst_ip",
+        "label": "Destination IP",
+        "type": "string"
+      },
+      {
+        "name": "protocol",
+        "label": "Protocol",
+        "type": "string"
+      },
+      {
+        "name": "action",
+        "label": "Action",
+        "type": "string"
+      }
+    ]
+  }
+]
