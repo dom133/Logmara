@@ -56,24 +56,45 @@ const (
 	maxLineSize        = 10 * 1024 * 1024 // cap a single ingested "line" at 10MB
 )
 
-// splitCappedLines behaves like bufio.ScanLines, except that if no newline
-// shows up within maxLineSize bytes it force-cuts a token there instead of
-// growing the buffer further. Plain ScanLines would instead make Scan()
-// return bufio.ErrTooLong and stop for good - since every device's syslog
-// output is interleaved into one shared file processed strictly in order, a
-// single oversized/newline-less message (crafted or just a device bug) would
-// otherwise wedge the scanner at that byte offset forever, blocking
-// ingestion for every other host sharing the file. Forcing progress instead
-// turns it into a handful of "[MALFORMED JSON]" entries for that one device.
-func splitCappedLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+// lineSplitter behaves like bufio.ScanLines, with two differences:
+//
+//   - if no newline shows up within maxLineSize bytes it force-cuts a token
+//     there instead of growing the buffer further. Plain ScanLines would
+//     instead make Scan() return bufio.ErrTooLong and stop for good - since
+//     every device's syslog output is interleaved into one shared file
+//     processed strictly in order, a single oversized/newline-less message
+//     (crafted or just a device bug) would otherwise wedge the scanner at
+//     that byte offset forever, blocking ingestion for every other host
+//     sharing the file. Forcing progress instead turns it into a handful of
+//     "[MALFORMED JSON]" entries for that one device.
+//
+//   - unlike ScanLines, it never force-emits a trailing chunk just because
+//     atEOF is true and no newline has shown up yet. For a file being
+//     tailed live, atEOF only means "no more bytes are available right
+//     now", not "this file is finished growing" - rsyslog may simply still
+//     be mid-write on that last line. Waiting instead of force-cutting
+//     lets the same still-on-disk bytes be re-read whole (now complete) on
+//     the next poll, instead of splitting one good record into two bogus
+//     "[MALFORMED JSON]" halves.
+//
+// lastAdvance records the exact number of bytes the most recent call
+// returned as advance - bufio.Scanner has no other way to expose a
+// SplitFunc's own advance value to its caller, and runIngestionLoop needs it
+// to track the file position by what Scan() actually consumed rather than
+// by asking the OS file descriptor how far it has physically read ahead
+// into the Scanner's internal buffer (see the comment on curFilePos there).
+type lineSplitter struct {
+	lastAdvance int64
+}
+
+func (s *lineSplitter) split(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		s.lastAdvance = int64(i + 1)
 		return i + 1, data[0:i], nil
 	}
 	if len(data) >= maxLineSize {
+		s.lastAdvance = maxLineSize
 		return maxLineSize, data[0:maxLineSize], nil
-	}
-	if atEOF && len(data) > 0 {
-		return len(data), data, nil
 	}
 	return 0, nil, nil
 }
@@ -243,12 +264,15 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		scanner := bufio.NewScanner(f)
 		buf := make([]byte, 0, maxLineSize)
 		scanner.Buffer(buf, maxLineSize)
-		scanner.Split(splitCappedLines)
+		splitter := &lineSplitter{}
+		scanner.Split(splitter.split)
 
 		batchStartPos := filePos
+		curFilePos := filePos
 		scanned := false
 
 		for scanner.Scan() {
+			curFilePos += splitter.lastAdvance
 			if ic.IsPaused() {
 				slog.Info("tailer: ingestion paused, breaking scan")
 				break
@@ -329,20 +353,13 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 					if err := flushBatch(db, entries, rate); err != nil {
 						slog.Error("flush error", "error", err)
 					} else {
-						curPos, seekErr := f.Seek(0, 1)
-						if seekErr == nil {
-							flushedPos = curPos
-							savePosition(posFile, flushedPos)
-						} else {
-							flushedPos = batchStartPos
-						}
+						flushedPos = curFilePos
+						savePosition(posFile, flushedPos)
 						alerts.EvaluateBatch(db, entries)
 					}
 				}
 				entries = entries[:0]
-				if cp, err := f.Seek(0, 1); err == nil {
-					batchStartPos = cp
-				}
+				batchStartPos = curFilePos
 				lastFlush = now
 			}
 		}
@@ -352,21 +369,22 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		}
 
 		if scanned {
-			// SEEK_CUR (how far this fd has actually read), not SEEK_END
-			// (wherever the file happens to end right now). If rsyslog is
-			// still mid-write on the last line when the scan loop above
-			// hits real EOF, SEEK_END can return a position further along
-			// than what was actually read - past the not-yet-finished
-			// remainder of that in-progress line. filePos then resumes
-			// there next time, splitting that line at an arbitrary byte
-			// offset instead of its start: the first "line" read next is
-			// really just that line's tail, which fails JSON unmarshal and
-			// surfaces as a spurious "[MALFORMED JSON]" entry for data that
-			// was never actually malformed.
-			curPos, err := f.Seek(0, 1)
-			if err == nil {
-				filePos = curPos
-			}
+			// curFilePos only ever advances by the exact byte length
+			// lineSplitter.split reported consuming for a token it actually
+			// returned - never by however far bufio's own internal
+			// read-ahead buffer happened to reach. The old approach here
+			// (f.Seek(0, 1), i.e. asking the OS file descriptor's own
+			// SEEK_CUR position) reflected the latter instead: bufio reads
+			// ahead in large chunks, so that position routinely sat past
+			// the last line Scan() had actually handed back, especially
+			// once a single Read() started pulling in more than one
+			// buffered line at a time - which is exactly what happens under
+			// high log volume. Resuming from that overshot position next
+			// poll would land mid-line whenever rsyslog was still mid-write
+			// on the last line in the file, splitting it into two bogus
+			// "[MALFORMED JSON]" halves instead of the one real record it
+			// always was.
+			filePos = curFilePos
 		}
 		f.Close()
 
