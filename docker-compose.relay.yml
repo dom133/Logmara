@@ -35,9 +35,21 @@ services:
       # here by default - persisted so a restart doesn't drop logs that were
       # buffered while the central server/link was unreachable.
       - relay_queue:/var/lib/rsyslog
+      # entrypoint-relay.sh's self-signed cert for this relay's own local
+      # direct-TLS listener (6514, declared inside relay.conf itself - see
+      # backend/handler/relay.go's relayConfSnippet) - persisted so it
+      # stays stable across restarts instead of being regenerated every time.
+      - relay_tls:/etc/syslog-relay/tls-local
     ports:
       - "${RELAY_PORT:-514}:514"
       - "${RELAY_PORT:-514}:514/udp"
+      # Direct TLS ingestion into this relay itself, no client certificate
+      # required (the 6514 input() inside relay.conf) - devices in this
+      # relay's own VLAN that want TLS instead of plain 514 can point here
+      # instead. Only present if relay.conf was (re)generated after this
+      # feature was added - see README "Syslog Relay" if an older
+      # relay.conf needs updating. Leave unpublished if it isn't wanted.
+      - "${RELAY_TLS_PORT:-6514}:6514"
     restart: unless-stopped
     logging:
       driver: json-file
@@ -47,3 +59,4 @@ services:
 
 volumes:
   relay_queue:
+  relay_tls:

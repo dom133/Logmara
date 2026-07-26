@@ -778,7 +778,9 @@ Each relay reuses the same JSON conversion the central server already does local
 
 ### Sending directly over TLS, without a relay
 
-Devices that don't need a relay but still want an encrypted transport instead of plain-text 514 can send straight to port **6514** (TCP), which runs the exact same ingestion as 514 — no relay, no JSON pre-formatting, no separate whitelist. Unlike the relay's port 6515, this listener is server-authenticated TLS only: it presents a certificate (the same one managed under `/data/relay` for the relay feature, including the self-signed placeholder generated before that feature has ever been configured) but does not require or check a client certificate, so any device that can reach the port and is willing to skip server-certificate verification can use it. It is not gated by the relay whitelist/ACL — leave it unpublished (remove or comment out `SYSLOG_TLS_PORT`'s line in `docker-compose.yml`) if you don't want it reachable.
+Devices that don't need a relay but still want an encrypted transport instead of plain-text 514 can send straight to the **central server's** port **6514** (TCP), which runs the exact same ingestion as 514 — no relay, no JSON pre-formatting, no separate whitelist. Unlike the relay's port 6515, this listener is server-authenticated TLS only: it presents a certificate (the same one managed under `/data/relay` for the relay feature, including the self-signed placeholder generated before that feature has ever been configured) but does not require or check a client certificate, so any device that can reach the port and is willing to skip server-certificate verification can use it. It is not gated by the relay whitelist/ACL — leave it unpublished (remove or comment out `SYSLOG_TLS_PORT`'s line in `docker-compose.yml`) if you don't want it reachable.
+
+**Each relay has the same thing, locally.** Independently of the central server's own 6514, every deployed relay also listens on its *own* 6514/tcp (see `docker-compose.relay.yml`'s `RELAY_TLS_PORT`) for devices in *that relay's* VLAN that want TLS instead of plain 514 into the relay — again server-authenticated only, no client cert. The relay generates its own self-signed certificate locally on first start (`entrypoint-relay.sh`, persisted in the `relay_tls` volume) rather than reusing anything from its uplink bundle, since that bundle's `client.crt`/`client.key` authenticate the relay *to the central server*, not the other way around. Devices sending here are relayed onward exactly like anything else the relay receives (over mTLS to the central server, `fromhost_ip` preserved). A relay built before this feature existed needs a rebuilt image *and* an updated `relay.conf` (either a freshly downloaded certificate bundle, or manually add the `6514` `input()` block — see the comment above `relayConfSnippet` in `backend/handler/relay.go` for the exact snippet) before this works.
 
 ### How it's secured
 
@@ -822,13 +824,13 @@ Devices that don't need a relay but still want an encrypted transport instead of
    mkdir -p relay-bundle && tar xzf syslog-relay-<label>.tar.gz -C relay-bundle
    docker compose -f docker-compose.relay.yml up -d --build
    ```
-4. Point the devices in that VLAN at the relay's IP on port 514 (tcp or udp), same as you would the central server directly.
+4. Point the devices in that VLAN at the relay's IP on port 514 (tcp or udp) — or 6514/tcp if they want TLS into the relay itself, see [Sending directly over TLS, without a relay](#sending-directly-over-tls-without-a-relay) — same as you would the central server directly.
 
 The target host baked into every generated `relay.conf` comes from, in order: the **Central Server Address** field under Admin > Settings > Syslog Relay (only editable once ingestion is enabled), then the `RELAY_CENTRAL_HOST` env var on the central server's `api` service, then `127.0.0.1` if neither is set — which only makes sense for same-host testing, so set one of the first two for any real cross-VLAN deployment.
 
 ### Firewall
 
-The relay only ever needs one outbound rule: **relay → central, 6515/tcp**. It doesn't need to be reachable *from* the central VLAN at all. On the central side, only 6515/tcp needs to be reachable from the relay's VLAN — devices behind the relay never talk to the central server directly. (Port 6514 is unrelated to the relay — see [Sending directly over TLS, without a relay](#sending-directly-over-tls-without-a-relay) — open it only if you want direct devices using it.)
+The relay only ever needs one outbound rule: **relay → central, 6515/tcp**. It doesn't need to be reachable *from* the central VLAN at all. On the central side, only 6515/tcp needs to be reachable from the relay's VLAN — devices behind the relay never talk to the central server directly. The relay's own 514 and 6514 (see [Sending directly over TLS, without a relay](#sending-directly-over-tls-without-a-relay)) only need to be reachable from devices *inside that relay's own VLAN* — open 6514 there too only if you want local devices using TLS into the relay.
 
 ### Limitations
 
