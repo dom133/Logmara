@@ -350,7 +350,18 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		}
 
 		if scanned {
-			curPos, err := f.Seek(0, 2)
+			// SEEK_CUR (how far this fd has actually read), not SEEK_END
+			// (wherever the file happens to end right now). If rsyslog is
+			// still mid-write on the last line when the scan loop above
+			// hits real EOF, SEEK_END can return a position further along
+			// than what was actually read - past the not-yet-finished
+			// remainder of that in-progress line. filePos then resumes
+			// there next time, splitting that line at an arbitrary byte
+			// offset instead of its start: the first "line" read next is
+			// really just that line's tail, which fails JSON unmarshal and
+			// surfaces as a spurious "[MALFORMED JSON]" entry for data that
+			// was never actually malformed.
+			curPos, err := f.Seek(0, 1)
 			if err == nil {
 				filePos = curPos
 			}
