@@ -457,6 +457,20 @@ export async function getUsers() {
 	return (res.data || []) as User[]
 }
 
+export interface UserSummary {
+	id: number
+	username: string
+}
+
+// Minimal, non-sensitive user list (id + username only) for admin/editor -
+// backs pickers like the notification channel's "Target Users" selector,
+// without exposing the account-management data getUsers()/GET /admin/users
+// carries (which stays admin-only).
+export async function getUserDirectory() {
+	const res = await api.get('/users/directory')
+	return (res.data || []) as UserSummary[]
+}
+
 export async function createUser(data: { username: string; email: string; password: string; role: string; auth_type: string }) {
 	const res = await api.post('/admin/users', data)
 	return res.data as User

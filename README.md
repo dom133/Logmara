@@ -274,10 +274,11 @@ sudo ufw allow 514/udp
 
 ```bash
 sudo apt-get install -y nfs-kernel-server
-sudo mkdir -p /srv/syslog-ha/nfs/log_data /srv/syslog-ha/nfs/log_spool
+sudo mkdir -p /srv/syslog-ha/nfs/log_data /srv/syslog-ha/nfs/log_spool /srv/syslog-ha/nfs/parser_defs
 sudo chown -R nobody:nogroup /srv/syslog-ha/nfs
-echo '/srv/syslog-ha/nfs/log_data  10.0.0.21(rw,sync,no_subtree_check) 10.0.0.22(rw,sync,no_subtree_check)' | sudo tee -a /etc/exports
-echo '/srv/syslog-ha/nfs/log_spool 10.0.0.21(rw,sync,no_subtree_check) 10.0.0.22(rw,sync,no_subtree_check)' | sudo tee -a /etc/exports
+echo '/srv/syslog-ha/nfs/log_data     10.0.0.21(rw,sync,no_subtree_check) 10.0.0.22(rw,sync,no_subtree_check)' | sudo tee -a /etc/exports
+echo '/srv/syslog-ha/nfs/log_spool    10.0.0.21(rw,sync,no_subtree_check) 10.0.0.22(rw,sync,no_subtree_check)' | sudo tee -a /etc/exports
+echo '/srv/syslog-ha/nfs/parser_defs  10.0.0.21(rw,sync,no_subtree_check) 10.0.0.22(rw,sync,no_subtree_check)' | sudo tee -a /etc/exports
 sudo exportfs -ra
 sudo systemctl enable --now nfs-kernel-server
 ```

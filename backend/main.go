@@ -565,6 +565,8 @@ r := gin.New()
 			editorGroup.POST("/alerts", notificationsGate, handler.CreateAlert(database))
 			editorGroup.PUT("/alerts/:id", notificationsGate, handler.UpdateAlert(database))
 			editorGroup.DELETE("/alerts/:id", notificationsGate, handler.DeleteAlert(database))
+
+			editorGroup.GET("/users/directory", handler.ListUserDirectory(database))
 		}
 
 		adminGroup := authGroup.Group("/admin")
@@ -602,20 +604,25 @@ r := gin.New()
 			adminGroup.DELETE("/relay/certificates/:id", handler.RevokeRelayCertificate(database))
 			adminGroup.POST("/relay/certificates/:id/regenerate", handler.RegenerateRelayCertificate(database))
 
-			adminGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))
-			adminGroup.PUT("/notification-channels/:id", notificationsGate, handler.UpdateNotificationChannel(database))
-			adminGroup.DELETE("/notification-channels/:id", notificationsGate, handler.DeleteNotificationChannel(database))
-			adminGroup.POST("/notification-channels/:id/test", notificationsGate, handler.TestNotificationChannel(database, notifHub))
 			adminGroup.DELETE("/notifications/history", notificationsGate, handler.ClearNotificationHistory(database))
 		}
 
-		// Same /admin path prefix as adminGroup above, but readable by editors
-		// too - they can already create alert rules (editorGroup), so they
-		// need to see whether their rules actually fired.
-		adminReadGroup := authGroup.Group("/admin")
-		adminReadGroup.Use(auth.RoleRequired("admin", "editor"))
+		// Same /admin path prefix as adminGroup above, but readable/usable by
+		// editors too - they can already create alert rules (editorGroup), so
+		// they need to see whether their rules actually fired, and to create
+		// their own notification channels to assign to those rules.
+		// Create/update/delete are further restricted to the channel's own
+		// creator at the handler level (see handler.channelOwnedByCaller) -
+		// an editor (or admin) can only ever modify a channel they made
+		// themselves, or one predating the created_by column entirely.
+		adminEditorGroup := authGroup.Group("/admin")
+		adminEditorGroup.Use(auth.RoleRequired("admin", "editor"))
 		{
-			adminReadGroup.POST("/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
+			adminEditorGroup.POST("/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
+			adminEditorGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))
+			adminEditorGroup.PUT("/notification-channels/:id", notificationsGate, handler.UpdateNotificationChannel(database))
+			adminEditorGroup.DELETE("/notification-channels/:id", notificationsGate, handler.DeleteNotificationChannel(database))
+			adminEditorGroup.POST("/notification-channels/:id/test", notificationsGate, handler.TestNotificationChannel(database, notifHub))
 		}
 	}
 

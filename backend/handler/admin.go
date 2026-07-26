@@ -51,6 +51,23 @@ users, err := db.GetAllUsers(database)
 	}
 }
 
+// ListUserDirectory returns just {id, username} for every user - enough to
+// populate a "pick a user" control (e.g. the in_app/push notification
+// channel's target-user selector) without exposing the account management
+// data (email, role, lockout status, ...) that GET /admin/users carries and
+// which is why that endpoint stays admin-only. Available to admin and
+// editor - anyone who can create a notification channel needs this.
+func ListUserDirectory(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		users, err := db.GetUserDirectory(database)
+		if err != nil {
+			middleware.HandleError(c, model.NewInternal("Failed to list users", err))
+			return
+		}
+		c.JSON(http.StatusOK, users)
+	}
+}
+
 func CreateUser(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req CreateUserRequest

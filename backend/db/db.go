@@ -1027,6 +1027,31 @@ type AuditLog struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// UserSummary is the minimal, non-sensitive projection of a user - just
+// enough to label a "pick a user" control. See handler.ListUserDirectory.
+type UserSummary struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+}
+
+func GetUserDirectory(db *sql.DB) ([]UserSummary, error) {
+	rows, err := db.Query("SELECT id, username FROM users WHERE is_active ORDER BY username")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []UserSummary
+	for rows.Next() {
+		var u UserSummary
+		if err := rows.Scan(&u.ID, &u.Username); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
 func GetAllUsers(db *sql.DB) ([]User, error) {
 	rows, err := db.Query("SELECT id, username, email, role, auth_type, is_admin, is_active, created_at, last_login_at, COALESCE(failed_login_attempts, 0), locked_until FROM users ORDER BY created_at DESC")
 	if err != nil {

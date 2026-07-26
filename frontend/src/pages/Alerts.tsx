@@ -8,7 +8,7 @@ import {
   NotificationChannel, NotificationChannelRequest, NotificationChannelType,
   getNotificationHistory, clearNotificationHistory, NotificationLogEntry, TriggerLogSnapshot, AuditLogRef,
   getDevices, DeviceStats, resolveDeviceDisplayName, getParsers, Parser, getParsedFields, ParsedField,
-  getUsers, User,
+  getUserDirectory, UserSummary,
 } from '../services/api'
 import { useAuth } from '../services/auth'
 import { onLiveNotification } from '../services/notificationEvents'
@@ -364,9 +364,9 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
   )
 }
 
-function ChannelsTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserId?: number }) {
+function ChannelsTab({ canManage, currentUserId }: { canManage: boolean; currentUserId?: number }) {
   const [channels, setChannels] = useState<NotificationChannel[]>([])
-  const [users, setUsers] = useState<User[]>([])
+  const [users, setUsers] = useState<UserSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<NotificationChannel | null>(null)
@@ -377,9 +377,17 @@ function ChannelsTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUser
   const loadData = async () => {
     setLoading(true)
     try {
-      const [channelsData, usersData] = await Promise.all([getNotificationChannels(), getUsers()])
-      setChannels(channelsData)
-      setUsers(usersData)
+      setChannels(await getNotificationChannels())
+      // The user list only backs the "Target Users" picker in the
+      // create/edit modal, which only canManage ever opens - skip it for
+      // viewer instead of failing the whole tab over a 403.
+      if (canManage) {
+        try {
+          setUsers(await getUserDirectory())
+        } catch {
+          // Non-fatal: the picker just shows no options if this fails.
+        }
+      }
     } catch {
       message.error('Failed to load notification channels')
     } finally {
@@ -387,7 +395,7 @@ function ChannelsTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUser
     }
   }
 
-  useEffect(() => { loadData() }, [])
+  useEffect(() => { loadData() }, [canManage])
 
   const openCreate = () => {
     setEditing(null)
@@ -472,7 +480,7 @@ const openEdit = (c: NotificationChannel) => {
     {
       title: 'Actions', key: 'actions',
       render: (_v: unknown, r: NotificationChannel) => {
-        const canEditRow = isAdmin && (r.created_by == null || r.created_by === currentUserId)
+        const canEditRow = canManage && (r.created_by == null || r.created_by === currentUserId)
         return (
           <Space>
             <Button size="small" icon={<ExperimentOutlined />} loading={testingId === r.id} onClick={() => handleTest(r.id)}>Test</Button>
@@ -489,7 +497,7 @@ const openEdit = (c: NotificationChannel) => {
   return (
     <>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        {isAdmin && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Channel</Button>}
+        {canManage && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Channel</Button>}
       </div>
       <Table dataSource={channels} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
 
@@ -837,7 +845,7 @@ export default function AlertsPage() {
 
   const items = [
     { key: 'rules', label: 'Alert Rules', children: <RulesTab canEdit={canEdit} isAdmin={isAdmin} active={activeTab === 'rules'} /> },
-    { key: 'channels', label: 'Notification Channels', children: <ChannelsTab isAdmin={isAdmin} currentUserId={user?.id} /> },
+    { key: 'channels', label: 'Notification Channels', children: <ChannelsTab canManage={canEdit} currentUserId={user?.id} /> },
     {
       key: 'history', label: 'History',
       children: (
