@@ -402,7 +402,8 @@ func scanChannel(row *sql.Rows) (model.NotificationChannel, error) {
 	var config []byte
 	var secret sql.NullString
 	var createdBy sql.NullInt64
-	if err := row.Scan(&ch.ID, &ch.Name, &ch.Type, &config, &secret, &ch.Enabled, &createdBy, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
+	var createdByUsername sql.NullString
+	if err := row.Scan(&ch.ID, &ch.Name, &ch.Type, &config, &secret, &ch.Enabled, &createdBy, &createdByUsername, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
 		return ch, err
 	}
 	ch.Config = config
@@ -410,13 +411,25 @@ func scanChannel(row *sql.Rows) (model.NotificationChannel, error) {
 	if createdBy.Valid {
 		ch.CreatedBy = &createdBy.Int64
 	}
+	if createdByUsername.Valid {
+		ch.CreatedByUsername = &createdByUsername.String
+	}
 	return ch, nil
 }
 
-const channelColumns = `id, name, type, config, secret, enabled, created_by, created_at, updated_at`
+// channelSelectBase resolves each channel's owner username via a LEFT JOIN
+// (so a channel predating the created_by column, or whose creator was since
+// deleted, still returns a row with a NULL username rather than none at
+// all) - lets every role show a plain "Owner" column without a separate,
+// admin/editor-only user-list lookup.
+const channelSelectBase = `
+	SELECT nc.id, nc.name, nc.type, nc.config, nc.secret, nc.enabled, nc.created_by, u.username, nc.created_at, nc.updated_at
+	FROM notification_channels nc
+	LEFT JOIN users u ON u.id = nc.created_by
+`
 
 func GetAllNotificationChannels(db *sql.DB) ([]model.NotificationChannel, error) {
-	rows, err := db.Query(`SELECT ` + channelColumns + ` FROM notification_channels ORDER BY created_at DESC`)
+	rows, err := db.Query(channelSelectBase + ` ORDER BY nc.created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list notification channels: %w", err)
 	}
@@ -434,7 +447,7 @@ func GetAllNotificationChannels(db *sql.DB) ([]model.NotificationChannel, error)
 }
 
 func GetNotificationChannel(db *sql.DB, id int64) (*model.NotificationChannel, error) {
-	rows, err := db.Query(`SELECT `+channelColumns+` FROM notification_channels WHERE id=$1`, id)
+	rows, err := db.Query(channelSelectBase+` WHERE nc.id=$1`, id)
 	if err != nil {
 		return nil, fmt.Errorf("get notification channel: %w", err)
 	}
@@ -455,7 +468,7 @@ func GetNotificationChannel(db *sql.DB, id int64) (*model.NotificationChannel, e
 // go through DecryptChannelSecret for the one they intend to send through.
 func GetChannelsForAlert(database *sql.DB, alertID int64) ([]model.NotificationChannel, error) {
 	rows, err := database.Query(
-		`SELECT nc.`+channelColumns+` FROM notification_channels nc
+		channelSelectBase+`
 		 JOIN alert_channels ac ON ac.channel_id = nc.id
 		 WHERE ac.alert_id = $1 AND nc.enabled = TRUE`, alertID)
 	if err != nil {

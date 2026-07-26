@@ -364,7 +364,7 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
   )
 }
 
-function ChannelsTab({ canManage, currentUserId }: { canManage: boolean; currentUserId?: number }) {
+function ChannelsTab({ canManage, isAdmin, currentUserId }: { canManage: boolean; isAdmin: boolean; currentUserId?: number }) {
   const [channels, setChannels] = useState<NotificationChannel[]>([])
   const [users, setUsers] = useState<UserSummary[]>([])
   const [loading, setLoading] = useState(false)
@@ -478,9 +478,22 @@ const openEdit = (c: NotificationChannel) => {
     { title: 'Type', dataIndex: 'type', key: 'type', render: (v: NotificationChannelType) => <Tag color="blue">{channelTypeLabels[v]}</Tag> },
     { title: 'Status', dataIndex: 'enabled', key: 'enabled', render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? 'Enabled' : 'Disabled'}</Tag> },
     {
+      title: 'Owner', dataIndex: 'created_by_username', key: 'created_by_username',
+      render: (username: string | undefined) => {
+        if (username) return username
+        // No recorded owner: the channel predates the created_by column, or
+        // its creator's account was since deleted (the column is ON DELETE
+        // SET NULL, so this case is indistinguishable from the first).
+        return <Tag color="default">No owner</Tag>
+      },
+    },
+    {
       title: 'Actions', key: 'actions',
       render: (_v: unknown, r: NotificationChannel) => {
-        const canEditRow = canManage && (r.created_by == null || r.created_by === currentUserId)
+        // Mirrors backend.callerCanModifyChannel: a channel with no recorded
+        // owner (predates the created_by column) can only be claimed/edited
+        // by an admin, not by any editor who happens to click it first.
+        const canEditRow = r.created_by != null ? canManage && r.created_by === currentUserId : isAdmin
         return (
           <Space>
             <Button size="small" icon={<ExperimentOutlined />} loading={testingId === r.id} onClick={() => handleTest(r.id)}>Test</Button>
@@ -845,7 +858,7 @@ export default function AlertsPage() {
 
   const items = [
     { key: 'rules', label: 'Alert Rules', children: <RulesTab canEdit={canEdit} isAdmin={isAdmin} active={activeTab === 'rules'} /> },
-    { key: 'channels', label: 'Notification Channels', children: <ChannelsTab canManage={canEdit} currentUserId={user?.id} /> },
+    { key: 'channels', label: 'Notification Channels', children: <ChannelsTab canManage={canEdit} isAdmin={isAdmin} currentUserId={user?.id} /> },
     {
       key: 'history', label: 'History',
       children: (

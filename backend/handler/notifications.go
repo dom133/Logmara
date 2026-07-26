@@ -14,6 +14,7 @@ import (
 	"syslytics/notifyhub"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // RequireNotificationsEnabled blocks the alert/channel/history management
@@ -65,10 +66,15 @@ func CreateNotificationChannel(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// channelOwnedByCaller loads the channel and checks that the caller either
-// created it or that it has no recorded owner (channels seeded before the
-// created_by column existed). Returns nil and writes an error response if
-// the check fails.
+// channelOwnedByCaller loads the channel and checks that the caller may
+// modify it: either they created it, or - for a channel with no recorded
+// owner (seeded before the created_by column existed, so there's no real
+// creator to compare against) - they're an admin. That fallback is
+// deliberately admin-only, not "any editor": an unclaimed legacy channel
+// isn't fair game for whichever editor happens to click Edit first, only
+// for the role that could already manage every channel before per-channel
+// ownership existed. Returns nil and writes an error response if the check
+// fails.
 func channelOwnedByCaller(c *gin.Context, database *sql.DB, id int64) (*model.NotificationChannel, bool) {
 	channel, err := db.GetNotificationChannel(database, id)
 	if err != nil {
@@ -79,15 +85,38 @@ func channelOwnedByCaller(c *gin.Context, database *sql.DB, id int64) (*model.No
 		middleware.HandleError(c, model.NewInternal("Failed to load notification channel", err))
 		return nil, false
 	}
+
+	if !callerCanModifyChannel(c, channel) {
+		if channel.CreatedBy != nil {
+			middleware.HandleError(c, model.NewForbidden("You can only modify notification channels you created", nil))
+		} else {
+			middleware.HandleError(c, model.NewForbidden("Only an admin can modify a channel with no recorded owner", nil))
+		}
+		return nil, false
+	}
+	return channel, true
+}
+
+// callerCanModifyChannel decides, without touching the DB, whether the
+// caller may modify channel: they created it, or - for a channel with no
+// recorded owner (seeded before the created_by column existed, so there's
+// no real creator to compare against) - they're an admin. Split out from
+// channelOwnedByCaller so this decision can be unit tested against a plain
+// gin.Context without a real database connection.
+func callerCanModifyChannel(c *gin.Context, channel *model.NotificationChannel) bool {
 	if channel.CreatedBy != nil {
 		uid, ok := c.Get("user_id")
 		callerID, okType := uid.(int64)
-		if !ok || !okType || *channel.CreatedBy != callerID {
-			middleware.HandleError(c, model.NewForbidden("You can only modify notification channels you created", nil))
-			return nil, false
-		}
+		return ok && okType && *channel.CreatedBy == callerID
 	}
-	return channel, true
+
+	claims, exists := c.Get("claims")
+	mapClaims, okClaims := claims.(*jwt.MapClaims)
+	if !exists || !okClaims {
+		return false
+	}
+	role, _ := (*mapClaims)["role"].(string)
+	return role == "admin"
 }
 
 func UpdateNotificationChannel(database *sql.DB) gin.HandlerFunc {
