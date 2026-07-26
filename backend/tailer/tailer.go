@@ -420,20 +420,25 @@ func compactFile(f *os.File, flushedPos int64, filePath string) error {
 	return nil
 }
 
+// flushBatch inserts entries one at a time, each its own implicit
+// transaction (no shared batch transaction). A prior version wrapped the
+// whole batch in one transaction with a SAVEPOINT around each row so a bad
+// row could be rolled back without losing the rest - in practice, once one
+// row aborted the transaction, ROLLBACK TO SAVEPOINT did not reliably
+// return the connection to a usable state (subsequent rows kept failing
+// with "current transaction is aborted" even though they were individually
+// fine), so a single Postgres-rejected row could still take an entire
+// multi-hundred-row batch down with it. Committing independently per row
+// costs some throughput but makes that structurally impossible: nothing
+// about one row's failure can touch any other row's outcome.
 func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
 
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
 	query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, via_relay)
 		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
-	stmt, err := tx.Prepare(query)
+	stmt, err := db.Prepare(query)
 	if err != nil {
 		return fmt.Errorf("prepare: %w", err)
 	}
@@ -458,34 +463,12 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 			parsedFields = entry.ParsedFields
 		}
 
-		// A savepoint per row means one entry that Postgres rejects for a
-		// reason sanitizeForPostgres doesn't cover (e.g. a value too long
-		// for a bounded VARCHAR column) only costs that one row instead of
-		// aborting the whole transaction - without it, every other entry in
-		// this batch (up to batchSize, several hundred) would fail to
-		// commit alongside it, since Postgres refuses all further
-		// statements once one has errored inside a transaction.
-		if _, spErr := tx.Exec("SAVEPOINT ingest_row"); spErr != nil {
-			return fmt.Errorf("savepoint: %w", spErr)
-		}
-
-		_, err = stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
-			entry.Severity, facility, entry.Message, rawMsg, parsedFields, pq.StringArray(entry.MatchedParsers), viaRelay)
-		if err != nil {
+		if _, err := stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
+			entry.Severity, facility, entry.Message, rawMsg, parsedFields, pq.StringArray(entry.MatchedParsers), viaRelay); err != nil {
 			slog.Error("insert error", "error", err)
-			if _, rbErr := tx.Exec("ROLLBACK TO SAVEPOINT ingest_row"); rbErr != nil {
-				return fmt.Errorf("rollback to savepoint: %w", rbErr)
-			}
 			continue
 		}
-		if _, spErr := tx.Exec("RELEASE SAVEPOINT ingest_row"); spErr != nil {
-			return fmt.Errorf("release savepoint: %w", spErr)
-		}
 		ingested++
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
 	}
 
 	if ingested > 0 {
