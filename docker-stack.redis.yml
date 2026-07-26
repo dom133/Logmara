@@ -23,7 +23,7 @@
 #   - Secret created: redis_password
 #   - `docker config create redis_sentinel_cfg redis/sentinel.conf.tpl`
 #
-# Deploy with: docker stack deploy -c docker-stack.redis.yml syslog-redis
+# Deploy with: docker stack deploy -c docker-stack.redis.yml syslytics-redis
 
 version: "3.8"
 

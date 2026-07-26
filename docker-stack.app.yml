@@ -48,7 +48,7 @@
 #     never as plain env vars. POSTGRES_USER/POSTGRES_DB below are optional
 #     (default syslog/syslog_db) and are not secret.
 #
-# Deploy with: docker stack deploy -c docker-stack.app.yml syslog-app
+# Deploy with: docker stack deploy -c docker-stack.app.yml syslytics-app
 
 version: "3.8"
 

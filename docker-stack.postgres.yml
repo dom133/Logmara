@@ -19,7 +19,7 @@
 #     pg_app_password (see README)
 #   - `docker config create haproxy_pg_cfg haproxy/haproxy.cfg`
 #
-# Deploy with: docker stack deploy -c docker-stack.postgres.yml syslog-pg
+# Deploy with: docker stack deploy -c docker-stack.postgres.yml syslytics-pg
 
 version: "3.8"
 
@@ -207,7 +207,7 @@ services:
     image: haproxy:2.9-alpine
     networks: [syslog_net]
     configs:
-      - source: haproxy_pg_cfg_1784921589
+      - source: haproxy_pg_cfg
         target: /usr/local/etc/haproxy/haproxy.cfg
     ports:
       # Published on every "app" node via host mode; point api's
@@ -238,5 +238,5 @@ secrets:
     external: true
 
 configs:
-  haproxy_pg_cfg_1784921589:
+  haproxy_pg_cfg:
     external: true

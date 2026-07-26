@@ -142,7 +142,7 @@ case "$cmd" in
         docker config create "haproxy_pg_cfg_${ts}" haproxy/haproxy.cfg
         echo "Config changed: created haproxy_pg_cfg_${ts}."
         echo "Update docker-stack.postgres.yml's haproxy config source to haproxy_pg_cfg_${ts}, then:"
-        echo "  docker stack deploy -c docker-stack.postgres.yml syslog-pg"
+        echo "  docker stack deploy -c docker-stack.postgres.yml syslytics-pg"
     else
         docker config create haproxy_pg_cfg haproxy/haproxy.cfg
     fi
@@ -154,7 +154,7 @@ case "$cmd" in
         docker config create "redis_sentinel_cfg_${ts}" redis/sentinel.conf.tpl
         echo "Config changed: created redis_sentinel_cfg_${ts}."
         echo "Update docker-stack.redis.yml's sentinel config source to redis_sentinel_cfg_${ts}, then:"
-        echo "  docker stack deploy -c docker-stack.redis.yml syslog-redis"
+        echo "  docker stack deploy -c docker-stack.redis.yml syslytics-redis"
     else
         docker config create redis_sentinel_cfg redis/sentinel.conf.tpl
     fi

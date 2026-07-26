@@ -398,23 +398,23 @@ These are node-local bind mounts, deliberately *not* on the shared NFS — Patro
 
 On `pg1`:
 ```bash
-docker stack deploy -c docker-stack.postgres.yml syslog-pg
+docker stack deploy -c docker-stack.postgres.yml syslytics-pg
 watch docker service ls   # wait for postgres1/2/3 and etcd1/2/3 at 1/1, haproxy at 2/2
 ```
 
 Once that's healthy:
 ```bash
-docker stack deploy -c docker-stack.redis.yml syslog-redis
+docker stack deploy -c docker-stack.redis.yml syslytics-redis
 watch docker service ls   # wait for redis1/2/3 and sentinel1/2/3 at 1/1
 ```
 
-Sanity-check leader election worked: `docker exec -it $(docker ps -qf name=syslog-pg_postgres1) curl -s localhost:8008/` should show `"role": "master"` on exactly one of `postgres1/2/3`.
+Sanity-check leader election worked: `docker exec -it $(docker ps -qf name=syslytics-pg_postgres1) curl -s localhost:8008/` should show `"role": "master"` on exactly one of `postgres1/2/3`.
 
-**Troubleshooting: a replica is stuck at `0/1` and never joins.** `docker service logs syslog-pg_postgres<N>` repeatedly shows `bootstrap from leader '...' in progress` followed by `Cancelling long running task` and `pg_basebackup exited with code=-15` every ~30-40s. This isn't the replica's own network or disk — a raw `iperf3`/`dd` test between the same two hosts will look perfectly healthy. Two things worth checking, in order:
+**Troubleshooting: a replica is stuck at `0/1` and never joins.** `docker service logs syslytics-pg_postgres<N>` repeatedly shows `bootstrap from leader '...' in progress` followed by `Cancelling long running task` and `pg_basebackup exited with code=-15` every ~30-40s. This isn't the replica's own network or disk — a raw `iperf3`/`dd` test between the same two hosts will look perfectly healthy. Two things worth checking, in order:
 
 1. **Stuck replication backends on the leader.** After several failed/killed bootstrap attempts, check for backends that never got cleaned up:
    ```bash
-   docker exec $(docker ps -qf name=syslog-pg_postgres<leader>) sh -c \
+   docker exec $(docker ps -qf name=syslytics-pg_postgres<leader>) sh -c \
      'PGPASSWORD=$(cat /run/secrets/pg_superuser_password) psql -U postgres -h localhost \
       -c "SELECT pid, application_name, client_addr, state, wait_event FROM pg_stat_activity WHERE usename='"'"'replicator'"'"';"'
    ```
@@ -433,7 +433,7 @@ Still on `pg1` (or wherever you're driving `docker stack deploy` from) - the app
 export REGISTRY=registry.example.com/syslytics TAG=v1
 export NFS_SERVER=10.0.0.30
 
-docker stack deploy -c docker-stack.app.yml syslog-app
+docker stack deploy -c docker-stack.app.yml syslytics-app
 watch docker service ls   # wait for api and frontend at 2/2, rsyslog global at 2/2
 ```
 
@@ -503,9 +503,9 @@ Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizar
 
 ### Testing failover
 
-- Kill the Patroni leader's node → `docker service logs syslog-pg_haproxy` and the Patroni REST API (`curl http://<any-pg-node>:8008/`) should show a new leader within a few seconds, with no manual steps.
-- Kill the Redis node currently acting as Sentinel's master → the other two Sentinels should promote a replica within a few seconds (`docker service logs syslog-redis_sentinel1` shows the failover); `api` replicas using `go-redis`'s Sentinel-aware client should reconnect to the new master automatically, and exactly one of them should log `"tailer: acquired leader lock"` shortly after.
-- Kill the node running one `api`/`frontend` replica → the other replica(s) keep serving without interruption; `docker service ps syslog-app_api` should show the lost one rescheduled onto the other `app=true` node.
+- Kill the Patroni leader's node → `docker service logs syslytics-pg_haproxy` and the Patroni REST API (`curl http://<any-pg-node>:8008/`) should show a new leader within a few seconds, with no manual steps.
+- Kill the Redis node currently acting as Sentinel's master → the other two Sentinels should promote a replica within a few seconds (`docker service logs syslytics-redis_sentinel1` shows the failover); `api` replicas using `go-redis`'s Sentinel-aware client should reconnect to the new master automatically, and exactly one of them should log `"tailer: acquired leader lock"` shortly after.
+- Kill the node running one `api`/`frontend` replica → the other replica(s) keep serving without interruption; `docker service ps syslytics-app_api` should show the lost one rescheduled onto the other `app=true` node.
 - Kill the edge node currently holding the VIP → keepalived should fail over in 1-3s; confirm with `ip addr` on the new holder and by sending a test syslog message during the cutover.
 - Send syslog messages throughout each test and confirm no duplicates or gaps in the logs table, and that `/admin/slow-queries` and dashboard stats look the same regardless of which `api` replica answers the request.
 
@@ -541,19 +541,19 @@ Deploy in this order so that data-tier services are current before the app tier 
 docker stack deploy \
   --resolve-image always \
   --with-registry-auth \
-  -c docker-stack.postgres.yml syslog-pg
+  -c docker-stack.postgres.yml syslytics-pg
 
 # Redis + Sentinel (stop-first default)
 docker stack deploy \
   --resolve-image always \
   --with-registry-auth \
-  -c docker-stack.redis.yml syslog-redis
+  -c docker-stack.redis.yml syslytics-redis
 
 # App tier: api/frontend (start-first) + rsyslog (global)
 docker stack deploy \
   --resolve-image always \
   --with-registry-auth \
-  -c docker-stack.app.yml syslog-app
+  -c docker-stack.app.yml syslytics-app
 ```
 
 `--resolve-image always` forces every node to pull the latest image from the registry before starting the new task. Without it, Swarm reuses the locally cached image and your update silently does nothing.
@@ -563,33 +563,33 @@ docker stack deploy \
 If you only changed a Swarm secret, config, or environment variable (not the image itself), re-deploy with `--force` to trigger a rolling restart:
 
 ```bash
-docker service update --force syslog-app_api
-docker service update --force syslog-app_frontend
-docker service update --force syslog-app_rsyslog
+docker service update --force syslytics-app_api
+docker service update --force syslytics-app_frontend
+docker service update --force syslytics-app_rsyslog
 ```
 
 Or re-deploy the whole stack with both flags:
 
 ```bash
-docker stack deploy --resolve-image always --with-registry-auth -c docker-stack.app.yml syslog-app
+docker stack deploy --resolve-image always --with-registry-auth -c docker-stack.app.yml syslytics-app
 ```
 
 #### 4. Watch the rollout
 
 ```bash
 watch docker service ls          # services move from "old/NEW" to "NEW/NEW" as tasks converge
-docker service ps syslog-app_api # per-task status — look for "Running" replacing the old slot
-docker service logs -f syslog-app_api   # follow logs during the update
+docker service ps syslytics-app_api # per-task status — look for "Running" replacing the old slot
+docker service logs -f syslytics-app_api   # follow logs during the update
 ```
 
 Each stack's `update_config` controls the pace:
 
 | Stack | Policy | Meaning |
 |-------|--------|---------|
-| `syslog-pg` (postgres1/2/3) | `stop-first` | Old Patroni node stops, new one starts — Patroni re-elects leader on the new task |
-| `syslog-redis` (redis/sentinel) | default | One-by-one rolling restart; Sentinel quorum stays intact |
-| `syslog-app` (api/frontend) | `start-first`, parallelism 1 | New replica starts and becomes healthy before the old one is removed — zero-downtime |
-| `syslog-app` (rsyslog) | `mode: global` | Updates every `edge=true` node one at a time; only the VIP-holder receives traffic |
+| `syslytics-pg` (postgres1/2/3) | `stop-first` | Old Patroni node stops, new one starts — Patroni re-elects leader on the new task |
+| `syslytics-redis` (redis/sentinel) | default | One-by-one rolling restart; Sentinel quorum stays intact |
+| `syslytics-app` (api/frontend) | `start-first`, parallelism 1 | New replica starts and becomes healthy before the old one is removed — zero-downtime |
+| `syslytics-app` (rsyslog) | `mode: global` | Updates every `edge=true` node one at a time; only the VIP-holder receives traffic |
 
 #### 5. Roll back if something went wrong
 
@@ -601,7 +601,7 @@ export TAG=v1   # previous working tag
 docker stack deploy \
   --resolve-image always \
   --with-registry-auth \
-  -c docker-stack.app.yml syslog-app
+  -c docker-stack.app.yml syslytics-app
 ```
 
 Swarm rolls back each replica in the same rolling fashion. For a faster emergency rollback, drain the affected node:
