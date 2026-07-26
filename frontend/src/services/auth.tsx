@@ -43,6 +43,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const sessionExpiryRef = useRef<number | null>(null)
   const checkIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const extendingRef = useRef(false)
+  const rememberedRef = useRef(false)
+  // Bridges checkSessionExpiry -> extendSession without a circular useCallback
+  // dependency (extendSession -> setupSessionWarning -> checkSessionExpiry).
+  const extendSessionRef = useRef<() => Promise<void>>(async () => {})
 
   const clearAllTimers = useCallback(() => {
     if (checkIntervalRef.current) {
@@ -56,6 +60,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null)
     setLoading(false)
     clearAllTimers()
+    rememberedRef.current = false
     setIsSessionExpiringSoon(false)
     setShowSessionWarning(false)
     setSessionWarningCountdown(0)
@@ -82,6 +87,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     if (msLeft <= WARNING_LEAD_MS) {
+      // Devices with "remember this device" checked at login are trusted to
+      // renew on their own - interrupting them with the same countdown modal
+      // as a non-remembered session defeats the point of remembering them.
+      if (rememberedRef.current) {
+        extendSessionRef.current()
+        return
+      }
       setIsSessionExpiringSoon(true)
       setShowSessionWarning(true)
       setSessionWarningCountdown(Math.max(1, Math.ceil(msLeft / 1000)))
@@ -99,6 +111,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const res = await api.get('/auth/me')
       setUser(res.data)
+      rememberedRef.current = !!res.data.remembered
       const expiresAt = res.data.expires_at
       if (expiresAt) {
         setupSessionWarning(expiresAt)
@@ -115,6 +128,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const refreshRes = await api.post('/auth/refresh', {}, { headers: { 'X-Silent-Refresh': 'true' } })
         const meRes = await api.get('/auth/me')
         setUser(meRes.data)
+        rememberedRef.current = !!refreshRes.data.remembered
         if (refreshRes.data.expires_at) {
           setupSessionWarning(refreshRes.data.expires_at)
         }
@@ -138,6 +152,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         notifications_enabled: userData.notifications_enabled ?? true,
         relay_ingestion_enabled: userData.relay_ingestion_enabled ?? false,
       })
+      rememberedRef.current = !!res.data.remembered
       setupSessionWarning(res.data.expires_at)
       return { ok: true }
     } catch (error: any) {
@@ -149,6 +164,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     extendingRef.current = true
     try {
       const res = await api.post('/auth/refresh', {})
+      rememberedRef.current = !!res.data.remembered
       setupSessionWarning(res.data.expires_at)
       setIsSessionExpiringSoon(false)
       setShowSessionWarning(false)
@@ -160,6 +176,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       extendingRef.current = false
     }
   }, [setupSessionWarning, logout])
+
+  useEffect(() => {
+    extendSessionRef.current = extendSession
+  }, [extendSession])
 
   useEffect(() => {
     loadUser()

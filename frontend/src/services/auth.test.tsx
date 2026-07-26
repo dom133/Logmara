@@ -65,4 +65,32 @@ describe('AuthProvider loadUser', () => {
     expect(mockedApi.post).toHaveBeenCalledWith('/auth/refresh', {}, { headers: { 'X-Silent-Refresh': 'true' } })
     expect(result.current.user).toBeNull()
   })
+
+  it('silently renews an expiring "remember this device" session instead of showing the warning modal', async () => {
+    // 25s < WARNING_LEAD_MS (30s), so setupSessionWarning's own initial
+    // checkSessionExpiry() call fires the auto-renew immediately - no need
+    // to wait for the 1s interval tick.
+    mockedApi.get.mockResolvedValueOnce({
+      data: { id: 1, username: 'alice', expires_at: Date.now() / 1000 + 25, remembered: true },
+    })
+    mockedApi.post.mockResolvedValueOnce({ data: { success: true, expires_at: Date.now() / 1000 + 900, remembered: true } })
+
+    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await waitFor(() => expect(mockedApi.post).toHaveBeenCalledWith('/auth/refresh', {}))
+    expect(result.current.showSessionWarning).toBe(false)
+  })
+
+  it('shows the warning modal for an expiring session that was not "remembered"', async () => {
+    mockedApi.get.mockResolvedValueOnce({
+      data: { id: 1, username: 'alice', expires_at: Date.now() / 1000 + 25, remembered: false },
+    })
+
+    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await waitFor(() => expect(result.current.showSessionWarning).toBe(true))
+    expect(mockedApi.post).not.toHaveBeenCalled()
+  })
 })

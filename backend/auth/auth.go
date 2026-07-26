@@ -83,8 +83,12 @@ func (cfg *Config) getJWTExpiryMin() int {
 	return 15
 }
 
-// GenerateToken creates a signed access JWT.
-func (cfg *Config) GenerateToken(userID int64, username string, role string) (string, string, time.Time, error) {
+// GenerateToken creates a signed access JWT. remember mirrors the
+// "remember this device" flag of the refresh token this access token was
+// issued alongside, so GetMe can tell the frontend whether it's safe to
+// silently auto-renew this session instead of prompting the user (see
+// AuthProvider.checkSessionExpiry).
+func (cfg *Config) GenerateToken(userID int64, username string, role string, remember bool) (string, string, time.Time, error) {
 	expiryMin := cfg.getJWTExpiryMin()
 	jti := generateJTI()
 	exp := time.Now().Add(time.Duration(expiryMin) * time.Minute)
@@ -95,6 +99,7 @@ func (cfg *Config) GenerateToken(userID int64, username string, role string) (st
 		"jti":      jti,
 		"exp":      exp.Unix(),
 		"iat":      time.Now().Unix(),
+		"remember": remember,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenStr, err := token.SignedString(cfg.jwtSecret)
