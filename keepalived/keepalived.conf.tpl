@@ -23,10 +23,15 @@ global_defs {
     # are being executed but script_security not enabled" and synthesizes a
     # failing exit code instead) - which silently traps this node in FAULT
     # state forever, so it can never take over the VIP even when the peer
-    # genuinely goes down. `user root` on the script below is what makes
-    # that safe to enable without also having to provision a dedicated
-    # unprivileged 'keepalived_script' system user.
-    script_security
+    # genuinely goes down. The keyword really is `enable_script_security`,
+    # not the more-guessable `script_security` - the latter is silently
+    # ignored as an unrecognized global_defs key (no parse error, no
+    # effect) rather than rejected, which is what makes this so easy to
+    # get wrong: see https://github.com/acassen/keepalived/issues/901.
+    # `user root` on the script below is what makes it safe to enable
+    # without also having to provision a dedicated unprivileged
+    # 'keepalived_script' system user.
+    enable_script_security
 }
 
 vrrp_script check_rsyslog {
