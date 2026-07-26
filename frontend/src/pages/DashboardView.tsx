@@ -572,7 +572,7 @@ export default function DashboardViewPage() {
           if (!detail) return null
           return (
             <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
-              <Descriptions bordered column={1} layout="vertical" size="small">
+              <Descriptions bordered column={1} size="small">
                 {detail.metadata.map((item, i) => (
                   <Descriptions.Item key={i} label={item.label}>
                     {item.content}

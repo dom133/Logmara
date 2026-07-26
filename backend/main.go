@@ -516,6 +516,7 @@ r := gin.New()
 		authGroup.POST("/auth/change-password", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
 		authGroup.GET("/auth/sessions", handler.ListSessions(database))
 		authGroup.DELETE("/auth/sessions/:id", handler.RevokeSession(database))
+		authGroup.GET("/auth/session-check", handler.CheckSession(database))
 
 		notificationsGate := handler.RequireNotificationsEnabled(database)
 

@@ -52,20 +52,27 @@ func ListUserSessions(database *sql.DB, userID int64) ([]Session, error) {
 
 // RevokeSession logs out one of userID's own sessions by id. Scoped to
 // userID so a user can never revoke someone else's session by guessing an id.
+// Also blacklists the access token JTI that was issued alongside this
+// session's refresh token (if any), so the device holding it is rejected on
+// its very next request instead of staying valid until that access token's
+// own natural expiry - see GET /auth/session-check, which the frontend
+// polls specifically to notice this quickly.
 func RevokeSession(database *sql.DB, userID, sessionID int64) error {
-	res, err := database.Exec(
-		"UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE id = $1 AND user_id = $2 AND used = false",
+	var jti sql.NullString
+	err := database.QueryRow(
+		"UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE id = $1 AND user_id = $2 AND used = false RETURNING jti",
 		sessionID, userID,
-	)
+	).Scan(&jti)
 	if err != nil {
+		if err == sql.ErrNoRows {
+			return sql.ErrNoRows
+		}
 		return fmt.Errorf("revoke session: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return sql.ErrNoRows
+	if jti.Valid && jti.String != "" {
+		if err := BlacklistJTI(database, jti.String); err != nil {
+			return fmt.Errorf("blacklist revoked session's token: %w", err)
+		}
 	}
 	return nil
 }

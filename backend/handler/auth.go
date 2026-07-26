@@ -236,7 +236,6 @@ if existing != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
 		}
-		_ = jti
 
 		refreshToken, refreshExpiresAt := auth.GenerateRefreshToken(int(user.ID), req.Remember)
 		devID := deviceID(c)
@@ -248,6 +247,7 @@ if existing != nil {
 			userAgent: c.Request.UserAgent(),
 			ip:        c.ClientIP(),
 			remember:  req.Remember,
+			jti:       jti,
 		}); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
@@ -335,7 +335,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			return
 		}
 
-		token, _, accessExpiresAt, err := authCfg.GenerateToken(user.ID, user.Username, user.Role)
+		token, newJTI, accessExpiresAt, err := authCfg.GenerateToken(user.ID, user.Username, user.Role)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
@@ -357,6 +357,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			userAgent: c.Request.UserAgent(),
 			ip:        c.ClientIP(),
 			remember:  remember,
+			jti:       newJTI,
 		}); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
@@ -425,13 +426,30 @@ func Logout(database *sql.DB) gin.HandlerFunc {
 			}
 		}
 		if refreshToken != "" {
-			var userID int
-			if err := database.QueryRow("SELECT user_id FROM refresh_tokens WHERE token = $1", refreshToken).Scan(&userID); err == nil {
-				database.Exec("UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE user_id = $1 AND used = false", userID)
-			}
+			// Scoped to this exact token (one row, one device/session) - not
+			// "every refresh token this user has", which would log out every
+			// other device/browser too, including any "remember this device"
+			// session that's supposed to survive independently of this one.
+			database.Exec("UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE token = $1 AND used = false", refreshToken)
 		}
 		clearAuthCookies(c)
 		c.JSON(http.StatusOK, gin.H{"message": "Logged out"})
+	}
+}
+
+// CheckSession is a lightweight endpoint for the frontend to poll
+// periodically after login (see auth.tsx). It does no work of its own -
+// JWTRequired (which every authGroup route, including this one, already
+// runs) rejects the request with 401 the moment the access token's JTI is
+// blacklisted, which is exactly what RevokeSession/Logout now do for the
+// token they invalidate. Reaching this handler at all means the session is
+// still good; a 401 here means it's been signed out from elsewhere (Admin,
+// another device's "Sign out" in My Sessions, or this same session's
+// Logout), and the frontend's axios response interceptor already redirects
+// to /login on any 401 - so there's nothing else for this handler to do.
+func CheckSession(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"active": true})
 	}
 }
 
@@ -525,13 +543,14 @@ type refreshTokenParams struct {
 	userAgent string
 	ip        string
 	remember  bool
+	jti       string
 }
 
 func insertRefreshToken(db *sql.DB, p refreshTokenParams) error {
 	_, err := db.Exec(
-		`INSERT INTO refresh_tokens (user_id, token, expires_at, used, device_id, user_agent, ip, remember, last_used_at)
-		 VALUES ($1, $2, $3, false, $4, $5, $6, $7, NOW())`,
-		p.userID, p.token, p.expiresAt, p.deviceID, p.userAgent, p.ip, p.remember,
+		`INSERT INTO refresh_tokens (user_id, token, expires_at, used, device_id, user_agent, ip, remember, jti, last_used_at)
+		 VALUES ($1, $2, $3, false, $4, $5, $6, $7, $8, NOW())`,
+		p.userID, p.token, p.expiresAt, p.deviceID, p.userAgent, p.ip, p.remember, p.jti,
 	)
 	return err
 }

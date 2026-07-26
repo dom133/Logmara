@@ -249,6 +249,13 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='ip') THEN ALTER TABLE refresh_tokens ADD COLUMN ip VARCHAR(100); END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='remember') THEN ALTER TABLE refresh_tokens ADD COLUMN remember BOOLEAN NOT NULL DEFAULT FALSE; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='last_used_at') THEN ALTER TABLE refresh_tokens ADD COLUMN last_used_at TIMESTAMPTZ; END IF; END $$`,
+		// jti links a refresh_tokens row to the access token issued alongside
+		// it, so revoking a session (Admin/self "Sign out" on another device)
+		// can also blacklist that still-live access token instead of leaving
+		// it valid until its own natural expiry - see handler.RevokeSession
+		// and GET /auth/session-check, which the frontend polls precisely to
+		// notice that blacklisting quickly rather than on its own schedule.
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='jti') THEN ALTER TABLE refresh_tokens ADD COLUMN jti VARCHAR(64); END IF; END $$`,
 		`DELETE FROM app_settings WHERE key = 'jwt_expiry'`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='rule_type') THEN ALTER TABLE alerts ADD COLUMN rule_type VARCHAR(30) NOT NULL DEFAULT 'log_threshold'; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='severity') THEN ALTER TABLE alerts ADD COLUMN severity VARCHAR(20); END IF; END $$`,

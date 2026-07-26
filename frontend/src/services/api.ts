@@ -452,6 +452,15 @@ export async function revokeSession(id: number) {
 	return res.data as { message: string }
 }
 
+// Polled periodically while logged in (see auth.tsx) purely to notice a
+// server-side session revocation (Admin, another device's "Sign out", or
+// this session's own Logout) quickly - a 401 here is handled by the axios
+// response interceptor's existing "redirect to /login on 401" behavior, so
+// callers don't need to do anything with the resolved/rejected value.
+export async function checkSession() {
+	await api.get('/auth/session-check')
+}
+
 export async function getUsers() {
 	const res = await api.get('/admin/users')
 	return (res.data || []) as User[]

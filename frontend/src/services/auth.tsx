@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
-import { api } from './api'
+import { api, checkSession } from './api'
 
 interface User {
   id: number
@@ -159,6 +159,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
   }, [checkSessionExpiry])
+
+  // Poll GET /auth/session-check every 30s while logged in, purely to
+  // notice a server-side revocation (Admin, another device's "Sign out" in
+  // My Sessions, or this session's own Logout) quickly instead of waiting
+  // for the access token's own natural expiry. A 401 here is already
+  // handled by the axios response interceptor (redirects to /login), so
+  // this just needs to fire the request - errors are swallowed rather than
+  // handled twice.
+  useEffect(() => {
+    if (!user) return
+    const interval = setInterval(() => {
+      checkSession().catch(() => { /* handled by the response interceptor */ })
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [user])
 
   const isAdmin = user?.is_admin || false
   const canEdit = user?.role === 'admin' || user?.role === 'editor'
