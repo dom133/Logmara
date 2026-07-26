@@ -538,5 +538,120 @@
         "type": "string"
       }
     ]
+  },
+  {
+    "name": "UniFi Network WAN Failover",
+    "description": "Matches UniFi Network controller CEF events for temporary Internet/WAN failover and restore (signature 105)",
+    "device_type": "ubiquiti",
+    "match_type": "message",
+    "match_value": "|105|Temporary Internet Failover|",
+    "regex": "^0\\|Ubiquiti\\|UniFi Network\\|[^|]*\\|105\\|Temporary Internet Failover\\|\\d+\\|UNIFIcategory=(.*?) UNIFIhost=(.*?) UNIFIdeviceMac=(\\S+) UNIFIdeviceName=(.*?) UNIFIdeviceModel=(\\S+) UNIFIdeviceIp=(\\S+) UNIFIdeviceVersion=(\\S+) UNIFIwanName=(.*?) UNIFIwanId=(\\S+) UNIFIwanPort=(\\S+) UNIFIwanIsp=(.*?) UNIFIwanSubnet=(\\S+) UNIFIwanSla=(\\S+) UNIFIfailoverWanName=(.*?) UNIFIfailoverWanId=(\\S+) UNIFIfailoverWanPort=(\\S+) UNIFIfailoverWanIsp=(.*?) UNIFIfailoverWanSubnet=(\\S+) UNIFIreportedDuration=(\\S+) UNIFIutcTime=(\\S+) msg=(.*)$",
+    "fields": [
+      {
+        "name": "category",
+        "label": "Category",
+        "type": "string"
+      },
+      {
+        "name": "unifi_host",
+        "label": "UniFi Host",
+        "type": "string"
+      },
+      {
+        "name": "device_mac",
+        "label": "Device MAC",
+        "type": "string"
+      },
+      {
+        "name": "device_name",
+        "label": "Device Name",
+        "type": "string"
+      },
+      {
+        "name": "device_model",
+        "label": "Device Model",
+        "type": "string"
+      },
+      {
+        "name": "device_ip",
+        "label": "Device IP",
+        "type": "string"
+      },
+      {
+        "name": "device_version",
+        "label": "Device Version",
+        "type": "string"
+      },
+      {
+        "name": "wan_name",
+        "label": "WAN Name",
+        "type": "string"
+      },
+      {
+        "name": "wan_id",
+        "label": "WAN ID",
+        "type": "string"
+      },
+      {
+        "name": "wan_port",
+        "label": "WAN Port",
+        "type": "string"
+      },
+      {
+        "name": "wan_isp",
+        "label": "WAN ISP",
+        "type": "string"
+      },
+      {
+        "name": "wan_subnet",
+        "label": "WAN Subnet",
+        "type": "string"
+      },
+      {
+        "name": "wan_sla",
+        "label": "WAN SLA",
+        "type": "string"
+      },
+      {
+        "name": "failover_wan_name",
+        "label": "Failover WAN Name",
+        "type": "string"
+      },
+      {
+        "name": "failover_wan_id",
+        "label": "Failover WAN ID",
+        "type": "string"
+      },
+      {
+        "name": "failover_wan_port",
+        "label": "Failover WAN Port",
+        "type": "string"
+      },
+      {
+        "name": "failover_wan_isp",
+        "label": "Failover WAN ISP",
+        "type": "string"
+      },
+      {
+        "name": "failover_wan_subnet",
+        "label": "Failover WAN Subnet",
+        "type": "string"
+      },
+      {
+        "name": "reported_duration",
+        "label": "Reported Duration",
+        "type": "string"
+      },
+      {
+        "name": "utc_time",
+        "label": "UTC Time",
+        "type": "string"
+      },
+      {
+        "name": "msg",
+        "label": "Message",
+        "type": "string"
+      }
+    ]
   }
 ]

@@ -22,7 +22,12 @@ const ruleTypeLabels: Record<AlertRuleType, string> = {
   device_silence: 'Device silence',
   audit_log: 'Audit log',
   relay_cert_expiring: 'Syslog relay certificate expiring',
+  malformed_json: 'Malformed JSON (ingestion)',
 }
+
+// Rule types whose notifications are admin-only (see the matching lists in
+// the backend: notify/push.go, db/alerts.go, handler/notifications.go).
+const adminOnlyRuleTypes = ['audit_log', 'relay_cert_expiring', 'malformed_json']
 
 const channelTypeLabels: Record<NotificationChannelType, string> = {
   email: 'Email',
@@ -177,6 +182,9 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
         if (r.rule_type === 'relay_cert_expiring') {
           return `warn ${r.threshold || 30} day(s) before a relay certificate expires`
         }
+        if (r.rule_type === 'malformed_json') {
+          return r.fire_on_every_match ? 'every malformed JSON line during ingestion' : 'any malformed JSON line during ingestion'
+        }
         return r.audit_action_filter ? `action = ${r.audit_action_filter}` : 'any audit action'
       },
     },
@@ -203,7 +211,7 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
         {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Alert Rule</Button>}
       </div>
-      <Table dataSource={isAdmin ? alerts : alerts.filter(a => !['audit_log', 'relay_cert_expiring'].includes(a.rule_type))} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
+      <Table dataSource={isAdmin ? alerts : alerts.filter(a => !adminOnlyRuleTypes.includes(a.rule_type))} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
 
       <Modal
         title={editing ? 'Edit Alert Rule' : 'New Alert Rule'}
@@ -222,7 +230,7 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
           <Form.Item name="rule_type" label="Rule Type" rules={[{ required: true }]}>
             <Select
               options={Object.entries(ruleTypeLabels)
-                .filter(([key]) => isAdmin || !['audit_log', 'relay_cert_expiring'].includes(key))
+                .filter(([key]) => isAdmin || !adminOnlyRuleTypes.includes(key))
                 .map(([value, label]) => ({ value, label }))}
             />
           </Form.Item>
@@ -347,7 +355,13 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
             </Form.Item>
           )}
 
-          {!(ruleType === 'log_threshold' && fireOnEveryMatch) && (
+          {ruleType === 'malformed_json' && (
+            <Form.Item name="fire_on_every_match" label="Fire on every match" valuePropName="checked" tooltip="Notify for every malformed JSON line encountered during ingestion, instead of at most once per cooldown period below.">
+              <Switch />
+            </Form.Item>
+          )}
+
+          {!((ruleType === 'log_threshold' || ruleType === 'malformed_json') && fireOnEveryMatch) && (
             <Form.Item name="cooldown_minutes" label="Cooldown (minutes)" tooltip="Minimum time between repeat notifications for this rule" rules={[{ required: true }]}>
               <InputNumber min={1} style={{ width: '100%' }} />
             </Form.Item>
@@ -642,7 +656,7 @@ function HistoryTab({ isAdmin, active, focusInAppId, focusFiringId, onFocusConsu
 
   useEffect(() => { loadData() }, [])
 
-  const groups = groupHistoryEntries(entries).filter(g => isAdmin || !['audit_log', 'relay_cert_expiring'].includes(g.ruleType))
+  const groups = groupHistoryEntries(entries).filter(g => isAdmin || !adminOnlyRuleTypes.includes(g.ruleType))
 
   // A new notification means a new row in notification_log - refresh the
   // list live while this tab is the one actually showing.

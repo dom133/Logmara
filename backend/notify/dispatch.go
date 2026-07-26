@@ -99,6 +99,10 @@ func (d *Dispatcher) DispatchAlert(alert model.Alert, payload Payload) {
 		return
 	}
 	alertID := alert.ID
+	// Callers (alertengine) don't set this themselves - filled in here so
+	// every downstream consumer (push's admin-only filter, the in_app/
+	// notification_log rows, the SSE stream) can gate on it.
+	payload.AlertRuleType = alert.RuleType
 	// One id per firing, shared by every channel's notification_log row
 	// below, so the alert history can group them back into a single
 	// "this rule fired, here's what happened per channel" entry instead of
@@ -120,7 +124,7 @@ func (d *Dispatcher) DispatchAlert(alert model.Alert, payload Payload) {
 		_ = db.LogNotification(d.DB, model.NotificationLogEntry{
 			AlertID: &alertID, AlertName: alert.Name, FiringID: firingID,
 			ChannelName: "(none)", Status: "no_channel", Detail: "Rule fired but has no notification channels attached",
-			TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions,
+			TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions, RuleType: payload.AlertRuleType,
 		})
 		return
 	}
@@ -216,7 +220,7 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName, firingID string, ch 
 	_ = db.LogNotification(d.DB, model.NotificationLogEntry{
 		AlertID: alertID, AlertName: alertName, FiringID: firingID, ChannelID: &ch.ID, ChannelName: ch.Name, ChannelType: ch.Type,
 		Status: status, Detail: detail,
-		TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions,
+		TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions, RuleType: payload.AlertRuleType,
 		InAppNotificationID: inAppID,
 	})
 }

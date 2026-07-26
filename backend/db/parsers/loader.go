@@ -23,12 +23,14 @@ const embeddedDefaultsDir = "defaults"
 
 // LoadAll returns the full set of built-in parser seeds. When dir is empty,
 // it reads only the factory defaults embedded in the binary. When dir is
-// set, it bootstraps that directory from the embedded defaults on first run
-// (leaving any existing files alone) and then reads *.json from it instead,
-// so an operator can edit, add, or remove parser definitions on disk without
-// rebuilding the binary. A malformed file is skipped (not fatal) and
-// reported via the returned errors so one bad edit doesn't take down every
-// other parser.
+// set, it bootstraps that directory from the embedded defaults on every
+// start (adding any default file that isn't already present, leaving all
+// existing files untouched) and then reads *.json from it instead, so an
+// operator can edit, add, or remove parser definitions on disk without
+// rebuilding the binary, and a new release can still introduce new default
+// parser files without a manual copy step. A malformed file is skipped (not
+// fatal) and reported via the returned errors so one bad edit doesn't take
+// down every other parser.
 func LoadAll(dir string) ([]ParserSeed, []error) {
 	if dir == "" {
 		return loadFromFS(embeddedDefaults, embeddedDefaultsDir)
@@ -42,30 +44,16 @@ func LoadAll(dir string) ([]ParserSeed, []error) {
 	return loadFromDir(dir)
 }
 
-// bootstrapDir seeds dir with the embedded factory-default JSON files the
-// first time it's used (empty or missing directory), and leaves it alone on
-// every subsequent start so operator edits are never overwritten.
+// bootstrapDir copies each embedded factory-default JSON file into dir if a
+// file of that name isn't already there. It runs on every start (not just
+// the first), so a new release that adds a new default parser file shows up
+// automatically - but any file that already exists is left byte-for-byte
+// alone, so operator edits to that file (including edits made to the
+// content of a file that also happens to ship new upstream parsers) are
+// never overwritten.
 func bootstrapDir(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return err
-		}
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return err
-		}
-		entries = nil
-	}
-
-	hasJSON := false
-	for _, e := range entries {
-		if !e.IsDir() && filepath.Ext(e.Name()) == ".json" {
-			hasJSON = true
-			break
-		}
-	}
-	if hasJSON {
-		return nil
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
 	}
 
 	defaults, err := embeddedDefaults.ReadDir(embeddedDefaultsDir)
@@ -76,11 +64,18 @@ func bootstrapDir(dir string) error {
 		if d.IsDir() {
 			continue
 		}
+		destPath := filepath.Join(dir, d.Name())
+		if _, err := os.Stat(destPath); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat %s: %w", destPath, err)
+		}
+
 		data, err := embeddedDefaults.ReadFile(path.Join(embeddedDefaultsDir, d.Name()))
 		if err != nil {
 			return fmt.Errorf("read embedded default %s: %w", d.Name(), err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, d.Name()), data, 0644); err != nil {
+		if err := os.WriteFile(destPath, data, 0644); err != nil {
 			return fmt.Errorf("write %s: %w", d.Name(), err)
 		}
 	}

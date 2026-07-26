@@ -52,12 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionExpiryRef.current = null
   }, [])
 
-  const logout = useCallback(async () => {
-    try {
-      await api.post('/auth/logout', {})
-    } catch (e) {
-      console.error('Error during logout:', e)
-    }
+  const resetToLoggedOut = useCallback(() => {
     setUser(null)
     setLoading(false)
     clearAllTimers()
@@ -65,6 +60,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setShowSessionWarning(false)
     setSessionWarningCountdown(0)
   }, [clearAllTimers])
+
+  const logout = useCallback(async () => {
+    try {
+      await api.post('/auth/logout', {})
+    } catch (e) {
+      console.error('Error during logout:', e)
+    }
+    resetToLoggedOut()
+  }, [resetToLoggedOut])
 
   const checkSessionExpiry = useCallback(() => {
     const expiresAt = sessionExpiryRef.current
@@ -101,14 +105,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       setLoading(false)
     } catch {
-      setUser(null)
-      setLoading(false)
-      clearAllTimers()
-      setIsSessionExpiringSoon(false)
-      setShowSessionWarning(false)
-      setSessionWarningCountdown(0)
+      // Access token missing/expired on boot (browser reopened, tab reloaded
+      // after its short TTL). Try the refresh token once before giving up -
+      // this is what makes "remember this device" persist. The silent header
+      // tells the backend to reject this when the session wasn't set up with
+      // "remember" (see handler.Refresh) - those sessions are only meant to
+      // last as long as the access token / an actively open, extended tab.
+      try {
+        const refreshRes = await api.post('/auth/refresh', {}, { headers: { 'X-Silent-Refresh': 'true' } })
+        const meRes = await api.get('/auth/me')
+        setUser(meRes.data)
+        if (refreshRes.data.expires_at) {
+          setupSessionWarning(refreshRes.data.expires_at)
+        }
+        setLoading(false)
+      } catch {
+        resetToLoggedOut()
+      }
     }
-  }, [clearAllTimers, setupSessionWarning])
+  }, [resetToLoggedOut, setupSessionWarning])
 
   const login = useCallback(async (username: string, password: string, remember?: boolean) => {
     try {

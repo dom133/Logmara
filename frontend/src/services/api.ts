@@ -135,6 +135,11 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   return (res.data || {}) as DashboardStats
 }
 
+export async function getLogsRate(): Promise<number> {
+  const res = await api.get('/stats/rate')
+  return (res.data?.logs_per_sec || 0) as number
+}
+
 export async function getTimeline(interval = '1h', from?: string, to?: string) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
   const res = await api.post('/stats/timeline', { interval, from, to, tz })
@@ -837,7 +842,7 @@ export async function revokeRelayCertificate(id: number) {
 
 // --- Alerts & Notifications ---
 
-export type AlertRuleType = 'log_threshold' | 'device_silence' | 'audit_log' | 'relay_cert_expiring'
+export type AlertRuleType = 'log_threshold' | 'device_silence' | 'audit_log' | 'relay_cert_expiring' | 'malformed_json'
 export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app' | 'push'
 export type FieldConditionOperator = 'equals' | 'contains' | 'not_equals' | 'regex'
 

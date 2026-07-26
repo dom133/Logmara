@@ -17,6 +17,10 @@
 
 **Syslytics is a self-hosted, [Docker Compose](#quick-start-single-server)-deployed platform for ingesting, parsing, and visualizing syslog data** — a live log viewer, a regex-based parser engine for structuring raw messages, custom dashboards, alerting, and an admin panel, all behind JWT auth with no external dependencies.
 
+<p align="center">
+  <img src="docs/screenshot-dashboard.png" alt="Syslytics dashboard (sample data)" width="900" />
+</p>
+
 ## Architecture
 
 ```
@@ -188,10 +192,10 @@ Getting here required backend code changes (not just Docker config) — see "How
 
 ### Requirements
 
-- **4+ Linux servers**, Docker installed, all mutually reachable. Recommended minimum split: 3 dedicated to Postgres, 3 for Redis Sentinel (can overlap with the app tier on small clusters), 2+ for the app tier (`api`/`frontend`/`rsyslog`/`haproxy`) so that tier also survives a single node failure.
+- **4+ Linux servers**, Docker installed, all mutually reachable. Recommended minimum split: 3 dedicated to Postgres, 3 for Redis Sentinel (can overlap with the app tier on small clusters), 2+ for the app tier (`api`/`frontend`/`rsyslog`/`haproxy-app`) so that tier also survives a single node failure.
 - A container image registry every node can pull from (e.g. a private registry, GHCR, ECR).
-- An NFS export (or equivalent shared filesystem — Ceph, GlusterFS, etc. if you already run one) reachable from every app/edge node, for the shared `/data` (raw logs, TLS certs, nginx conf snippets).
-- Two or more externally-routable IPs on the edge nodes for the keepalived VIP.
+- An NFS export (or equivalent shared filesystem — Ceph, GlusterFS, etc. if you already run one) reachable from every app/edge node, for the shared `/data` (raw logs, TLS certs, nginx conf snippets). A single NFS box is a SPOF for that shared storage; see [Optional: NFS Replica](#optional-nfs-replica-drbd--keepalived) below if you want it synchronously replicated instead.
+- Two or more externally-routable IPs on the edge nodes for the keepalived VIP — this now fronts `rsyslog` (raw TCP/UDP, unproxied) *and* load-balanced HTTP/API access via `haproxy-app`, so make sure it's reachable from wherever both syslog senders and browser/API clients sit.
 
 ### Files
 
@@ -202,9 +206,11 @@ Getting here required backend code changes (not just Docker config) — see "How
 | [`haproxy/haproxy.cfg`](haproxy/haproxy.cfg) | Routes `:5000` to whichever Postgres node's Patroni REST API reports itself as primary |
 | [`docker-stack.redis.yml`](docker-stack.redis.yml) | 3-node Redis + 3-node Sentinel, backing `backend/sharedstate` (rate limiting, cache invalidation, tailer leader election, ingestion control, slow-query log) |
 | [`redis/sentinel.conf.tpl`](redis/sentinel.conf.tpl) | Sentinel config template loaded as a Swarm config at deploy time |
-| [`docker-stack.app.yml`](docker-stack.app.yml) | `api`, `rsyslog`, `frontend` as Swarm services with real `deploy:` (placement, restart, update policy, `api`/`frontend` at `${API_REPLICAS:-2}`/`${FRONTEND_REPLICAS:-2}`) |
-| [`keepalived/`](keepalived/) | VRRP config template + health-check script for the floating syslog ingress VIP |
+| [`docker-stack.app.yml`](docker-stack.app.yml) | `api`, `rsyslog`, `frontend`, `haproxy-app` as Swarm services with real `deploy:` (placement, restart, update policy, `api`/`frontend` at `${API_REPLICAS:-2}`/`${FRONTEND_REPLICAS:-2}`) |
+| [`haproxy/haproxy-app.cfg`](haproxy/haproxy-app.cfg) | Load-balances `:80`/`:443`/`:8080` across every `frontend`/`api` replica cluster-wide (`tasks.frontend`/`tasks.api`) |
+| [`keepalived/`](keepalived/) | VRRP config template + health-check scripts (`rsyslog` and `haproxy-app`) for the floating app/edge VIP |
 | [`scripts/swarm-bootstrap.sh`](scripts/swarm-bootstrap.sh) | Guided commands for swarm init/join, node labeling, network/secret/config creation |
+| [`nfs-ha/`](nfs-ha/) | *Optional* — DRBD resource template + keepalived VIP + promote/demote hooks for a synchronously-replicated NFS pair, instead of a single NFS box |
 
 ### How multi-replica safety works
 
@@ -259,8 +265,8 @@ Swarm itself needs, between every swarm node (`pg1`-`pg3`, `app1`-`app2`):
 Everything else (Postgres 5432, Patroni's REST API 8008, etcd 2379/2380, Redis 6379, Sentinel 26379) travels over the `syslog_net` overlay network via that same VXLAN tunnel — you do **not** need to open those ports individually between nodes.
 
 What *does* need opening beyond the swarm nodes themselves:
-- `app1`/`app2`: `80/tcp`, `443/tcp` (frontend, published with `mode: host`) and `514/tcp`+`514/udp` (rsyslog, also `mode: host`) to whatever network your users/log senders are on.
-- `nfs1`: `2049/tcp` (NFS) and `111/tcp`+`111/udp` (portmapper), open to `app1`/`app2` specifically.
+- `app1`/`app2`: `80/tcp`, `443/tcp` (`haproxy-app`, published with `mode: host` — `frontend` itself is no longer published), optionally `8080/tcp` (`haproxy-app`'s direct API listener, only if you use it) and `514/tcp`+`514/udp` (rsyslog, also `mode: host`) to whatever network your users/log senders are on.
+- `nfs1`: `2049/tcp` (NFS) and `111/tcp`+`111/udp` (portmapper), open to `app1`/`app2` specifically. If you deploy the optional [DRBD-replicated NFS pair](#optional-nfs-replica-drbd--keepalived) instead, `nfs1`/`nfs2` also need `7789/tcp` (DRBD replication) open to each other.
 
 ```bash
 # Example using ufw on app1/app2 - adjust to your actual firewall/security groups
@@ -382,6 +388,7 @@ ENCRYPTION_KEY_VAL=$(openssl rand -base64 48)   # separate value; see "Security 
 ./scripts/swarm-bootstrap.sh redis-secret "$REDIS_PASS"
 ./scripts/swarm-bootstrap.sh app-secrets "$JWT_SECRET_VAL" "$ENCRYPTION_KEY_VAL"
 ./scripts/swarm-bootstrap.sh haproxy-config
+./scripts/swarm-bootstrap.sh haproxy-app-config
 ./scripts/swarm-bootstrap.sh redis-sentinel-config
 ```
 All four passwords/keys now live only as Swarm secrets (mounted into the relevant containers at `/run/secrets/*`) - none of them need to be exported as shell env vars again in step 10, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later.
@@ -434,7 +441,7 @@ export REGISTRY=registry.example.com/syslytics TAG=v1
 export NFS_SERVER=10.0.0.30
 
 docker stack deploy -c docker-stack.app.yml syslytics-app
-watch docker service ls   # wait for api and frontend at 2/2, rsyslog global at 2/2
+watch docker service ls   # wait for api and frontend at 2/2, rsyslog and haproxy-app global at 2/2
 ```
 
 #### 11. Set up keepalived on the edge nodes
@@ -463,7 +470,8 @@ export STATE=MASTER PRIORITY=150 \
 
 envsubst < keepalived/keepalived.conf.tpl | sudo tee /etc/keepalived/keepalived.conf > /dev/null
 sudo cp keepalived/check_rsyslog.sh /etc/keepalived/check_rsyslog.sh
-sudo chmod +x /etc/keepalived/check_rsyslog.sh
+sudo cp keepalived/check_haproxy_app.sh /etc/keepalived/check_haproxy_app.sh
+sudo chmod +x /etc/keepalived/check_rsyslog.sh /etc/keepalived/check_haproxy_app.sh
 sudo systemctl enable --now keepalived
 ```
 
@@ -483,7 +491,8 @@ export STATE=BACKUP PRIORITY=100 \
 
 envsubst < keepalived/keepalived.conf.tpl | sudo tee /etc/keepalived/keepalived.conf > /dev/null
 sudo cp keepalived/check_rsyslog.sh /etc/keepalived/check_rsyslog.sh
-sudo chmod +x /etc/keepalived/check_rsyslog.sh
+sudo cp keepalived/check_haproxy_app.sh /etc/keepalived/check_haproxy_app.sh
+sudo chmod +x /etc/keepalived/check_rsyslog.sh /etc/keepalived/check_haproxy_app.sh
 sudo systemctl enable --now keepalived
 ```
 
@@ -495,7 +504,7 @@ ip -br addr show eth0   # should list 10.0.0.100 on app1, not on app2
 
 For a third/fourth edge node, repeat the `app2` block with a unique lower `PRIORITY` (e.g. `90`, `80`) and `PEER_IPS` listing every *other* edge node's IP, one per indented line.
 
-Finally, point syslog senders at the VIP (`10.0.0.100:514`, tcp or udp) and, if you're routing browser/API traffic through it too, point clients/DNS at the same VIP for `80`/`443`.
+Finally, point syslog senders at the VIP (`10.0.0.100:514`, tcp or udp) and browser/API clients/DNS at the same VIP for `80`/`443` (and `8080` if you use `haproxy-app`'s direct API listener) — `haproxy-app` behind it load-balances across every `frontend`/`api` replica cluster-wide, not just whichever node currently holds the VIP.
 
 #### 12. First login
 
@@ -507,6 +516,7 @@ Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizar
 - Kill the Redis node currently acting as Sentinel's master → the other two Sentinels should promote a replica within a few seconds (`docker service logs syslytics-redis_sentinel1` shows the failover); `api` replicas using `go-redis`'s Sentinel-aware client should reconnect to the new master automatically, and exactly one of them should log `"tailer: acquired leader lock"` shortly after.
 - Kill the node running one `api`/`frontend` replica → the other replica(s) keep serving without interruption; `docker service ps syslytics-app_api` should show the lost one rescheduled onto the other `app=true` node.
 - Kill the edge node currently holding the VIP → keepalived should fail over in 1-3s; confirm with `ip addr` on the new holder and by sending a test syslog message during the cutover.
+- Confirm `haproxy-app` is actually load-balancing, not just failing over: hit `http://<any-app-node-ip>:7001/` (the stats page) and check every `frontend-*`/`api-*` server-template slot shows `UP` with a non-zero request count after a few page loads/API calls; `docker service logs syslytics-app_haproxy-app` also shows each backend server going up as its task starts.
 - Send syslog messages throughout each test and confirm no duplicates or gaps in the logs table, and that `/admin/slow-queries` and dashboard stats look the same regardless of which `api` replica answers the request.
 
 ### Updating images (rolling update)
@@ -610,6 +620,155 @@ Swarm rolls back each replica in the same rolling fashion. For a faster emergenc
 docker node drain app1
 ```
 This forces all tasks on `app1` to reschedule onto other `app=true` nodes, giving you time to fix the image.
+
+### Optional: NFS Replica (DRBD + keepalived)
+
+By default `nfs1` (step 3 above) is a single, unreplicated box — every other tier in this HA design tolerates a node failure, but losing `nfs1` takes `log_data`/`log_spool`/`parser_defs` down with it. This is an **optional** add-on: a second NFS node (`nfs2`) synchronously replicated via DRBD (protocol C — a write only acknowledges once both nodes have it on disk, so failover loses nothing already acknowledged to the app tier), with keepalived doing the same VRRP-based failover it already does for the edge VIP, just driving DRBD promote/demote instead of gating an already-running service.
+
+Skip this whole section if a single NFS box (or an existing Ceph/GlusterFS cluster you point `NFS_SERVER` at instead) is an acceptable risk for your deployment — nothing else in this guide depends on it.
+
+**Files** (all in [`nfs-ha/`](nfs-ha/)):
+
+| File | Purpose |
+|------|---------|
+| [`drbd-nfs.res.tpl`](nfs-ha/drbd-nfs.res.tpl) | DRBD resource definition, identical on both nodes |
+| [`promote_nfs.sh`](nfs-ha/promote_nfs.sh) / [`demote_nfs.sh`](nfs-ha/demote_nfs.sh) | `drbdadm primary`+mount+export+start `nfs-kernel-server`, and the reverse |
+| [`check_nfs_drbd.sh`](nfs-ha/check_nfs_drbd.sh) | vrrp_script health check — DRBD `UpToDate` and `nfsd` actually listening |
+| [`keepalived-nfs.conf.tpl`](nfs-ha/keepalived-nfs.conf.tpl) | VRRP template wiring the two hooks above into keepalived's `notify_master`/`notify_backup`/`notify_fault` |
+
+**Topology** (extends the 6-machine example above with one more node):
+
+| Node | Example IP | Role |
+|---|---|---|
+| `nfs1` | 10.0.0.30 | DRBD primary (starts as VRRP MASTER) |
+| `nfs2` | 10.0.0.31 | DRBD secondary (starts as VRRP BACKUP) |
+| — | 10.0.0.40 | Floating NFS VIP (`NFS_SERVER` points here, not at `nfs1` directly) |
+
+#### 1. Install DRBD and provision a matching block device on both nodes
+
+```bash
+# on both nfs1 and nfs2
+sudo apt-get install -y drbd-utils keepalived gettext-base nfs-kernel-server
+```
+
+You need an unformatted block device of identical size on both nodes — e.g. a dedicated LVM logical volume (`/dev/vg0/nfsdata`). DRBD owns this device directly; never `mkfs` it yourself, and never mount it outside of `promote_nfs.sh`.
+
+#### 2. Render and load the DRBD resource (both nodes, identical file)
+
+```bash
+# on both nfs1 and nfs2
+cd ~/syslog_gui
+export NFS1_HOST=nfs1 NFS1_IP=10.0.0.30 NFS2_HOST=nfs2 NFS2_IP=10.0.0.31 \
+       DRBD_DISK=/dev/vg0/nfsdata \
+       DRBD_SECRET=<same-openssl-rand--hex-16-value-on-both-nodes>
+
+envsubst < nfs-ha/drbd-nfs.res.tpl | sudo tee /etc/drbd.d/nfs-ha.res > /dev/null
+sudo drbdadm create-md nfs-ha
+sudo drbdadm up nfs-ha
+```
+
+`drbdadm status nfs-ha` on either node should now show `Connected`, both sides `Inconsistent` (nothing has been synced yet — that's expected before the next step).
+
+#### 3. Seed the initial full sync from `nfs1`
+
+```bash
+# on nfs1 ONLY - this is the one-time exception, decides which side's
+# (empty) data "wins" the initial sync
+sudo drbdadm primary --force nfs-ha
+sudo mkfs.xfs /dev/drbd0
+sudo mkdir -p /srv/syslog-ha/nfs
+sudo mount /dev/drbd0 /srv/syslog-ha/nfs
+```
+
+Watch `drbdadm status nfs-ha` until both sides report `UpToDate` (this is the initial full-device sync — time depends on device size and `resync-rate` in the `.res` file).
+
+**Migrating existing data from a single-`nfs1` setup**: if `nfs1` already has real data under `/srv/syslog-ha/nfs/{log_data,log_spool,parser_defs}` from before, copy it into the newly-mounted DRBD filesystem now, before continuing:
+```bash
+sudo rsync -a /path/to/old/nfs/export/ /srv/syslog-ha/nfs/
+```
+
+#### 4. Create the exports and mirror the directory layout
+
+```bash
+# on nfs1 (already primary/mounted from step 3)
+sudo mkdir -p /srv/syslog-ha/nfs/log_data /srv/syslog-ha/nfs/log_spool /srv/syslog-ha/nfs/parser_defs
+sudo chown -R nobody:nogroup /srv/syslog-ha/nfs
+echo '/srv/syslog-ha/nfs/log_data     10.0.0.21(rw,sync,no_subtree_check) 10.0.0.22(rw,sync,no_subtree_check)' | sudo tee -a /etc/exports
+echo '/srv/syslog-ha/nfs/log_spool    10.0.0.21(rw,sync,no_subtree_check) 10.0.0.22(rw,sync,no_subtree_check)' | sudo tee -a /etc/exports
+echo '/srv/syslog-ha/nfs/parser_defs  10.0.0.21(rw,sync,no_subtree_check) 10.0.0.22(rw,sync,no_subtree_check)' | sudo tee -a /etc/exports
+```
+`/etc/exports` needs the same content on `nfs2` too (it's not part of the replicated block device — only what's *under* the mount point is), so copy the same three lines there as well. Don't run `exportfs`/`systemctl start nfs-kernel-server` by hand on either node from here on — `promote_nfs.sh`/`demote_nfs.sh` own that lifecycle exclusively; a manually-started `nfsd` on the secondary would serve a stale, non-DRBD-backed filesystem.
+
+Then tear down the manual step-3 state so keepalived starts from a clean slate:
+```bash
+# on nfs1
+sudo systemctl stop nfs-kernel-server 2>/dev/null || true
+sudo umount /srv/syslog-ha/nfs
+sudo drbdadm secondary nfs-ha
+```
+
+#### 5. Set up keepalived on both nodes
+
+Pick a VRRP auth password (same rule as the app-tier VIP — 8 characters) and a `virtual_router_id` that's already reserved as `52` in the template (distinct from the app-tier VIP's `51`).
+
+**On `nfs1`** (starts as MASTER / DRBD primary):
+```bash
+ssh nfs1
+cd ~/syslog_gui
+export STATE=MASTER PRIORITY=150 \
+       MY_IP=10.0.0.30 PEER_IP=10.0.0.31 \
+       VIP=10.0.0.40 VIP_CIDR=24 INTERFACE=eth0 \
+       VRRP_AUTH_PASS=<the-8-char-pass>
+
+envsubst < nfs-ha/keepalived-nfs.conf.tpl | sudo tee /etc/keepalived/keepalived.conf > /dev/null
+sudo cp nfs-ha/check_nfs_drbd.sh nfs-ha/promote_nfs.sh nfs-ha/demote_nfs.sh /etc/keepalived/
+sudo chmod +x /etc/keepalived/check_nfs_drbd.sh /etc/keepalived/promote_nfs.sh /etc/keepalived/demote_nfs.sh
+sudo systemctl enable --now keepalived
+```
+
+**On `nfs2`** (starts as BACKUP / DRBD secondary) — identical except `STATE`, `PRIORITY`, `MY_IP`, `PEER_IP`:
+```bash
+ssh nfs2
+cd ~/syslog_gui
+export STATE=BACKUP PRIORITY=100 \
+       MY_IP=10.0.0.31 PEER_IP=10.0.0.30 \
+       VIP=10.0.0.40 VIP_CIDR=24 INTERFACE=eth0 \
+       VRRP_AUTH_PASS=<the-same-8-char-pass>
+
+envsubst < nfs-ha/keepalived-nfs.conf.tpl | sudo tee /etc/keepalived/keepalived.conf > /dev/null
+sudo cp nfs-ha/check_nfs_drbd.sh nfs-ha/promote_nfs.sh nfs-ha/demote_nfs.sh /etc/keepalived/
+sudo chmod +x /etc/keepalived/check_nfs_drbd.sh /etc/keepalived/promote_nfs.sh /etc/keepalived/demote_nfs.sh
+sudo systemctl enable --now keepalived
+```
+
+Confirm: `ip -br addr show eth0` should list `10.0.0.40` on `nfs1`, and `drbdadm role nfs-ha` should report `Primary/Secondary` on `nfs1` / `Secondary/Primary` on `nfs2` (keepalived's `notify_master` on `nfs1` should have already run `promote_nfs.sh` on startup).
+
+#### 6. Point the app tier at the NFS VIP
+
+```bash
+export NFS_SERVER=10.0.0.40   # the VIP, not nfs1's bare IP
+docker stack deploy -c docker-stack.app.yml syslytics-app
+```
+If you're adding this to an already-running cluster, this is a `docker service update`-triggering redeploy of `api`/`frontend`/`rsyslog` (they all mount `log_data`/`log_spool`/`parser_defs`) — expect the same rolling-update behavior as any other config change (see "Updating images" above).
+
+#### Testing NFS failover
+
+- Kill `nfs1` (or `systemctl stop keepalived` on it) → `nfs2` should take the VIP within 1-3s, `drbdadm role nfs-ha` on `nfs2` should flip to `Primary/Unknown`, and `journalctl -u keepalived` there should show `promote_nfs.sh` running. Writes from the app tier should pause for a few seconds during the cutover, not fail or corrupt.
+- Bring `nfs1` back → it should rejoin as `Secondary`, DRBD should resync automatically (`drbdadm status nfs-ha` shows `SyncTarget`/`SyncSource` briefly), and it should NOT reclaim the VIP unless its `PRIORITY` is higher and `nfs2` releases it (normal VRRP preemption — expected, not a bug).
+
+#### Split-brain recovery (both sides briefly think they're Primary)
+
+This can happen if the VRRP link between `nfs1`/`nfs2` is partitioned but both remain reachable to app nodes independently (rare, but possible on a flaky network). DRBD detects it on reconnect and refuses to auto-resolve by default — you decide which side's writes to discard:
+
+```bash
+# on the node whose recent writes you're willing to discard (the "loser")
+sudo drbdadm secondary nfs-ha
+sudo drbdadm connect --discard-my-data nfs-ha
+
+# on the other node (the "winner", if not already connected)
+sudo drbdadm connect nfs-ha
+```
+There's no automatic fencing (STONITH) set up here — for a deployment where even this manual step is unacceptable, look at DRBD's `fence-peer` handler integration instead, which is a meaningfully bigger lift (passwordless SSH between nodes, a fencing script) and out of scope for this guide.
 
 ## Syslog Relay (Optional, Multi-VLAN)
 
@@ -1018,7 +1177,12 @@ Syslytics includes a robust parser engine that allows you to extract structured 
 ### Built-in Parsers
 The system ships with several dozen built-in parsers covering common log sources: Linux (SSHD auth, systemd, sudo, cron, NetworkManager, DHCP, kernel firewall drops), Cisco IOS, MikroTik, Palo Alto, FortiGate, pfSense/Suricata, Ubiquiti/UniFi, plus a couple of generic IP/MAC extractors.
 
-They're defined as JSON files in [`backend/db/parsers/defaults/`](backend/db/parsers/defaults/) (one per vendor, e.g. `linux.json`, `cisco.json`), embedded into the binary as factory defaults. At startup, if `PARSER_DEFS_DIR` is set (see [Configuration](#configuration)), that directory is bootstrapped from the embedded defaults on first run and then re-read on every subsequent start — so you can edit, add, or remove builtin parser definitions on disk (same `name`/`description`/`device_type`/`match_type`/`match_value`/`regex`/`fields` shape as the API's parser objects) without rebuilding the image. A malformed file is skipped with a warning in the logs rather than blocking startup.
+They're defined as JSON files in [`backend/db/parsers/defaults/`](backend/db/parsers/defaults/) (one per vendor, e.g. `linux.json`, `cisco.json`), embedded into the binary as factory defaults. Loading them into the running app happens in two steps, both re-run on every start:
+
+1. **Directory bootstrap** (only relevant if `PARSER_DEFS_DIR` is set, see [Configuration](#configuration)): for each embedded default file, if a file of that name doesn't already exist in `PARSER_DEFS_DIR`, it's copied there. A file that already exists is left completely untouched — so an image upgrade that adds a brand-new default parser file shows up in your directory automatically, while any file you've already edited (or that already shipped and you haven't changed) never gets silently overwritten. This means an edit to an *existing* factory file (e.g. a new parser appended to `ubiquiti.json` in a later release) won't reach a directory that already has its own `ubiquiti.json` — copy the new entry over manually, or delete/rename your local copy to have it regenerated from the new embedded version.
+2. **Database sync**: whichever set of JSON files ends up in play (embedded defaults if `PARSER_DEFS_DIR` is unset, otherwise everything read from that directory) is upserted into the `parsers`/`parsed_fields_registry` tables — matched by `name`. Existing builtin rows (`is_builtin = true`) are updated in place (description/device_type/match_type/match_value/regex/fields), new ones are inserted, and any builtin row whose name no longer appears in the JSON is deleted. Parsers you created yourself through the UI/API (`is_builtin = false`) are never touched by this sync.
+
+Either way you can edit, add, or remove builtin parser definitions on disk (same `name`/`description`/`device_type`/`match_type`/`match_value`/`regex`/`fields` shape as the API's parser objects) without rebuilding the image. A malformed file is skipped with a warning in the logs rather than blocking startup.
 
 ### Creating Parsers
 Parsers can be created through the web interface or API with the following requirements:

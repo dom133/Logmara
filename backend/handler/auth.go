@@ -303,6 +303,27 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			refreshToken = req.RefreshToken
 		}
 
+		// The frontend sends this on its silent, boot-time restore attempt
+		// (AuthProvider.loadUser after the access token has already expired)
+		// but never on the user-initiated "Extend Session" click, which must
+		// keep working regardless of remember. A session that wasn't set up
+		// with "remember this device" is only meant to survive as long as its
+		// access token or an active tab keeps extending it - not come back to
+		// life on its own after the browser was reopened - so silently reject
+		// without consuming the token, leaving it available for that Extend
+		// Session click if the tab is in fact still open.
+		if c.GetHeader("X-Silent-Refresh") == "true" {
+			var remembered bool
+			err := database.QueryRow(
+				`SELECT remember FROM refresh_tokens WHERE token = $1 AND used = false AND expires_at > NOW()`,
+				refreshToken,
+			).Scan(&remembered)
+			if err != nil || !remembered {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "silent refresh not allowed for this session"})
+				return
+			}
+		}
+
 		var userID int
 		var deviceIDVal sql.NullString
 		var remember bool

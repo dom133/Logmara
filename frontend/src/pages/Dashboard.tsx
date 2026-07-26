@@ -1,12 +1,12 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Row, Col, Card, Table, Tag, Spin, Typography, Button } from 'antd'
-import { RestOutlined, FileTextOutlined, ClockCircleOutlined, CalendarOutlined, DesktopOutlined } from '@ant-design/icons'
+import { RestOutlined, FileTextOutlined, ClockCircleOutlined, CalendarOutlined, DesktopOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import { getDashboardStats, getTimeline, getSeverityStats, getDevices, DeviceStats, resolveDeviceDisplayName } from '../services/api'
+import { getDashboardStats, getTimeline, getSeverityStats, getDevices, getLogsRate, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import { DashboardStats, TimelinePoint } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import StatCard from '../components/StatCard'
-import { SEVERITY_COLORS } from '../constants'
+import { SEVERITY_HEX, SEVERITY_LABELS, SEVERITY_ORDER } from '../constants'
 
 const { Title } = Typography
 
@@ -16,6 +16,7 @@ export default function Dashboard() {
   const [severityData, setSeverityData] = useState<Array<{ severity: string; count: number }>>([])
   const [loading, setLoading] = useState(true)
   const [devices, setDevices] = useState<DeviceStats[]>([])
+  const [logsPerSec, setLogsPerSec] = useState(0)
 
   const deviceMap = useMemo(() => {
     const m = new Map<string, string>()
@@ -64,6 +65,28 @@ export default function Dashboard() {
     }
   }, [isTabActive])
 
+  // Polled separately, and much faster than the 30s loadData() cycle above -
+  // this is the one dashboard number meant to look "live", and piggybacking
+  // it on the heavier stats/timeline/severity/devices refresh would either
+  // make it stale or force everything else to poll unnecessarily often.
+  useEffect(() => {
+    const loadRate = async () => {
+      try {
+        setLogsPerSec(await getLogsRate())
+      } catch {
+        // A missed rate tick isn't worth its own error UI; the next tick retries.
+      }
+    }
+    loadRate()
+    const interval = setInterval(() => {
+      if (isTabActive) {
+        loadRate()
+      }
+    }, 4000)
+
+    return () => clearInterval(interval)
+  }, [isTabActive])
+
   const loadDevices = async () => {
     const d = await getDevices()
     setDevices(d)
@@ -104,19 +127,43 @@ export default function Dashboard() {
     grid: { left: 50, right: 20, top: 30, bottom: 30 },
   }
 
+  const severityRank = (severity: string) => {
+    const idx = SEVERITY_ORDER.indexOf(severity)
+    return idx === -1 ? SEVERITY_ORDER.length : idx
+  }
+  const sortedSeverity = [...severityData]
+    .filter(s => s.count > 0)
+    .sort((a, b) => severityRank(a.severity) - severityRank(b.severity))
+  const totalSeverity = sortedSeverity.reduce((sum, s) => sum + s.count, 0)
+
   const severityOption = {
-    tooltip: { trigger: 'item' as const },
-    legend: { orient: 'vertical' as const, left: 'left' as const, top: 'middle' as const },
+    tooltip: { trigger: 'item' as const, formatter: '{b}: {c} ({d}%)' },
+    legend: {
+      orient: 'horizontal' as const,
+      type: 'scroll' as const,
+      bottom: 0,
+      left: 'center' as const,
+    },
+    title: {
+      text: totalSeverity.toLocaleString(),
+      subtext: 'Total',
+      left: 'center' as const,
+      top: '38%' as const,
+      textStyle: { fontSize: 22, fontWeight: 600 },
+      subtextStyle: { fontSize: 12 },
+    },
     series: [{
       type: 'pie' as const,
-      radius: ['40%', '70%'],
-      avoidLabelOverlap: false,
-      data: severityData.map(s => ({
-        name: s.severity.toUpperCase(),
+      radius: ['45%', '68%'],
+      center: ['50%', '44%'],
+      avoidLabelOverlap: true,
+      data: sortedSeverity.map(s => ({
+        name: SEVERITY_LABELS[s.severity] || s.severity,
         value: s.count,
-        itemStyle: { color: SEVERITY_COLORS[s.severity] || '#bfbfbf' },
+        itemStyle: { color: SEVERITY_HEX[s.severity] || '#bfbfbf' },
       })),
-      label: { show: true, formatter: '{b}: {c}' },
+      label: { show: true, formatter: '{b}: {d}%' },
+      labelLine: { show: true },
     }],
   }
 
@@ -143,16 +190,19 @@ export default function Dashboard() {
     <>
       <Title level={3}>Dashboard</Title>
       <Row gutter={16} style={{ marginBottom: 24 }}>
-        <Col xs={24} sm={12} md={6}>
+        <Col xs={24} sm={12} md={8}>
           <StatCard title="Total Logs" value={stats?.total_logs || 0} icon={<FileTextOutlined />} color="#1890ff" />
         </Col>
-        <Col xs={24} sm={12} md={6}>
+        <Col xs={24} sm={12} md={8}>
           <StatCard title="Last Hour" value={stats?.logs_last_hour || 0} icon={<ClockCircleOutlined />} color="#3f8600" />
         </Col>
-        <Col xs={24} sm={12} md={6}>
+        <Col xs={24} sm={12} md={8}>
           <StatCard title="Last 24h" value={stats?.logs_last_day || 0} icon={<CalendarOutlined />} color="#cf1322" />
         </Col>
-        <Col xs={24} sm={12} md={6}>
+        <Col xs={24} sm={12} md={8}>
+          <StatCard title="Logs / sec" value={logsPerSec.toFixed(1)} subtitle="avg. last 10s" icon={<ThunderboltOutlined />} color="#13c2c2" />
+        </Col>
+        <Col xs={24} sm={12} md={8}>
           <StatCard title="Devices" value={stats?.unique_devices || 0} icon={<DesktopOutlined />} color="#722ed1" />
         </Col>
       </Row>
@@ -165,7 +215,7 @@ export default function Dashboard() {
         </Col>
         <Col xs={24} lg={10}>
           <Card title="Severity Distribution">
-            <ReactECharts option={severityOption} style={{ height: 300 }} />
+            <ReactECharts option={severityOption} style={{ height: 340 }} />
           </Card>
         </Col>
       </Row>

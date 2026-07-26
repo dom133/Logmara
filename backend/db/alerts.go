@@ -613,7 +613,7 @@ func GetInAppNotifications(db *sql.DB, sinceID int64, limit int, isAdmin bool, u
 	query := `SELECT id, alert_id, title, message, severity, alert_rule_type, target_user_ids, created_at FROM in_app_notifications
 		WHERE id > $1 AND (target_user_ids IS NULL OR $3 = ANY(target_user_ids))`
 	if !isAdmin {
-		query += ` AND alert_rule_type NOT IN ('audit_log', 'relay_cert_expiring')`
+		query += ` AND alert_rule_type NOT IN ('audit_log', 'relay_cert_expiring', 'malformed_json')`
 	}
 	query += ` ORDER BY id DESC LIMIT $2`
 	rows, err := db.Query(query, sinceID, limit, userID)
@@ -644,7 +644,7 @@ func GetUnreadNotificationCount(db *sql.DB, userID int64, isAdmin bool) (count i
 
 	query := "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM in_app_notifications WHERE id > $1 AND (target_user_ids IS NULL OR $2 = ANY(target_user_ids))"
 	if !isAdmin {
-		query += " AND alert_rule_type NOT IN ('audit_log', 'relay_cert_expiring')"
+		query += " AND alert_rule_type NOT IN ('audit_log', 'relay_cert_expiring', 'malformed_json')"
 	}
 	err = db.QueryRow(query, lastRead, userID).Scan(&count, &lastID)
 	if err != nil {

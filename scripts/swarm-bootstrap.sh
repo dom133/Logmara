@@ -64,6 +64,11 @@ Commands (run on the indicated node):
       command to roll it out):
         docker config create haproxy_pg_cfg haproxy/haproxy.cfg
 
+  haproxy-app-config
+      Same idea as haproxy-config, for haproxy/haproxy-app.cfg (fronts
+      frontend/api - docker-stack.app.yml's haproxy-app service):
+        docker config create haproxy_app_cfg haproxy/haproxy-app.cfg
+
   redis-sentinel-config
       Same idea as haproxy-config, for redis/sentinel.conf.tpl:
         docker config create redis_sentinel_cfg redis/sentinel.conf.tpl
@@ -145,6 +150,18 @@ case "$cmd" in
         echo "  docker stack deploy -c docker-stack.postgres.yml syslytics-pg"
     else
         docker config create haproxy_pg_cfg haproxy/haproxy.cfg
+    fi
+    ;;
+
+  haproxy-app-config)
+    if docker config inspect haproxy_app_cfg >/dev/null 2>&1; then
+        ts=$(date +%s)
+        docker config create "haproxy_app_cfg_${ts}" haproxy/haproxy-app.cfg
+        echo "Config changed: created haproxy_app_cfg_${ts}."
+        echo "Update docker-stack.app.yml's haproxy_app_cfg config source to haproxy_app_cfg_${ts}, then:"
+        echo "  docker stack deploy -c docker-stack.app.yml syslytics-app"
+    else
+        docker config create haproxy_app_cfg haproxy/haproxy-app.cfg
     fi
     ;;
 

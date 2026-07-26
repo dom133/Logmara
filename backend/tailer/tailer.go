@@ -85,12 +85,12 @@ func splitCappedLines(data []byte, atEOF bool) (advance int, token []byte, err e
 // NFS), only the replica that currently holds the elected lock actually
 // tails/flushes/compacts; the others wait, ready to take over the moment
 // the lock becomes available (leader crash, node loss, etc.).
-func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine) {
+func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter) {
 	if elector == nil {
-		runIngestionLoop(ctx, db, filePath, engine, ic, alerts)
+		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate)
 		return
 	}
-	runWithLeaderElection(ctx, db, filePath, engine, ic, elector, alerts)
+	runWithLeaderElection(ctx, db, filePath, engine, ic, elector, alerts, rate)
 }
 
 const (
@@ -100,7 +100,7 @@ const (
 	leaderMaxRenewFails = 3
 )
 
-func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine) {
+func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -119,7 +119,7 @@ func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, eng
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			runIngestionLoop(leaderCtx, db, filePath, engine, ic, alerts)
+			runIngestionLoop(leaderCtx, db, filePath, engine, ic, alerts, rate)
 		}()
 
 		consecutiveFails := 0
@@ -162,7 +162,7 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine) {
+func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter) {
 	slog.Info("file tailer started", "path", filePath)
 	batchSize := 500
 	batchInterval := 2 * time.Second
@@ -179,7 +179,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		// Flush any remaining entries on shutdown
 		if len(entries) > 0 {
 			slog.Info("flushing remaining entries on shutdown", "count", len(entries))
-			if err := flushBatch(db, entries); err != nil {
+			if err := flushBatch(db, entries, rate); err != nil {
 				slog.Error("final flush error", "error", err)
 			} else {
 				flushedPos = batchStartPos
@@ -263,12 +263,14 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			var entry model.IngestEntry
 			if err := json.Unmarshal([]byte(line), &entry); err != nil {
 				slog.Error("invalid JSON", "error", err)
+				sanitizedLine := sanitizeForPostgres(line)
 				entry = model.IngestEntry{
 					Timestamp: time.Now().Format(time.RFC3339),
 					Hostname:  "unknown",
 					Severity:  "error",
-					Message:   fmt.Sprintf("[MALFORMED JSON] %s", sanitizeForPostgres(line)),
+					Message:   fmt.Sprintf("[MALFORMED JSON] %s", sanitizedLine),
 				}
+				alerts.EvaluateMalformedJSON(db, sanitizedLine)
 			}
 
 			// A device sending a NUL byte in its message unmarshals from JSON
@@ -324,7 +326,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			now := time.Now()
 			if len(entries) >= batchSize || now.Sub(lastFlush) >= batchInterval {
 				if !ic.IsPaused() {
-					if err := flushBatch(db, entries); err != nil {
+					if err := flushBatch(db, entries, rate); err != nil {
 						slog.Error("flush error", "error", err)
 					} else {
 						curPos, seekErr := f.Seek(0, 1)
@@ -369,7 +371,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		f.Close()
 
 		if len(entries) > 0 && !ic.IsPaused() {
-			if err := flushBatch(db, entries); err != nil {
+			if err := flushBatch(db, entries, rate); err != nil {
 				slog.Error("flush error", "error", err)
 			} else {
 				flushedPos = batchStartPos
@@ -442,7 +444,7 @@ func compactFile(f *os.File, flushedPos int64, filePath string) error {
 // multi-hundred-row batch down with it. Committing independently per row
 // costs some throughput but makes that structurally impossible: nothing
 // about one row's failure can touch any other row's outcome.
-func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
+func flushBatch(db *sql.DB, entries []model.IngestEntry, rate sharedstate.RateCounter) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -484,6 +486,7 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 
 	if ingested > 0 {
 		slog.Info("flushed logs", "count", ingested)
+		rate.Incr(ingested)
 	}
 
 	return nil

@@ -421,7 +421,14 @@ func main() {
 	audit.SetAlertEngine(alertEngine)
 	notifHub := notifyhub.NewHub(ctx, sharedClient)
 	alertEngine.SetOnInApp(notifHub.Publish)
-	go tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine)
+
+	// Redis-backed (shared across replicas) when sharedClient is set, so the
+	// dashboard's logs/sec figure is the same regardless of which replica
+	// answers the request - falls back to in-memory otherwise, same as
+	// everything else gated on sharedClient above.
+	logRate := sharedstate.NewRateCounter(sharedClient, "lograte")
+	handler.SetLogRateCounter(logRate)
+	go tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine, logRate)
 
 	// Device silence checks run independently on every replica: the read
 	// (mv_device_stats) is cheap and the per-rule-per-device cooldown key in
@@ -509,6 +516,7 @@ r := gin.New()
 		authGroup.POST("/stats/devices", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDeviceStats(database))
 		authGroup.POST("/stats/severity", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetSeverityStats(database))
 		authGroup.POST("/stats/timeline", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetTimelineStats(database))
+		authGroup.GET("/stats/rate", handler.GetLogsRate())
 		authGroup.GET("/devices", handler.GetDevices(database))
 		authGroup.POST("/export/csv", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportCSV(database))
 		authGroup.POST("/export/html", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportHTML(database))

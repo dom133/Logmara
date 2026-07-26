@@ -43,6 +43,19 @@ vrrp_script check_rsyslog {
     user root
 }
 
+# Gates the VIP on haproxy-app (docker-stack.app.yml) too, now that it
+# shares this VIP with rsyslog for load-balanced HTTP/API access - without
+# this, the VIP could sit on a node where rsyslog is healthy but
+# haproxy-app died, silently dropping all frontend/api traffic.
+vrrp_script check_haproxy_app {
+    script "/etc/keepalived/check_haproxy_app.sh"
+    interval 2
+    timeout 2
+    fall 2
+    rise 2
+    user root
+}
+
 vrrp_instance VI_SYSLOG {
     state ${STATE}
     interface ${INTERFACE}
@@ -66,6 +79,7 @@ ${PEER_IPS}
 
     track_script {
         check_rsyslog
+        check_haproxy_app
     }
 
     # Optional: notify_master/notify_backup scripts can be added here to log

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"syslytics/model"
+	"syslytics/sharedstate"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
@@ -31,6 +32,30 @@ var (
 	severityStatsCacheTime time.Time
 	severityStatsTTL       = 30 * time.Second
 )
+
+// currentLogRateCounter defaults to a local, in-memory counter so the
+// endpoint below works even before SetLogRateCounter is called; main.go
+// always calls it at startup with the same counter the tailer increments
+// (Redis-backed when Redis is configured, so every api replica reports the
+// same rate - see sharedstate.NewRateCounter).
+var currentLogRateCounter sharedstate.RateCounter = sharedstate.NewRateCounter(nil, "lograte")
+
+func SetLogRateCounter(rate sharedstate.RateCounter) {
+	currentLogRateCounter = rate
+}
+
+// logRateWindowSeconds is the trailing window logs/sec is averaged over: long
+// enough to smooth out the tailer's batch-flush cadence (entries land in
+// bursts every ~2s or 500 rows, not literally one at a time - see
+// tailer.runIngestionLoop), short enough to still read as "current".
+const logRateWindowSeconds = 10
+
+func GetLogsRate() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		rate := currentLogRateCounter.Rate(c.Request.Context(), logRateWindowSeconds)
+		c.JSON(http.StatusOK, gin.H{"logs_per_sec": rate})
+	}
+}
 
 func statsInvalidateAll() {
 	dashboardCacheMu.Lock()

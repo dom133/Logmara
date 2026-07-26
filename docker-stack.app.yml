@@ -1,4 +1,4 @@
-# HA application tier (api, rsyslog, frontend) for Docker Swarm.
+# HA application tier (api, rsyslog, frontend, haproxy-app) for Docker Swarm.
 #
 # OPTIONAL, additive stack for multi-node deployments — does not replace or
 # modify docker-compose.yml (the supported single-server path, see README
@@ -23,6 +23,13 @@
 # original single-process behavior instead - safe, but only correct at
 # replicas: 1.
 #
+# `frontend` is not published on the host anymore - `haproxy-app` (below) is
+# what actually binds :80/:443/:8080 on every edge=true node and load-
+# balances across every frontend/api replica cluster-wide via tasks.frontend/
+# tasks.api. This is what makes multiple replicas an actual load-balancing
+# win behind the keepalived VIP, not just a failover target (only one node's
+# published ports were ever reachable through the VIP before).
+#
 # `rsyslog` uses `mode: global` on role==edge nodes with `mode: host` port
 # publishing instead: this bypasses the Swarm ingress routing mesh, which
 # otherwise SNATs UDP/TCP syslog traffic and would break the app's
@@ -35,9 +42,13 @@
 # Prerequisites (see README "High Availability Deployment"):
 #   - docker-stack.postgres.yml already deployed (provides haproxy:5000)
 #   - docker-stack.redis.yml already deployed (provides sentinel1/2/3:26379)
-#   - Nodes labeled app=true (api/frontend/haproxy) and edge=true (rsyslog).
-#     These are independent boolean labels (not a single "role" value), so a
-#     small cluster can freely put both on the same nodes.
+#   - Nodes labeled app=true (api/frontend) and edge=true (rsyslog,
+#     haproxy-app, keepalived). These are independent boolean labels (not a
+#     single "role" value), so a small cluster can freely put both on the
+#     same nodes - haproxy-app needs edge=true specifically, since it must
+#     colocate with whichever node currently holds the keepalived VIP.
+#   - haproxy_app_cfg Swarm config created (`scripts/swarm-bootstrap.sh
+#     haproxy-app-config`)
 #   - NFS export mounted at the same path on every app=true / edge=true node,
 #     e.g. /mnt/syslog-nfs, exporting what were log_data/log_spool
 #   - jwt_secret and encryption_key secrets created (`scripts/swarm-
@@ -233,13 +244,6 @@ services:
     image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-frontend:${TAG:-latest}
     volumes:
       - log_data:/data
-    ports:
-      - target: 80
-        published: ${FRONTEND_PORT:-80}
-        mode: host
-      - target: 443
-        published: ${FRONTEND_HTTPS_PORT:-443}
-        mode: host
     networks:
       - syslog_net
     depends_on:
@@ -256,18 +260,11 @@ services:
       restart_policy:
         condition: any
         delay: 5s
-      # host-mode published ports (above) mean each replica binds :80/:443
-      # directly on its node - with exactly one replica per app node
-      # (replicas == number of app==true nodes), start-first can never
-      # succeed: the new task needs the same host port the old task on
-      # that same node is still holding, and there's no spare node to
-      # place it on in the meantime, so it hangs in Pending forever
-      # ("host-mode port already in use") while the old task keeps
-      # serving stale code indefinitely. stop-first is the only strategy
-      # that actually completes here, at the cost of a brief drop on that
-      # node's replica during the swap.
+      # No longer host-mode published (haproxy-app owns :80/:443 now), so
+      # the old host-port conflict that forced stop-first here is gone -
+      # start-first gives a zero-downtime rollout, matching api above.
       update_config:
-        order: stop-first
+        order: start-first
         parallelism: 1
       resources:
         limits:
@@ -276,6 +273,46 @@ services:
         reservations:
           cpus: '0.25'
           memory: 128M
+
+  # Fronts frontend/api with real load balancing across every replica
+  # cluster-wide (via tasks.frontend/tasks.api - see haproxy/haproxy-app.cfg),
+  # behind the keepalived VIP. mode: global + edge==true mirrors rsyslog: one
+  # instance per edge node, but only the node currently holding the VIP
+  # actually receives external traffic - unlike rsyslog, that one instance
+  # then load-balances across the *entire* frontend/api replica set, not
+  # just itself, which is what makes replicas > 1 an actual scale-out win
+  # for HTTP traffic instead of only a failover target.
+  haproxy-app:
+    image: haproxy:2.9-alpine
+    configs:
+      - source: haproxy_app_cfg
+        target: /usr/local/etc/haproxy/haproxy.cfg
+    ports:
+      - target: 80
+        published: ${FRONTEND_PORT:-80}
+        mode: host
+      - target: 443
+        published: ${FRONTEND_HTTPS_PORT:-443}
+        mode: host
+      - target: 8080
+        published: ${API_LB_PORT:-8080}
+        mode: host
+    networks:
+      - syslog_net
+    depends_on:
+      - frontend
+      - api
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      mode: global
+      placement:
+        constraints: [node.labels.edge == true]
+      restart_policy:
+        condition: on-failure
 
 networks:
   syslog_net:
@@ -312,4 +349,9 @@ secrets:
   pg_app_password:
     external: true
   redis_password:
+    external: true
+
+configs:
+  # Created via `scripts/swarm-bootstrap.sh haproxy-app-config`.
+  haproxy_app_cfg:
     external: true

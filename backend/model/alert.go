@@ -9,8 +9,9 @@ import (
 const (
 	RuleTypeLogThreshold      = "log_threshold"
 	RuleTypeDeviceSilence     = "device_silence"
-RuleTypeAuditLog = "audit_log"
+	RuleTypeAuditLog          = "audit_log"
 	RuleTypeRelayCertExpiring = "relay_cert_expiring"
+	RuleTypeMalformedJSON     = "malformed_json"
 )
 
 // Notification channel types.
@@ -78,7 +79,7 @@ type Alert struct {
 type AlertRequest struct {
 	Name                 string                `json:"name" binding:"required,max=255"`
 	Description          string                `json:"description"`
-	RuleType             string                `json:"rule_type" binding:"required,oneof=log_threshold device_silence audit_log relay_cert_expiring"`
+	RuleType             string                `json:"rule_type" binding:"required,oneof=log_threshold device_silence audit_log relay_cert_expiring malformed_json"`
 	Severity             string                `json:"severity"`
 	DeviceIPs            []string              `json:"device_ips"`
 	ParserNames          []string              `json:"parser_names"`

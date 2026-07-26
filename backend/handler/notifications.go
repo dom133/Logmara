@@ -328,7 +328,7 @@ func StreamNotifications(hub *notifyhub.Hub, database *sql.DB) gin.HandlerFunc {
 			case <-c.Request.Context().Done():
 				return
 			case n := <-ch:
-				if !isAdmin && (n.AlertRuleType == "audit_log" || n.AlertRuleType == "relay_cert_expiring") {
+				if !isAdmin && (n.AlertRuleType == "audit_log" || n.AlertRuleType == "relay_cert_expiring" || n.AlertRuleType == "malformed_json") {
 					continue
 				}
 				if len(n.TargetUserIds) > 0 {
