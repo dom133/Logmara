@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lib/pq"
 	"syslytics/alertengine"
@@ -24,6 +25,24 @@ import (
 	"syslytics/parser"
 	"syslytics/sharedstate"
 )
+
+// sanitizeForPostgres repairs invalid UTF-8 byte sequences (a misbehaving
+// device sending non-UTF-8 encoded text) and strips embedded NUL bytes. NUL
+// is otherwise perfectly valid UTF-8 (U+0000), but Postgres's text/jsonb
+// storage rejects it outright ("invalid byte sequence for encoding UTF8:
+// 0x00") regardless of the surrounding text's validity - and because
+// flushBatch commits a whole batch in one transaction, a single such value
+// anywhere in a batch aborted the transaction and silently dropped every
+// other (perfectly valid) entry queued alongside it.
+func sanitizeForPostgres(s string) string {
+	if s == "" {
+		return s
+	}
+	if !strings.ContainsRune(s, 0) && utf8.ValidString(s) {
+		return s
+	}
+	return strings.ReplaceAll(strings.ToValidUTF8(s, "�"), "\x00", "")
+}
 
 // truncatedISORe matches app_name values that are actually truncated ISO 8601
 // timestamps (e.g. "2026-07-23T20") caused by rsyslog mis-parsing non-RFC3164
@@ -75,10 +94,10 @@ func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine
 }
 
 const (
-	leaderRetryInterval   = 5 * time.Second
-	leaderRetryJitter     = 1 * time.Second
-	leaderRenewInterval   = 5 * time.Second
-	leaderMaxRenewFails   = 3
+	leaderRetryInterval = 5 * time.Second
+	leaderRetryJitter   = 1 * time.Second
+	leaderRenewInterval = 5 * time.Second
+	leaderMaxRenewFails = 3
 )
 
 func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine) {
@@ -248,33 +267,51 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 					Timestamp: time.Now().Format(time.RFC3339),
 					Hostname:  "unknown",
 					Severity:  "error",
-					Message:   fmt.Sprintf("[MALFORMED JSON] %s", line),
+					Message:   fmt.Sprintf("[MALFORMED JSON] %s", sanitizeForPostgres(line)),
 				}
 			}
 
-if entry.Hostname == "" {
-			continue
-		}
+			// A device sending a NUL byte in its message unmarshals from JSON
+			// just fine, but Postgres refuses to store it in any text/jsonb
+			// column - sanitize every string field before it's used for
+			// parsing or insertion, whichever branch above produced entry.
+			entry.Hostname = sanitizeForPostgres(entry.Hostname)
+			entry.FromHostIP = sanitizeForPostgres(entry.FromHostIP)
+			entry.AppName = sanitizeForPostgres(entry.AppName)
+			entry.ProcessID = sanitizeForPostgres(entry.ProcessID)
+			entry.MsgID = sanitizeForPostgres(entry.MsgID)
+			entry.Severity = sanitizeForPostgres(entry.Severity)
+			entry.Facility = sanitizeForPostgres(entry.Facility)
+			entry.Message = sanitizeForPostgres(entry.Message)
+			entry.RawMessage = sanitizeForPostgres(entry.RawMessage)
+			entry.ViaRelay = sanitizeForPostgres(entry.ViaRelay)
 
-		// Fix rsyslog mis-parse: when a device sends an ISO 8601 timestamp in its
-		// syslog header (non-RFC3164), rsyslog treats the truncated date part
-		// (e.g. "2026-07-23T20") as programname and the rest ("11:40.246Z ...")
-		// as the message. Restore the original message by merging them back.
-		if truncatedISORe.MatchString(entry.AppName) {
-			fullMsg := entry.AppName + ":" + entry.Message
-			entry.Message = fullMsg
-			entry.RawMessage = fullMsg
-			// If the restored message contains a known structured format, set app
-			if idx := strings.Index(fullMsg, "CEF:"); idx >= 0 {
-				entry.AppName = "CEF"
-			} else {
-				entry.AppName = ""
+			if entry.Hostname == "" {
+				continue
 			}
-		}
 
-		appName := entry.AppName
+			// Fix rsyslog mis-parse: when a device sends an ISO 8601 timestamp in its
+			// syslog header (non-RFC3164), rsyslog treats the truncated date part
+			// (e.g. "2026-07-23T20") as programname and the rest ("11:40.246Z ...")
+			// as the message. Restore the original message by merging them back.
+			if truncatedISORe.MatchString(entry.AppName) {
+				fullMsg := entry.AppName + ":" + entry.Message
+				entry.Message = fullMsg
+				entry.RawMessage = fullMsg
+				// If the restored message contains a known structured format, set app
+				if idx := strings.Index(fullMsg, "CEF:"); idx >= 0 {
+					entry.AppName = "CEF"
+				} else {
+					entry.AppName = ""
+				}
+			}
+
+			appName := entry.AppName
 			result := engine.Parse(entry.Hostname, appName, entry.Message)
 			if result != nil {
+				for k, v := range result.Fields {
+					result.Fields[k] = sanitizeForPostgres(v)
+				}
 				jsonData, err := json.Marshal(result.Fields)
 				if err == nil {
 					entry.ParsedFields = jsonData
@@ -421,11 +458,28 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 			parsedFields = entry.ParsedFields
 		}
 
+		// A savepoint per row means one entry that Postgres rejects for a
+		// reason sanitizeForPostgres doesn't cover (e.g. a value too long
+		// for a bounded VARCHAR column) only costs that one row instead of
+		// aborting the whole transaction - without it, every other entry in
+		// this batch (up to batchSize, several hundred) would fail to
+		// commit alongside it, since Postgres refuses all further
+		// statements once one has errored inside a transaction.
+		if _, spErr := tx.Exec("SAVEPOINT ingest_row"); spErr != nil {
+			return fmt.Errorf("savepoint: %w", spErr)
+		}
+
 		_, err = stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
 			entry.Severity, facility, entry.Message, rawMsg, parsedFields, pq.StringArray(entry.MatchedParsers), viaRelay)
 		if err != nil {
 			slog.Error("insert error", "error", err)
+			if _, rbErr := tx.Exec("ROLLBACK TO SAVEPOINT ingest_row"); rbErr != nil {
+				return fmt.Errorf("rollback to savepoint: %w", rbErr)
+			}
 			continue
+		}
+		if _, spErr := tx.Exec("RELEASE SAVEPOINT ingest_row"); spErr != nil {
+			return fmt.Errorf("release savepoint: %w", spErr)
 		}
 		ingested++
 	}
