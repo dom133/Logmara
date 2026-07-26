@@ -1,30 +1,30 @@
 <p align="center">
-  <img src="frontend/public/icons/icon-192.png" alt="Syslytics logo" width="120" />
+  <img src="frontend/public/icons/icon-192.png" alt="Logmara logo" width="120" />
 </p>
 
-<h1 align="center">Syslytics 📡</h1>
+<h1 align="center">Logmara 📡</h1>
 
 <p align="center">
 
 [![License: AGPL-3.0 with Commons Clause](https://img.shields.io/badge/License-AGPL--3.0%20%2B%20Commons%20Clause-blue.svg)](LICENSE)
-![GitHub stars](https://img.shields.io/github/stars/dom133/Syslytics?style=social)
-![GitHub forks](https://img.shields.io/github/forks/dom133/Syslytics?style=social)
-![GitHub repo size](https://img.shields.io/github/repo-size/dom133/Syslytics)
-![GitHub top language](https://img.shields.io/github/languages/top/dom133/Syslytics)
-![GitHub last commit](https://img.shields.io/github/last-commit/dom133/Syslytics?color=red)
+![GitHub stars](https://img.shields.io/github/stars/dom133/Logmara?style=social)
+![GitHub forks](https://img.shields.io/github/forks/dom133/Logmara?style=social)
+![GitHub repo size](https://img.shields.io/github/repo-size/dom133/Logmara)
+![GitHub top language](https://img.shields.io/github/languages/top/dom133/Logmara)
+![GitHub last commit](https://img.shields.io/github/last-commit/dom133/Logmara?color=red)
 
 </p>
 
-**Syslytics is a self-hosted, [Docker Compose](#quick-start-single-server)-deployed platform for ingesting, parsing, and visualizing syslog data** — a live log viewer, a regex-based parser engine for structuring raw messages, custom dashboards, alerting, and an admin panel, all behind JWT auth with no external dependencies.
+**Logmara is a self-hosted, [Docker Compose](#quick-start-single-server)-deployed platform for ingesting, parsing, and visualizing syslog data** — a live log viewer, a regex-based parser engine for structuring raw messages, custom dashboards, alerting, and an admin panel, all behind JWT auth with no external dependencies.
 
 <p align="center">
-  <img src="docs/screenshot-dashboard.png" alt="Syslytics dashboard (sample data)" width="900" />
+  <img src="docs/screenshot-dashboard.png" alt="Logmara dashboard (sample data)" width="900" />
 </p>
 
 ## Architecture
 
 <p align="center">
-  <img src="docs/architecture-single-server.svg" alt="Syslytics single-server architecture: browser to Nginx to Go API to PostgreSQL, with rsyslog writing logs.jsonl that the API's tailer reads, and a docker-proxy sidecar queried by the API for Admin health" width="900" />
+  <img src="docs/architecture-single-server.svg" alt="Logmara single-server architecture: browser to Nginx to Go API to PostgreSQL, with rsyslog writing logs.jsonl that the API's tailer reads, and a docker-proxy sidecar queried by the API for Admin health" width="900" />
 </p>
 
 `rsyslog` and the Go API don't talk to each other directly - `rsyslog` writes ingested logs as JSON lines to a shared file (`logs.jsonl` on the `log_data` volume), and the API's file tailer (`backend/tailer/`) reads and parses that file, then persists parsed entries to PostgreSQL.
@@ -73,7 +73,7 @@ sudo ufw allow 514/udp
 ### 3. Clone the repo and configure
 
 ```bash
-git clone https://github.com/dom133/Syslytics.git
+git clone https://github.com/dom133/Logmara.git
 cd syslog_gui
 cp .env.example .env
 ```
@@ -133,7 +133,7 @@ Copy `.env.example` and adjust values:
 
 ### Security keys
 
-Syslytics uses two secrets that are read **only from the environment** and are **never written to the database**:
+Logmara uses two secrets that are read **only from the environment** and are **never written to the database**:
 
 - **`JWT_SECRET`** — signs session tokens. Anyone who has it can forge a login for any user.
 - **`ENCRYPTION_KEY`** — AES-256 key that encrypts sensitive settings at rest (SMTP/LDAP bind passwords, notification-channel secrets).
@@ -313,22 +313,22 @@ Pick one manager (`pg1` here) as your "control" node — everywhere below that s
   ```
   If `/etc/docker/daemon.json` already has other content, merge the key in by hand instead of overwriting the file. Verify with `docker info --format '{{.RegistryConfig.IndexConfigs}}'` — it should list `<pg1-ip>:5000` with `Secure:false`.
 
-  Use `REGISTRY=<pg1-ip>:5000/syslytics` in place of `registry.example.com/syslytics` everywhere below.
+  Use `REGISTRY=<pg1-ip>:5000/logmara` in place of `registry.example.com/logmara` everywhere below.
 
 ```bash
 ssh pg1
-git clone https://github.com/dom133/Syslytics.git
+git clone https://github.com/dom133/Logmara.git
 cd syslog_gui
 
-export REGISTRY=registry.example.com/syslytics TAG=v1
-docker build -f Dockerfile.backend  -t $REGISTRY/syslytics-api:$TAG .
-docker build -f Dockerfile.rsyslog  -t $REGISTRY/syslytics-rsyslog:$TAG .
-docker build -f Dockerfile.frontend -t $REGISTRY/syslytics-frontend:$TAG .
-docker build -f Dockerfile.patroni  -t $REGISTRY/syslytics-patroni:$TAG .
-docker push $REGISTRY/syslytics-api:$TAG
-docker push $REGISTRY/syslytics-rsyslog:$TAG
-docker push $REGISTRY/syslytics-frontend:$TAG
-docker push $REGISTRY/syslytics-patroni:$TAG
+export REGISTRY=registry.example.com/logmara TAG=v1
+docker build -f Dockerfile.backend  -t $REGISTRY/logmara-api:$TAG .
+docker build -f Dockerfile.rsyslog  -t $REGISTRY/logmara-rsyslog:$TAG .
+docker build -f Dockerfile.frontend -t $REGISTRY/logmara-frontend:$TAG .
+docker build -f Dockerfile.patroni  -t $REGISTRY/logmara-patroni:$TAG .
+docker push $REGISTRY/logmara-api:$TAG
+docker push $REGISTRY/logmara-rsyslog:$TAG
+docker push $REGISTRY/logmara-frontend:$TAG
+docker push $REGISTRY/logmara-patroni:$TAG
 ```
 
 #### 5. Initialize the swarm and join the other nodes
@@ -401,23 +401,23 @@ These are node-local bind mounts, deliberately *not* on the shared NFS — Patro
 
 On `pg1`:
 ```bash
-docker stack deploy -c docker-stack.postgres.yml syslytics-pg
+docker stack deploy -c docker-stack.postgres.yml logmara-pg
 watch docker service ls   # wait for postgres1/2/3 and etcd1/2/3 at 1/1, haproxy at 2/2
 ```
 
 Once that's healthy:
 ```bash
-docker stack deploy -c docker-stack.redis.yml syslytics-redis
+docker stack deploy -c docker-stack.redis.yml logmara-redis
 watch docker service ls   # wait for redis1/2/3 and sentinel1/2/3 at 1/1
 ```
 
-Sanity-check leader election worked: `docker exec -it $(docker ps -qf name=syslytics-pg_postgres1) curl -s localhost:8008/` should show `"role": "master"` on exactly one of `postgres1/2/3`.
+Sanity-check leader election worked: `docker exec -it $(docker ps -qf name=logmara-pg_postgres1) curl -s localhost:8008/` should show `"role": "master"` on exactly one of `postgres1/2/3`.
 
-**Troubleshooting: a replica is stuck at `0/1` and never joins.** `docker service logs syslytics-pg_postgres<N>` repeatedly shows `bootstrap from leader '...' in progress` followed by `Cancelling long running task` and `pg_basebackup exited with code=-15` every ~30-40s. This isn't the replica's own network or disk — a raw `iperf3`/`dd` test between the same two hosts will look perfectly healthy. Two things worth checking, in order:
+**Troubleshooting: a replica is stuck at `0/1` and never joins.** `docker service logs logmara-pg_postgres<N>` repeatedly shows `bootstrap from leader '...' in progress` followed by `Cancelling long running task` and `pg_basebackup exited with code=-15` every ~30-40s. This isn't the replica's own network or disk — a raw `iperf3`/`dd` test between the same two hosts will look perfectly healthy. Two things worth checking, in order:
 
 1. **Stuck replication backends on the leader.** After several failed/killed bootstrap attempts, check for backends that never got cleaned up:
    ```bash
-   docker exec $(docker ps -qf name=syslytics-pg_postgres<leader>) sh -c \
+   docker exec $(docker ps -qf name=logmara-pg_postgres<leader>) sh -c \
      'PGPASSWORD=$(cat /run/secrets/pg_superuser_password) psql -U postgres -h localhost \
       -c "SELECT pid, application_name, client_addr, state, wait_event FROM pg_stat_activity WHERE usename='"'"'replicator'"'"';"'
    ```
@@ -433,10 +433,10 @@ Sanity-check leader election worked: `docker exec -it $(docker ps -qf name=sysly
 Still on `pg1` (or wherever you're driving `docker stack deploy` from) - the app tier's credentials (JWT signing key, encryption key, and the Postgres/Redis app passwords) all come from the Swarm secrets created in step 7, so nothing sensitive needs exporting here, only deployment parameters:
 
 ```bash
-export REGISTRY=registry.example.com/syslytics TAG=v1
+export REGISTRY=registry.example.com/logmara TAG=v1
 export NFS_SERVER=10.0.0.30
 
-docker stack deploy -c docker-stack.app.yml syslytics-app
+docker stack deploy -c docker-stack.app.yml logmara-app
 watch docker service ls   # wait for api and frontend at 2/2, rsyslog and haproxy-app global at 2/2
 ```
 
@@ -455,7 +455,7 @@ Then, **on `app1`** (the MASTER — higher priority). Substitute your real inter
 ```bash
 ssh app1
 sudo apt-get install -y keepalived gettext-base git
-git clone https://github.com/dom133/Syslytics.git ~/syslog_gui 2>/dev/null || (cd ~/syslog_gui && git pull)
+git clone https://github.com/dom133/Logmara.git ~/syslog_gui 2>/dev/null || (cd ~/syslog_gui && git pull)
 cd ~/syslog_gui
 
 export STATE=MASTER PRIORITY=150 \
@@ -476,7 +476,7 @@ Then, **on `app2`** (the BACKUP — lower priority). Identical except `STATE`, `
 ```bash
 ssh app2
 sudo apt-get install -y keepalived gettext-base git
-git clone https://github.com/dom133/Syslytics.git ~/syslog_gui 2>/dev/null || (cd ~/syslog_gui && git pull)
+git clone https://github.com/dom133/Logmara.git ~/syslog_gui 2>/dev/null || (cd ~/syslog_gui && git pull)
 cd ~/syslog_gui
 
 export STATE=BACKUP PRIORITY=100 \
@@ -508,11 +508,11 @@ Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizar
 
 ### Testing failover
 
-- Kill the Patroni leader's node → `docker service logs syslytics-pg_haproxy` and the Patroni REST API (`curl http://<any-pg-node>:8008/`) should show a new leader within a few seconds, with no manual steps.
-- Kill the Redis node currently acting as Sentinel's master → the other two Sentinels should promote a replica within a few seconds (`docker service logs syslytics-redis_sentinel1` shows the failover); `api` replicas using `go-redis`'s Sentinel-aware client should reconnect to the new master automatically, and exactly one of them should log `"tailer: acquired leader lock"` shortly after.
-- Kill the node running one `api`/`frontend` replica → the other replica(s) keep serving without interruption; `docker service ps syslytics-app_api` should show the lost one rescheduled onto the other `app=true` node.
+- Kill the Patroni leader's node → `docker service logs logmara-pg_haproxy` and the Patroni REST API (`curl http://<any-pg-node>:8008/`) should show a new leader within a few seconds, with no manual steps.
+- Kill the Redis node currently acting as Sentinel's master → the other two Sentinels should promote a replica within a few seconds (`docker service logs logmara-redis_sentinel1` shows the failover); `api` replicas using `go-redis`'s Sentinel-aware client should reconnect to the new master automatically, and exactly one of them should log `"tailer: acquired leader lock"` shortly after.
+- Kill the node running one `api`/`frontend` replica → the other replica(s) keep serving without interruption; `docker service ps logmara-app_api` should show the lost one rescheduled onto the other `app=true` node.
 - Kill the edge node currently holding the VIP → keepalived should fail over in 1-3s; confirm with `ip addr` on the new holder and by sending a test syslog message during the cutover.
-- Confirm `haproxy-app` is actually load-balancing, not just failing over: hit `http://<any-app-node-ip>:7001/` (the stats page) and check every `frontend-*`/`api-*` server-template slot shows `UP` with a non-zero request count after a few page loads/API calls; `docker service logs syslytics-app_haproxy-app` also shows each backend server going up as its task starts.
+- Confirm `haproxy-app` is actually load-balancing, not just failing over: hit `http://<any-app-node-ip>:7001/` (the stats page) and check every `frontend-*`/`api-*` server-template slot shows `UP` with a non-zero request count after a few page loads/API calls; `docker service logs logmara-app_haproxy-app` also shows each backend server going up as its task starts.
 - Send syslog messages throughout each test and confirm no duplicates or gaps in the logs table, and that `/admin/slow-queries` and dashboard stats look the same regardless of which `api` replica answers the request.
 
 ### Updating images (rolling update)
@@ -526,16 +526,16 @@ ssh pg1
 cd syslog_gui
 git pull   # or switch to the branch/commit you want
 
-export REGISTRY=registry.example.com/syslytics TAG=v2   # <-- bump the tag
+export REGISTRY=registry.example.com/logmara TAG=v2   # <-- bump the tag
 
-docker build -f Dockerfile.backend   -t $REGISTRY/syslytics-api:$TAG .
-docker build -f Dockerfile.rsyslog   -t $REGISTRY/syslytics-rsyslog:$TAG .
-docker build -f Dockerfile.frontend  -t $REGISTRY/syslytics-frontend:$TAG .
-docker build -f Dockerfile.patroni   -t $REGISTRY/syslytics-patroni:$TAG .
-docker push $REGISTRY/syslytics-api:$TAG
-docker push $REGISTRY/syslytics-rsyslog:$TAG
-docker push $REGISTRY/syslytics-frontend:$TAG
-docker push $REGISTRY/syslytics-patroni:$TAG
+docker build -f Dockerfile.backend   -t $REGISTRY/logmara-api:$TAG .
+docker build -f Dockerfile.rsyslog   -t $REGISTRY/logmara-rsyslog:$TAG .
+docker build -f Dockerfile.frontend  -t $REGISTRY/logmara-frontend:$TAG .
+docker build -f Dockerfile.patroni   -t $REGISTRY/logmara-patroni:$TAG .
+docker push $REGISTRY/logmara-api:$TAG
+docker push $REGISTRY/logmara-rsyslog:$TAG
+docker push $REGISTRY/logmara-frontend:$TAG
+docker push $REGISTRY/logmara-patroni:$TAG
 ```
 
 #### 2. Re-deploy stacks (rolling update)
@@ -547,19 +547,19 @@ Deploy in this order so that data-tier services are current before the app tier 
 docker stack deploy \
   --resolve-image always \
   --with-registry-auth \
-  -c docker-stack.postgres.yml syslytics-pg
+  -c docker-stack.postgres.yml logmara-pg
 
 # Redis + Sentinel (stop-first default)
 docker stack deploy \
   --resolve-image always \
   --with-registry-auth \
-  -c docker-stack.redis.yml syslytics-redis
+  -c docker-stack.redis.yml logmara-redis
 
 # App tier: api/frontend (start-first) + rsyslog (global)
 docker stack deploy \
   --resolve-image always \
   --with-registry-auth \
-  -c docker-stack.app.yml syslytics-app
+  -c docker-stack.app.yml logmara-app
 ```
 
 `--resolve-image always` forces every node to pull the latest image from the registry before starting the new task. Without it, Swarm reuses the locally cached image and your update silently does nothing.
@@ -569,33 +569,33 @@ docker stack deploy \
 If you only changed a Swarm secret, config, or environment variable (not the image itself), re-deploy with `--force` to trigger a rolling restart:
 
 ```bash
-docker service update --force syslytics-app_api
-docker service update --force syslytics-app_frontend
-docker service update --force syslytics-app_rsyslog
+docker service update --force logmara-app_api
+docker service update --force logmara-app_frontend
+docker service update --force logmara-app_rsyslog
 ```
 
 Or re-deploy the whole stack with both flags:
 
 ```bash
-docker stack deploy --resolve-image always --with-registry-auth -c docker-stack.app.yml syslytics-app
+docker stack deploy --resolve-image always --with-registry-auth -c docker-stack.app.yml logmara-app
 ```
 
 #### 4. Watch the rollout
 
 ```bash
 watch docker service ls          # services move from "old/NEW" to "NEW/NEW" as tasks converge
-docker service ps syslytics-app_api # per-task status — look for "Running" replacing the old slot
-docker service logs -f syslytics-app_api   # follow logs during the update
+docker service ps logmara-app_api # per-task status — look for "Running" replacing the old slot
+docker service logs -f logmara-app_api   # follow logs during the update
 ```
 
 Each stack's `update_config` controls the pace:
 
 | Stack | Policy | Meaning |
 |-------|--------|---------|
-| `syslytics-pg` (postgres1/2/3) | `stop-first` | Old Patroni node stops, new one starts — Patroni re-elects leader on the new task |
-| `syslytics-redis` (redis/sentinel) | default | One-by-one rolling restart; Sentinel quorum stays intact |
-| `syslytics-app` (api/frontend) | `start-first`, parallelism 1 | New replica starts and becomes healthy before the old one is removed — zero-downtime |
-| `syslytics-app` (rsyslog) | `mode: global` | Updates every `edge=true` node one at a time; only the VIP-holder receives traffic |
+| `logmara-pg` (postgres1/2/3) | `stop-first` | Old Patroni node stops, new one starts — Patroni re-elects leader on the new task |
+| `logmara-redis` (redis/sentinel) | default | One-by-one rolling restart; Sentinel quorum stays intact |
+| `logmara-app` (api/frontend) | `start-first`, parallelism 1 | New replica starts and becomes healthy before the old one is removed — zero-downtime |
+| `logmara-app` (rsyslog) | `mode: global` | Updates every `edge=true` node one at a time; only the VIP-holder receives traffic |
 
 #### 5. Roll back if something went wrong
 
@@ -607,7 +607,7 @@ export TAG=v1   # previous working tag
 docker stack deploy \
   --resolve-image always \
   --with-registry-auth \
-  -c docker-stack.app.yml syslytics-app
+  -c docker-stack.app.yml logmara-app
 ```
 
 Swarm rolls back each replica in the same rolling fashion. For a faster emergency rollback, drain the affected node:
@@ -743,7 +743,7 @@ Confirm: `ip -br addr show eth0` should list `10.0.0.40` on `nfs1`, and `drbdadm
 
 ```bash
 export NFS_SERVER=10.0.0.40   # the VIP, not nfs1's bare IP
-docker stack deploy -c docker-stack.app.yml syslytics-app
+docker stack deploy -c docker-stack.app.yml logmara-app
 ```
 If you're adding this to an already-running cluster, this is a `docker service update`-triggering redeploy of `api`/`frontend`/`rsyslog` (they all mount `log_data`/`log_spool`/`parser_defs`) — expect the same rolling-update behavior as any other config change (see "Updating images" above).
 
@@ -939,7 +939,7 @@ The **Dashboards** tab provides customizable views of your log data.
 ## Parser Creation Guide
 
 ### Overview
-Syslytics includes a powerful regex-based parser engine that allows you to extract structured data from raw syslog messages. Parsers can be created directly through the web interface or via API endpoints.
+Logmara includes a powerful regex-based parser engine that allows you to extract structured data from raw syslog messages. Parsers can be created directly through the web interface or via API endpoints.
 
 ### Creating a Parser
 1. Navigate to the **Admin Panel** → **Parsers**
@@ -1156,7 +1156,7 @@ npm run dev
 
 ## Parser Engine
 
-Syslytics includes a robust parser engine that allows you to extract structured data from raw syslog messages using regular expressions.
+Logmara includes a robust parser engine that allows you to extract structured data from raw syslog messages using regular expressions.
 
 ### How Parsers Work
 1. **Pattern Matching**: Parsers match incoming log messages based on hostname, IP address, or regex patterns
@@ -1188,15 +1188,15 @@ Parsers can be created through the web interface or API with the following requi
 
 ## Support 💬
 
-Questions, bug reports, or feature requests? [Open an issue](https://github.com/dom133/Syslytics/issues) on GitHub.
+Questions, bug reports, or feature requests? [Open an issue](https://github.com/dom133/Logmara/issues) on GitHub.
 
 ## Star History
 
-<a href="https://star-history.com/#dom133/Syslytics&Date">
+<a href="https://star-history.com/#dom133/Logmara&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=dom133/Syslytics&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=dom133/Syslytics&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=dom133/Syslytics&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=dom133/Logmara&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=dom133/Logmara&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=dom133/Logmara&type=Date" />
   </picture>
 </a>
 

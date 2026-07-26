@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"syslytics/db"
-	"syslytics/model"
-	"syslytics/notify"
+	"logmara/db"
+	"logmara/model"
+	"logmara/notify"
 )
 
 type deviceLastSeen struct {

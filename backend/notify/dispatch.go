@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"syslytics/db"
-	"syslytics/model"
+	"logmara/db"
+	"logmara/model"
 )
 
 // BuildNotifier constructs the Sender for a channel given its decrypted
@@ -251,7 +251,7 @@ func sendPushChannel(database *sql.DB, payload Payload, targetUserIds []int64) (
 func TestChannel(database *sql.DB, channel model.NotificationChannel, onInApp func(model.InAppNotification)) error {
 	payload := Payload{
 		Title:    "Test notification",
-		Message:  "This is a test notification from Syslytics.",
+		Message:  "This is a test notification from Logmara.",
 		Severity: "info",
 	}
 

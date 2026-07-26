@@ -147,7 +147,7 @@ case "$cmd" in
         docker config create "haproxy_pg_cfg_${ts}" haproxy/haproxy.cfg
         echo "Config changed: created haproxy_pg_cfg_${ts}."
         echo "Update docker-stack.postgres.yml's haproxy config source to haproxy_pg_cfg_${ts}, then:"
-        echo "  docker stack deploy -c docker-stack.postgres.yml syslytics-pg"
+        echo "  docker stack deploy -c docker-stack.postgres.yml logmara-pg"
     else
         docker config create haproxy_pg_cfg haproxy/haproxy.cfg
     fi
@@ -159,7 +159,7 @@ case "$cmd" in
         docker config create "haproxy_app_cfg_${ts}" haproxy/haproxy-app.cfg
         echo "Config changed: created haproxy_app_cfg_${ts}."
         echo "Update docker-stack.app.yml's haproxy_app_cfg config source to haproxy_app_cfg_${ts}, then:"
-        echo "  docker stack deploy -c docker-stack.app.yml syslytics-app"
+        echo "  docker stack deploy -c docker-stack.app.yml logmara-app"
     else
         docker config create haproxy_app_cfg haproxy/haproxy-app.cfg
     fi
@@ -171,7 +171,7 @@ case "$cmd" in
         docker config create "redis_sentinel_cfg_${ts}" redis/sentinel.conf.tpl
         echo "Config changed: created redis_sentinel_cfg_${ts}."
         echo "Update docker-stack.redis.yml's sentinel config source to redis_sentinel_cfg_${ts}, then:"
-        echo "  docker stack deploy -c docker-stack.redis.yml syslytics-redis"
+        echo "  docker stack deploy -c docker-stack.redis.yml logmara-redis"
     else
         docker config create redis_sentinel_cfg redis/sentinel.conf.tpl
     fi

@@ -12,7 +12,7 @@ import (
 
 	"database/sql"
 
-	"syslytics/audit"
+	"logmara/audit"
 
 	"github.com/gin-gonic/gin"
 )

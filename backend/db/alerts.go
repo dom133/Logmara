@@ -9,8 +9,8 @@ import (
 
 	"github.com/lib/pq"
 
-	"syslytics/model"
-	"syslytics/util"
+	"logmara/model"
+	"logmara/util"
 )
 
 // encryptionKey returns the AES key used to encrypt notification-channel

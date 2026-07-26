@@ -12,7 +12,7 @@ import (
 
 	"github.com/lib/pq"
 
-	"syslytics/model"
+	"logmara/model"
 )
 
 type Engine struct {

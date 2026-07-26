@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"syslytics/sharedstate"
+	"logmara/sharedstate"
 )
 
 const (

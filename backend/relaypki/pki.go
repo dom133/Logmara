@@ -116,7 +116,7 @@ func generateCA() (*x509.Certificate, crypto.Signer, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	cert, err := selfSignCA(key, pkix.Name{CommonName: "Syslytics Relay CA"})
+	cert, err := selfSignCA(key, pkix.Name{CommonName: "Logmara Relay CA"})
 	if err != nil {
 		return nil, nil, err
 	}

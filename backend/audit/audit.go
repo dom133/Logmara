@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"sync/atomic"
 
-	"syslytics/alertengine"
+	"logmara/alertengine"
 )
 
 var engine atomic.Pointer[alertengine.Engine]

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"syslytics/sharedstate"
+	"logmara/sharedstate"
 )
 
 type SlowQueryRecord struct {

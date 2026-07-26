@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"syslytics/util"
+	"logmara/util"
 
 	"github.com/redis/go-redis/v9"
 )

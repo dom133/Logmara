@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"syslytics/db"
-	"syslytics/util"
+	"logmara/db"
+	"logmara/util"
 
 	"github.com/gin-gonic/gin"
 )

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef, useLayoutEffect } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { Row, Col, Card, Table, Tag, Spin, Typography, Button } from 'antd'
 import { RestOutlined, FileTextOutlined, ClockCircleOutlined, CalendarOutlined, DesktopOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
@@ -17,19 +17,6 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [devices, setDevices] = useState<DeviceStats[]>([])
   const [logsPerSec, setLogsPerSec] = useState(0)
-
-  const statCardRefs = useRef<Array<HTMLDivElement | null>>([])
-  const [statCardSize, setStatCardSize] = useState<{ width: number; height: number } | null>(null)
-
-  useLayoutEffect(() => {
-    const widths = statCardRefs.current.map(el => el?.offsetWidth ?? 0)
-    const heights = statCardRefs.current.map(el => el?.offsetHeight ?? 0)
-    const maxWidth = Math.max(...widths)
-    const maxHeight = Math.max(...heights)
-    if (maxWidth > 0 && maxHeight > 0) {
-      setStatCardSize({ width: maxWidth, height: maxHeight })
-    }
-  }, [stats, logsPerSec])
 
   const deviceMap = useMemo(() => {
     const m = new Map<string, string>()
@@ -199,24 +186,26 @@ export default function Dashboard() {
     { title: 'Count', dataIndex: 'count', key: 'count', width: 70 },
   ]
 
+  const statTiles = [
+    { title: 'Total Logs', value: stats?.total_logs || 0, icon: <FileTextOutlined />, color: '#1890ff' },
+    { title: 'Last Hour', value: stats?.logs_last_hour || 0, icon: <ClockCircleOutlined />, color: '#3f8600' },
+    { title: 'Last 24h', value: stats?.logs_last_day || 0, icon: <CalendarOutlined />, color: '#cf1322' },
+    { title: 'Logs / sec', value: logsPerSec.toFixed(1), subtitle: 'avg. last 10s', icon: <ThunderboltOutlined />, color: '#13c2c2' },
+    { title: 'Devices', value: stats?.unique_devices || 0, icon: <DesktopOutlined />, color: '#722ed1' },
+  ]
+
   return (
     <>
       <Title level={3}>Dashboard</Title>
-      <div style={{ display: 'flex', flexWrap: 'wrap', columnGap: 16, rowGap: 24, marginBottom: 24 }}>
-        {[
-          { title: 'Total Logs', value: stats?.total_logs || 0, icon: <FileTextOutlined />, color: '#1890ff' },
-          { title: 'Last Hour', value: stats?.logs_last_hour || 0, icon: <ClockCircleOutlined />, color: '#3f8600' },
-          { title: 'Last 24h', value: stats?.logs_last_day || 0, icon: <CalendarOutlined />, color: '#cf1322' },
-          { title: 'Logs / sec', value: logsPerSec.toFixed(1), subtitle: 'avg. last 10s', icon: <ThunderboltOutlined />, color: '#13c2c2' },
-          { title: 'Devices', value: stats?.unique_devices || 0, icon: <DesktopOutlined />, color: '#722ed1' },
-        ].map((c, i) => (
-          <div
-            key={c.title}
-            ref={el => { statCardRefs.current[i] = el }}
-            style={statCardSize ? { width: statCardSize.width, minHeight: statCardSize.height, maxWidth: '100%' } : { maxWidth: '100%' }}
-          >
-            <StatCard title={c.title} value={c.value} subtitle={c.subtitle} icon={c.icon} color={c.color} />
-          </div>
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+        columnGap: 16,
+        rowGap: 24,
+        marginBottom: 24,
+      }}>
+        {statTiles.map(c => (
+          <StatCard key={c.title} title={c.title} value={c.value} subtitle={c.subtitle} icon={c.icon} color={c.color} />
         ))}
       </div>
 

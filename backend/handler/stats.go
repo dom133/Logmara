@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"syslytics/model"
-	"syslytics/sharedstate"
+	"logmara/model"
+	"logmara/sharedstate"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"

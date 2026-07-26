@@ -6,12 +6,12 @@ import (
 	"net/http"
 	"time"
 
-	"syslytics/audit"
-	"syslytics/auth"
-	"syslytics/db"
-	"syslytics/ldap"
-	"syslytics/middleware"
-	"syslytics/model"
+	"logmara/audit"
+	"logmara/auth"
+	"logmara/db"
+	"logmara/ldap"
+	"logmara/middleware"
+	"logmara/model"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"

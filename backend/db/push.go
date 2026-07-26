@@ -6,7 +6,7 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 
-	"syslytics/model"
+	"logmara/model"
 )
 
 // GetOrCreateVAPIDKeys returns the VAPID key pair used to sign Web Push

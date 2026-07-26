@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	"syslytics/middleware"
-	"syslytics/model"
-	"syslytics/parser"
+	"logmara/middleware"
+	"logmara/model"
+	"logmara/parser"
 
 	"github.com/gin-gonic/gin"
 )

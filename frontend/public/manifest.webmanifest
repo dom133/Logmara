@@ -1,6 +1,6 @@
 {
-  "name": "Syslytics",
-  "short_name": "Syslytics",
+  "name": "Logmara",
+  "short_name": "Logmara",
   "description": "Centralized syslog viewer, dashboards, parsers and alerting.",
   "start_url": "/",
   "scope": "/",

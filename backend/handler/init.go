@@ -10,11 +10,11 @@ import (
 	"strconv"
 	"time"
 
-	"syslytics/auth"
-	"syslytics/db"
-	"syslytics/middleware"
-	"syslytics/model"
-	"syslytics/util"
+	"logmara/auth"
+	"logmara/db"
+	"logmara/middleware"
+	"logmara/model"
+	"logmara/util"
 
 	"github.com/gin-gonic/gin"
 )

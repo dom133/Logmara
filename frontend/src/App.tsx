@@ -108,7 +108,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, loading
   return (
     <>
       <div style={{ padding: '20px 16px', fontSize: 20, fontWeight: 700, color: '#1890ff', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <img src="/icons/icon-192.png" alt="Syslytics" style={{ width: 28, height: 28, borderRadius: 6 }} /> {!collapsed && 'Syslytics'}
+        <img src="/icons/icon-192.png" alt="Logmara" style={{ width: 28, height: 28, borderRadius: 6 }} /> {!collapsed && 'Logmara'}
       </div>
       {renderLinks()}
     </>
@@ -270,7 +270,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
                 if (location.pathname === '/') return 'Dashboard'
                 const match = location.pathname.match(/^\/dashboards\/([^/]+)$/)?.[1]
                 if (match && dashboardTitle) return `Dashboards / ${dashboardTitle}`
-                return location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'Syslytics'
+                return location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'Logmara'
               })()}
             </span>
           </div>

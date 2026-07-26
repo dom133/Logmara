@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"syslytics/db"
-	"syslytics/model"
+	"logmara/db"
+	"logmara/model"
 
 	"github.com/gin-gonic/gin"
 )

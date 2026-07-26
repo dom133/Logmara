@@ -12,8 +12,8 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 
-	"syslytics/db"
-	"syslytics/model"
+	"logmara/db"
+	"logmara/model"
 )
 
 // vapidSubject identifies this server to push services per RFC 8292. It

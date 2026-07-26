@@ -3,8 +3,8 @@ package parser
 import (
 	"testing"
 
-	dbparsers "syslytics/db/parsers"
-	"syslytics/model"
+	dbparsers "logmara/db/parsers"
+	"logmara/model"
 )
 
 func strPtr(s string) *string { return &s }

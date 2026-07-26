@@ -19,11 +19,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/lib/pq"
-	"syslytics/alertengine"
-	"syslytics/control"
-	"syslytics/model"
-	"syslytics/parser"
-	"syslytics/sharedstate"
+	"logmara/alertengine"
+	"logmara/control"
+	"logmara/model"
+	"logmara/parser"
+	"logmara/sharedstate"
 )
 
 // sanitizeForPostgres repairs invalid UTF-8 byte sequences (a misbehaving

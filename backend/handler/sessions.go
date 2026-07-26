@@ -4,9 +4,9 @@ import (
 	"database/sql"
 	"net/http"
 
-	"syslytics/db"
-	"syslytics/middleware"
-	"syslytics/model"
+	"logmara/db"
+	"logmara/middleware"
+	"logmara/model"
 
 	"github.com/gin-gonic/gin"
 )

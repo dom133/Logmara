@@ -15,8 +15,8 @@ import (
 
 	_ "github.com/lib/pq"
 
-	"syslytics/db/parsers"
-	"syslytics/util"
+	"logmara/db/parsers"
+	"logmara/util"
 )
 
 var appStarting atomic.Bool

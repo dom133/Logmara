@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"os"
 
-	"syslytics/relaypki"
+	"logmara/relaypki"
 )
 
 func main() {

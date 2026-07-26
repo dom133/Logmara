@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"time"
 
-	"syslytics/db"
-	"syslytics/util"
+	"logmara/db"
+	"logmara/util"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"

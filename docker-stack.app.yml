@@ -7,10 +7,10 @@
 # Swarm `docker stack deploy` does NOT build images (no `build:` support),
 # so images must be built and pushed to a registry every node can pull from
 # first:
-#   docker build -f Dockerfile.backend  -t ${REGISTRY:?}/syslytics-api:${TAG:-latest} .
-#   docker build -f Dockerfile.rsyslog  -t ${REGISTRY:?}/syslytics-rsyslog:${TAG:-latest} .
-#   docker build -f Dockerfile.frontend -t ${REGISTRY:?}/syslytics-frontend:${TAG:-latest} .
-#   docker push ${REGISTRY:?}/syslytics-api:${TAG:-latest}   (repeat for the other two)
+#   docker build -f Dockerfile.backend  -t ${REGISTRY:?}/logmara-api:${TAG:-latest} .
+#   docker build -f Dockerfile.rsyslog  -t ${REGISTRY:?}/logmara-rsyslog:${TAG:-latest} .
+#   docker build -f Dockerfile.frontend -t ${REGISTRY:?}/logmara-frontend:${TAG:-latest} .
+#   docker push ${REGISTRY:?}/logmara-api:${TAG:-latest}   (repeat for the other two)
 #
 # `api` and `frontend` run 2 replicas each (see API_REPLICAS/FRONTEND_
 # REPLICAS below to change that). This requires docker-stack.redis.yml to
@@ -60,7 +60,7 @@
 #     never as plain env vars. POSTGRES_USER/POSTGRES_DB below are optional
 #     (default syslog/syslog_db) and are not secret.
 #
-# Deploy with: docker stack deploy -c docker-stack.app.yml syslytics-app
+# Deploy with: docker stack deploy -c docker-stack.app.yml logmara-app
 
 version: "3.8"
 
@@ -112,7 +112,7 @@ services:
         condition: on-failure
 
   rsyslog:
-    image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-rsyslog:${TAG:-latest}
+    image: ${REGISTRY:?set REGISTRY to your image registry}/logmara-rsyslog:${TAG:-latest}
     environment:
       - TZ=UTC
     volumes:
@@ -157,7 +157,7 @@ services:
         condition: on-failure
 
   api:
-    image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-api:${TAG:-latest}
+    image: ${REGISTRY:?set REGISTRY to your image registry}/logmara-api:${TAG:-latest}
     environment:
       TZ: UTC
       # Every credential below is mounted as a Docker Swarm secret (see the
@@ -242,7 +242,7 @@ services:
           memory: 512M
 
   frontend:
-    image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-frontend:${TAG:-latest}
+    image: ${REGISTRY:?set REGISTRY to your image registry}/logmara-frontend:${TAG:-latest}
     volumes:
       - log_data:/data
     networks:

@@ -1,4 +1,4 @@
-name: syslytics
+name: logmara
 
 services:
   postgres:

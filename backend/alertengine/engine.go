@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"syslytics/db"
-	"syslytics/model"
-	"syslytics/notify"
-	"syslytics/sharedstate"
+	"logmara/db"
+	"logmara/model"
+	"logmara/notify"
+	"logmara/sharedstate"
 )
 
 var severityRank = map[string]int{

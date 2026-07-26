@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"time"
 
-	"syslytics/db"
-	"syslytics/middleware"
-	"syslytics/model"
-	"syslytics/notify"
-	"syslytics/notifyhub"
+	"logmara/db"
+	"logmara/middleware"
+	"logmara/model"
+	"logmara/notify"
+	"logmara/notifyhub"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"

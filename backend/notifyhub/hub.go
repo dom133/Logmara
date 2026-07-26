@@ -10,8 +10,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"syslytics/model"
-	"syslytics/sharedstate"
+	"logmara/model"
+	"logmara/sharedstate"
 )
 
 const channelName = "notifications:new"

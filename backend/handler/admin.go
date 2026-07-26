@@ -12,13 +12,13 @@ import (
 	"strings"
 	"time"
 
-	"syslytics/audit"
-	"syslytics/auth"
-	"syslytics/control"
-	"syslytics/db"
-	"syslytics/ldap"
-	"syslytics/middleware"
-	"syslytics/model"
+	"logmara/audit"
+	"logmara/auth"
+	"logmara/control"
+	"logmara/db"
+	"logmara/ldap"
+	"logmara/middleware"
+	"logmara/model"
 
 	"github.com/gin-gonic/gin"
 )
