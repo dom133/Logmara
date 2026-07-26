@@ -24,11 +24,12 @@
 # replicas: 1.
 #
 # `frontend` is not published on the host anymore - `haproxy-app` (below) is
-# what actually binds :80/:443/:8080 on every edge=true node and load-
-# balances across every frontend/api replica cluster-wide via tasks.frontend/
-# tasks.api. This is what makes multiple replicas an actual load-balancing
-# win behind the keepalived VIP, not just a failover target (only one node's
-# published ports were ever reachable through the VIP before).
+# what actually binds :80/:443 on every edge=true node and load-balances
+# across every frontend/api replica cluster-wide via tasks.frontend/tasks.api.
+# This is what makes multiple replicas an actual load-balancing win behind
+# the keepalived VIP, not just a failover target (only one node's published
+# ports were ever reachable through the VIP before). :8080 (the API) is
+# never published directly - all traffic goes through nginx on :80/:443.
 #
 # `rsyslog` uses `mode: global` on role==edge nodes with `mode: host` port
 # publishing instead: this bypasses the Swarm ingress routing mesh, which
@@ -293,9 +294,6 @@ services:
         mode: host
       - target: 443
         published: ${FRONTEND_HTTPS_PORT:-443}
-        mode: host
-      - target: 8080
-        published: ${API_LB_PORT:-8080}
         mode: host
     networks:
       - syslog_net
