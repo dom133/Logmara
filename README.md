@@ -17,9 +17,20 @@
 
 **Logmara is a self-hosted, [Docker Compose](#quick-start-single-server)-deployed platform for ingesting, parsing, and visualizing syslog data** — a live log viewer, a regex-based parser engine for structuring raw messages, custom dashboards, alerting, and an admin panel, all behind JWT auth with no external dependencies.
 
+Project website: **[logmara.com](https://logmara.com)**
+
 <p align="center">
   <img src="docs/screenshot-dashboard.png" alt="Logmara dashboard (sample data)" width="900" />
 </p>
+
+## Demo
+
+A live demo is available at **[demo.logmara.com](https://demo.logmara.com)**:
+
+| Field | Value |
+|-------|-------|
+| Username | `demo` |
+| Password | `Demouser12@` |
 
 ## Architecture
 
