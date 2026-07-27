@@ -456,10 +456,11 @@ const httpsServerBlock = `server {
 `
 
 // corsMapDirective renders the nginx `map` block that resolves the
-// request's Origin header to an Access-Control-Allow-Origin value: "*"
-// allows any origin, an empty list allows none. This is the only CORS
-// enforcement in the app - clients only ever reach the API through this
-// nginx proxy, so there's nothing equivalent on the backend side.
+// request's Origin header to an Access-Control-Allow-Origin value.
+// Wildcard "*" is rejected (treated as empty) to prevent unrestricted CORS.
+// An empty list allows none. This is the only CORS enforcement in the app -
+// clients only ever reach the API through this nginx proxy, so there's
+// nothing equivalent on the backend side.
 func corsMapDirective(origins string) string {
 	var b strings.Builder
 	b.WriteString("map $http_origin $cors_allow_origin {\n")
@@ -470,7 +471,7 @@ func corsMapDirective(origins string) string {
 			continue
 		}
 		if o == "*" {
-			return "map $http_origin $cors_allow_origin {\n    default $http_origin;\n}\n"
+			continue
 		}
 		b.WriteString(fmt.Sprintf("    %q $http_origin;\n", o))
 	}

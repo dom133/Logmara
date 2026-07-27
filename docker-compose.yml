@@ -17,7 +17,7 @@ services:
       TZ: UTC
       POSTGRES_DB: ${POSTGRES_DB:-syslog_db}
       POSTGRES_USER: ${POSTGRES_USER:-syslog}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-syslogpass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -117,7 +117,7 @@ services:
       dockerfile: Dockerfile.backend
     environment:
       TZ: UTC
-      DATABASE_URL: postgres://${POSTGRES_USER:-syslog}:${POSTGRES_PASSWORD:-syslogpass}@postgres:5432/${POSTGRES_DB:-syslog_db}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-syslog}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-syslog_db}?sslmode=disable
       # Security keys - required, and never stored in the database (a DB dump
       # alone must not be able to forge tokens or decrypt secrets). Generate
       # each with `openssl rand -base64 48` and put them in .env. See README

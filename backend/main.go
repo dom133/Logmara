@@ -496,7 +496,11 @@ r := gin.New()
 	changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute, "/data/ratelimit-change-password.json")
 
 	r.GET("/api/health", handler.HealthCheck(database))
-	r.GET("/api/metrics", handler.PrometheusMetrics(database))
+
+	metricsGroup := r.Group("/api")
+	metricsGroup.Use(authCfg.JWTRequired())
+	metricsGroup.GET("/metrics", handler.PrometheusMetrics(database))
+
 	r.POST("/api/auth/login", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(loginLimiter), handler.Login(database, authCfg))
 	r.POST("/api/auth/refresh", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(refreshLimiter), handler.Refresh(database, authCfg))
 	r.POST("/api/auth/logout", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.Logout(database))
@@ -556,7 +560,7 @@ r := gin.New()
 		authGroup.PATCH("/dashboards/:id/pin", handler.TogglePinDashboard(database))
 
 		editorGroup := authGroup.Group("")
-		editorGroup.Use(auth.RoleRequired("admin", "editor"))
+		editorGroup.Use(authCfg.RoleRequired("admin", "editor"))
 		{
 			editorGroup.POST("/parsers", handler.CreateParser(engine))
 			editorGroup.PUT("/parsers/:id", handler.UpdateParser(engine))
@@ -579,7 +583,7 @@ r := gin.New()
 		}
 
 		adminGroup := authGroup.Group("/admin")
-		adminGroup.Use(auth.AdminRequired())
+		adminGroup.Use(authCfg.AdminRequired())
 		{
 			adminGroup.GET("/users", handler.ListUsers(database))
 			adminGroup.POST("/users", handler.CreateUser(database))
@@ -625,7 +629,7 @@ r := gin.New()
 		// an editor (or admin) can only ever modify a channel they made
 		// themselves, or one predating the created_by column entirely.
 		adminEditorGroup := authGroup.Group("/admin")
-		adminEditorGroup.Use(auth.RoleRequired("admin", "editor"))
+		adminEditorGroup.Use(authCfg.RoleRequired("admin", "editor"))
 		{
 			adminEditorGroup.POST("/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
 			adminEditorGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))

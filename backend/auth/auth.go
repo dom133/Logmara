@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"logmara/audit"
 	"logmara/db"
 	"logmara/util"
 
@@ -245,7 +246,7 @@ func (cfg *Config) JWTRequired() gin.HandlerFunc {
 }
 
 // RoleRequired returns middleware that enforces at least one of the given roles.
-func RoleRequired(roles ...string) gin.HandlerFunc {
+func (cfg *Config) RoleRequired(roles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, exists := c.Get("claims")
 		if !exists {
@@ -256,6 +257,8 @@ func RoleRequired(roles ...string) gin.HandlerFunc {
 
 		mapClaims := claims.(*jwt.MapClaims)
 		userRole := (*mapClaims)["role"].(string)
+		username, _ := (*mapClaims)["username"].(string)
+		userID, _ := (*mapClaims)["user_id"].(float64)
 
 		for _, role := range roles {
 			if userRole == role {
@@ -264,13 +267,19 @@ func RoleRequired(roles ...string) gin.HandlerFunc {
 			}
 		}
 
+		if cfg.db != nil {
+			go func() {
+				audit.LogAudit(cfg.db, int64(userID), username, "access_denied", c.ClientIP(), fmt.Sprintf("insufficient permissions; required=%v, user_role=%s", roles, userRole))
+			}()
+		}
+
 		c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions"})
 		c.Abort()
 	}
 }
 
 // AdminRequired returns middleware that enforces admin role.
-func AdminRequired() gin.HandlerFunc {
+func (cfg *Config) AdminRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, exists := c.Get("claims")
 		if !exists {
@@ -281,8 +290,16 @@ func AdminRequired() gin.HandlerFunc {
 
 		mapClaims := claims.(*jwt.MapClaims)
 		userRole := (*mapClaims)["role"].(string)
+		username, _ := (*mapClaims)["username"].(string)
+		userID, _ := (*mapClaims)["user_id"].(float64)
 
 		if userRole != "admin" {
+			if cfg.db != nil {
+				go func() {
+					audit.LogAudit(cfg.db, int64(userID), username, "access_denied", c.ClientIP(), fmt.Sprintf("admin access required; user_role=%s", userRole))
+				}()
+			}
+
 			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
 			c.Abort()
 			return
