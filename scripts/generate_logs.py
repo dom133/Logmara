@@ -481,7 +481,7 @@ class Sender:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         else:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.connect((self.host, self.port))
+        self.sock.connect((self.host, self.port))
 
     def send(self, data: bytes):
         try:
