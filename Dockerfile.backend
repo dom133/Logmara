@@ -19,6 +19,6 @@ COPY --from=builder /app/server .
 # back for troubleshooting.
 ENV GIN_MODE=release
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD curl -f http://localhost:8080/api/health || exit 1
 ENTRYPOINT ["/bin/sh", "-c", "chmod -R a+r /data 2>/dev/null; exec ./server"]
