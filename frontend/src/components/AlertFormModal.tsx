@@ -1,5 +1,5 @@
 import { Form, Input, InputNumber, Select, Switch, Space, Modal, Button } from 'antd'
-import { Alert, AlertRequest, AlertRuleType, DeviceStats, Parser, ParsedField, NotificationChannel } from '../services/api'
+import { Alert, AlertRequest, AlertRuleType, DeviceStats, Parser, ParsedField, NotificationChannel, resolveDeviceDisplayName } from '../services/api'
 import { ruleTypeLabels, adminOnlyRuleTypes, operatorLabels, channelTypeLabels } from '../constants/alertConstants'
 
 interface AlertFormModalProps {
@@ -22,10 +22,7 @@ export default function AlertFormModal({ open, editing, isAdmin, devices, parser
   const selectedDevices: string[] = Form.useWatch('device_ips', form) || []
   const fieldConditions: any[] = Form.useWatch('field_conditions', form) || []
 
-  const deviceOptions = devices.map(d => {
-    const label = (d.alias && d.alias.length > 0 ? d.alias : d.fromhost_ip) || d.fromhost_ip
-    return { label, value: d.fromhost_ip }
-  })
+  const deviceOptions = devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))
 
   const availableParserNames = selectedDevices.length === 0
     ? null

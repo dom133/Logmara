@@ -48,13 +48,13 @@ export default function ParsersPage() {
     handleUpdate,
     handleDelete,
     refresh,
-  } = useCrud<Parser, { name: string; description?: string; device_type: string; match_type: string; match_value?: string; regex: string; enabled: boolean; fields?: ParserFieldDef[] }, Partial<{ name: string; description: string; device_type: string; match_type: string; match_value: string; regex: string; enabled: boolean }>>({
+  } = useCrud<Parser, { name: string; description?: string; device_type: string; match_type: string; match_value?: string; regex: string; enabled: boolean; fields: ParserFieldDef[] }, Partial<{ name: string; description: string; device_type: string; match_type: string; match_value: string; regex: string; enabled: boolean }>>({
     loadData: async () => {
       const [p, f] = await Promise.all([getParsers(), getParsedFields()])
       setFields(f)
       return p
     },
-    createItem: (data) => createParser(data as { name: string; description?: string; device_type: string; match_type: string; match_value?: string; regex: string; enabled: boolean; fields?: ParserFieldDef[] }),
+    createItem: (data) => createParser(data as { name: string; description?: string; device_type: string; match_type: string; match_value?: string; regex: string; enabled: boolean; fields: ParserFieldDef[] }),
     updateItem: updateParser,
     deleteItem: deleteParser,
     entityName: 'Parser',

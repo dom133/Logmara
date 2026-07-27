@@ -1,8 +1,11 @@
 import { useState, useMemo } from 'react'
-import { Table, Button, Select, Text, Tag } from 'antd'
+import { Table, Button, Select, Typography, Tag } from 'antd'
 import { ColumnsType } from 'antd/es/table'
 import { LogEntry, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import SeverityTag from './SeverityTag'
+import { ColumnDef } from '../hooks/useColumnWidths'
+
+const { Text } = Typography
 
 export interface LogTableProps {
   logs: LogEntry[]
@@ -15,7 +18,7 @@ export interface LogTableProps {
   setPageSize: (v: number) => void
   onLoadMore: () => void
   onRowClick: (record: LogEntry) => void
-  enhanceColumns?: (cols: ColumnsType<LogEntry>) => ColumnsType<LogEntry>
+  enhanceColumns?: (cols: ColumnDef[]) => ColumnDef[]
 }
 
 export function useDeviceMap(devices: DeviceStats[]): Map<string, string> {
@@ -125,7 +128,7 @@ export default function LogTable({
   const defaultCols = buildDefaultColumns(deviceMap)
   const finalColumns = columns || defaultCols
 
-  const renderedColumns = enhanceColumns ? enhanceColumns(finalColumns) : finalColumns
+  const renderedColumns = enhanceColumns ? (enhanceColumns(finalColumns as ColumnDef[]) as ColumnsType<LogEntry>) : finalColumns
 
   return (
     <>

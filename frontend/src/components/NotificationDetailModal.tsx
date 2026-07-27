@@ -2,6 +2,7 @@ import { Modal, Space, Descriptions, List, Typography, Empty, Button, Tag } from
 import { CheckCircleOutlined } from '@ant-design/icons'
 import { HistoryGroup } from './historyTypes'
 import SeverityTag from './SeverityTag'
+import { historyStatusColor } from '../constants/alertConstants'
 
 const { Text } = Typography
 
@@ -40,7 +41,7 @@ export default function NotificationDetailModal({ viewing, onClose }: Notificati
                     <Space>
                       <Text strong>{c.channel_name}</Text>
                       <Text type="secondary">({c.channel_type})</Text>
-                      <Tag color={c.status === 'sent' ? 'green' : c.status === 'failed' ? 'red' : 'orange'}>{c.status}</Tag>
+                      <Tag color={historyStatusColor[c.status] || 'orange'}>{c.status}</Tag>
                     </Space>
                     {c.detail && (
                       <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable>

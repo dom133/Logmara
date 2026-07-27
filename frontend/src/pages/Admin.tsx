@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip } from 'antd'
-import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined } from '@ant-design/icons'
-import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule } from '../services/api'
+import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
+import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary } from '../services/api'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
 import { useAuth } from '../services/auth'
@@ -55,6 +55,7 @@ export default function Admin() {
   const [auditLogsLoading, setAuditLogsLoading] = useState(false)
   const [auditLogsOffset, setAuditLogsOffset] = useState(0)
   const [auditLogsFilters, setAuditLogsFilters] = useState<{ username: string; action: string; from: string; to: string }>({ username: '', action: '', from: '', to: '' })
+  const [userDirectory, setUserDirectory] = useState<UserSummary[]>([])
   const [auditDetailOpen, setAuditDetailOpen] = useState(false)
   const [auditDetailRecord, setAuditDetailRecord] = useState<AuditLog | null>(null)
   const [activeTab, setActiveTab] = useState('users')
@@ -259,7 +260,10 @@ await testLDAPConnection({
       case 'devices': await loadDevices(); break
       case 'slow_queries': await loadSlowQueries(); break
       case 'health': await loadHealth(); break
-      case 'audit_logs': await loadAuditLogs(0); break
+      case 'audit_logs':
+        await loadAuditLogs(0)
+        getUserDirectory().then(setUserDirectory).catch(() => { /* filter falls back to no options */ })
+        break
     }
     tabCacheRef.current.set(tab, { loadedAt: Date.now() })
   }
@@ -1027,7 +1031,7 @@ const handleCleanup = async () => {
                     allowClear
                     showSearch
                     onChange={(val) => { setAuditLogsFilters({ ...auditLogsFilters, username: val || '' }); loadAuditLogs(0) }}
-                    options={users.map((u) => ({ label: u.username, value: u.username }))}
+                    options={userDirectory.map((u) => ({ label: u.username, value: u.username }))}
                   />
                   <Select
                     placeholder="Filter by action"

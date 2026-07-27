@@ -208,6 +208,10 @@ services:
       REDIS_SENTINEL_ADDRS: sentinel1:26379,sentinel2:26379,sentinel3:26379
       REDIS_MASTER_NAME: mymaster
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      # Mirrors deploy.replicas below so main.go can refuse to start rather
+      # than silently run uncoordinated tailers if this stack is ever
+      # deployed with API_REPLICAS > 1 but without docker-stack.redis.yml.
+      API_REPLICAS: ${API_REPLICAS:-2}
       # Directory the builtin parser JSON definitions (backend/db/parsers)
       # are bootstrapped into and re-read from on every start, so an
       # operator can edit/add/remove them without rebuilding the image. Must
@@ -236,8 +240,16 @@ services:
       restart_policy:
         condition: any
         delay: 5s
+      # stop-first (not start-first): each replica's tailer only guards
+      # against concurrent ingestion via Redis leader election, which still
+      # needs its lock's TTL to lapse before a new task can take over (see
+      # main.go's LeaderElector comment) - starting the new task before the
+      # old one has fully stopped means both briefly exist, and the update
+      # only really has to wait as long as the old task takes to shut down
+      # (well under the lock TTL). Trading a brief gap in serving traffic
+      # during rollout for one less thing that has to line up perfectly.
       update_config:
-        order: start-first
+        order: stop-first
         parallelism: 1
       resources:
         limits:
@@ -267,11 +279,11 @@ services:
       restart_policy:
         condition: any
         delay: 5s
-      # No longer host-mode published (haproxy-app owns :80/:443 now), so
-      # the old host-port conflict that forced stop-first here is gone -
-      # start-first gives a zero-downtime rollout, matching api above.
+      # stop-first, matching api above: old replica fully stops before the
+      # new one starts, so an update never runs old and new versions side by
+      # side even briefly.
       update_config:
-        order: start-first
+        order: stop-first
         parallelism: 1
       resources:
         limits:

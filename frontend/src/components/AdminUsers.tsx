@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, Popconfirm, Tooltip, message } from 'antd'
 import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ReloadOutlined, RestOutlined } from '@ant-design/icons'
-import { User, getUsers, createUser, updateUser, deleteUser, resetPassword, unlockUser } from '../../services/api'
-import { useCrud } from '../../hooks/useCRUD'
-import { useColumnWidths } from '../../hooks/useColumnWidths'
-import { getErrorMessage } from '../../utils/error'
+import { User, getUsers, createUser, updateUser, deleteUser, resetPassword, unlockUser } from '../services/api'
+import { useCrud } from '../hooks/useCRUD'
+import { useColumnWidths } from '../hooks/useColumnWidths'
+import { getErrorMessage } from '../utils/error'
 
 const { Option } = Select
 
@@ -37,9 +37,9 @@ export default function AdminUsers({ settings }: AdminUsersProps) {
       if (settings['ldap_auto_provision'] === 'true') {
         data.auth_type = 'local'
       }
-      return createUser(data)
+      return createUser(data as { username: string; email: string; password: string; role: string; auth_type: string })
     },
-    updateItem: (_, data) => updateUser(crud.editing!.id, data),
+    updateItem: (id, data) => updateUser(id, data as { role?: string; is_active?: boolean }),
     deleteItem: deleteUser,
     entityName: 'User',
     form: form,

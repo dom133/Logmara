@@ -7,7 +7,7 @@ import {
   getNotificationChannels, createNotificationChannel, updateNotificationChannel, deleteNotificationChannel, testNotificationChannel,
   NotificationChannel, NotificationChannelRequest, NotificationChannelType,
   getNotificationHistory, clearNotificationHistory, NotificationLogEntry,
-  getDevices, DeviceStats, resolveDeviceDisplayName, getParsers, Parser, getParsedFields, ParsedField,
+  getDevices, DeviceStats, getParsers, Parser, getParsedFields, ParsedField,
   getUserDirectory, UserSummary,
 } from '../services/api'
 import { useAuth } from '../services/auth'
@@ -54,14 +54,19 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
     return onLiveNotification(() => { loadData() })
   }, [active])
 
+  const selectedDevices: string[] = Form.useWatch('device_ips', form) || []
+  const selectedDevicesKey = selectedDevices.join(',')
+
+  // Refetch the field registry scoped to the selected device(s) whenever
+  // that selection changes, so "Field Conditions" only offers fields that
+  // parsers have actually extracted from those devices' logs (falls back to
+  // every known field when no device is selected).
   useEffect(() => {
-    const selectedDevices: string[] = form.getFieldValue('device_ips') || []
     getParsedFields(selectedDevices.length > 0 ? selectedDevices : undefined)
       .then(setParsedFields)
-      .catch(() => { /* keep the previous list */ })
-  }, [])
-
-  const deviceOptions = devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))
+      .catch(() => { /* keep the previous list rather than blanking the form */ })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDevicesKey])
 
   const openCreate = () => {
     setEditing(null)

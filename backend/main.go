@@ -243,6 +243,21 @@ func main() {
 		slog.Info("redis shared state enabled")
 	}
 
+	// API_REPLICAS mirrors the deploy.replicas value docker-stack.app.yml
+	// passes through as an env var (see its "environment:" block) - it has
+	// no effect on the single-server docker-compose.yml path, which never
+	// sets it and defaults to 1 here. Running more than one api replica
+	// without Redis means every replica runs its own uncoordinated tailer
+	// against the same shared log file and position checkpoint (see
+	// tailer.Run / runIngestionLoop): they race on both, corrupting the
+	// checkpoint and producing MALFORMED JSON as one replica seeks the file
+	// mid-line. That's silent data corruption, not just a missed
+	// optimization, so fail fast instead of letting it happen.
+	if apiReplicas, err := strconv.Atoi(os.Getenv("API_REPLICAS")); err == nil && apiReplicas > 1 && sharedClient == nil {
+		slog.Error("API_REPLICAS > 1 without Redis configured; multiple replicas would run uncoordinated tailers against the same log file and corrupt its position checkpoint - deploy docker-stack.redis.yml and set REDIS_SENTINEL_ADDRS/REDIS_ADDR, or run a single replica", "api_replicas", apiReplicas)
+		os.Exit(1)
+	}
+
 	// Feed every slow query recorded at the driver level (db.instrumentedConn)
 	// into the same admin slow-query log that handler.timedQuery writes to,
 	// so /admin/slow-queries covers all database access, not just the
@@ -410,7 +425,17 @@ func main() {
 		handler.SetCacheBroadcaster(broadcaster)
 		go handler.StartCacheInvalidationSubscriber(ctx, broadcaster)
 		handler.SetSlowQueryStore(sharedClient)
-		elector = sharedstate.NewLeaderElector(sharedClient, "tailer", 15*time.Second)
+		// TTL must leave real margin over tailer.go's own failure-detection
+		// deadline (leaderRenewInterval * leaderMaxRenewFails = 5s * 3 = 15s):
+		// if the lock's Redis-side TTL lapses at the same moment the current
+		// leader notices it can't renew, a waiting replica can acquire the
+		// lock and start ingesting before the old leader's goroutine has
+		// actually stopped - two tailers briefly active on the same file and
+		// position checkpoint, corrupting it exactly like running without
+		// Redis at all. 45s (3x that 15s deadline) gives a comfortable
+		// margin through a slow Sentinel failover while still recovering
+		// well within a minute if the leader outright crashes.
+		elector = sharedstate.NewLeaderElector(sharedClient, "tailer", 45*time.Second)
 	}
 
 	logFilePath := os.Getenv("LOG_FILE_PATH")

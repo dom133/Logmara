@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 
-interface ColumnDef {
+export interface ColumnDef {
   key: string;
   width?: number;
   title?: React.ReactNode;
