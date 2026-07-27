@@ -13,6 +13,11 @@ import (
 	"logmara/util"
 )
 
+// adminOnlyRuleTypesSQL renders model.AdminOnlyRuleTypes as a quoted,
+// comma-separated SQL list - built once from the single source of truth
+// rather than duplicating the literal values in every query below.
+var adminOnlyRuleTypesSQL = "'" + strings.Join(model.AdminOnlyRuleTypes, "', '") + "'"
+
 // encryptionKey returns the AES key used to encrypt notification-channel
 // secrets. It is sourced only from the environment (never the database), so a
 // database dump alone can't decrypt them - see util.SecretFromEnv. The *sql.DB
@@ -153,8 +158,28 @@ func scanAlert(row *sql.Rows) (model.Alert, error) {
 const alertColumns = `id, name, description, rule_type, severity, device_ips, parser_names, message_pattern,
 	threshold, window_minutes, cooldown_minutes, fire_on_every_match, field_conditions_logic, audit_action_filter, is_active, created_by, created_at, updated_at, last_fired_at`
 
-func GetAllAlerts(db *sql.DB) ([]model.Alert, error) {
-	rows, err := db.Query(`SELECT ` + alertColumns + ` FROM alerts ORDER BY created_at DESC`)
+// GetAllAlerts lists every alert rule. isAdmin=false drops admin-only rule
+// types (see model.AdminOnlyRuleTypes) *unless* userID is specifically
+// listed as a target user on one of the alert's attached in_app/push
+// channels - being deliberately targeted by whoever set up that channel
+// overrides the admin-only default, same as at notification-delivery time
+// (see notify/push.go, handler/notifications.go's SSE stream). Editing is
+// unaffected here - CreateAlert/UpdateAlert still gate on role, not on
+// whether the caller happens to be a target user.
+func GetAllAlerts(db *sql.DB, isAdmin bool, userID int64) ([]model.Alert, error) {
+	query := `SELECT ` + alertColumns + ` FROM alerts a`
+	args := []interface{}{}
+	if !isAdmin {
+		query += ` WHERE a.rule_type NOT IN (` + adminOnlyRuleTypesSQL + `)
+			OR EXISTS (
+				SELECT 1 FROM alert_channels ac
+				JOIN notification_channels nc ON nc.id = ac.channel_id
+				WHERE ac.alert_id = a.id AND nc.config -> 'user_ids' @> to_jsonb($1::bigint)
+			)`
+		args = append(args, userID)
+	}
+	query += ` ORDER BY a.created_at DESC`
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list alerts: %w", err)
 	}
@@ -540,13 +565,31 @@ func nullableJSON(b []byte) interface{} {
 	return b
 }
 
-func GetNotificationHistory(db *sql.DB, limit int) ([]model.NotificationLogEntry, error) {
+// GetNotificationHistory lists recent notification firings. isAdmin=false
+// drops admin-only rule types (see model.AdminOnlyRuleTypes) *unless* userID
+// was specifically a target user of the firing's channel - joins back to
+// in_app_notifications (in_app channels: target_user_ids is the actual
+// deduped/merged set a given firing used, see notify/dispatch.go) and to
+// notification_channels (push and everything else: the channel's own
+// configured user_ids) to check that. Same "deliberate targeting overrides
+// the admin-only default" reasoning as GetAllAlerts and notify/push.go.
+func GetNotificationHistory(db *sql.DB, limit int, isAdmin bool, userID int64) ([]model.NotificationLogEntry, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := db.Query(
-		`SELECT id, alert_id, alert_name, firing_id, channel_id, channel_name, channel_type, status, detail, trigger_log, audit_log_ref, matched_conditions, in_app_notification_id, rule_type, created_at
-		 FROM notification_log ORDER BY created_at DESC LIMIT $1`, limit)
+	query := `SELECT nl.id, nl.alert_id, nl.alert_name, nl.firing_id, nl.channel_id, nl.channel_name, nl.channel_type, nl.status, nl.detail, nl.trigger_log, nl.audit_log_ref, nl.matched_conditions, nl.in_app_notification_id, nl.rule_type, nl.created_at
+		 FROM notification_log nl`
+	args := []interface{}{limit}
+	if !isAdmin {
+		query += ` LEFT JOIN in_app_notifications ian ON ian.id = nl.in_app_notification_id
+			LEFT JOIN notification_channels nc ON nc.id = nl.channel_id
+			WHERE nl.rule_type NOT IN (` + adminOnlyRuleTypesSQL + `)
+				OR $2 = ANY(ian.target_user_ids)
+				OR nc.config -> 'user_ids' @> to_jsonb($2::bigint)`
+		args = append(args, userID)
+	}
+	query += ` ORDER BY nl.created_at DESC LIMIT $1`
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list notification history: %w", err)
 	}
@@ -606,15 +649,24 @@ func CreateInAppNotification(db *sql.DB, alertID *int64, title, message, severit
 	return id, createdAt, err
 }
 
+// GetInAppNotifications lists the caller's bell notifications: broadcast
+// rows (target_user_ids IS NULL) plus anything specifically targeted at
+// userID. For broadcast rows, isAdmin=false additionally drops admin-only
+// rule types (see model.AdminOnlyRuleTypes) - but a row that specifically
+// targets userID is always visible regardless of rule type, since whoever
+// set up that channel deliberately chose to include this non-admin user;
+// that override is what makes admin-only alerts usable for looping in a
+// specific non-admin without exposing them to every other non-admin.
 func GetInAppNotifications(db *sql.DB, sinceID int64, limit int, isAdmin bool, userID int64) ([]model.InAppNotification, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	query := `SELECT id, alert_id, title, message, severity, alert_rule_type, target_user_ids, created_at FROM in_app_notifications
-		WHERE id > $1 AND (target_user_ids IS NULL OR $3 = ANY(target_user_ids))`
+	broadcastCond := "TRUE"
 	if !isAdmin {
-		query += ` AND alert_rule_type NOT IN ('audit_log', 'relay_cert_expiring', 'malformed_json')`
+		broadcastCond = "alert_rule_type NOT IN (" + adminOnlyRuleTypesSQL + ")"
 	}
+	query := `SELECT id, alert_id, title, message, severity, alert_rule_type, target_user_ids, created_at FROM in_app_notifications
+		WHERE id > $1 AND ($3 = ANY(target_user_ids) OR (target_user_ids IS NULL AND ` + broadcastCond + `))`
 	query += ` ORDER BY id DESC LIMIT $2`
 	rows, err := db.Query(query, sinceID, limit, userID)
 	if err != nil {
@@ -642,10 +694,11 @@ func GetUnreadNotificationCount(db *sql.DB, userID int64, isAdmin bool) (count i
 		return 0, 0, fmt.Errorf("get notification state: %w", err)
 	}
 
-	query := "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM in_app_notifications WHERE id > $1 AND (target_user_ids IS NULL OR $2 = ANY(target_user_ids))"
+	broadcastCond := "TRUE"
 	if !isAdmin {
-		query += " AND alert_rule_type NOT IN ('audit_log', 'relay_cert_expiring', 'malformed_json')"
+		broadcastCond = "alert_rule_type NOT IN (" + adminOnlyRuleTypesSQL + ")"
 	}
+	query := "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM in_app_notifications WHERE id > $1 AND ($2 = ANY(target_user_ids) OR (target_user_ids IS NULL AND " + broadcastCond + "))"
 	err = db.QueryRow(query, lastRead, userID).Scan(&count, &lastID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("count unread notifications: %w", err)

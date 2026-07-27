@@ -14,6 +14,23 @@ const (
 	RuleTypeMalformedJSON     = "malformed_json"
 )
 
+// AdminOnlyRuleTypes are rule types only an admin may create, view, or
+// receive notifications for - they surface data (audit log entries, relay
+// certificate/PKI state, raw ingestion errors) that shouldn't leak to an
+// editor/viewer regardless of who a notification channel happens to target.
+// Every place that lists alerts, delivers notifications, or serves history
+// must filter on this for non-admin callers - see IsAdminOnlyRuleType.
+var AdminOnlyRuleTypes = []string{RuleTypeAuditLog, RuleTypeRelayCertExpiring, RuleTypeMalformedJSON}
+
+func IsAdminOnlyRuleType(ruleType string) bool {
+	for _, rt := range AdminOnlyRuleTypes {
+		if ruleType == rt {
+			return true
+		}
+	}
+	return false
+}
+
 // Notification channel types.
 const (
 	ChannelTypeEmail   = "email"

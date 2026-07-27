@@ -13,7 +13,9 @@ import (
 
 func ListAlerts(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		alerts, err := db.GetAllAlerts(database)
+		userID := c.GetInt64("user_id")
+		isAdmin := db.IsUserAdmin(database, userID)
+		alerts, err := db.GetAllAlerts(database, isAdmin, userID)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to list alerts", err))
 			return
@@ -27,6 +29,14 @@ func CreateAlert(database *sql.DB) gin.HandlerFunc {
 		var req model.AlertRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			return
+		}
+
+		// The rule-type dropdown only hides admin-only types (see
+		// model.AdminOnlyRuleTypes) from non-admins in the UI - this is the
+		// actual enforcement, since the API can be called directly.
+		if model.IsAdminOnlyRuleType(req.RuleType) && !db.IsUserAdmin(database, c.GetInt64("user_id")) {
+			middleware.HandleError(c, model.NewForbidden("Only an admin can create this rule type", nil))
 			return
 		}
 
@@ -55,6 +65,14 @@ func UpdateAlert(database *sql.DB) gin.HandlerFunc {
 		var req model.AlertRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			return
+		}
+
+		// Same enforcement as CreateAlert - also blocks a non-admin editor
+		// from touching an existing admin-only rule at all, since RuleType
+		// is required on every update (full-replace semantics, not partial).
+		if model.IsAdminOnlyRuleType(req.RuleType) && !db.IsUserAdmin(database, c.GetInt64("user_id")) {
+			middleware.HandleError(c, model.NewForbidden("Only an admin can modify this rule type", nil))
 			return
 		}
 

@@ -16,7 +16,7 @@ import { getErrorMessage } from '../utils/error'
 import AlertFormModal from '../components/AlertFormModal'
 import ChannelFormModal from '../components/ChannelFormModal'
 import NotificationDetailModal from '../components/NotificationDetailModal'
-import { ruleTypeLabels, adminOnlyRuleTypes, channelTypeLabels, historyStatusColor } from '../constants/alertConstants'
+import { ruleTypeLabels, channelTypeLabels, historyStatusColor } from '../constants/alertConstants'
 import { HistoryGroup, groupHistoryEntries } from '../components/historyTypes'
 
 const { Title, Text } = Typography
@@ -163,7 +163,7 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
         {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Alert Rule</Button>}
       </div>
-      <Table dataSource={isAdmin ? alerts : alerts.filter(a => !adminOnlyRuleTypes.includes(a.rule_type))} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
+      <Table dataSource={alerts} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
 
       <AlertFormModal
         open={modalOpen}
@@ -343,7 +343,7 @@ function HistoryTab({ isAdmin, active, focusInAppId, focusFiringId, onFocusConsu
 
   useEffect(() => { loadData() }, [])
 
-  const groups = groupHistoryEntries(entries).filter(g => isAdmin || !adminOnlyRuleTypes.includes(g.ruleType))
+  const groups = groupHistoryEntries(entries)
 
   useEffect(() => {
     if (!active) return

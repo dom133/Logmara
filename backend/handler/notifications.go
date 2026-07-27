@@ -206,7 +206,9 @@ func GetNotificationHistory(database *sql.DB) gin.HandlerFunc {
 			limit = DefaultAdminLimit
 		}
 
-		entries, err := db.GetNotificationHistory(database, limit)
+		userID := c.GetInt64("user_id")
+		isAdmin := db.IsUserAdmin(database, userID)
+		entries, err := db.GetNotificationHistory(database, limit, isAdmin, userID)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to load notification history", err))
 			return
@@ -325,20 +327,23 @@ func StreamNotifications(hub *notifyhub.Hub, database *sql.DB) gin.HandlerFunc {
 			case <-c.Request.Context().Done():
 				return
 			case n := <-ch:
-				if !isAdmin && (n.AlertRuleType == "audit_log" || n.AlertRuleType == "relay_cert_expiring" || n.AlertRuleType == "malformed_json") {
-					continue
-				}
+				targeted := false
 				if len(n.TargetUserIds) > 0 {
-					found := false
 					for _, uid := range n.TargetUserIds {
 						if uid == userID {
-							found = true
+							targeted = true
 							break
 						}
 					}
-					if !found {
+					if !targeted {
 						continue
 					}
+				}
+				// Broadcast (no specific targets) admin-only notifications
+				// stay hidden from non-admins; being specifically targeted
+				// overrides that, same reasoning as db.GetInAppNotifications.
+				if !targeted && !isAdmin && model.IsAdminOnlyRuleType(n.AlertRuleType) {
+					continue
 				}
 				b, err := json.Marshal(n)
 				if err != nil {
