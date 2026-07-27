@@ -338,6 +338,12 @@ func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.Parsed
 	}
 	defer fieldRows.Close()
 
+	// Dedupe only within the same parser (parsed_fields_registry already
+	// enforces UNIQUE(parser_id, field_name), so this just guards against
+	// re-scanning the same row twice) - different parsers legitimately reuse
+	// field names like "src_ip"/"mac_address", and keying on name alone would
+	// silently drop, say, Ubiquiti Firewall Log's "src_ip" whenever some
+	// other matched parser for the same device(s) also has a "src_ip" field.
 	var fields []model.ParsedField
 	seen := make(map[string]bool)
 	for fieldRows.Next() {
@@ -345,8 +351,9 @@ func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.Parsed
 		if err := fieldRows.Scan(&f.ID, &f.ParserID, &f.Name, &f.Label, &f.Type, &f.ParserName); err != nil {
 			continue
 		}
-		if !seen[f.Name] {
-			seen[f.Name] = true
+		key := f.ParserName + "\x00" + f.Name
+		if !seen[key] {
+			seen[key] = true
 			fields = append(fields, f)
 		}
 	}
