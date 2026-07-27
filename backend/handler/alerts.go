@@ -31,10 +31,8 @@ func CreateAlert(database *sql.DB) gin.HandlerFunc {
 		}
 
 		var createdBy int64
-		if uid, ok := c.Get("user_id"); ok {
-			if id, ok := uid.(int64); ok {
-				createdBy = id
-			}
+		if id, ok := extractUserID(c); ok {
+			createdBy = id
 		}
 
 		alert, err := db.CreateAlert(database, req, createdBy)

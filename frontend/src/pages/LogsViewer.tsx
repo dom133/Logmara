@@ -7,6 +7,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import EmptyState from '../components/EmptyState'
+import LogTable, { useDeviceMap, buildDefaultColumns, resolveHostname } from '../components/LogTable'
 import { DATE_PRESETS } from '../constants'
 import { useAuth } from '../services/auth'
 
@@ -37,8 +38,6 @@ export default function LogsViewer() {
     sort: 'timestamp_desc',
   })
   const [pageSize, setPageSize] = useState(50)
-  // Keyset pagination cursor/offset for "Load more" - avoids the OFFSET
-  // scans and exact COUNT(*) that made deep pagination slow on large tables.
   const cursorRef = useRef('')
   const offsetRef = useRef(0)
   const searchRef = useRef<InputRef>(null)
@@ -56,21 +55,7 @@ export default function LogsViewer() {
     localStorage.setItem('logs_refresh_interval', String(refreshInterval))
   }, [refreshInterval])
 
-  const deviceMap = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const d of devices) {
-      const dn = resolveDeviceDisplayName(d)
-      if (d.fromhost_ip) m.set(d.fromhost_ip, dn)
-      if (d.hostname) m.set(d.hostname, dn)
-      if (d.old_hostname) m.set(d.old_hostname, dn)
-    }
-    return m
-  }, [devices])
-
-  const resolveHostname = (hostname: string, fromhost_ip?: string, displayName?: string): string => {
-    if (displayName) return displayName
-    return deviceMap.get(fromhost_ip || hostname || '') || hostname || '-'
-  }
+  const deviceMap = useDeviceMap(devices)
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_logs',
@@ -217,64 +202,6 @@ export default function LogsViewer() {
     setDetailModalOpen(true)
   }
 
-  const columns = [
-    {
-      title: 'Time',
-      dataIndex: 'timestamp',
-      key: 'timestamp',
-      width: 180,
-      render: (v: string) => new Date(v).toLocaleString(),
-    },
-    {
-      title: 'Severity',
-      dataIndex: 'severity',
-      key: 'severity',
-      width: 90,
-      render: (v: string) => <SeverityTag severity={v} />,
-    },
-    {
-      title: 'Device',
-      dataIndex: 'hostname',
-      key: 'hostname',
-      width: 160,
-      render: (v: string | null | undefined, _record: LogEntry) =>
-        v ? <Tag color="blue">{resolveHostname(v, _record.fromhost_ip, _record.display_name)}</Tag> : '-',
-    },
-    {
-      title: 'App',
-      dataIndex: 'app_name',
-      key: 'app_name',
-      width: 120,
-      render: (v?: string) => v ? <Text type="secondary">{v}</Text> : '-',
-    },
-    {
-      title: 'Message',
-      dataIndex: 'message',
-      key: 'message',
-      width: 300,
-      ellipsis: { showTitle: true },
-      render: (v: string, record: LogEntry) => {
-        const display = record.raw_message || v
-        return (
-          <pre style={{
-            margin: 0,
-            width: '100%',
-            maxWidth: '100%',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-all',
-            fontFamily: 'Consolas, Monaco, monospace',
-            fontSize: 12,
-            lineHeight: 1.4,
-            maxHeight: 100,
-            overflow: 'auto',
-          }}>
-            {display}
-          </pre>
-        )
-      },
-    },
-  ]
-
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
@@ -375,34 +302,18 @@ export default function LogsViewer() {
           {loading && logs.length === 0 && (
             <Skeleton active paragraph={{ rows: 10 }} />
           )}
-          <Table
-            columns={enhanceColumns(columns)}
-            dataSource={logs}
-            rowKey="id"
+          <LogTable
+            logs={logs}
+            devices={devices}
             loading={loading}
-            tableLayout="fixed"
-            scroll={{ x: 'max-content' }}
-            pagination={false}
-            size="small"
-            onRow={(record) => ({
-              onClick: () => handleRowClick(record),
-              style: { cursor: 'pointer' },
-            })}
+            loadingMore={loadingMore}
+            hasMore={hasMore}
+            pageSize={pageSize}
+            setPageSize={setPageSize}
+            onLoadMore={handleLoadMore}
+            onRowClick={handleRowClick}
+            enhanceColumns={enhanceColumns}
           />
-          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8, marginTop: 16 }}>
-            <Select
-              size="small"
-              style={{ width: 100 }}
-              value={pageSize}
-              onChange={setPageSize}
-              options={['25', '50', '100', '200'].map(v => ({ label: `${v} / page`, value: parseInt(v) }))}
-            />
-            {hasMore ? (
-              <Button onClick={handleLoadMore} loading={loadingMore}>Load more</Button>
-            ) : (
-              <Text type="secondary">No more logs</Text>
-            )}
-          </div>
           <Modal
             title="Log Details"
             open={detailModalOpen}
@@ -416,7 +327,7 @@ export default function LogsViewer() {
               <Descriptions bordered column={1} size="small">
                 <Descriptions.Item label="Timestamp">{new Date(selectedLog.timestamp).toLocaleString()}</Descriptions.Item>
                 <Descriptions.Item label="Severity"><SeverityTag severity={selectedLog.severity} /></Descriptions.Item>
-                <Descriptions.Item label="Device"><Tag color="blue">{resolveHostname(selectedLog.hostname, selectedLog.fromhost_ip, selectedLog.display_name)}</Tag></Descriptions.Item>
+                <Descriptions.Item label="Device"><Tag color="blue">{resolveHostname(deviceMap, selectedLog.hostname, selectedLog.fromhost_ip, selectedLog.display_name)}</Tag></Descriptions.Item>
                 {selectedLog.fromhost_ip && <Descriptions.Item label="Source IP"><Tag color="green">{selectedLog.fromhost_ip}</Tag></Descriptions.Item>}
                 {selectedLog.app_name && <Descriptions.Item label="App">{selectedLog.app_name}</Descriptions.Item>}
                 <Descriptions.Item label="Message">

@@ -7,6 +7,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import DashboardFieldFilters from '../components/DashboardFieldFilters'
+import LogTable, { useDeviceMap, buildDefaultColumns, resolveHostname } from '../components/LogTable'
 import { SEVERITY_LABELS } from '../constants'
 import { useAuth } from '../services/auth'
 
@@ -27,8 +28,6 @@ export default function DashboardViewPage() {
   const [tableLoading, setTableLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const [pageSize, setPageSize] = useState(50)
-  // Keyset pagination cursor for "Load more" on the timestamp sorts; sorting
-  // by severity/hostname falls back to offset (see sortSupportsCursor).
   const cursorRef = useRef('')
   const offsetRef = useRef(0)
   const [filters, setFilters] = useState({
@@ -58,21 +57,7 @@ export default function DashboardViewPage() {
     ],
   )
 
-  const deviceMap = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const d of devices) {
-      const dn = resolveDeviceDisplayName(d)
-      if (d.fromhost_ip) m.set(d.fromhost_ip, dn)
-      if (d.hostname) m.set(d.hostname, dn)
-      if (d.old_hostname) m.set(d.old_hostname, dn)
-    }
-    return m
-  }, [devices])
-
-  const resolveHostname = (hostname: string, fromhost_ip?: string, displayName?: string): string => {
-    if (displayName) return displayName
-    return deviceMap.get(fromhost_ip || hostname || '') || hostname || '-'
-  }
+  const deviceMap = useDeviceMap(devices)
 
   const loadDashboard = async () => {
     setLoading(true)
@@ -176,7 +161,6 @@ export default function DashboardViewPage() {
       }
     }, 30000)
 
-    // Check if tab is active
     const handleVisibilityChange = () => {
       setIsTabActive(!document.hidden)
     }
@@ -244,16 +228,10 @@ export default function DashboardViewPage() {
   const dashDevices = dashboard?.config?.devices || []
   const dashFixedSeverity = dashboard?.config?.filters?.severity || ''
 
-  // Device filter options limited to the dashboard's own device scope -
-  // narrowing to a device outside that scope wouldn't return anything
-  // anyway (see resolveDashboardFilters on the backend).
   const dashDeviceOptions = devices
     .filter(d => dashDevices.includes(d.fromhost_ip))
     .map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))
 
-  // Only offer sorting by a field the dashboard doesn't already pin to a
-  // single value - "By Device" is meaningless when the dashboard is scoped
-  // to exactly one device, but still useful with zero (all) or several.
   const sortOptions = [
     { label: 'Newest First', value: 'timestamp_desc' },
     { label: 'Oldest First', value: 'timestamp_asc' },
@@ -281,60 +259,7 @@ export default function DashboardViewPage() {
   }
 
   const columns = [
-    {
-      title: 'Time',
-      dataIndex: 'timestamp',
-      key: 'timestamp',
-      width: 180,
-      render: (v: string) => new Date(v).toLocaleString(),
-    },
-    {
-      title: 'Device',
-      dataIndex: 'hostname',
-      key: 'hostname',
-      width: 150,
-      render: (v: string, r: LogEntry) => <Tag color="blue">{resolveHostname(v, r.fromhost_ip, r.display_name)}</Tag>,
-    },
-    {
-      title: 'Severity',
-      dataIndex: 'severity',
-      key: 'severity',
-      width: 100,
-      render: (v: string) => <SeverityTag severity={v} />,
-    },
-    {
-      title: 'App',
-      dataIndex: 'app_name',
-      key: 'app_name',
-      width: 120,
-      render: (v?: string) => v ? <Text type="secondary">{v}</Text> : '-',
-    },
-    {
-      title: 'Message',
-      dataIndex: 'message',
-      key: 'message',
-      width: 300,
-      ellipsis: { showTitle: true },
-      render: (v: string, record: LogEntry) => {
-        const display = record.raw_message || v
-        return (
-          <pre style={{
-            margin: 0,
-            width: '100%',
-            maxWidth: '100%',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-all',
-            fontFamily: 'Consolas, Monaco, monospace',
-            fontSize: 12,
-            lineHeight: 1.4,
-            maxHeight: 100,
-            overflow: 'auto',
-          }}>
-            {display}
-          </pre>
-        )
-      },
-    },
+    ...buildDefaultColumns(deviceMap),
     ...buildCustomColumns(),
   ]
 
@@ -342,7 +267,7 @@ export default function DashboardViewPage() {
     if (!detailLog) return null
     const items: { label: string; content: React.ReactNode }[] = [
       { label: 'Timestamp', content: new Date(detailLog.timestamp).toLocaleString() },
-      { label: 'Hostname', content: <Tag color="blue">{resolveHostname(detailLog.hostname, detailLog.fromhost_ip, detailLog.display_name)}</Tag> },
+      { label: 'Hostname', content: <Tag color="blue">{resolveHostname(deviceMap, detailLog.hostname, detailLog.fromhost_ip, detailLog.display_name)}</Tag> },
       { label: 'Source IP', content: detailLog.fromhost_ip ? <Tag color="green">{detailLog.fromhost_ip}</Tag> : '-' },
       { label: 'Severity', content: <SeverityTag severity={detailLog.severity} /> },
       { label: 'Facility', content: detailLog.facility ?? '-' },
@@ -529,34 +454,19 @@ export default function DashboardViewPage() {
         <DashboardFieldFilters availableFields={fields} value={fieldFilters} onChange={setFieldFilters} />
       </Card>
 
-      <Table
-        dataSource={logs}
-        columns={enhanceColumns(columns)}
-        rowKey="id"
+      <LogTable
+        logs={logs}
+        devices={devices}
+        columns={columns}
         loading={tableLoading}
-        size="small"
-        tableLayout="fixed"
-        scroll={{ x: 'max-content' }}
-        onRow={(record) => ({
-          onClick: () => setDetailLog(record),
-          style: { cursor: 'pointer' },
-        })}
-        pagination={false}
+        loadingMore={loadingMore}
+        hasMore={hasMore}
+        pageSize={pageSize}
+        setPageSize={setPageSize}
+        onLoadMore={handleLoadMore}
+        onRowClick={setDetailLog}
+        enhanceColumns={enhanceColumns}
       />
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8, marginTop: 16 }}>
-        <Select
-          size="small"
-          style={{ width: 100 }}
-          value={pageSize}
-          onChange={setPageSize}
-          options={['25', '50', '100', '200'].map(v => ({ label: `${v} / page`, value: parseInt(v) }))}
-        />
-        {hasMore ? (
-          <Button onClick={handleLoadMore} loading={loadingMore}>Load more</Button>
-        ) : (
-          <Text type="secondary">No more logs</Text>
-        )}
-      </div>
 
       <Modal
         title="Log Details"

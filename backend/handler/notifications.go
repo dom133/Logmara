@@ -51,10 +51,8 @@ func CreateNotificationChannel(database *sql.DB) gin.HandlerFunc {
 		}
 
 		var createdBy int64
-		if uid, ok := c.Get("user_id"); ok {
-			if id, ok := uid.(int64); ok {
-				createdBy = id
-			}
+		if id, ok := extractUserID(c); ok {
+			createdBy = id
 		}
 
 		channel, err := db.CreateNotificationChannel(database, req, createdBy)
@@ -105,9 +103,8 @@ func channelOwnedByCaller(c *gin.Context, database *sql.DB, id int64) (*model.No
 // gin.Context without a real database connection.
 func callerCanModifyChannel(c *gin.Context, channel *model.NotificationChannel) bool {
 	if channel.CreatedBy != nil {
-		uid, ok := c.Get("user_id")
-		callerID, okType := uid.(int64)
-		return ok && okType && *channel.CreatedBy == callerID
+		callerID, ok := extractUserID(c)
+		return ok && *channel.CreatedBy == callerID
 	}
 
 	claims, exists := c.Get("claims")

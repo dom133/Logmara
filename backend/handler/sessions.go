@@ -16,9 +16,8 @@ import (
 // they don't recognize.
 func ListSessions(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userID, ok := c.Get("user_id")
-		uid, okType := userID.(int64)
-		if !ok || !okType {
+		uid, ok := extractUserID(c)
+		if !ok {
 			middleware.HandleError(c, model.NewAppError(http.StatusUnauthorized, "Authentication required", nil))
 			return
 		}
@@ -46,9 +45,8 @@ func ListSessions(database *sql.DB) gin.HandlerFunc {
 // RevokeSession signs out one of the caller's own sessions by id.
 func RevokeSession(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userID, ok := c.Get("user_id")
-		uid, okType := userID.(int64)
-		if !ok || !okType {
+		uid, ok := extractUserID(c)
+		if !ok {
 			middleware.HandleError(c, model.NewAppError(http.StatusUnauthorized, "Authentication required", nil))
 			return
 		}
