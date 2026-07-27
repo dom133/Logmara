@@ -42,13 +42,13 @@ export default function ParsersPage() {
     modalOpen,
     editing,
     openCreate,
-    openEdit,
+    openEdit: crudOpenEdit,
     closeModal,
     handleCreate,
     handleUpdate,
     handleDelete,
     refresh,
-  } = useCrud<Parser, { name: string; description?: string; device_type: string; match_type: string; match_value?: string; regex: string; enabled: boolean; fields: ParserFieldDef[] }, Partial<{ name: string; description: string; device_type: string; match_type: string; match_value: string; regex: string; enabled: boolean }>>({
+  } = useCrud<Parser, { name: string; description?: string; device_type: string; match_type: string; match_value?: string; regex: string; enabled: boolean; fields: ParserFieldDef[] }, Partial<{ name: string; description: string; device_type: string; match_type: string; match_value: string; regex: string; enabled: boolean; fields: ParserFieldDef[] }>>({
     loadData: async () => {
       const [p, f] = await Promise.all([getParsers(), getParsedFields()])
       setFields(f)
@@ -60,6 +60,22 @@ export default function ParsersPage() {
     entityName: 'Parser',
     form,
   })
+
+  const parserFields = (pid: number) => fields.filter(f => f.parser_id === pid)
+
+  const openEdit = (p: Parser) => {
+    form.setFieldsValue({
+      name: p.name,
+      description: p.description ?? undefined,
+      device_type: p.device_type,
+      match_type: p.match_type,
+      match_value: p.match_value ?? undefined,
+      regex: p.regex,
+      enabled: p.enabled,
+      fields: parserFields(p.id).map(f => ({ name: f.field_name, label: f.field_label, type: f.field_type })),
+    })
+    crudOpenEdit(p)
+  }
 
   const handleClone = async (id: number) => {
     try {
@@ -97,8 +113,6 @@ export default function ParsersPage() {
       message.error(getErrorMessage(e, 'Failed to start reparse'))
     }
   }
-
-  const parserFields = (pid: number) => fields.filter(f => f.parser_id === pid)
 
   const columns = [
     {
