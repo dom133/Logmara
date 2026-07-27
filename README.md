@@ -17,9 +17,20 @@
 
 **Logmara is a self-hosted, [Docker Compose](#quick-start-single-server)-deployed platform for ingesting, parsing, and visualizing syslog data** — a live log viewer, a regex-based parser engine for structuring raw messages, custom dashboards, alerting, and an admin panel, all behind JWT auth with no external dependencies.
 
+Project website: **[logmara.com](https://logmara.com)**
+
 <p align="center">
   <img src="docs/screenshot-dashboard.png" alt="Logmara dashboard (sample data)" width="900" />
 </p>
+
+## Demo
+
+A live demo is available at **[demo.logmara.com](https://demo.logmara.com)**:
+
+| Field | Value |
+|-------|-------|
+| Username | `demo` |
+| Password | `Demouser12@` |
 
 ## Architecture
 
@@ -33,7 +44,7 @@
 |---------|---------|-------------|
 | Frontend | 80 (443 if HTTPS is enabled, see Admin > Settings) | React SPA served via Nginx |
 | API | 8080 | Gin REST API with JWT auth; tails rsyslog's JSONL output into PostgreSQL |
-| rsyslog | 514 (TCP/UDP); 6514 (mTLS, optional relay ingestion - see [Syslog Relay](#syslog-relay-optional-multi-vlan)) | Syslog ingestion daemon |
+| rsyslog | 514 (TCP/UDP); 6514 (TLS, no client cert - same ingestion as 514, just encrypted); 6515 (mTLS, optional relay ingestion - see [Syslog Relay](#syslog-relay-optional-multi-vlan)) | Syslog ingestion daemon |
 | PostgreSQL | 5432 | Persistent log storage |
 | docker-proxy | *(internal only, not published to the host)* | Read-only Docker Engine API sidecar backing [Health Monitoring](#health-monitoring) |
 
@@ -768,20 +779,26 @@ There's no automatic fencing (STONITH) set up here — for a deployment where ev
 
 ## Syslog Relay (Optional, Multi-VLAN)
 
-Lets one or more small, standalone rsyslog hosts sit in VLANs that don't route directly to the central server, collect syslog from local devices, and forward it over an authenticated, encrypted channel (mTLS on port 6514) to this server's normal ingestion pipeline. The central server keeps accepting direct syslog on 514 from its own VLAN exactly as in the Quick Start — relays are additive, not a replacement, and any number of them can point at the same central server. This works the same whether the central side is a single server (`docker-compose.yml`) or the [High Availability](#high-availability-deployment-multi-node-optional) multi-node stack above.
+Lets one or more small, standalone rsyslog hosts sit in VLANs that don't route directly to the central server, collect syslog from local devices, and forward it over an authenticated, encrypted channel (mTLS on port 6515) to this server's normal ingestion pipeline. The central server keeps accepting direct syslog on 514 from its own VLAN exactly as in the Quick Start — relays are additive, not a replacement, and any number of them can point at the same central server. This works the same whether the central side is a single server (`docker-compose.yml`) or the [High Availability](#high-availability-deployment-multi-node-optional) multi-node stack above.
 
 <p align="center">
-  <img src="docs/architecture-syslog-relay.svg" alt="Syslog relay architecture: devices in VLAN A forward to syslog-relay in VLAN B, and device4 in VLAN D forwards to syslog-relay-2, both relaying over mTLS on port 6514/tcp to rsyslog in the central VLAN C, which writes logs.jsonl for the tailer" width="900" />
+  <img src="docs/architecture-syslog-relay.svg" alt="Syslog relay architecture: devices in VLAN A forward to syslog-relay in VLAN B, and device4 in VLAN D forwards to syslog-relay-2, both relaying over mTLS on port 6515/tcp to rsyslog in the central VLAN C, which writes logs.jsonl for the tailer" width="900" />
 </p>
 
 Each relay reuses the same JSON conversion the central server already does locally (`rsyslog/syslog.conf`'s `JsonLines` template), so `fromhost_ip` stays the real device IP — the field parser matching and per-device stats rely on — instead of becoming the relay's own IP.
+
+### Sending directly over TLS, without a relay
+
+Devices that don't need a relay but still want an encrypted transport instead of plain-text 514 can send straight to the **central server's** port **6514** (TCP), which runs the exact same ingestion as 514 — no relay, no JSON pre-formatting, no separate whitelist. Unlike the relay's port 6515, this listener is server-authenticated TLS only: it presents a certificate (the same one managed under `/data/relay` for the relay feature, including the self-signed placeholder generated before that feature has ever been configured) but does not require or check a client certificate, so any device that can reach the port and is willing to skip server-certificate verification can use it. It is not gated by the relay whitelist/ACL — leave it unpublished (remove or comment out `SYSLOG_TLS_PORT`'s line in `docker-compose.yml`) if you don't want it reachable.
+
+**Each relay has the same thing, locally.** Independently of the central server's own 6514, every deployed relay also listens on its *own* 6514/tcp (see `docker-compose.relay.yml`'s `RELAY_TLS_PORT`) for devices in *that relay's* VLAN that want TLS instead of plain 514 into the relay — again server-authenticated only, no client cert. The relay generates its own self-signed certificate locally on first start (`entrypoint-relay.sh`, persisted in the `relay_tls` volume) rather than reusing anything from its uplink bundle, since that bundle's `client.crt`/`client.key` authenticate the relay *to the central server*, not the other way around. Devices sending here are relayed onward exactly like anything else the relay receives (over mTLS to the central server, `fromhost_ip` preserved). A relay built before this feature existed needs a rebuilt image *and* an updated `relay.conf` (either a freshly downloaded certificate bundle, or manually add the `6514` `input()` block — see the comment above `relayConfSnippet` in `backend/handler/relay.go` for the exact snippet) before this works.
 
 ### How it's secured
 
 - **mTLS**: the central server runs its own internal CA (generated automatically the first time you use this feature — see `backend/relaypki`). The CA uses RSA 4096-bit keys. Every relay gets a client certificate signed by that CA; the central listener rejects any connection without a valid one.
 - **IP whitelist**: a valid certificate alone isn't enough — the peer's IP must also be on the whitelist (Admin > Syslog Relay > Whitelist IP). Together these mean only a relay you've explicitly approved, from an IP you've explicitly approved, gets in.
 - **Revocation is a real, immediate cutoff** — there's no X.509 CRL/OCSP at the TLS layer, so instead every relay certificate gets a CommonName unique to that one issuance (`label#serial`, see `backend/relaypki`), and the mTLS listener's `StreamDriver.AuthMode="x509/name"` only accepts a handshake whose CommonName is in the current `PermittedPeer` list — regenerated, alongside the IP allow-list, in the very same `allowed-relays.conf` every time a certificate is issued or revoked. Revoking one (Admin > Syslog Relay > Certificates > Revoke), or replacing it via Regenerate/Renew, drops its exact CommonName from that list, so the *old* key specifically stops working — not just "some cert signed by our CA" — even though it's still cryptographically valid and unexpired.
-  - Applying this needs a real `rsyslogd` restart, not just a config nudge: rsyslog has no lightweight reload (`SIGHUP` only reopens output files), so `entrypoint.sh` runs `rsyslogd` as a supervised child and the reload sidecar kills just that child to force a restart against the regenerated config. This briefly interrupts ingestion on **both** 514 and 6514 (one process serves both), every time a relay whitelist/certificate change is applied.
+  - Applying this needs a real `rsyslogd` restart, not just a config nudge: rsyslog has no lightweight reload (`SIGHUP` only reopens output files), so `entrypoint.sh` runs `rsyslogd` as a supervised child and the reload sidecar kills just that child to force a restart against the regenerated config. This briefly interrupts ingestion on **514, 6514, and 6515 alike** (one process serves all three), every time a relay whitelist/certificate change is applied.
   - The whitelist entry itself is left in place either way, now shown as **Blocked** on the Whitelist IP tab, rather than deleted — generate a replacement certificate for it (from either tab) to restore access.
   - Removing an IP from the **whitelist** entirely (Whitelist IP > delete) also revokes its certificate, since a device that's no longer allowed in shouldn't leave an "issued" certificate lying around either.
   - The old, revoked certificate row is always kept for the audit trail — "Regenerate" on a revoked row issues a fresh certificate (with its own fresh CommonName) for the same entry without deleting its history.
@@ -811,20 +828,20 @@ Each relay reuses the same JSON conversion the central server already does local
 
 ### Enabling it
 
-1. Admin > Settings > **Syslog Relay** > turn on "Enable Syslog Relay Ingestion". This starts accepting mTLS connections on port 6514 (still gated by the whitelist below, so nothing gets in until you add a relay).
+1. Admin > Settings > **Syslog Relay** > turn on "Enable Syslog Relay Ingestion". This starts accepting mTLS connections on port 6515 (still gated by the whitelist below, so nothing gets in until you add a relay).
 2. A new **Syslog Relay** entry appears in the sidebar. Either open **Certificates** > "Generate Certificate" and give the relay a label and the IP it will connect from directly, or first add the IP under **Whitelist IP** and generate a certificate for that entry afterwards (its "Generate Certificate" row action) — useful if you want the IP approved before a certificate exists for it. Either way, the browser downloads `syslog-relay-<label>.tar.gz` — save it now, this is the only copy.
 3. Copy that file to the small server you're deploying in the client VLAN, alongside `docker-compose.relay.yml` and `Dockerfile.rsyslog-relay` from this repo:
    ```bash
    mkdir -p relay-bundle && tar xzf syslog-relay-<label>.tar.gz -C relay-bundle
    docker compose -f docker-compose.relay.yml up -d --build
    ```
-4. Point the devices in that VLAN at the relay's IP on port 514 (tcp or udp), same as you would the central server directly.
+4. Point the devices in that VLAN at the relay's IP on port 514 (tcp or udp) — or 6514/tcp if they want TLS into the relay itself, see [Sending directly over TLS, without a relay](#sending-directly-over-tls-without-a-relay) — same as you would the central server directly.
 
 The target host baked into every generated `relay.conf` comes from, in order: the **Central Server Address** field under Admin > Settings > Syslog Relay (only editable once ingestion is enabled), then the `RELAY_CENTRAL_HOST` env var on the central server's `api` service, then `127.0.0.1` if neither is set — which only makes sense for same-host testing, so set one of the first two for any real cross-VLAN deployment.
 
 ### Firewall
 
-The relay only ever needs one outbound rule: **relay → central, 6514/tcp**. It doesn't need to be reachable *from* the central VLAN at all. On the central side, only 6514/tcp needs to be reachable from the relay's VLAN — devices behind the relay never talk to the central server directly.
+The relay only ever needs one outbound rule: **relay → central, 6515/tcp**. It doesn't need to be reachable *from* the central VLAN at all. On the central side, only 6515/tcp needs to be reachable from the relay's VLAN — devices behind the relay never talk to the central server directly. The relay's own 514 and 6514 (see [Sending directly over TLS, without a relay](#sending-directly-over-tls-without-a-relay)) only need to be reachable from devices *inside that relay's own VLAN* — open 6514 there too only if you want local devices using TLS into the relay.
 
 ### Limitations
 
@@ -845,7 +862,7 @@ Admin > Health shows the up/down status of every container the app depends on. I
 
 ### Syslog Relay is different
 
-A [relay](#syslog-relay-optional-multi-vlan) isn't on `syslog_net` and isn't reachable from the central server at all — by design, its only firewall rule is *outbound* 6514/tcp to the central server (see [Firewall](#firewall)). There's no socket, network path, or open port for the central server to check its container status through. The Health tab shows relay **liveness** instead, derived from data the app already has: whether a log has arrived recently from its whitelisted IP (`mv_device_stats.last_seen`, same rollup the Devices tab and device-silence alerts use) and whether its certificate is still `issued` rather than `revoked`. This is a proxy for "is it up and forwarding," not a container health check — a relay that's up but has nothing to forward will look identical to one that's down.
+A [relay](#syslog-relay-optional-multi-vlan) isn't on `syslog_net` and isn't reachable from the central server at all — by design, its only firewall rule is *outbound* 6515/tcp to the central server (see [Firewall](#firewall)). There's no socket, network path, or open port for the central server to check its container status through. The Health tab shows relay **liveness** instead, derived from data the app already has: whether a log has arrived recently from its whitelisted IP (`mv_device_stats.last_seen`, same rollup the Devices tab and device-silence alerts use) and whether its certificate is still `issued` rather than `revoked`. This is a proxy for "is it up and forwarding," not a container health check — a relay that's up but has nothing to forward will look identical to one that's down.
 
 ## Features
 

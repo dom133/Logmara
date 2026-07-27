@@ -8,12 +8,17 @@ import {
 import { emitLiveNotification } from '../services/notificationEvents'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { getErrorMessage } from '../utils/error'
+import { SEVERITY_COLORS } from '../constants'
 
-const severityColor: Record<string, string> = {
-  critical: 'red',
-  error: 'volcano',
-  warning: 'orange',
-  info: 'blue',
+const severityColorMap: Record<string, string> = {
+  critical: 'crit',
+  error: 'err',
+  warning: 'warning',
+  info: 'info',
+}
+
+function getSeverityColor(severity: string) {
+  return SEVERITY_COLORS[severityColorMap[severity] ?? severity] ?? 'default'
 }
 
 function formatTime(iso: string) {
@@ -182,7 +187,7 @@ export function NotificationBell() {
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
             <Typography.Text strong style={{ fontSize: 13 }}>{n.title}</Typography.Text>
-            <Tag color={severityColor[n.severity] || 'default'} style={{ marginRight: 0 }}>{n.severity}</Tag>
+            <Tag color={getSeverityColor(n.severity)} style={{ marginRight: 0 }}>{n.severity}</Tag>
           </div>
           <Typography.Text type="secondary" style={{ fontSize: 13, display: 'block', marginTop: 2 }}>{n.message}</Typography.Text>
           <Typography.Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>{formatTime(n.created_at)}</Typography.Text>

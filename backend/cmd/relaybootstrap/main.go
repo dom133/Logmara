@@ -4,7 +4,7 @@
 // service (which calls EnsureCA directly, in-process, from
 // handler.SyncRelayConfig) and the rsyslog container, which has no Go
 // runtime of its own and needs the CA/server cert to exist before it can
-// bind its mTLS listener on 6514 - even on a first boot before the api
+// bind its mTLS listener on 6515 - even on a first boot before the api
 // service has necessarily run yet (see rsyslog/entrypoint.sh).
 //
 // EnsureCA is idempotent and safe to call repeatedly and concurrently with

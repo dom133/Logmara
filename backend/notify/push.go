@@ -112,23 +112,26 @@ func dispatchPush(database *sql.DB, payload Payload, targetUserIds []int64) (pus
 		return pushResult{}, fmt.Errorf("no browsers are subscribed to push notifications")
 	}
 
-	adminOnly := payload.AlertRuleType == "audit_log" || payload.AlertRuleType == "relay_cert_expiring" || payload.AlertRuleType == "malformed_json"
+	adminOnly := model.IsAdminOnlyRuleType(payload.AlertRuleType)
 	filtered := make([]model.PushSubscription, 0, len(subs))
 	for _, s := range subs {
-		if adminOnly && !db.IsUserAdmin(database, s.UserID) {
-			continue
-		}
+		targeted := false
 		if len(targetUserIds) > 0 {
-			found := false
 			for _, uid := range targetUserIds {
 				if uid == s.UserID {
-					found = true
+					targeted = true
 					break
 				}
 			}
-			if !found {
+			if !targeted {
 				continue
 			}
+		}
+		// Broadcast (no specific targets) admin-only notifications stay
+		// admin-only; being specifically targeted overrides that, same
+		// reasoning as db.GetInAppNotifications.
+		if !targeted && adminOnly && !db.IsUserAdmin(database, s.UserID) {
+			continue
 		}
 		filtered = append(filtered, s)
 	}

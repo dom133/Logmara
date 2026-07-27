@@ -2,12 +2,24 @@
 # client VLAN (see README "Syslog Relay" and docker-compose.relay.yml).
 # Unlike Dockerfile.rsyslog (the main stack's collector, which writes
 # logs.jsonl for the api's tailer), this only ever forwards - the actual
-# config (relay.conf) and TLS material are supplied at deploy time from the
-# certificate bundle downloaded once from Admin > Syslog Relay, not baked
-# into the image.
+# config (relay.conf) and TLS material for the uplink to the central
+# server are supplied at deploy time from the certificate bundle
+# downloaded once from Admin > Syslog Relay, not baked into the image.
+#
+# relay.conf (from that bundle) also declares this relay's own optional
+# direct-TLS listener on 6514 for local devices (see
+# backend/handler/relay.go's relayConfSnippet) - it has to live there,
+# not in a separate file baked into this image, so it loads after (and
+# reuses) that same file's `module(load="imtcp")` rather than risking a
+# second, conflicting load of the same module from a second file.
+# entrypoint-relay.sh (below) only generates that listener's self-signed
+# certificate - unrelated to the uplink bundle, so it doesn't need to
+# wait for one to exist.
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends rsyslog rsyslog-gnutls procps && rm -rf /var/lib/apt/lists/*
-EXPOSE 514 514/udp
+RUN apt-get update && apt-get install -y --no-install-recommends rsyslog rsyslog-gnutls openssl procps && rm -rf /var/lib/apt/lists/*
+COPY rsyslog/entrypoint-relay.sh /entrypoint-relay.sh
+RUN chmod +x /entrypoint-relay.sh
+EXPOSE 514 514/udp 6514
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD pgrep -x rsyslogd || exit 1
-CMD ["rsyslogd", "-n"]
+ENTRYPOINT ["/entrypoint-relay.sh"]

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, message, Popconfirm, Typography, List, Spin } from 'antd'
+import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, message, Popconfirm, Typography, Spin } from 'antd'
 import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
-import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardConfig, ParsedField, FieldFilter } from '../services/api'
+import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardConfig, ParsedField } from '../services/api'
 import { getDevices, getParsedFields, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
+import { useCrud } from '../hooks/useCRUD'
 import { useAuth } from '../services/auth'
 import DashboardFieldFilters from '../components/DashboardFieldFilters'
 import { getErrorMessage } from '../utils/error'
@@ -15,10 +16,6 @@ export default function DashboardsPage() {
   const { user } = useAuth()
   const canEdit = user?.role === 'admin' || user?.role === 'editor'
   const isAdmin = user?.role === 'admin'
-  const [dashboards, setDashboards] = useState<Dashboard[]>([])
-  const [loading, setLoading] = useState(true)
-  const [modalOpen, setModalOpen] = useState(false)
-  const [editing, setEditing] = useState<Dashboard | null>(null)
   const [form] = Form.useForm()
   const [devices, setDevices] = useState<DeviceStats[]>([])
   const [parsedFields, setParsedFields] = useState<ParsedField[]>([])
@@ -42,22 +39,36 @@ export default function DashboardsPage() {
     setParsedFields(pf)
   }
 
-  const loadFieldsForDevices = async (devices: string[]) => {
-    const pf = await getParsedFields(devices.length > 0 ? devices : undefined)
+  const loadFieldsForDevices = async (devicesList: string[]) => {
+    const pf = await getParsedFields(devicesList.length > 0 ? devicesList : undefined)
     setParsedFields(pf)
   }
 
-  const loadData = async () => {
-    setLoading(true)
-    try {
+  const {
+    items: dashboards,
+    loading,
+    modalOpen,
+    editing,
+    openCreate: crudOpenCreate,
+    openEdit: crudOpenEdit,
+    closeModal,
+    handleCreate,
+    handleUpdate,
+    handleDelete,
+    refresh,
+  } = useCrud<Dashboard, { name: string; description?: string; config: DashboardConfig }, Partial<{ name: string; description: string; config: DashboardConfig }>>({
+    loadData: async () => {
       const [d, dv] = await Promise.all([getDashboards(), getDevices()])
-      setDashboards(d)
       setDevices(dv)
       await loadAllFields()
-    } finally {
-      setLoading(false)
-    }
-  }
+      return d
+    },
+    createItem: createDashboard,
+    updateItem: updateDashboard,
+    deleteItem: deleteDashboard,
+    entityName: 'Dashboard',
+    form,
+  })
 
   const selectedDevices: string[] = Form.useWatch(['config', 'devices'], form) || []
   const selectedParsers: string[] = Form.useWatch(['config', 'parsers'], form) || []
@@ -84,51 +95,11 @@ export default function DashboardsPage() {
     value: f.field_name,
   }))
 
-  useEffect(() => {
-    loadData()
-  }, [])
-
-  const handleCreate = async (values: unknown) => {
-    try {
-      await createDashboard(values as { name: string; description?: string; config: DashboardConfig })
-      message.success('Dashboard created')
-      setModalOpen(false)
-      form.resetFields()
-      loadData()
-    } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to create dashboard'))
-    }
-  }
-
-  const handleUpdate = async (values: unknown) => {
-    if (!editing) return
-    try {
-      await updateDashboard(editing.id, values as Partial<{ name: string; description: string; config: DashboardConfig }>)
-      message.success('Dashboard updated')
-      setModalOpen(false)
-      setEditing(null)
-      form.resetFields()
-      loadData()
-    } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to update dashboard'))
-    }
-  }
-
-  const handleDelete = async (id: number) => {
-    try {
-      await deleteDashboard(id)
-      message.success('Dashboard deleted')
-      loadData()
-    } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to delete dashboard'))
-    }
-  }
-
   const handleTogglePin = async (id: number) => {
     try {
       const res = await togglePinDashboard(id)
       message.success(res.pinned ? 'Dashboard pinned' : 'Dashboard unpinned')
-      loadData()
+      refresh()
       window.dispatchEvent(new CustomEvent('dashboards-pinned-changed'))
     } catch (e: unknown) {
       message.error(getErrorMessage(e, 'Failed to toggle pin'))
@@ -139,14 +110,13 @@ export default function DashboardsPage() {
     try {
       const res = await togglePublicDashboard(id)
       message.success(res.is_public ? 'Dashboard is now public' : 'Dashboard is now private')
-      loadData()
+      refresh()
     } catch (e: unknown) {
       message.error(getErrorMessage(e, 'Failed to toggle public'))
     }
   }
 
   const openCreate = () => {
-    setEditing(null)
     form.resetFields()
     form.setFieldsValue({
       config: {
@@ -157,11 +127,10 @@ export default function DashboardsPage() {
     })
     prevDevices.current = []
     loadAllFields()
-    setModalOpen(true)
+    crudOpenCreate()
   }
 
   const openEdit = (d: Dashboard) => {
-    setEditing(d)
     form.setFieldsValue({
       name: d.name,
       description: d.description,
@@ -170,7 +139,7 @@ export default function DashboardsPage() {
     const devs = d.config?.devices || []
     prevDevices.current = devs
     loadFieldsForDevices(devs)
-    setModalOpen(true)
+    crudOpenEdit(d)
   }
 
   const columns = [
@@ -343,23 +312,23 @@ export default function DashboardsPage() {
       <Modal
         title={editing ? 'Edit Dashboard' : 'New Dashboard'}
         open={modalOpen}
-        onCancel={() => { setModalOpen(false); setEditing(null) }}
+        onCancel={closeModal}
         onOk={() => { form.validateFields().then(values => editing ? handleUpdate(values) : handleCreate(values)) }}
         width={{ sm: '90%', md: 700 }}
       >
         <Form form={form} layout="vertical" onValuesChange={async (changed, allValues) => {
-      const newDevices = allValues.config?.devices || []
-      if (JSON.stringify(newDevices) !== JSON.stringify(prevDevices.current)) {
-        prevDevices.current = newDevices
-        form.setFieldValue(['config', 'parsers'], [])
-        form.setFieldValue(['config', 'fields'], [])
-        await loadFieldsForDevices(newDevices)
-        return
-      }
-      if (changed.config && Object.prototype.hasOwnProperty.call(changed.config, 'parsers')) {
-        form.setFieldValue(['config', 'fields'], [])
-      }
-    }}>
+          const newDevices = allValues.config?.devices || []
+          if (JSON.stringify(newDevices) !== JSON.stringify(prevDevices.current)) {
+            prevDevices.current = newDevices
+            form.setFieldValue(['config', 'parsers'], [])
+            form.setFieldValue(['config', 'fields'], [])
+            await loadFieldsForDevices(newDevices)
+            return
+          }
+          if (changed.config && Object.prototype.hasOwnProperty.call(changed.config, 'parsers')) {
+            form.setFieldValue(['config', 'fields'], [])
+          }
+        }}>
           <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Name is required' }, { max: 50, message: 'Name must be 50 characters or less' }]}>
             <Input placeholder="e.g. Firewall Monitoring" />
           </Form.Item>

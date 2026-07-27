@@ -243,6 +243,21 @@ func main() {
 		slog.Info("redis shared state enabled")
 	}
 
+	// API_REPLICAS mirrors the deploy.replicas value docker-stack.app.yml
+	// passes through as an env var (see its "environment:" block) - it has
+	// no effect on the single-server docker-compose.yml path, which never
+	// sets it and defaults to 1 here. Running more than one api replica
+	// without Redis means every replica runs its own uncoordinated tailer
+	// against the same shared log file and position checkpoint (see
+	// tailer.Run / runIngestionLoop): they race on both, corrupting the
+	// checkpoint and producing MALFORMED JSON as one replica seeks the file
+	// mid-line. That's silent data corruption, not just a missed
+	// optimization, so fail fast instead of letting it happen.
+	if apiReplicas, err := strconv.Atoi(os.Getenv("API_REPLICAS")); err == nil && apiReplicas > 1 && sharedClient == nil {
+		slog.Error("API_REPLICAS > 1 without Redis configured; multiple replicas would run uncoordinated tailers against the same log file and corrupt its position checkpoint - deploy docker-stack.redis.yml and set REDIS_SENTINEL_ADDRS/REDIS_ADDR, or run a single replica", "api_replicas", apiReplicas)
+		os.Exit(1)
+	}
+
 	// Feed every slow query recorded at the driver level (db.instrumentedConn)
 	// into the same admin slow-query log that handler.timedQuery writes to,
 	// so /admin/slow-queries covers all database access, not just the
@@ -410,14 +425,24 @@ func main() {
 		handler.SetCacheBroadcaster(broadcaster)
 		go handler.StartCacheInvalidationSubscriber(ctx, broadcaster)
 		handler.SetSlowQueryStore(sharedClient)
-		elector = sharedstate.NewLeaderElector(sharedClient, "tailer", 15*time.Second)
+		// TTL must leave real margin over tailer.go's own failure-detection
+		// deadline (leaderRenewInterval * leaderMaxRenewFails = 5s * 3 = 15s):
+		// if the lock's Redis-side TTL lapses at the same moment the current
+		// leader notices it can't renew, a waiting replica can acquire the
+		// lock and start ingesting before the old leader's goroutine has
+		// actually stopped - two tailers briefly active on the same file and
+		// position checkpoint, corrupting it exactly like running without
+		// Redis at all. 45s (3x that 15s deadline) gives a comfortable
+		// margin through a slow Sentinel failover while still recovering
+		// well within a minute if the leader outright crashes.
+		elector = sharedstate.NewLeaderElector(sharedClient, "tailer", 45*time.Second)
 	}
 
 	logFilePath := os.Getenv("LOG_FILE_PATH")
 	if logFilePath == "" {
 		logFilePath = "/data/logs.jsonl"
 	}
-	alertEngine := alertengine.NewEngine(database, sharedClient)
+	alertEngine := alertengine.NewEngine(ctx, database, sharedClient)
 	audit.SetAlertEngine(alertEngine)
 	notifHub := notifyhub.NewHub(ctx, sharedClient)
 	alertEngine.SetOnInApp(notifHub.Publish)
@@ -496,7 +521,11 @@ r := gin.New()
 	changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute, "/data/ratelimit-change-password.json")
 
 	r.GET("/api/health", handler.HealthCheck(database))
-	r.GET("/api/metrics", handler.PrometheusMetrics(database))
+
+	metricsGroup := r.Group("/api")
+	metricsGroup.Use(authCfg.JWTRequired())
+	metricsGroup.GET("/metrics", handler.PrometheusMetrics(database))
+
 	r.POST("/api/auth/login", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(loginLimiter), handler.Login(database, authCfg))
 	r.POST("/api/auth/refresh", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(refreshLimiter), handler.Refresh(database, authCfg))
 	r.POST("/api/auth/logout", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.Logout(database))
@@ -556,7 +585,7 @@ r := gin.New()
 		authGroup.PATCH("/dashboards/:id/pin", handler.TogglePinDashboard(database))
 
 		editorGroup := authGroup.Group("")
-		editorGroup.Use(auth.RoleRequired("admin", "editor"))
+		editorGroup.Use(authCfg.RoleRequired("admin", "editor"))
 		{
 			editorGroup.POST("/parsers", handler.CreateParser(engine))
 			editorGroup.PUT("/parsers/:id", handler.UpdateParser(engine))
@@ -571,15 +600,15 @@ r := gin.New()
 			editorGroup.PATCH("/dashboards/:id/public", handler.TogglePublicDashboard(database))
 
 			editorGroup.GET("/alerts", notificationsGate, handler.ListAlerts(database))
-			editorGroup.POST("/alerts", notificationsGate, handler.CreateAlert(database))
-			editorGroup.PUT("/alerts/:id", notificationsGate, handler.UpdateAlert(database))
-			editorGroup.DELETE("/alerts/:id", notificationsGate, handler.DeleteAlert(database))
+			editorGroup.POST("/alerts", notificationsGate, handler.CreateAlert(alertEngine))
+			editorGroup.PUT("/alerts/:id", notificationsGate, handler.UpdateAlert(alertEngine))
+			editorGroup.DELETE("/alerts/:id", notificationsGate, handler.DeleteAlert(alertEngine))
 
 			editorGroup.GET("/users/directory", handler.ListUserDirectory(database))
 		}
 
 		adminGroup := authGroup.Group("/admin")
-		adminGroup.Use(auth.AdminRequired())
+		adminGroup.Use(authCfg.AdminRequired())
 		{
 			adminGroup.GET("/users", handler.ListUsers(database))
 			adminGroup.POST("/users", handler.CreateUser(database))
@@ -625,7 +654,7 @@ r := gin.New()
 		// an editor (or admin) can only ever modify a channel they made
 		// themselves, or one predating the created_by column entirely.
 		adminEditorGroup := authGroup.Group("/admin")
-		adminEditorGroup.Use(auth.RoleRequired("admin", "editor"))
+		adminEditorGroup.Use(authCfg.RoleRequired("admin", "editor"))
 		{
 			adminEditorGroup.POST("/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
 			adminEditorGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))

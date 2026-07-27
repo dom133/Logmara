@@ -105,6 +105,14 @@ func UpdateParser(engine *parser.Engine) gin.HandlerFunc {
 			MatchValue  *string `json:"match_value"`
 			Regex       *string `json:"regex"`
 			Enabled     *bool   `json:"enabled"`
+			// Pointer to the slice (not the slice itself) so an omitted "fields"
+			// key leaves parsed_fields_registry untouched, while an explicit
+			// (even empty) array means "replace the field list with this".
+			Fields *[]struct {
+				Name  string `json:"name"`
+				Label string `json:"label"`
+				Type  string `json:"type"`
+			} `json:"fields"`
 		}
 
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -113,6 +121,14 @@ func UpdateParser(engine *parser.Engine) gin.HandlerFunc {
 		}
 
 		db := engine.GetDB()
+
+		isBuiltin := false
+		db.QueryRow("SELECT is_builtin FROM parsers WHERE id = $1", id).Scan(&isBuiltin)
+
+		if isBuiltin {
+			middleware.HandleError(c, model.NewForbidden("cannot modify built-in parser", nil))
+			return
+		}
 
 		var setClauses []string
 		var args []interface{}
@@ -154,27 +170,54 @@ func UpdateParser(engine *parser.Engine) gin.HandlerFunc {
 			argIdx++
 		}
 
-		if len(setClauses) == 0 {
+		if len(setClauses) == 0 && req.Fields == nil {
 			middleware.HandleError(c, model.NewBadRequest("no fields to update", nil))
 			return
 		}
 
-		setClauses = append(setClauses, "updated_at = NOW()")
-		args = append(args, id)
-
-		query := "UPDATE parsers SET " + joinStrings(setClauses, ", ") + " WHERE id = $" + strconv.Itoa(argIdx)
-
-		isBuiltin := false
-		db.QueryRow("SELECT is_builtin FROM parsers WHERE id = $1", id).Scan(&isBuiltin)
-
-		if isBuiltin {
-			middleware.HandleError(c, model.NewForbidden("cannot modify built-in parser", nil))
+		tx, err := db.Begin()
+		if err != nil {
+			middleware.HandleError(c, model.NewInternal("Could not start transaction", err))
 			return
 		}
+		defer tx.Rollback()
 
-		_, err = db.Exec(query, args...)
-		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to update parser", err))
+		if len(setClauses) > 0 {
+			setClauses = append(setClauses, "updated_at = NOW()")
+			args = append(args, id)
+			query := "UPDATE parsers SET " + joinStrings(setClauses, ", ") + " WHERE id = $" + strconv.Itoa(argIdx)
+			if _, err := tx.Exec(query, args...); err != nil {
+				middleware.HandleError(c, model.NewInternal("Failed to update parser", err))
+				return
+			}
+		}
+
+		// Replace the field list wholesale (delete + reinsert) rather than
+		// diffing, same approach seedParsers uses to sync builtin parser
+		// definitions - simpler than reconciling adds/renames/removals, and
+		// field_name is what alerts/dashboards reference, not the row id.
+		if req.Fields != nil {
+			if _, err := tx.Exec("DELETE FROM parsed_fields_registry WHERE parser_id = $1", id); err != nil {
+				middleware.HandleError(c, model.NewInternal("Failed to update fields", err))
+				return
+			}
+			for _, f := range *req.Fields {
+				ftype := f.Type
+				if ftype == "" {
+					ftype = "string"
+				}
+				if _, err := tx.Exec(`
+					INSERT INTO parsed_fields_registry (parser_id, field_name, field_label, field_type)
+					VALUES ($1, $2, $3, $4)
+				`, id, f.Name, f.Label, ftype); err != nil {
+					middleware.HandleError(c, model.NewInternal("Failed to insert field", err))
+					return
+				}
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			middleware.HandleError(c, model.NewInternal("Could not commit transaction", err))
 			return
 		}
 

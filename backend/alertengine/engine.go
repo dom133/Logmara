@@ -4,10 +4,13 @@
 package alertengine
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"logmara/db"
@@ -15,6 +18,13 @@ import (
 	"logmara/notify"
 	"logmara/sharedstate"
 )
+
+// alertRulesReloadChannel carries a fire-and-forget "reload now" signal
+// across replicas whenever one of them changes an alert rule, so every
+// replica's cache picks up the change immediately instead of waiting for its
+// own runReloadLoop tick (up to 30s later). The payload is unused - the
+// message itself is the signal.
+const alertRulesReloadChannel = "alerts:reload"
 
 var severityRank = map[string]int{
 	"emerg": 0, "emergency": 0,
@@ -87,21 +97,130 @@ func globToRegex(pattern string) (*regexp.Regexp, error) {
 // called from the single tailer goroutine that currently holds ingestion
 // leadership.
 type Engine struct {
-	store      counterStore
-	dispatcher *notify.Dispatcher
+	db          *sql.DB
+	store       counterStore
+	dispatcher  *notify.Dispatcher
+	broadcaster *sharedstate.Broadcaster // nil when Redis isn't configured
+
+	mu          sync.RWMutex
+	rulesByType map[string][]model.Alert
+	reloadCh    chan struct{}
 }
 
 // NewEngine builds an Engine. redisClient may be nil (single-server
 // deployments without Redis configured), in which case rule counters and
-// cooldowns are tracked in-process instead of in Redis.
-func NewEngine(database *sql.DB, redisClient *sharedstate.Client) *Engine {
+// cooldowns are tracked in-process instead of in Redis, and cache reloads
+// stay local to this process.
+//
+// Active alert rules are loaded once here and cached in memory rather than
+// re-queried from Postgres on every single EvaluateBatch/EvaluateMalformedJSON
+// call - those run on the tailer's hot path (once per ingested batch, i.e.
+// potentially dozens of times a second), and at that rate the rule lookup was
+// itself a meaningful chunk of the per-batch DB round trips. The cache is
+// refreshed when Reload is called (wired up to the alert CRUD handlers), by
+// the periodic safety-net tick in runReloadLoop (also catches rule changes
+// made directly in the database), and - when Redis is configured - the
+// instant another replica's Reload publishes to alertRulesReloadChannel, so
+// a rule change made through replica A takes effect on replica B without
+// waiting for B's own next tick.
+func NewEngine(ctx context.Context, database *sql.DB, redisClient *sharedstate.Client) *Engine {
 	var store counterStore
+	var broadcaster *sharedstate.Broadcaster
 	if redisClient != nil {
 		store = newRedisCounterStore(redisClient)
+		broadcaster = sharedstate.NewBroadcaster(redisClient)
 	} else {
 		store = newLocalCounterStore()
 	}
-	return &Engine{store: store, dispatcher: notify.NewDispatcher(database)}
+	e := &Engine{
+		db:          database,
+		store:       store,
+		dispatcher:  notify.NewDispatcher(database),
+		broadcaster: broadcaster,
+		reloadCh:    make(chan struct{}, 1),
+	}
+	e.loadRules()
+	go e.runReloadLoop()
+	if broadcaster != nil {
+		go broadcaster.Subscribe(ctx, alertRulesReloadChannel, func(string) {
+			e.reloadLocal()
+		})
+	}
+	return e
+}
+
+// loadRules refreshes the in-memory active-rules cache from the database in
+// a single query, grouped by rule_type.
+func (e *Engine) loadRules() {
+	alerts, err := db.GetAllActiveAlerts(e.db)
+	if err != nil {
+		slog.Error("failed to load alert rules", "error", err)
+		return
+	}
+
+	byType := make(map[string][]model.Alert)
+	for _, a := range alerts {
+		byType[a.RuleType] = append(byType[a.RuleType], a)
+	}
+
+	e.mu.Lock()
+	e.rulesByType = byType
+	e.mu.Unlock()
+
+	slog.Info("loaded active alert rules", "count", len(alerts))
+}
+
+func (e *Engine) runReloadLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			e.loadRules()
+		case <-e.reloadCh:
+			e.loadRules()
+		}
+	}
+}
+
+// Reload triggers an async refresh of the cached active alert rules on this
+// replica, and - when Redis is configured - broadcasts the same signal to
+// every other replica so they refresh too. Called after any create/update/
+// delete/toggle of an alert so the change takes effect immediately instead
+// of waiting for the next periodic tick.
+func (e *Engine) Reload() {
+	e.reloadLocal()
+	if e.broadcaster != nil {
+		if err := e.broadcaster.Publish(context.Background(), alertRulesReloadChannel, ""); err != nil {
+			slog.Warn("failed to broadcast alert rules reload", "error", err)
+		}
+	}
+}
+
+// reloadLocal queues a refresh of this process's own cache only. Used by
+// Reload and by the cross-replica subscriber alike, so a reload signal
+// received from another replica triggers a local refresh without being
+// re-published - publishing it again would ping-pong the same signal
+// between replicas forever.
+func (e *Engine) reloadLocal() {
+	select {
+	case e.reloadCh <- struct{}{}:
+	default:
+	}
+}
+
+// GetDB returns the database handle the engine was built with, for handlers
+// that need to run an alert CRUD query and then call Reload.
+func (e *Engine) GetDB() *sql.DB {
+	return e.db
+}
+
+// rulesOfType returns the cached active rules for ruleType (nil if none).
+func (e *Engine) rulesOfType(ruleType string) []model.Alert {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.rulesByType[ruleType]
 }
 
 // SetOnInApp registers a callback invoked whenever an in_app channel fires,
@@ -123,8 +242,8 @@ func (e *Engine) EvaluateBatch(database *sql.DB, entries []model.IngestEntry) {
 		return
 	}
 
-	rules, err := db.GetActiveAlertsByType(database, model.RuleTypeLogThreshold)
-	if err != nil || len(rules) == 0 {
+	rules := e.rulesOfType(model.RuleTypeLogThreshold)
+	if len(rules) == 0 {
 		return
 	}
 
@@ -257,8 +376,8 @@ func (e *Engine) EvaluateAuditLog(database *sql.DB, action string, userID int64,
 		return
 	}
 
-	rules, err := db.GetActiveAlertsByType(database, model.RuleTypeAuditLog)
-	if err != nil || len(rules) == 0 {
+	rules := e.rulesOfType(model.RuleTypeAuditLog)
+	if len(rules) == 0 {
 		return
 	}
 
@@ -306,8 +425,8 @@ func (e *Engine) EvaluateMalformedJSON(database *sql.DB, rawLine string) {
 		return
 	}
 
-	rules, err := db.GetActiveAlertsByType(database, model.RuleTypeMalformedJSON)
-	if err != nil || len(rules) == 0 {
+	rules := e.rulesOfType(model.RuleTypeMalformedJSON)
+	if len(rules) == 0 {
 		return
 	}
 

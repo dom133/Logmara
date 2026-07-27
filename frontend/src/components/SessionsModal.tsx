@@ -52,7 +52,7 @@ export function SessionsModal({ open, onClose }: { open: boolean; onClose: () =>
           renderItem={(s) => (
             <List.Item
               actions={[
-                !s.is_current && (
+                s.remember && !s.is_current && (
                   <Popconfirm key="revoke" title="Sign out this device?" onConfirm={() => handleRevoke(s.id)}>
                     <Button size="small" danger>Sign out</Button>
                   </Popconfirm>

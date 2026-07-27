@@ -76,15 +76,7 @@ func CreateUser(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		validRoles := []string{RoleAdmin, RoleEditor, RoleViewer}
-		found := false
-		for _, r := range validRoles {
-			if req.Role == r {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !isValidRole(req.Role) {
 			middleware.HandleError(c, model.NewBadRequest("Invalid role. Must be admin, editor, or viewer", nil))
 			return
 		}
@@ -139,7 +131,7 @@ func UpdateUser(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+			middleware.HandleError(c, model.NewBadRequest("Invalid user ID", nil))
 			return
 		}
 
@@ -149,19 +141,9 @@ func UpdateUser(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		if req.Role != nil {
-			validRoles := []string{RoleAdmin, RoleEditor, RoleViewer}
-			found := false
-			for _, r := range validRoles {
-				if *req.Role == r {
-					found = true
-					break
-				}
-			}
-			if !found {
-				middleware.HandleError(c, model.NewBadRequest("Invalid role", nil))
-				return
-			}
+		if req.Role != nil && !isValidRole(*req.Role) {
+			middleware.HandleError(c, model.NewBadRequest("Invalid role", nil))
+			return
 		}
 
 		oldUser, err := db.GetUserByID(database, id)
@@ -197,7 +179,7 @@ func DeleteUser(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+			middleware.HandleError(c, model.NewBadRequest("Invalid user ID", nil))
 			return
 		}
 
@@ -216,7 +198,7 @@ func ResetPassword(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+			middleware.HandleError(c, model.NewBadRequest("Invalid user ID", nil))
 			return
 		}
 
@@ -261,7 +243,7 @@ func UnlockUserHandler(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+			middleware.HandleError(c, model.NewBadRequest("Invalid user ID", nil))
 			return
 		}
 
@@ -339,12 +321,12 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 			}
 			certPath := filepath.Join(sslDir, "server.crt")
 			keyPath := filepath.Join(sslDir, "server.key")
-			if _, err := os.Stat(certPath); os.IsNotExist(err) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot enable HTTPS: SSL certificate not found. Please upload certificate and key first."})
-				return
-			}
-			if _, err := os.Stat(keyPath); os.IsNotExist(err) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot enable HTTPS: SSL private key not found. Please upload certificate and key first."})
+		if _, err := os.Stat(certPath); os.IsNotExist(err) {
+			middleware.HandleError(c, model.NewBadRequest("Cannot enable HTTPS: SSL certificate not found. Please upload certificate and key first.", nil))
+			return
+		}
+		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+			middleware.HandleError(c, model.NewBadRequest("Cannot enable HTTPS: SSL private key not found. Please upload certificate and key first.", nil))
 				return
 			}
 		}
@@ -474,10 +456,11 @@ const httpsServerBlock = `server {
 `
 
 // corsMapDirective renders the nginx `map` block that resolves the
-// request's Origin header to an Access-Control-Allow-Origin value: "*"
-// allows any origin, an empty list allows none. This is the only CORS
-// enforcement in the app - clients only ever reach the API through this
-// nginx proxy, so there's nothing equivalent on the backend side.
+// request's Origin header to an Access-Control-Allow-Origin value.
+// Wildcard "*" is rejected (treated as empty) to prevent unrestricted CORS.
+// An empty list allows none. This is the only CORS enforcement in the app -
+// clients only ever reach the API through this nginx proxy, so there's
+// nothing equivalent on the backend side.
 func corsMapDirective(origins string) string {
 	var b strings.Builder
 	b.WriteString("map $http_origin $cors_allow_origin {\n")
@@ -488,7 +471,7 @@ func corsMapDirective(origins string) string {
 			continue
 		}
 		if o == "*" {
-			return "map $http_origin $cors_allow_origin {\n    default $http_origin;\n}\n"
+			continue
 		}
 		b.WriteString(fmt.Sprintf("    %q $http_origin;\n", o))
 	}

@@ -56,24 +56,45 @@ const (
 	maxLineSize        = 10 * 1024 * 1024 // cap a single ingested "line" at 10MB
 )
 
-// splitCappedLines behaves like bufio.ScanLines, except that if no newline
-// shows up within maxLineSize bytes it force-cuts a token there instead of
-// growing the buffer further. Plain ScanLines would instead make Scan()
-// return bufio.ErrTooLong and stop for good - since every device's syslog
-// output is interleaved into one shared file processed strictly in order, a
-// single oversized/newline-less message (crafted or just a device bug) would
-// otherwise wedge the scanner at that byte offset forever, blocking
-// ingestion for every other host sharing the file. Forcing progress instead
-// turns it into a handful of "[MALFORMED JSON]" entries for that one device.
-func splitCappedLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+// lineSplitter behaves like bufio.ScanLines, with two differences:
+//
+//   - if no newline shows up within maxLineSize bytes it force-cuts a token
+//     there instead of growing the buffer further. Plain ScanLines would
+//     instead make Scan() return bufio.ErrTooLong and stop for good - since
+//     every device's syslog output is interleaved into one shared file
+//     processed strictly in order, a single oversized/newline-less message
+//     (crafted or just a device bug) would otherwise wedge the scanner at
+//     that byte offset forever, blocking ingestion for every other host
+//     sharing the file. Forcing progress instead turns it into a handful of
+//     "[MALFORMED JSON]" entries for that one device.
+//
+//   - unlike ScanLines, it never force-emits a trailing chunk just because
+//     atEOF is true and no newline has shown up yet. For a file being
+//     tailed live, atEOF only means "no more bytes are available right
+//     now", not "this file is finished growing" - rsyslog may simply still
+//     be mid-write on that last line. Waiting instead of force-cutting
+//     lets the same still-on-disk bytes be re-read whole (now complete) on
+//     the next poll, instead of splitting one good record into two bogus
+//     "[MALFORMED JSON]" halves.
+//
+// lastAdvance records the exact number of bytes the most recent call
+// returned as advance - bufio.Scanner has no other way to expose a
+// SplitFunc's own advance value to its caller, and runIngestionLoop needs it
+// to track the file position by what Scan() actually consumed rather than
+// by asking the OS file descriptor how far it has physically read ahead
+// into the Scanner's internal buffer (see the comment on curFilePos there).
+type lineSplitter struct {
+	lastAdvance int64
+}
+
+func (s *lineSplitter) split(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		s.lastAdvance = int64(i + 1)
 		return i + 1, data[0:i], nil
 	}
 	if len(data) >= maxLineSize {
+		s.lastAdvance = maxLineSize
 		return maxLineSize, data[0:maxLineSize], nil
-	}
-	if atEOF && len(data) > 0 {
-		return len(data), data, nil
 	}
 	return 0, nil, nil
 }
@@ -243,12 +264,15 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		scanner := bufio.NewScanner(f)
 		buf := make([]byte, 0, maxLineSize)
 		scanner.Buffer(buf, maxLineSize)
-		scanner.Split(splitCappedLines)
+		splitter := &lineSplitter{}
+		scanner.Split(splitter.split)
 
 		batchStartPos := filePos
+		curFilePos := filePos
 		scanned := false
 
 		for scanner.Scan() {
+			curFilePos += splitter.lastAdvance
 			if ic.IsPaused() {
 				slog.Info("tailer: ingestion paused, breaking scan")
 				break
@@ -329,20 +353,13 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 					if err := flushBatch(db, entries, rate); err != nil {
 						slog.Error("flush error", "error", err)
 					} else {
-						curPos, seekErr := f.Seek(0, 1)
-						if seekErr == nil {
-							flushedPos = curPos
-							savePosition(posFile, flushedPos)
-						} else {
-							flushedPos = batchStartPos
-						}
+						flushedPos = curFilePos
+						savePosition(posFile, flushedPos)
 						alerts.EvaluateBatch(db, entries)
 					}
 				}
 				entries = entries[:0]
-				if cp, err := f.Seek(0, 1); err == nil {
-					batchStartPos = cp
-				}
+				batchStartPos = curFilePos
 				lastFlush = now
 			}
 		}
@@ -352,21 +369,22 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		}
 
 		if scanned {
-			// SEEK_CUR (how far this fd has actually read), not SEEK_END
-			// (wherever the file happens to end right now). If rsyslog is
-			// still mid-write on the last line when the scan loop above
-			// hits real EOF, SEEK_END can return a position further along
-			// than what was actually read - past the not-yet-finished
-			// remainder of that in-progress line. filePos then resumes
-			// there next time, splitting that line at an arbitrary byte
-			// offset instead of its start: the first "line" read next is
-			// really just that line's tail, which fails JSON unmarshal and
-			// surfaces as a spurious "[MALFORMED JSON]" entry for data that
-			// was never actually malformed.
-			curPos, err := f.Seek(0, 1)
-			if err == nil {
-				filePos = curPos
-			}
+			// curFilePos only ever advances by the exact byte length
+			// lineSplitter.split reported consuming for a token it actually
+			// returned - never by however far bufio's own internal
+			// read-ahead buffer happened to reach. The old approach here
+			// (f.Seek(0, 1), i.e. asking the OS file descriptor's own
+			// SEEK_CUR position) reflected the latter instead: bufio reads
+			// ahead in large chunks, so that position routinely sat past
+			// the last line Scan() had actually handed back, especially
+			// once a single Read() started pulling in more than one
+			// buffered line at a time - which is exactly what happens under
+			// high log volume. Resuming from that overshot position next
+			// poll would land mid-line whenever rsyslog was still mid-write
+			// on the last line in the file, splitting it into two bogus
+			// "[MALFORMED JSON]" halves instead of the one real record it
+			// always was.
+			filePos = curFilePos
 		}
 		f.Close()
 
@@ -433,55 +451,63 @@ func compactFile(f *os.File, flushedPos int64, filePath string) error {
 	return nil
 }
 
-// flushBatch inserts entries one at a time, each its own implicit
-// transaction (no shared batch transaction). A prior version wrapped the
-// whole batch in one transaction with a SAVEPOINT around each row so a bad
-// row could be rolled back without losing the rest - in practice, once one
-// row aborted the transaction, ROLLBACK TO SAVEPOINT did not reliably
-// return the connection to a usable state (subsequent rows kept failing
-// with "current transaction is aborted" even though they were individually
-// fine), so a single Postgres-rejected row could still take an entire
-// multi-hundred-row batch down with it. Committing independently per row
-// costs some throughput but makes that structurally impossible: nothing
-// about one row's failure can touch any other row's outcome.
+const insertColumns = 13
+
+// insertQueryColumns lists the syslog_logs columns in the order rowArgs
+// produces values for; shared by the bulk and per-row insert paths so they
+// can never drift apart.
+const insertQueryColumns = `timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, via_relay`
+
+// maxInsertRows caps how many entries go into a single multi-row INSERT.
+// 13 columns * 500 rows = 6500 placeholders, comfortably under Postgres's
+// 65535-parameter-per-statement limit while still collapsing hundreds of
+// round trips into one.
+const maxInsertRows = 500
+
+func rowArgs(entry model.IngestEntry) []interface{} {
+	ts, err := parseTimestamp(entry.Timestamp)
+	if err != nil {
+		ts = time.Now()
+	}
+	parsedFields := json.RawMessage("{}")
+	if len(entry.ParsedFields) > 0 {
+		parsedFields = entry.ParsedFields
+	}
+
+	return []interface{}{
+		ts, entry.Hostname, nullStr(entry.FromHostIP), nullStr(entry.AppName),
+		nullStr(entry.ProcessID), nullStr(entry.MsgID), entry.Severity,
+		nullStr(entry.Facility), entry.Message, nullStr(entry.RawMessage),
+		parsedFields, pq.StringArray(entry.MatchedParsers), nullStr(entry.ViaRelay),
+	}
+}
+
+// flushBatch inserts entries in chunks of up to maxInsertRows, each chunk as
+// a single multi-row INSERT (one round trip instead of one per row - at high
+// ingestion rates the per-Exec network round trip, not Postgres itself, was
+// the bottleneck). If a chunk's bulk insert fails - e.g. one row in it has
+// data Postgres rejects - it falls back to inserting that chunk's rows one
+// at a time (see insertRowsIndividually) so a single bad row still can't
+// take out the rest of the chunk with it.
 func flushBatch(db *sql.DB, entries []model.IngestEntry, rate sharedstate.RateCounter) error {
 	if len(entries) == 0 {
 		return nil
 	}
 
-	query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, via_relay)
-		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
-	stmt, err := db.Prepare(query)
-	if err != nil {
-		return fmt.Errorf("prepare: %w", err)
-	}
-	defer stmt.Close()
-
 	ingested := 0
-	for _, entry := range entries {
-		ts, err := parseTimestamp(entry.Timestamp)
+	for start := 0; start < len(entries); start += maxInsertRows {
+		end := start + maxInsertRows
+		if end > len(entries) {
+			end = len(entries)
+		}
+		chunk := entries[start:end]
+
+		n, err := insertChunk(db, chunk)
 		if err != nil {
-			ts = time.Now()
+			slog.Warn("bulk insert failed, falling back to per-row insert", "rows", len(chunk), "error", err)
+			n = insertRowsIndividually(db, chunk)
 		}
-
-		fromHostIP := nullStr(entry.FromHostIP)
-		appName := nullStr(entry.AppName)
-		processID := nullStr(entry.ProcessID)
-		msgID := nullStr(entry.MsgID)
-		facility := nullStr(entry.Facility)
-		rawMsg := nullStr(entry.RawMessage)
-		viaRelay := nullStr(entry.ViaRelay)
-		parsedFields := json.RawMessage("{}")
-		if len(entry.ParsedFields) > 0 {
-			parsedFields = entry.ParsedFields
-		}
-
-		if _, err := stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
-			entry.Severity, facility, entry.Message, rawMsg, parsedFields, pq.StringArray(entry.MatchedParsers), viaRelay); err != nil {
-			slog.Error("insert error", "error", err)
-			continue
-		}
-		ingested++
+		ingested += n
 	}
 
 	if ingested > 0 {
@@ -490,6 +516,71 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry, rate sharedstate.RateCo
 	}
 
 	return nil
+}
+
+func insertChunk(db *sql.DB, entries []model.IngestEntry) (int, error) {
+	var sb strings.Builder
+	sb.WriteString("INSERT INTO syslog_logs (")
+	sb.WriteString(insertQueryColumns)
+	sb.WriteString(") VALUES ")
+
+	args := make([]interface{}, 0, len(entries)*insertColumns)
+	for i, entry := range entries {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteByte('(')
+		base := i * insertColumns
+		for c := 1; c <= insertColumns; c++ {
+			if c > 1 {
+				sb.WriteByte(',')
+			}
+			sb.WriteByte('$')
+			sb.WriteString(strconv.Itoa(base + c))
+		}
+		sb.WriteByte(')')
+		args = append(args, rowArgs(entry)...)
+	}
+
+	res, err := db.Exec(sb.String(), args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// insertRowsIndividually inserts entries one at a time, each its own
+// implicit transaction (no shared batch transaction). A prior version
+// wrapped the whole batch in one transaction with a SAVEPOINT around each
+// row so a bad row could be rolled back without losing the rest - in
+// practice, once one row aborted the transaction, ROLLBACK TO SAVEPOINT did
+// not reliably return the connection to a usable state (subsequent rows
+// kept failing with "current transaction is aborted" even though they were
+// individually fine), so a single Postgres-rejected row could still take
+// down the whole chunk. Committing independently per row makes that
+// structurally impossible: nothing about one row's failure can touch any
+// other row's outcome. This path only runs on the rare chunk whose bulk
+// insert failed, so its lower throughput doesn't matter in practice.
+func insertRowsIndividually(db *sql.DB, entries []model.IngestEntry) int {
+	query := `INSERT INTO syslog_logs (` + insertQueryColumns + `)
+		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
+	stmt, err := db.Prepare(query)
+	if err != nil {
+		slog.Error("prepare error", "error", err)
+		return 0
+	}
+	defer stmt.Close()
+
+	ingested := 0
+	for _, entry := range entries {
+		if _, err := stmt.Exec(rowArgs(entry)...); err != nil {
+			slog.Error("insert error", "error", err)
+			continue
+		}
+		ingested++
+	}
+	return ingested
 }
 
 func parseTimestamp(s string) (time.Time, error) {

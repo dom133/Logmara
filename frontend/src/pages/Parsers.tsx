@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, Switch, message, Popconfirm, Tooltip, Typography, Divider, Descriptions, Row, Col, Statistic } from 'antd'
 import { PlusOutlined, PlayCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, RestOutlined, CopyOutlined } from '@ant-design/icons'
 import { getParsers, createParser, updateParser, deleteParser, cloneParser, testParser, reparseUnparsed, getParsedFields, Parser, ParsedField, ParserFieldDef } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
+import { useCrud } from '../hooks/useCRUD'
 import { useAuth } from '../services/auth'
 import { getErrorMessage } from '../utils/error'
 
@@ -14,12 +15,8 @@ const matchTypes = ['hostname', 'app_name', 'message', 'all']
 export default function ParsersPage() {
   const { user } = useAuth()
   const canEdit = user?.role === 'admin' || user?.role === 'editor'
-  const [parsers, setParsers] = useState<Parser[]>([])
-  const [fields, setFields] = useState<ParsedField[]>([])
-  const [loading, setLoading] = useState(true)
-  const [modalOpen, setModalOpen] = useState(false)
-  const [editing, setEditing] = useState<Parser | null>(null)
   const [form] = Form.useForm()
+  const [fields, setFields] = useState<ParsedField[]>([])
   const [testModalOpen, setTestModalOpen] = useState(false)
   const [testResult, setTestResult] = useState<{ matched: boolean; parser_name: string | null; fields: Record<string, string> | null; message: string } | null>(null)
   const [testLoading, setTestLoading] = useState(false)
@@ -39,62 +36,52 @@ export default function ParsersPage() {
     ],
   )
 
-  const loadData = async () => {
-    setLoading(true)
-    try {
+  const {
+    items: parsers,
+    loading,
+    modalOpen,
+    editing,
+    openCreate,
+    openEdit: crudOpenEdit,
+    closeModal,
+    handleCreate,
+    handleUpdate,
+    handleDelete,
+    refresh,
+  } = useCrud<Parser, { name: string; description?: string; device_type: string; match_type: string; match_value?: string; regex: string; enabled: boolean; fields: ParserFieldDef[] }, Partial<{ name: string; description: string; device_type: string; match_type: string; match_value: string; regex: string; enabled: boolean; fields: ParserFieldDef[] }>>({
+    loadData: async () => {
       const [p, f] = await Promise.all([getParsers(), getParsedFields()])
-      setParsers(p)
       setFields(f)
-    } finally {
-      setLoading(false)
-    }
-  }
+      return p
+    },
+    createItem: (data) => createParser(data as { name: string; description?: string; device_type: string; match_type: string; match_value?: string; regex: string; enabled: boolean; fields: ParserFieldDef[] }),
+    updateItem: updateParser,
+    deleteItem: deleteParser,
+    entityName: 'Parser',
+    form,
+  })
 
-  useEffect(() => {
-    loadData()
-  }, [])
+  const parserFields = (pid: number) => fields.filter(f => f.parser_id === pid)
 
-  const handleCreate = async (values: unknown) => {
-    try {
-      await createParser(values as { name: string; description?: string; device_type: string; match_type: string; match_value?: string; regex: string; enabled: boolean; fields: ParserFieldDef[] })
-      message.success('Parser created')
-      setModalOpen(false)
-      form.resetFields()
-      loadData()
-    } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to create parser'))
-    }
-  }
-
-  const handleUpdate = async (values: unknown) => {
-    if (!editing) return
-    try {
-      await updateParser(editing.id, values as Partial<{ name: string; description: string; device_type: string; match_type: string; match_value: string; regex: string; enabled: boolean }>)
-      message.success('Parser updated')
-      setModalOpen(false)
-      setEditing(null)
-      form.resetFields()
-      loadData()
-    } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to update parser'))
-    }
-  }
-
-  const handleDelete = async (id: number) => {
-    try {
-      await deleteParser(id)
-      message.success('Parser deleted')
-      loadData()
-    } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to delete parser'))
-    }
+  const openEdit = (p: Parser) => {
+    form.setFieldsValue({
+      name: p.name,
+      description: p.description ?? undefined,
+      device_type: p.device_type,
+      match_type: p.match_type,
+      match_value: p.match_value ?? undefined,
+      regex: p.regex,
+      enabled: p.enabled,
+      fields: parserFields(p.id).map(f => ({ name: f.field_name, label: f.field_label, type: f.field_type })),
+    })
+    crudOpenEdit(p)
   }
 
   const handleClone = async (id: number) => {
     try {
       await cloneParser(id)
       message.success('Parser cloned')
-      loadData()
+      refresh()
     } catch (e: unknown) {
       message.error(getErrorMessage(e, 'Failed to clone parser'))
     }
@@ -126,29 +113,6 @@ export default function ParsersPage() {
       message.error(getErrorMessage(e, 'Failed to start reparse'))
     }
   }
-
-  const openCreate = () => {
-    setEditing(null)
-    form.resetFields()
-    form.setFieldsValue({ enabled: true, match_type: 'hostname', device_type: 'all', fields: [] })
-    setModalOpen(true)
-  }
-
-  const openEdit = (p: Parser) => {
-    setEditing(p)
-    form.setFieldsValue({
-      name: p.name,
-      description: p.description,
-      device_type: p.device_type,
-      match_type: p.match_type,
-      match_value: p.match_value,
-      regex: p.regex,
-      enabled: p.enabled,
-    })
-    setModalOpen(true)
-  }
-
-  const parserFields = (pid: number) => fields.filter(f => f.parser_id === pid)
 
   const columns = [
     {
@@ -224,7 +188,10 @@ export default function ParsersPage() {
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
           {canEdit && <Button icon={<ReloadOutlined />} onClick={handleReparse}>Reparse Unparsed</Button>}
           {canEdit && <Button icon={<PlayCircleOutlined />} onClick={() => setTestModalOpen(true)}>Test Regex</Button>}
-          {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Parser</Button>}
+          {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={() => {
+            form.setFieldsValue({ enabled: true, match_type: 'hostname', device_type: 'all', fields: [] })
+            openCreate()
+          }}>New Parser</Button>}
         </div>
       </div>
 
@@ -257,7 +224,7 @@ export default function ParsersPage() {
       <Modal
         title={editing ? 'Edit Parser' : 'New Parser'}
         open={modalOpen}
-        onCancel={() => { setModalOpen(false); setEditing(null) }}
+        onCancel={closeModal}
         onOk={() => { form.validateFields().then(values => editing ? handleUpdate(values) : handleCreate(values)) }}
         width={{ sm: '90%', md: 700 }}
       >

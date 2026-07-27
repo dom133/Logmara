@@ -6,3 +6,5 @@ backend/*.exe
 *.pem
 Dockerfile.frontend.local
 .opencode/
+__pycache__/
+*.pyc

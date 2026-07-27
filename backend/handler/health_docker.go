@@ -349,7 +349,7 @@ func relayHeartbeatLastSeen(ips []string) map[string]time.Time {
 
 // fetchRelayHealth can't reach into the relay host at all (see the package
 // doc comment in relay.go: it lives in a separate, untrusted client VLAN
-// with only outbound 6514/tcp to the central server allowed - nothing here
+// with only outbound 6515/tcp to the central server allowed - nothing here
 // can dial back in, and it isn't on syslog_net or in the Swarm). Instead
 // this reports the best proxy signal already on hand: whether logs are
 // still arriving from its whitelisted IP, and whether its certificate is

@@ -20,7 +20,7 @@ const (
 const RelayCertRenewalWindowDays = 30
 
 // RelayWhitelistEntry is one IP address allowed to send syslog to the
-// central mTLS relay listener (port 6514). RelayCertID is set when the
+// central mTLS relay listener (port 6515). RelayCertID is set when the
 // entry was created as part of issuing a relay certificate (the normal
 // path via CreateRelayCertificate); it's nil for entries added directly
 // through the whitelist tab without a matching certificate.

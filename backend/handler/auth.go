@@ -2,6 +2,7 @@ package handler
 
 import (
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -216,11 +217,15 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			}
 
 			if user == nil {
-if existing != nil {
-				if err := db.IncrementFailedLogins(database, existing.ID); err != nil {
-					slog.Error("failed to increment failed logins", "error", err, "user_id", existing.ID)
+				if existing != nil {
+					newFailed, locked, err := db.IncrementFailedLogins(database, existing.ID)
+					if err != nil {
+						slog.Error("failed to increment failed logins", "error", err, "user_id", existing.ID)
+					}
+					if locked {
+						audit.LogAudit(database, existing.ID, req.Username, "user_locked", c.ClientIP(), fmt.Sprintf("account locked after %d failed attempts", newFailed))
+					}
 				}
-			}
 				audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "invalid user or inactive")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 				return
@@ -231,7 +236,7 @@ if existing != nil {
 		db.UpdateLastLogin(database, user.Username)
 		user.LastLoginAt = ptrTime(time.Now())
 
-		token, jti, accessExpiresAt, err := authCfg.GenerateToken(user.ID, user.Username, user.Role)
+		token, jti, accessExpiresAt, err := authCfg.GenerateToken(user.ID, user.Username, user.Role, req.Remember)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
@@ -275,6 +280,7 @@ if existing != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"user":       userResp,
 			"expires_at": accessExpiresAt.Unix(),
+			"remembered": req.Remember,
 		})
 	}
 }
@@ -337,7 +343,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		var replacementToken string
 		var replacementExpiry time.Time
 		if claimErr != nil {
-			recoveredUserID, recoveredToken, recoveredExpiry, recovered := recoverRacedRefresh(database, refreshToken)
+			recoveredUserID, recoveredToken, recoveredExpiry, recoveredRemember, recovered := recoverRacedRefresh(database, refreshToken)
 			if !recovered {
 				clearAuthCookies(c)
 				audit.LogAudit(database, 0, "", "refresh_failed", c.ClientIP(), "invalid, expired, or reused refresh token")
@@ -347,6 +353,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			userID = recoveredUserID
 			replacementToken = recoveredToken
 			replacementExpiry = recoveredExpiry
+			remember = recoveredRemember
 		}
 
 		user, err := getUserByID(database, userID)
@@ -356,7 +363,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			return
 		}
 
-		token, newJTI, accessExpiresAt, err := authCfg.GenerateToken(user.ID, user.Username, user.Role)
+		token, newJTI, accessExpiresAt, err := authCfg.GenerateToken(user.ID, user.Username, user.Role, remember)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
@@ -365,7 +372,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		if replacementToken != "" {
 			audit.LogAudit(database, user.ID, user.Username, "refresh_race_recovered", c.ClientIP(), "")
 			setAuthCookies(c, token, replacementToken, accessExpiresAt, replacementExpiry)
-			c.JSON(http.StatusOK, gin.H{"success": true, "expires_at": accessExpiresAt.Unix()})
+			c.JSON(http.StatusOK, gin.H{"success": true, "expires_at": accessExpiresAt.Unix(), "remembered": remember})
 			return
 		}
 
@@ -389,7 +396,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		audit.LogAudit(database, user.ID, user.Username, "refresh_success", c.ClientIP(), "")
 
 		setAuthCookies(c, token, newRefreshToken, accessExpiresAt, newExpiresAt)
-		c.JSON(http.StatusOK, gin.H{"success": true, "expires_at": accessExpiresAt.Unix()})
+		c.JSON(http.StatusOK, gin.H{"success": true, "expires_at": accessExpiresAt.Unix(), "remembered": remember})
 	}
 }
 
@@ -397,7 +404,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 // rotated moments ago (used=true, linked to a replacement) and, if so,
 // within the grace window, hands back the replacement token instead of
 // treating this as a stale/replayed refresh token.
-func recoverRacedRefresh(database *sql.DB, token string) (userID int, replacementToken string, replacementExpiry time.Time, ok bool) {
+func recoverRacedRefresh(database *sql.DB, token string) (userID int, replacementToken string, replacementExpiry time.Time, remember bool, ok bool) {
 	var replacedBy sql.NullString
 	var usedAt sql.NullTime
 	err := database.QueryRow(
@@ -405,22 +412,22 @@ func recoverRacedRefresh(database *sql.DB, token string) (userID int, replacemen
 		token,
 	).Scan(&userID, &usedAt, &replacedBy)
 	if err != nil || !replacedBy.Valid || !usedAt.Valid {
-		return 0, "", time.Time{}, false
+		return 0, "", time.Time{}, false, false
 	}
 	if time.Since(usedAt.Time) > refreshReuseGraceWindow {
-		return 0, "", time.Time{}, false
+		return 0, "", time.Time{}, false, false
 	}
 
 	var expiresAt time.Time
 	err = database.QueryRow(
-		"SELECT expires_at FROM refresh_tokens WHERE token = $1 AND expires_at > NOW()",
+		"SELECT expires_at, remember FROM refresh_tokens WHERE token = $1 AND expires_at > NOW()",
 		replacedBy.String,
-	).Scan(&expiresAt)
+	).Scan(&expiresAt, &remember)
 	if err != nil {
-		return 0, "", time.Time{}, false
+		return 0, "", time.Time{}, false, false
 	}
 
-	return userID, replacedBy.String, expiresAt, true
+	return userID, replacedBy.String, expiresAt, remember, true
 }
 
 func getUserByID(database *sql.DB, userID int) (*db.User, error) {
@@ -493,6 +500,7 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 			isAdmin = false
 		}
 		exp := int64((*mapClaims)["exp"].(float64))
+		remembered, _ := (*mapClaims)["remember"].(bool)
 		c.JSON(http.StatusOK, gin.H{
 			"id":                      userID,
 			"username":                username,
@@ -502,6 +510,7 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 			"notifications_enabled":   db.GetSetting(database, "notifications_enabled", "true") == "true",
 			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "true",
 			"expires_at":              exp,
+			"remembered":              remembered,
 		})
 	}
 }

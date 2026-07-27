@@ -323,6 +323,7 @@ export async function updateParser(id: number, data: Partial<{
   match_value: string
   regex: string
   enabled: boolean
+  fields: ParserFieldDef[]
 }>) {
   const res = await api.put(`/parsers/${id}`, data)
   return res.data

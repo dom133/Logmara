@@ -24,8 +24,8 @@ func (e *Engine) CheckRelayCertExpiring(database *sql.DB) {
 		return
 	}
 
-	rules, err := db.GetActiveAlertsByType(database, model.RuleTypeRelayCertExpiring)
-	if err != nil || len(rules) == 0 {
+	rules := e.rulesOfType(model.RuleTypeRelayCertExpiring)
+	if len(rules) == 0 {
 		return
 	}
 
