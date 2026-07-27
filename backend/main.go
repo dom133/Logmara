@@ -442,7 +442,7 @@ func main() {
 	if logFilePath == "" {
 		logFilePath = "/data/logs.jsonl"
 	}
-	alertEngine := alertengine.NewEngine(database, sharedClient)
+	alertEngine := alertengine.NewEngine(ctx, database, sharedClient)
 	audit.SetAlertEngine(alertEngine)
 	notifHub := notifyhub.NewHub(ctx, sharedClient)
 	alertEngine.SetOnInApp(notifHub.Publish)
@@ -600,9 +600,9 @@ r := gin.New()
 			editorGroup.PATCH("/dashboards/:id/public", handler.TogglePublicDashboard(database))
 
 			editorGroup.GET("/alerts", notificationsGate, handler.ListAlerts(database))
-			editorGroup.POST("/alerts", notificationsGate, handler.CreateAlert(database))
-			editorGroup.PUT("/alerts/:id", notificationsGate, handler.UpdateAlert(database))
-			editorGroup.DELETE("/alerts/:id", notificationsGate, handler.DeleteAlert(database))
+			editorGroup.POST("/alerts", notificationsGate, handler.CreateAlert(alertEngine))
+			editorGroup.PUT("/alerts/:id", notificationsGate, handler.UpdateAlert(alertEngine))
+			editorGroup.DELETE("/alerts/:id", notificationsGate, handler.DeleteAlert(alertEngine))
 
 			editorGroup.GET("/users/directory", handler.ListUserDirectory(database))
 		}

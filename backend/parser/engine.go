@@ -22,6 +22,28 @@ type Engine struct {
 	reloadCh chan struct{}
 }
 
+// regexCache holds compiled regexes keyed by pattern source, shared across
+// all Engine instances. Match/Extract run on every single ingested log
+// line for every enabled parser - recompiling the same pattern per line
+// (regexp.Compile does a full parse + NFA build) was the dominant per-line
+// CPU cost at high ingestion rates. Keyed by pattern text rather than
+// parser ID, so a reload that leaves a pattern unchanged keeps reusing its
+// cached regex, and a changed pattern simply gets a new entry (old ones are
+// harmless, bounded by the number of distinct patterns ever seen).
+var regexCache sync.Map // map[string]*regexp.Regexp
+
+func compileCached(pattern string) (*regexp.Regexp, error) {
+	if v, ok := regexCache.Load(pattern); ok {
+		return v.(*regexp.Regexp), nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	regexCache.Store(pattern, re)
+	return re, nil
+}
+
 func NewEngine(db *sql.DB) *Engine {
 	e := &Engine{
 		db:       db,
@@ -112,7 +134,7 @@ func (e *Engine) Match(hostname, appName, message string) []model.Parser {
 			continue
 		}
 
-		re, err := regexp.Compile(p.Regex)
+		re, err := compileCached(p.Regex)
 		if err != nil {
 			slog.Error("regex compile error", "parser", p.Name, "error", err)
 			continue
@@ -154,9 +176,11 @@ func (e *Engine) parserMatches(p *model.Parser, hostname, appName, message strin
 }
 
 func matchGlob(pattern, value string) bool {
-	re := globToRegex(pattern)
-	matched, _ := regexp.MatchString(re, value)
-	return matched
+	re, err := compileCached(globToRegex(pattern))
+	if err != nil {
+		return false
+	}
+	return re.MatchString(value)
 }
 
 func globToRegex(pattern string) string {
@@ -183,7 +207,7 @@ func globToRegex(pattern string) string {
 func (e *Engine) Extract(parser *model.Parser, message string) map[string]string {
 	result := make(map[string]string)
 
-	re, err := regexp.Compile(parser.Regex)
+	re, err := compileCached(parser.Regex)
 	if err != nil {
 		slog.Error("regex compile error", "parser", parser.Name, "error", err)
 		return nil

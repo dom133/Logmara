@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"net/http"
 
+	"logmara/alertengine"
 	"logmara/db"
 	"logmara/middleware"
 	"logmara/model"
@@ -24,7 +25,8 @@ func ListAlerts(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func CreateAlert(database *sql.DB) gin.HandlerFunc {
+func CreateAlert(engine *alertengine.Engine) gin.HandlerFunc {
+	database := engine.GetDB()
 	return func(c *gin.Context) {
 		var req model.AlertRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -50,11 +52,13 @@ func CreateAlert(database *sql.DB) gin.HandlerFunc {
 			middleware.HandleError(c, model.NewInternal("Failed to create alert", err))
 			return
 		}
+		engine.Reload()
 		c.JSON(http.StatusCreated, alert)
 	}
 }
 
-func UpdateAlert(database *sql.DB) gin.HandlerFunc {
+func UpdateAlert(engine *alertengine.Engine) gin.HandlerFunc {
+	database := engine.GetDB()
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
@@ -85,11 +89,13 @@ func UpdateAlert(database *sql.DB) gin.HandlerFunc {
 			middleware.HandleError(c, model.NewInternal("Failed to update alert", err))
 			return
 		}
+		engine.Reload()
 		c.JSON(http.StatusOK, alert)
 	}
 }
 
-func DeleteAlert(database *sql.DB) gin.HandlerFunc {
+func DeleteAlert(engine *alertengine.Engine) gin.HandlerFunc {
+	database := engine.GetDB()
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
@@ -101,6 +107,7 @@ func DeleteAlert(database *sql.DB) gin.HandlerFunc {
 			middleware.HandleError(c, model.NewInternal("Failed to delete alert", err))
 			return
 		}
+		engine.Reload()
 		c.JSON(http.StatusOK, gin.H{"message": "alert deleted"})
 	}
 }

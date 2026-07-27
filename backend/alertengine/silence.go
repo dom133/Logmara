@@ -74,8 +74,8 @@ func (e *Engine) CheckDeviceSilence(database *sql.DB) {
 		return
 	}
 
-	rules, err := db.GetActiveAlertsByType(database, model.RuleTypeDeviceSilence)
-	if err != nil || len(rules) == 0 {
+	rules := e.rulesOfType(model.RuleTypeDeviceSilence)
+	if len(rules) == 0 {
 		return
 	}
 

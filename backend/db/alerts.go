@@ -224,6 +224,30 @@ func GetActiveAlertsByType(db *sql.DB, ruleType string) ([]model.Alert, error) {
 	return alerts, nil
 }
 
+// GetAllActiveAlerts returns every active alert rule regardless of type, for
+// alertengine's Engine to group by rule_type into its in-memory cache
+// (loadRules) in a single query instead of one round trip per rule type.
+func GetAllActiveAlerts(db *sql.DB) ([]model.Alert, error) {
+	rows, err := db.Query(`SELECT ` + alertColumns + ` FROM alerts WHERE is_active=TRUE`)
+	if err != nil {
+		return nil, fmt.Errorf("list all active alerts: %w", err)
+	}
+	defer rows.Close()
+
+	var alerts []model.Alert
+	for rows.Next() {
+		a, err := scanAlert(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan alert: %w", err)
+		}
+		alerts = append(alerts, a)
+	}
+	if err := attachFieldConditions(db, alerts); err != nil {
+		return nil, err
+	}
+	return alerts, nil
+}
+
 func GetAlert(db *sql.DB, id int64) (*model.Alert, error) {
 	rows, err := db.Query(`SELECT `+alertColumns+` FROM alerts WHERE id=$1`, id)
 	if err != nil {

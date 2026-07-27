@@ -451,55 +451,63 @@ func compactFile(f *os.File, flushedPos int64, filePath string) error {
 	return nil
 }
 
-// flushBatch inserts entries one at a time, each its own implicit
-// transaction (no shared batch transaction). A prior version wrapped the
-// whole batch in one transaction with a SAVEPOINT around each row so a bad
-// row could be rolled back without losing the rest - in practice, once one
-// row aborted the transaction, ROLLBACK TO SAVEPOINT did not reliably
-// return the connection to a usable state (subsequent rows kept failing
-// with "current transaction is aborted" even though they were individually
-// fine), so a single Postgres-rejected row could still take an entire
-// multi-hundred-row batch down with it. Committing independently per row
-// costs some throughput but makes that structurally impossible: nothing
-// about one row's failure can touch any other row's outcome.
+const insertColumns = 13
+
+// insertQueryColumns lists the syslog_logs columns in the order rowArgs
+// produces values for; shared by the bulk and per-row insert paths so they
+// can never drift apart.
+const insertQueryColumns = `timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, via_relay`
+
+// maxInsertRows caps how many entries go into a single multi-row INSERT.
+// 13 columns * 500 rows = 6500 placeholders, comfortably under Postgres's
+// 65535-parameter-per-statement limit while still collapsing hundreds of
+// round trips into one.
+const maxInsertRows = 500
+
+func rowArgs(entry model.IngestEntry) []interface{} {
+	ts, err := parseTimestamp(entry.Timestamp)
+	if err != nil {
+		ts = time.Now()
+	}
+	parsedFields := json.RawMessage("{}")
+	if len(entry.ParsedFields) > 0 {
+		parsedFields = entry.ParsedFields
+	}
+
+	return []interface{}{
+		ts, entry.Hostname, nullStr(entry.FromHostIP), nullStr(entry.AppName),
+		nullStr(entry.ProcessID), nullStr(entry.MsgID), entry.Severity,
+		nullStr(entry.Facility), entry.Message, nullStr(entry.RawMessage),
+		parsedFields, pq.StringArray(entry.MatchedParsers), nullStr(entry.ViaRelay),
+	}
+}
+
+// flushBatch inserts entries in chunks of up to maxInsertRows, each chunk as
+// a single multi-row INSERT (one round trip instead of one per row - at high
+// ingestion rates the per-Exec network round trip, not Postgres itself, was
+// the bottleneck). If a chunk's bulk insert fails - e.g. one row in it has
+// data Postgres rejects - it falls back to inserting that chunk's rows one
+// at a time (see insertRowsIndividually) so a single bad row still can't
+// take out the rest of the chunk with it.
 func flushBatch(db *sql.DB, entries []model.IngestEntry, rate sharedstate.RateCounter) error {
 	if len(entries) == 0 {
 		return nil
 	}
 
-	query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, via_relay)
-		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
-	stmt, err := db.Prepare(query)
-	if err != nil {
-		return fmt.Errorf("prepare: %w", err)
-	}
-	defer stmt.Close()
-
 	ingested := 0
-	for _, entry := range entries {
-		ts, err := parseTimestamp(entry.Timestamp)
+	for start := 0; start < len(entries); start += maxInsertRows {
+		end := start + maxInsertRows
+		if end > len(entries) {
+			end = len(entries)
+		}
+		chunk := entries[start:end]
+
+		n, err := insertChunk(db, chunk)
 		if err != nil {
-			ts = time.Now()
+			slog.Warn("bulk insert failed, falling back to per-row insert", "rows", len(chunk), "error", err)
+			n = insertRowsIndividually(db, chunk)
 		}
-
-		fromHostIP := nullStr(entry.FromHostIP)
-		appName := nullStr(entry.AppName)
-		processID := nullStr(entry.ProcessID)
-		msgID := nullStr(entry.MsgID)
-		facility := nullStr(entry.Facility)
-		rawMsg := nullStr(entry.RawMessage)
-		viaRelay := nullStr(entry.ViaRelay)
-		parsedFields := json.RawMessage("{}")
-		if len(entry.ParsedFields) > 0 {
-			parsedFields = entry.ParsedFields
-		}
-
-		if _, err := stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
-			entry.Severity, facility, entry.Message, rawMsg, parsedFields, pq.StringArray(entry.MatchedParsers), viaRelay); err != nil {
-			slog.Error("insert error", "error", err)
-			continue
-		}
-		ingested++
+		ingested += n
 	}
 
 	if ingested > 0 {
@@ -508,6 +516,71 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry, rate sharedstate.RateCo
 	}
 
 	return nil
+}
+
+func insertChunk(db *sql.DB, entries []model.IngestEntry) (int, error) {
+	var sb strings.Builder
+	sb.WriteString("INSERT INTO syslog_logs (")
+	sb.WriteString(insertQueryColumns)
+	sb.WriteString(") VALUES ")
+
+	args := make([]interface{}, 0, len(entries)*insertColumns)
+	for i, entry := range entries {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteByte('(')
+		base := i * insertColumns
+		for c := 1; c <= insertColumns; c++ {
+			if c > 1 {
+				sb.WriteByte(',')
+			}
+			sb.WriteByte('$')
+			sb.WriteString(strconv.Itoa(base + c))
+		}
+		sb.WriteByte(')')
+		args = append(args, rowArgs(entry)...)
+	}
+
+	res, err := db.Exec(sb.String(), args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// insertRowsIndividually inserts entries one at a time, each its own
+// implicit transaction (no shared batch transaction). A prior version
+// wrapped the whole batch in one transaction with a SAVEPOINT around each
+// row so a bad row could be rolled back without losing the rest - in
+// practice, once one row aborted the transaction, ROLLBACK TO SAVEPOINT did
+// not reliably return the connection to a usable state (subsequent rows
+// kept failing with "current transaction is aborted" even though they were
+// individually fine), so a single Postgres-rejected row could still take
+// down the whole chunk. Committing independently per row makes that
+// structurally impossible: nothing about one row's failure can touch any
+// other row's outcome. This path only runs on the rare chunk whose bulk
+// insert failed, so its lower throughput doesn't matter in practice.
+func insertRowsIndividually(db *sql.DB, entries []model.IngestEntry) int {
+	query := `INSERT INTO syslog_logs (` + insertQueryColumns + `)
+		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
+	stmt, err := db.Prepare(query)
+	if err != nil {
+		slog.Error("prepare error", "error", err)
+		return 0
+	}
+	defer stmt.Close()
+
+	ingested := 0
+	for _, entry := range entries {
+		if _, err := stmt.Exec(rowArgs(entry)...); err != nil {
+			slog.Error("insert error", "error", err)
+			continue
+		}
+		ingested++
+	}
+	return ingested
 }
 
 func parseTimestamp(s string) (time.Time, error) {
