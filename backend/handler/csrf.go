@@ -15,7 +15,7 @@ func CSRFRequired() gin.HandlerFunc {
 			_, err := c.Cookie(CSRFTokenCookieName)
 			if err != nil {
 				token := generateCSRFToken()
-				secure := c.GetHeader("X-Forwarded-Proto") == "https"
+				secure := isHTTPS(c)
 				http.SetCookie(c.Writer, &http.Cookie{
 					Name:     CSRFTokenCookieName,
 					Value:    token,
