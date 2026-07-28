@@ -1016,6 +1016,8 @@ export interface InAppNotification {
 	title: string
 	message: string
 	severity: string
+	alert_rule_type?: string
+	target_user_ids?: number[]
 	created_at: string
 }
 
