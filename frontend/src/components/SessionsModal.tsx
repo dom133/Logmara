@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Modal, List, Tag, Button, Popconfirm, message, Empty, Spin } from 'antd'
+import { useTranslation } from 'react-i18next'
 import { getSessions, revokeSession, Session } from '../services/api'
 import { getErrorMessage } from '../utils/error'
 
 export function SessionsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { t } = useTranslation()
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -12,7 +14,7 @@ export function SessionsModal({ open, onClose }: { open: boolean; onClose: () =>
     try {
       setSessions(await getSessions())
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to load sessions'))
+      message.error(getErrorMessage(e, t('sessions.loadFailed')))
     } finally {
       setLoading(false)
     }
@@ -25,27 +27,27 @@ export function SessionsModal({ open, onClose }: { open: boolean; onClose: () =>
   const handleRevoke = async (id: number) => {
     try {
       await revokeSession(id)
-      message.success('Session signed out')
+      message.success(t('sessions.signedOut'))
       load()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to revoke session'))
+      message.error(getErrorMessage(e, t('sessions.revokeFailed')))
     }
   }
 
   return (
     <Modal
-      title="My Sessions"
+      title={t('nav.sessions')}
       open={open}
       onCancel={onClose}
       footer={[
-        <Button key="close" onClick={onClose} style={{ width: '100%' }}>Close</Button>
+        <Button key="close" onClick={onClose} style={{ width: '100%' }}>{t('common.close')}</Button>
       ]}
       width={{ sm: '90%', md: 640 }}
     >
       {loading ? (
         <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>
       ) : sessions.length === 0 ? (
-        <Empty description="No active sessions" />
+        <Empty description={t('sessions.noActive')} />
       ) : (
         <List
           dataSource={sessions}
@@ -53,8 +55,8 @@ export function SessionsModal({ open, onClose }: { open: boolean; onClose: () =>
             <List.Item
               actions={[
                 s.remember && !s.is_current && (
-                  <Popconfirm key="revoke" title="Sign out this device?" onConfirm={() => handleRevoke(s.id)}>
-                    <Button size="small" danger>Sign out</Button>
+                  <Popconfirm key="revoke" title={t('sessions.signOutConfirm')} onConfirm={() => handleRevoke(s.id)}>
+                    <Button size="small" danger>{t('sessions.signOut')}</Button>
                   </Popconfirm>
                 ),
               ].filter(Boolean)}
@@ -62,16 +64,16 @@ export function SessionsModal({ open, onClose }: { open: boolean; onClose: () =>
               <List.Item.Meta
                 title={
                   <span>
-                    {s.ip || 'Unknown location'}
-                    {s.is_current && <Tag color="green" style={{ marginLeft: 8 }}>This device</Tag>}
-                    {s.remember && <Tag color="blue" style={{ marginLeft: 8 }}>Remembered</Tag>}
+                    {s.ip || t('sessions.unknownLocation')}
+                    {s.is_current && <Tag color="green" style={{ marginLeft: 8 }}>{t('sessions.thisDevice')}</Tag>}
+                    {s.remember && <Tag color="blue" style={{ marginLeft: 8 }}>{t('sessions.remembered')}</Tag>}
                   </span>
                 }
                 description={
                   <>
-                    <div style={{ wordBreak: 'break-all' }}>{s.user_agent || 'Unknown browser'}</div>
+                    <div style={{ wordBreak: 'break-all' }}>{s.user_agent || t('sessions.unknownBrowser')}</div>
                     <div>
-                      Last active: {s.last_used_at ? new Date(s.last_used_at).toLocaleString() : new Date(s.created_at).toLocaleString()}
+                      {t('sessions.lastActive', { date: s.last_used_at ? new Date(s.last_used_at).toLocaleString() : new Date(s.created_at).toLocaleString() })}
                     </div>
                   </>
                 }

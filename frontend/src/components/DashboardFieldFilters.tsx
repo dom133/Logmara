@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
 import { Input, Select, Button, Space, Tag, Tooltip } from 'antd'
+import { useTranslation } from 'react-i18next'
 import { PlusOutlined, CloseOutlined, InfoCircleOutlined } from '@ant-design/icons'
 import type { FieldFilter } from '../services/api'
 
@@ -28,6 +29,7 @@ interface DashboardFieldFiltersProps {
 }
 
 export default function DashboardFieldFilters({ availableFields, value, onChange }: DashboardFieldFiltersProps) {
+  const { t } = useTranslation()
   const [internalFilters, setInternalFilters] = useState<FieldFilter[]>([])
   const [adding, setAdding] = useState(false)
 
@@ -57,12 +59,12 @@ export default function DashboardFieldFilters({ availableFields, value, onChange
     return (
       <div>
         <Space align="start">
-          <strong>Field Filters</strong>
-          <Tooltip title="No parseable fields available. Add parsers or enable existing ones to expose filterable fields.">
+          <strong>{t('dashboards.fieldFilters')}</strong>
+          <Tooltip title={t('dashboards.noFieldsTooltip')}>
             <InfoCircleOutlined />
           </Tooltip>
         </Space>
-        <Input disabled placeholder="No fields available" style={{ marginTop: 8 }} />
+        <Input disabled placeholder={t('dashboards.noFieldsPlaceholder')} style={{ marginTop: 8 }} />
       </div>
     )
   }
@@ -70,8 +72,8 @@ export default function DashboardFieldFilters({ availableFields, value, onChange
   return (
     <div>
       <Space align="start" style={{ marginBottom: 8 }}>
-        <strong>Field Filters</strong>
-        <Tooltip title="Filter logs by parsed fields (e.g. src_ip, action, policy_id). Fields come from enabled log parsers.">
+        <strong>{t('dashboards.fieldFilters')}</strong>
+        <Tooltip title={t('dashboards.fieldFiltersTooltip')}>
           <InfoCircleOutlined />
         </Tooltip>
         {adding ? (
@@ -79,17 +81,17 @@ export default function DashboardFieldFilters({ availableFields, value, onChange
             <Select
               style={{ width: 160 }}
               options={availableFields.map(f => ({ label: f, value: f }))}
-              placeholder="Pick field"
+              placeholder={t('dashboards.pickField')}
               onChange={(f) => {
                 setFilters([...filters, { field: f, operator: 'eq', values: [''] }])
                 setAdding(false)
               }}
               autoFocus
             />
-            <Button size="small" onClick={() => setAdding(false)}>Cancel</Button>
+            <Button size="small" onClick={() => setAdding(false)}>{t('common.cancel')}</Button>
           </>
         ) : (
-          <Button size="small" icon={<PlusOutlined />} onClick={() => setAdding(true)}>Add Filter</Button>
+          <Button size="small" icon={<PlusOutlined />} onClick={() => setAdding(true)}>{t('dashboards.addFilter')}</Button>
         )}
       </Space>
       {filters.map((ff, idx) => (
@@ -106,7 +108,7 @@ export default function DashboardFieldFilters({ availableFields, value, onChange
             <Input
               size="small"
               style={{ width: 200 }}
-              placeholder="value"
+              placeholder={t('parsers.value')}
               value={ff.values?.[0] || ''}
               onChange={(e) => updateFilter(idx, 'values', [e.target.value])}
             />

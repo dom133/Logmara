@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, Popconfirm, Tooltip, message } from 'antd'
+import { useTranslation } from 'react-i18next'
 import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ReloadOutlined, RestOutlined } from '@ant-design/icons'
 import { User, getUsers, createUser, updateUser, deleteUser, resetPassword, unlockUser } from '../services/api'
 import { useCrud } from '../hooks/useCRUD'
@@ -13,6 +14,7 @@ export interface AdminUsersProps {
 }
 
 export default function AdminUsers({ settings }: AdminUsersProps) {
+  const { t } = useTranslation()
   const [form] = Form.useForm()
   const [editForm] = Form.useForm()
   const [authType, setAuthType] = useState('local')
@@ -52,64 +54,64 @@ export default function AdminUsers({ settings }: AdminUsersProps) {
   }
 
   const handleResetPassword = async (user: User) => {
-    const password = prompt(`Enter new password for ${user.username}:`)
+    const password = prompt(t('users.resetPasswordPrompt', { username: user.username }))
     if (!password || password.length < 4) {
-      if (password !== null) message.error('Password must be at least 4 characters')
+      if (password !== null) message.error(t('users.passwordMinLength'))
       return
     }
     try {
       await resetPassword(user.id, password)
-      message.success('Password reset')
+      message.success(t('users.passwordReset'))
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to reset password'))
+      message.error(getErrorMessage(e, t('users.resetPasswordFailed')))
     }
   }
 
   const handleUnlock = async (id: number) => {
     try {
       await unlockUser(id)
-      message.success('User unlocked')
+      message.success(t('users.userUnlocked'))
       crud.refresh()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to unlock user'))
+      message.error(getErrorMessage(e, t('users.unlockFailed')))
     }
   }
 
   const userColumns = [
     {
-      title: 'Username',
+      title: t('login.username'),
       dataIndex: 'username',
       key: 'username',
     },
     {
-      title: 'Email',
+      title: t('common.email'),
       dataIndex: 'email',
       key: 'email',
       render: (email: string) => email || '-',
     },
     {
-      title: 'Type',
+      title: t('users.type'),
       dataIndex: 'auth_type',
       key: 'auth_type',
-      render: (t: string) => <Tag color={t === 'ldap' ? 'orange' : 'default'}>{t === 'ldap' ? 'LDAP' : 'Local'}</Tag>,
+      render: (authType: string) => <Tag color={authType === 'ldap' ? 'orange' : 'default'}>{authType === 'ldap' ? t('users.ldap') : t('users.local')}</Tag>,
     },
     {
-      title: 'Role',
+      title: t('users.role'),
       dataIndex: 'role',
       key: 'role',
       render: (role: string) => {
         const colors: Record<string, string> = { admin: 'red', editor: 'blue', viewer: 'green' }
-        return <Tag color={colors[role] || 'default'}>{role}</Tag>
+        return <Tag color={colors[role] || 'default'}>{t(`roles.${role}`, role)}</Tag>
       },
     },
     {
-      title: 'Active',
+      title: t('users.active'),
       dataIndex: 'is_active',
       key: 'is_active',
-      render: (active: boolean) => <Tag color={active ? 'green' : 'red'}>{active ? 'Active' : 'Disabled'}</Tag>,
+      render: (active: boolean) => <Tag color={active ? 'green' : 'red'}>{active ? t('users.active') : t('common.disabled')}</Tag>,
     },
     {
-      title: 'Status',
+      title: t('common.status'),
       dataIndex: 'locked_until',
       key: 'locked_until',
       render: (_v: string | null, record: User) => {
@@ -118,36 +120,36 @@ export default function AdminUsers({ settings }: AdminUsersProps) {
           const minutes = Math.floor(remaining / 60000)
           const seconds = Math.floor((remaining % 60000) / 1000)
           return (
-            <Tooltip title={`Locked. Fails: ${record.failed_login_attempts}. Unlocks in ${minutes}m ${seconds}s.`}>
-              <Tag color="red">Locked ({minutes}m {seconds}s)</Tag>
+            <Tooltip title={t('users.lockedTooltip', { count: record.failed_login_attempts, minutes, seconds })}>
+              <Tag color="red">{t('users.locked', { minutes, seconds })}</Tag>
             </Tooltip>
           )
         }
         if (record.failed_login_attempts > 0) {
-          return <Tag color="orange">{record.failed_login_attempts} fail(s)</Tag>
+          return <Tag color="orange">{t('users.failCount', { count: record.failed_login_attempts })}</Tag>
         }
-        return <Tag color="green">OK</Tag>
+        return <Tag color="green">{t('common.ok')}</Tag>
       },
     },
     {
-      title: 'Last Login',
+      title: t('users.lastLogin'),
       dataIndex: 'last_login_at',
       key: 'last_login_at',
       render: (date: string | null) => date ? new Date(date).toLocaleString() : '-',
     },
     {
-      title: 'Created',
+      title: t('users.created'),
       dataIndex: 'created_at',
       key: 'created_at',
       render: (date: string) => new Date(date).toLocaleString(),
     },
     {
-      title: 'Actions',
+      title: t('common.actions'),
       key: 'actions',
       render: (_v: unknown, record: User) => (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {record.locked_until && new Date(record.locked_until).getTime() > Date.now() && (
-            <Popconfirm title="Unlock this user?" okText="Yes" cancelText="No" onConfirm={() => handleUnlock(record.id)}>
+            <Popconfirm title={t('users.unlockConfirm')} okText={t('common.yes')} cancelText={t('common.no')} onConfirm={() => handleUnlock(record.id)}>
               <Button size="small" type="primary" icon={<ReloadOutlined />} />
             </Popconfirm>
           )}
@@ -157,9 +159,9 @@ export default function AdminUsers({ settings }: AdminUsersProps) {
           }} icon={<EditOutlined />} />
           {record.auth_type !== 'ldap' && <Button size="small" onClick={() => handleResetPassword(record)} icon={<KeyOutlined />} />}
           <Popconfirm
-            title="Delete user?"
-            okText="Yes"
-            cancelText="No"
+            title={t('users.deleteConfirm')}
+            okText={t('common.yes')}
+            cancelText={t('common.no')}
             onConfirm={() => crud.handleDelete(record.id)}
           >
             <Button size="small" danger icon={<DeleteOutlined />} />
@@ -171,10 +173,10 @@ export default function AdminUsers({ settings }: AdminUsersProps) {
 
   return (
     <Card
-      title="User Management"
+      title={t('users.management')}
       extra={
         <Space>
-          {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
+          {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>{t('common.reset')}</Button>}
           <Button
             type="primary"
             icon={<PlusOutlined />}
@@ -184,7 +186,7 @@ export default function AdminUsers({ settings }: AdminUsersProps) {
               crud.openCreate()
             }}
           >
-            Add User
+            {t('users.addUser')}
           </Button>
         </Space>
       }
@@ -198,7 +200,7 @@ export default function AdminUsers({ settings }: AdminUsersProps) {
         scroll={{ x: 'max-content' }}
       />
       <Modal
-        title="Create User"
+        title={t('users.createUser')}
         open={crud.modalOpen && !crud.editing}
         onCancel={crud.closeModal}
         onOk={async () => {
@@ -208,65 +210,65 @@ export default function AdminUsers({ settings }: AdminUsersProps) {
           }
           await crud.handleCreate(values)
         }}
-        okText="Create"
-        cancelText="Cancel"
+        okText={t('users.createUser')}
+        cancelText={t('common.cancel')}
         width={{ sm: '90%', md: 500 }}
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="username" label="Username" rules={[{ required: true, message: 'Required' }]}>
+          <Form.Item name="username" label={t('login.username')} rules={[{ required: true, message: t('relay.required') }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="email" label="Email" rules={[{ required: true, message: 'Required' }, { type: 'email' }]}>
+          <Form.Item name="email" label={t('common.email')} rules={[{ required: true, message: t('relay.required') }, { type: 'email' }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="auth_type" label="Auth Type" rules={[{ required: true }]} initialValue="local" hidden={settings['ldap_auto_provision'] === 'true'}>
+          <Form.Item name="auth_type" label={t('users.authType')} rules={[{ required: true }]} initialValue="local" hidden={settings['ldap_auto_provision'] === 'true'}>
             <Select onChange={(v) => { setAuthType(v); if (v === 'ldap') form.setFieldsValue({ password: undefined }) }}>
-              <Option value="local">Local</Option>
-              <Option value="ldap">LDAP</Option>
+              <Option value="local">{t('users.local')}</Option>
+              <Option value="ldap">{t('users.ldap')}</Option>
             </Select>
           </Form.Item>
           <Form.Item
             name="password"
-            label="Password"
+            label={t('common.password')}
             dependencies={['auth_type']}
             hidden={authType === 'ldap'}
-            rules={[{ required: authType === 'local' || settings['ldap_auto_provision'] === 'true', min: 8, message: 'Min 8 characters' }]}
+            rules={[{ required: authType === 'local' || settings['ldap_auto_provision'] === 'true', min: 8, message: t('setup.min8Chars') }]}
           >
             <Input.Password />
           </Form.Item>
-          <Form.Item name="role" label="Role" rules={[{ required: true }]}>
+          <Form.Item name="role" label={t('users.role')} rules={[{ required: true }]}>
             <Select>
-              <Option value="viewer">Viewer</Option>
-              <Option value="editor">Editor</Option>
-              <Option value="admin">Admin</Option>
+              <Option value="viewer">{t('roles.viewer')}</Option>
+              <Option value="editor">{t('roles.editor')}</Option>
+              <Option value="admin">{t('roles.admin')}</Option>
             </Select>
           </Form.Item>
         </Form>
       </Modal>
       <Modal
-        title="Edit User"
+        title={t('users.editUser')}
         open={crud.modalOpen && !!crud.editing}
         onCancel={crud.closeModal}
         onOk={async () => {
           const values = await editForm.validateFields()
           await crud.handleUpdate(values)
         }}
-        okText="Save"
-        cancelText="Cancel"
+        okText={t('common.save')}
+        cancelText={t('common.cancel')}
         width={{ sm: '90%', md: 500 }}
       >
         <Form form={editForm} layout="vertical">
-          <Form.Item label="Username">
+          <Form.Item label={t('login.username')}>
             <Input value={crud.editing?.username} disabled />
           </Form.Item>
-          <Form.Item name="role" label="Role" rules={[{ required: true }]}>
+          <Form.Item name="role" label={t('users.role')} rules={[{ required: true }]}>
             <Select>
-              <Option value="viewer">Viewer</Option>
-              <Option value="editor">Editor</Option>
-              <Option value="admin">Admin</Option>
+              <Option value="viewer">{t('roles.viewer')}</Option>
+              <Option value="editor">{t('roles.editor')}</Option>
+              <Option value="admin">{t('roles.admin')}</Option>
             </Select>
           </Form.Item>
-          <Form.Item name="is_active" label="Active" valuePropName="checked">
+          <Form.Item name="is_active" label={t('users.active')} valuePropName="checked">
             <Switch />
           </Form.Item>
         </Form>

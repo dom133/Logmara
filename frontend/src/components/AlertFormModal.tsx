@@ -1,4 +1,5 @@
 import { Form, Input, InputNumber, Select, Switch, Space, Modal, Button } from 'antd'
+import { useTranslation } from 'react-i18next'
 import { Alert, AlertRequest, AlertRuleType, DeviceStats, Parser, ParsedField, NotificationChannel, resolveDeviceDisplayName } from '../services/api'
 import { ruleTypeLabels, adminOnlyRuleTypes, operatorLabels, channelTypeLabels } from '../constants/alertConstants'
 
@@ -16,6 +17,7 @@ interface AlertFormModalProps {
 }
 
 export default function AlertFormModal({ open, editing, isAdmin, devices, parsers, parsedFields, channels, form, onCancel, onOk }: AlertFormModalProps) {
+  const { t } = useTranslation()
   const ruleType = Form.useWatch('rule_type', form)
   const fireOnEveryMatch = Form.useWatch('fire_on_every_match', form)
   const selectedParsers: string[] = Form.useWatch('parser_names', form) || []
@@ -40,7 +42,7 @@ export default function AlertFormModal({ open, editing, isAdmin, devices, parser
 
   return (
     <Modal
-      title={editing ? 'Edit Alert Rule' : 'New Alert Rule'}
+      title={editing ? t('alerts.editRule') : t('alerts.newRule')}
       open={open}
       onCancel={onCancel}
       onOk={onOk}
@@ -63,7 +65,7 @@ export default function AlertFormModal({ open, editing, isAdmin, devices, parser
 
         {(ruleType === 'log_threshold' || ruleType === 'device_silence') && (
           <Form.Item name="device_ips" label="Devices" tooltip="Leave empty to watch all devices">
-            <Select mode="multiple" allowClear placeholder="All devices" options={deviceOptions} />
+            <Select mode="multiple" allowClear placeholder={t('alerts.allDevicesPlaceholder')} options={deviceOptions} />
           </Form.Item>
         )}
 
@@ -73,7 +75,7 @@ export default function AlertFormModal({ open, editing, isAdmin, devices, parser
               <Select allowClear options={['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug'].map(s => ({ value: s, label: s }))} />
             </Form.Item>
             <Form.Item name="parser_names" label="Parsers" tooltip="Which parser(s) must have matched the log entry; leave empty to match any parser (including unparsed logs). Narrowed to parsers actually seen on the selected device(s) once you pick one.">
-              <Select mode="multiple" allowClear placeholder="Any parser" options={parserOptions} />
+              <Select mode="multiple" allowClear placeholder={t('alerts.anyParserPlaceholder')} options={parserOptions} />
             </Form.Item>
             <Form.Item name="message_pattern" label="Message Pattern" tooltip="Substring or glob (*) match against the raw log message">
               <Input placeholder="failed login" />
@@ -93,13 +95,13 @@ export default function AlertFormModal({ open, editing, isAdmin, devices, parser
                       {fields.map((field) => (
                         <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }} wrap>
                           <Form.Item name={[field.name, 'field_name']} rules={[{ required: true, message: 'Field required' }]} noStyle>
-                            <Select showSearch placeholder="Field" style={{ width: 200 }} options={fieldOptions} />
+                            <Select showSearch placeholder={t('alerts.fieldPlaceholder')} style={{ width: 200 }} options={fieldOptions} />
                           </Form.Item>
                           <Form.Item name={[field.name, 'operator']} initialValue="equals" noStyle>
                             <Select style={{ width: 130 }} options={Object.entries(operatorLabels).map(([value, label]) => ({ value, label }))} />
                           </Form.Item>
                           <Form.Item name={[field.name, 'value']} rules={[{ required: true, message: 'Value required' }]} noStyle>
-                            <Input placeholder="Value" style={{ width: 180 }} />
+                            <Input placeholder={t('parsers.value')} style={{ width: 180 }} />
                           </Form.Item>
                           <Button type="link" danger onClick={() => remove(field.name)}>Remove</Button>
                         </Space>
@@ -136,7 +138,7 @@ export default function AlertFormModal({ open, editing, isAdmin, devices, parser
 
         {ruleType === 'audit_log' && (
           <Form.Item name="audit_action_filter" label="Action Filter" tooltip="Leave empty to match any audit action">
-            <Select placeholder="Select an audit action (or leave empty for all)" allowClear>
+            <Select placeholder={t('alerts.selectAuditAction')} allowClear>
               <Select.OptGroup label="Authentication">
                 <Select.Option value="login_success">login_success</Select.Option>
                 <Select.Option value="login_failed">login_failed</Select.Option>
