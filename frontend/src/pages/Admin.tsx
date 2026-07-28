@@ -356,17 +356,17 @@ const handleCleanup = async () => {
                       <InputNumber min={1} max={10080} style={{ width: '100%' }} />
                     </Form.Item>
                     <Divider orientation="left">{t('admin.security')}</Divider>
-                    <Form.Item label={t('admin.maxFailedAttempts')} name="security_max_failed_attempts" tooltip="Number of failed login attempts before account lockout. Leave empty to use MAX_FAILED_ATTEMPTS env var or default (5).">
+                    <Form.Item label={t('admin.maxFailedAttempts')} name="security_max_failed_attempts" tooltip={t('admin.maxFailedAttemptsTooltip')}>
                       <InputNumber min={1} max={100} style={{ width: '100%' }} />
                     </Form.Item>
-                    <Form.Item label={t('admin.lockoutDuration')} name="security_lockout_duration_min" tooltip="How long the account stays locked after reaching max failed attempts. Leave empty to use LOCKOUT_DURATION_MIN env var or default (15).">
+                    <Form.Item label={t('admin.lockoutDuration')} name="security_lockout_duration_min" tooltip={t('admin.lockoutDurationTooltip')}>
                       <InputNumber min={1} max={1440} style={{ width: '100%' }} />
                     </Form.Item>
                     <Divider orientation="left">{t('admin.cors')}</Divider>
 <Form.Item
                       label={t('admin.corsOrigins')}
                       name="cors_origins"
-                      tooltip="Comma-separated list of origins allowed to call the API from a browser (e.g. http://localhost:3000,https://example.com). Leave empty to only allow the origin the app is served from."
+                      tooltip={t('admin.corsOriginsTooltip')}
                     >
                       <Input placeholder="http://localhost:3000,https://yourdomain.com" />
                     </Form.Item>
@@ -459,10 +459,10 @@ const handleCleanup = async () => {
                       </Result>
                     )}
                     <Divider orientation="left">{t('admin.notifications')}</Divider>
-                    <Form.Item label={t('admin.enableNotifications')} name="notifications_enabled" valuePropName="checked" tooltip="Master switch for alert rule evaluation and delivery through any channel">
+                    <Form.Item label={t('admin.enableNotifications')} name="notifications_enabled" valuePropName="checked" tooltip={t('admin.enableNotificationsTooltip')}>
                       <Switch />
                     </Form.Item>
-                    <Form.Item label={t('admin.enableSmtp')} name="smtp_enabled" valuePropName="checked" tooltip="Required for email notification channels">
+                    <Form.Item label={t('admin.enableSmtp')} name="smtp_enabled" valuePropName="checked" tooltip={t('admin.enableSmtpTooltip')}>
                       <Switch checked={smtpEnabled} onChange={(v) => { setSmtpEnabled(v); settingsForm.setFieldValue('smtp_enabled', v) }} />
                     </Form.Item>
                     <Form.Item label={t('admin.smtpHost')} name="smtp_host">
@@ -488,14 +488,14 @@ const handleCleanup = async () => {
                       label={t('admin.enableRelayIngestion')}
                       name="relay_ingestion_enabled"
                       valuePropName="checked"
-                      tooltip="Accept syslog forwarded by remote relays (mTLS + IP whitelist) in other VLANs. Once enabled, whitelist and certificate management appear in a separate 'Syslog Relay' menu (admin-only)."
+                      tooltip={t('admin.enableRelayIngestionTooltip')}
                     >
                       <Switch checked={relayEnabled} onChange={(v) => { setRelayEnabled(v); settingsForm.setFieldValue('relay_ingestion_enabled', v) }} />
                     </Form.Item>
                     <Form.Item
                       label={t('admin.centralServer')}
                       name="relay_central_host"
-                      tooltip="This server's hostname/IP as reachable from a relay's VLAN, pre-filled into every relay.conf bundle generated on the Syslog Relay page. Falls back to the RELAY_CENTRAL_HOST env var, then 127.0.0.1, if left empty."
+                      tooltip={t('admin.centralServerTooltip')}
                     >
                       <Input placeholder="e.g. syslog.example.com or 10.0.0.5" disabled={!relayEnabled} />
                     </Form.Item>

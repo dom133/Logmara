@@ -17,7 +17,7 @@ import { getErrorMessage } from '../utils/error'
 import AlertFormModal from '../components/AlertFormModal'
 import ChannelFormModal from '../components/ChannelFormModal'
 import NotificationDetailModal from '../components/NotificationDetailModal'
-import { ruleTypeLabels, channelTypeLabels, historyStatusColor } from '../constants/alertConstants'
+import { getRuleTypeLabels, getChannelTypeLabels, historyStatusColor } from '../constants/alertConstants'
 import { HistoryGroup, groupHistoryEntries } from '../components/historyTypes'
 
 const { Title, Text } = Typography
@@ -118,7 +118,7 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
 
   const columns = [
     { title: t('common.name'), dataIndex: 'name', key: 'name', render: (v: string, r: Alert) => <Space>{v}{!r.is_active && <Tag>{t('common.disabled')}</Tag>}</Space> },
-    { title: t('common.type'), dataIndex: 'rule_type', key: 'rule_type', render: (v: AlertRuleType) => <Tag color="blue">{ruleTypeLabels[v]}</Tag> },
+    { title: t('common.type'), dataIndex: 'rule_type', key: 'rule_type', render: (v: AlertRuleType) => <Tag color="blue">{getRuleTypeLabels(t)[v]}</Tag> },
     {
       title: t('alerts.condition'), key: 'condition', ellipsis: true,
       render: (_v: unknown, r: Alert) => {
@@ -288,7 +288,7 @@ function ChannelsTab({ canManage, isAdmin, currentUserId }: { canManage: boolean
 
   const columns = [
     { title: t('common.name'), dataIndex: 'name', key: 'name' },
-    { title: t('common.type'), dataIndex: 'type', key: 'type', render: (v: NotificationChannelType) => <Tag color="blue">{channelTypeLabels[v]}</Tag> },
+    { title: t('common.type'), dataIndex: 'type', key: 'type', render: (v: NotificationChannelType) => <Tag color="blue">{getChannelTypeLabels(t)[v]}</Tag> },
     { title: t('common.status'), dataIndex: 'enabled', key: 'enabled', render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? t('common.enabled') : t('common.disabled')}</Tag> },
     {
       title: t('alerts.owner'), dataIndex: 'created_by_username', key: 'created_by_username',

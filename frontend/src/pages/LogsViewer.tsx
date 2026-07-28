@@ -9,7 +9,7 @@ import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import EmptyState from '../components/EmptyState'
 import LogTable, { useDeviceMap, buildDefaultColumns, resolveHostname } from '../components/LogTable'
-import { DATE_PRESETS } from '../constants'
+import { getDatePresets } from '../constants'
 import { useAuth } from '../services/auth'
 
 const { Title, Text } = Typography
@@ -258,7 +258,7 @@ export default function LogsViewer() {
             placeholder={t('logs.datePreset')}
             style={{ minWidth: 120, flex: '1 1 120px' }}
             allowClear
-            options={DATE_PRESETS}
+            options={getDatePresets(t)}
             onChange={v => {
               const now = dayjs()
               const to = now.format()

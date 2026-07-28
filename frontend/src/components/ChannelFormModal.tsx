@@ -1,7 +1,7 @@
 import { Form, Input, InputNumber, Select, Switch, Space, Modal, Typography } from 'antd'
 import { useTranslation } from 'react-i18next'
 import { NotificationChannel, NotificationChannelRequest, NotificationChannelType, UserSummary } from '../services/api'
-import { channelTypeLabels } from '../constants/alertConstants'
+import { getChannelTypeLabels } from '../constants/alertConstants'
 
 const { Text } = Typography
 
@@ -32,7 +32,7 @@ export default function ChannelFormModal({ open, editing, users, form, onCancel,
         </Form.Item>
         <Form.Item name="type" label={t('common.type')} rules={[{ required: true }]}>
           <Select
-            options={Object.entries(channelTypeLabels).map(([value, label]) => ({ value, label }))}
+            options={Object.entries(getChannelTypeLabels(t)).map(([value, label]) => ({ value, label }))}
             disabled={!!editing}
           />
         </Form.Item>

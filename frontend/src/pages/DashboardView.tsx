@@ -9,7 +9,7 @@ import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import DashboardFieldFilters from '../components/DashboardFieldFilters'
 import LogTable, { useDeviceMap, buildDefaultColumns, resolveHostname } from '../components/LogTable'
-import { SEVERITY_LABELS } from '../constants'
+import { getSeverityLabels } from '../constants'
 import { useAuth } from '../services/auth'
 
 const { Title, Text } = Typography
@@ -350,7 +350,7 @@ export default function DashboardViewPage() {
             style={{ minWidth: 140, flex: '1 1 140px' }}
             value={filters.severity || undefined}
             onChange={(v) => setFilters(f => ({ ...f, severity: v || '' }))}
-            options={severities.map(s => ({ label: SEVERITY_LABELS[s] || s, value: s }))}
+            options={severities.map(s => ({ label: getSeverityLabels(t)[s] || s, value: s }))}
           />
           {dashDevices.length > 1 && (
             <Select
