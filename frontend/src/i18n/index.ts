@@ -58,10 +58,10 @@ async function loadLanguageResources(languages: string[]): Promise<Record<string
 
 async function getDefaultLanguage(): Promise<string | null> {
   try {
-    const res = await fetch('/api/settings')
+    const res = await fetch('/api/settings/default-language')
     if (!res.ok) return null
-    const settings: Record<string, string> = await res.json()
-    return settings['default_language'] || null
+    const data: { default_language?: string } = await res.json()
+    return data.default_language || null
   } catch {
     return null
   }

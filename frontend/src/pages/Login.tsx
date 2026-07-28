@@ -35,14 +35,14 @@ export default function Login() {
     const result = await login(values.username, values.password, values.remember)
     setLoading(false)
     if (result.ok) {
-      message.success(t('common.logged_in'))
+      message.success(t('login.loggedIn'))
       navigate(redirectPath)
     } else {
-      message.error(result.error || t('login.invalid_credentials'))
+      message.error(result.error || t('login.invalidCredentials'))
     }
   }
 
-  const languages = sortLanguagesEnglishFirst(Object.keys((i18n as any).resourceStore?.data || {}))
+  const languages = sortLanguagesEnglishFirst(Object.keys((i18n as any).store?.data || {}))
 
   return (
     <Layout style={{ minHeight: '100vh', background: themeMode === 'dark' ? '#141414' : '#f0f2f5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -73,7 +73,7 @@ export default function Login() {
             <Input.Password size="large" placeholder={t('login.password')} />
           </Form.Item>
           <Form.Item name="remember" valuePropName="checked" style={{ marginBottom: 12 }}>
-            <Checkbox>{t('login.remember_device')}</Checkbox>
+            <Checkbox>{t('login.remember')}</Checkbox>
           </Form.Item>
           <Form.Item>
             <Button type="primary" htmlType="submit" loading={loading} size="large" block>

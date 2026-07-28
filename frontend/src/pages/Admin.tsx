@@ -373,7 +373,7 @@ const handleCleanup = async () => {
                     <Divider orientation="left">{t('admin.languageSettings')}</Divider>
                     <Form.Item label={t('admin.defaultLanguage')} name="default_language" tooltip={t('admin.defaultLanguageTooltip')}>
                       <Select
-                        options={sortLanguagesEnglishFirst(Object.keys((i18n as any).resourceStore?.data || {})).map((l: string) => ({ value: l, label: languageDisplayName(l) }))}
+                        options={sortLanguagesEnglishFirst(Object.keys((i18n as any).store?.data || {})).map((l: string) => ({ value: l, label: languageDisplayName(l) }))}
                       />
                     </Form.Item>
                     <Divider orientation="left">HTTPS</Divider>
