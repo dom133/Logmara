@@ -88,11 +88,45 @@ func TestLeaderElector_RenewFailsForNonOwner(t *testing.T) {
 	if !leaderA.Acquire(ctx) {
 		t.Fatal("leaderA should acquire the uncontested lock")
 	}
-	if leaderB.Renew(ctx) {
-		t.Fatal("leaderB should not be able to renew a lock it does not own")
+	if ok, lost := leaderB.Renew(ctx); ok || !lost {
+		t.Fatalf("leaderB renewing a lock it does not own: got ok=%v lost=%v, want ok=false lost=true (definitive)", ok, lost)
 	}
-	if !leaderA.Renew(ctx) {
+	if ok, _ := leaderA.Renew(ctx); !ok {
 		t.Fatal("leaderA should be able to renew its own lock")
+	}
+}
+
+// TestLeaderElector_RenewIsDefinitiveLossAfterTakeover is the regression
+// test for the swarm double-ingestion bug: when leaderA's TTL lapses (e.g. a
+// missed renewal) and leaderB acquires in the gap, leaderA's next Renew must
+// report a *definitive* loss (lost=true), not just ok=false - the tailer's
+// runWithLeaderElection relies on that distinction to step down immediately
+// instead of tolerating a few more renew cycles, which would otherwise let
+// both instances tail the same file concurrently for several seconds.
+func TestLeaderElector_RenewIsDefinitiveLossAfterTakeover(t *testing.T) {
+	client, mr := newTestClient(t)
+	ctx := context.Background()
+
+	leaderA := NewLeaderElector(client, "tailer", 5*time.Second)
+	leaderB := NewLeaderElector(client, "tailer", 5*time.Second)
+
+	if !leaderA.Acquire(ctx) {
+		t.Fatal("leaderA should acquire the uncontested lock")
+	}
+
+	// Simulate leaderA missing its renewal window (e.g. a network blip) long
+	// enough for the TTL to lapse, then leaderB winning the race to acquire.
+	mr.FastForward(6 * time.Second)
+	if !leaderB.Acquire(ctx) {
+		t.Fatal("leaderB should acquire the lock once leaderA's TTL has expired")
+	}
+
+	ok, lost := leaderA.Renew(ctx)
+	if ok {
+		t.Fatal("leaderA should not be able to renew a lock leaderB now owns")
+	}
+	if !lost {
+		t.Fatal("leaderA's renew must be reported as a definitive loss (lost=true), not a transient failure - callers must step down immediately rather than tolerating retries")
 	}
 }
 

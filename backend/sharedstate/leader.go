@@ -60,17 +60,30 @@ func (le *LeaderElector) Acquire(ctx context.Context) bool {
 	return ok
 }
 
-// Renew extends the lock's TTL. Returns false if this instance no longer
-// holds it (someone else's TTL expiry + acquire raced ahead, or the key was
-// otherwise lost) - callers must treat a false return as "stop acting as
-// leader immediately".
-func (le *LeaderElector) Renew(ctx context.Context) bool {
+// Renew extends the lock's TTL. ok reports whether this instance is still
+// leader. lost distinguishes *why* it isn't, which callers must treat very
+// differently:
+//
+//   - lost=true: the script ran and definitively confirmed this instance no
+//     longer owns the key (TTL expiry + another instance's Acquire already
+//     raced ahead). Someone else may already be acting as leader, so the
+//     caller must stop acting as leader immediately - tolerating this for
+//     even a few more seconds risks two instances running concurrently.
+//   - lost=false (with ok=false): a transient error talking to Redis
+//     (network blip, timeout, Sentinel failover in progress). This
+//     instance's leadership status is simply unknown, not disproven - safe
+//     for callers to tolerate a handful of consecutive occurrences before
+//     stepping down, since nothing indicates anyone else has taken over.
+func (le *LeaderElector) Renew(ctx context.Context) (ok bool, lost bool) {
 	res, err := renewScript.Run(ctx, le.client.rdb, []string{le.key}, le.id, le.ttl.Milliseconds()).Int()
 	if err != nil {
 		slog.Warn("leader election renew error", "key", le.key, "error", err)
-		return false
+		return false, false
 	}
-	return res == 1
+	if res == 1 {
+		return true, false
+	}
+	return false, true
 }
 
 // Release voluntarily gives up leadership (e.g. on clean shutdown) so
