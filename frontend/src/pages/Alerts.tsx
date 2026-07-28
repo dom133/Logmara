@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
 import { Card, Table, Button, Tag, Space, message, Popconfirm, Tabs, Typography, Form } from 'antd'
 import { PlusOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined, EyeOutlined } from '@ant-design/icons'
@@ -22,6 +23,7 @@ import { HistoryGroup, groupHistoryEntries } from '../components/historyTypes'
 const { Title, Text } = Typography
 
 function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boolean; active: boolean }) {
+  const { t } = useTranslation()
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [channels, setChannels] = useState<NotificationChannel[]>([])
   const [devices, setDevices] = useState<DeviceStats[]>([])
@@ -41,7 +43,7 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
       setDevices(d)
       setParsers(p)
     } catch {
-      message.error('Failed to load alerts')
+      message.error(t('alerts.failedToLoad'))
     } finally {
       setLoading(false)
     }
@@ -90,67 +92,67 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
     try {
       if (editing) {
         await updateAlert(editing.id, values)
-        message.success('Alert rule updated')
+        message.success(t('alerts.ruleUpdated'))
       } else {
         await createAlert(values)
-        message.success('Alert rule created')
+        message.success(t('alerts.ruleCreated'))
       }
       setModalOpen(false)
       loadData()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to save alert rule'))
+      message.error(getErrorMessage(e, t('alerts.saveFailed')))
     }
   }
 
   const handleDelete = async (id: number) => {
     try {
       await deleteAlert(id)
-      message.success('Alert rule deleted')
+      message.success(t('alerts.ruleDeleted'))
       loadData()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to delete alert rule'))
+      message.error(getErrorMessage(e, t('alerts.deleteFailed')))
     }
   }
 
   const channelName = (id: number) => channels.find(c => c.id === id)?.name || `#${id}`
 
   const columns = [
-    { title: 'Name', dataIndex: 'name', key: 'name', render: (v: string, r: Alert) => <Space>{v}{!r.is_active && <Tag>Disabled</Tag>}</Space> },
-    { title: 'Type', dataIndex: 'rule_type', key: 'rule_type', render: (v: AlertRuleType) => <Tag color="blue">{ruleTypeLabels[v]}</Tag> },
+    { title: t('common.name'), dataIndex: 'name', key: 'name', render: (v: string, r: Alert) => <Space>{v}{!r.is_active && <Tag>{t('common.disabled')}</Tag>}</Space> },
+    { title: t('common.type'), dataIndex: 'rule_type', key: 'rule_type', render: (v: AlertRuleType) => <Tag color="blue">{ruleTypeLabels[v]}</Tag> },
     {
-      title: 'Condition', key: 'condition', ellipsis: true,
+      title: t('alerts.condition'), key: 'condition', ellipsis: true,
       render: (_v: unknown, r: Alert) => {
         const scope = [
-          (r.device_ips || []).length > 0 ? `${r.device_ips.length} device(s)` : 'all devices',
-          (r.parser_names || []).length > 0 ? `${r.parser_names.length} parser(s)` : null,
-          (r.field_conditions || []).length > 0 ? `${r.field_conditions.length} field condition(s)` : null,
+          (r.device_ips || []).length > 0 ? `${r.device_ips.length} ${t('alerts.devices')}` : t('alerts.allDevices'),
+          (r.parser_names || []).length > 0 ? `${r.parser_names.length} ${t('alerts.parsers')}` : null,
+          (r.field_conditions || []).length > 0 ? `${r.field_conditions.length} ${t('alerts.fieldConditions')}` : null,
         ].filter(Boolean).join(', ')
         if (r.rule_type === 'log_threshold') {
-          return `${r.threshold}+ matches / ${r.window_minutes}m on ${scope}${r.severity ? `, severity >= ${r.severity}` : ''}`
+          return `${r.threshold}+ ${t('alerts.matches')} / ${r.window_minutes}m ${t('alerts.on')} ${scope}${r.severity ? `, ${t('alerts.severity')} >= ${r.severity}` : ''}`
         }
         if (r.rule_type === 'device_silence') {
-          return `silent for ${r.threshold}m on ${scope}`
+          return `${t('alerts.silentFor')} ${r.threshold}m ${t('alerts.on')} ${scope}`
         }
         if (r.rule_type === 'relay_cert_expiring') {
-          return `warn ${r.threshold || 30} day(s) before a relay certificate expires`
+          return `${t('alerts.warn')} ${r.threshold || 30} ${t('alerts.days')} ${t('alerts.beforeCertExpires')}`
         }
         if (r.rule_type === 'malformed_json') {
-          return r.fire_on_every_match ? 'every malformed JSON line during ingestion' : 'any malformed JSON line during ingestion'
+          return r.fire_on_every_match ? t('alerts.everyMalformedJson') : t('alerts.anyMalformedJson')
         }
-        return r.audit_action_filter ? `action = ${r.audit_action_filter}` : 'any audit action'
+        return r.audit_action_filter ? `${t('alerts.action')} = ${r.audit_action_filter}` : t('alerts.anyAuditAction')
       },
     },
     {
-      title: 'Channels', key: 'channels',
+      title: t('alerts.channels'), key: 'channels',
       render: (_v: unknown, r: Alert) => (r.channel_ids || []).map(id => <Tag key={id}>{channelName(id)}</Tag>),
     },
-    { title: 'Last Fired', dataIndex: 'last_fired_at', key: 'last_fired_at', render: (v?: string) => v ? new Date(v).toLocaleString() : '-' },
+    { title: t('alerts.lastFired'), dataIndex: 'last_fired_at', key: 'last_fired_at', render: (v?: string) => v ? new Date(v).toLocaleString() : '-' },
     {
-      title: 'Actions', key: 'actions',
+      title: t('common.actions'), key: 'actions',
       render: (_v: unknown, r: Alert) => (
         <Space>
           {canEdit && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />}
-          {canEdit && <Popconfirm title="Delete alert rule?" onConfirm={() => handleDelete(r.id)}>
+          {canEdit && <Popconfirm title={t('alerts.deleteConfirm')} onConfirm={() => handleDelete(r.id)}>
             <Button size="small" danger icon={<DeleteOutlined />} />
           </Popconfirm>}
         </Space>
@@ -161,7 +163,7 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
   return (
     <>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Alert Rule</Button>}
+        {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>{t('alerts.newRule')}</Button>}
       </div>
       <Table dataSource={alerts} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
 
@@ -182,6 +184,7 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
 }
 
 function ChannelsTab({ canManage, isAdmin, currentUserId }: { canManage: boolean; isAdmin: boolean; currentUserId?: number }) {
+  const { t } = useTranslation()
   const [channels, setChannels] = useState<NotificationChannel[]>([])
   const [users, setUsers] = useState<UserSummary[]>([])
   const [loading, setLoading] = useState(false)
@@ -200,7 +203,7 @@ function ChannelsTab({ canManage, isAdmin, currentUserId }: { canManage: boolean
         } catch { /* picker shows no options */ }
       }
     } catch {
-      message.error('Failed to load notification channels')
+      message.error(t('alerts.channelsFailedToLoad'))
     } finally {
       setLoading(false)
     }
@@ -249,25 +252,25 @@ function ChannelsTab({ canManage, isAdmin, currentUserId }: { canManage: boolean
     try {
       if (editing) {
         await updateNotificationChannel(editing.id, req)
-        message.success('Channel updated')
+        message.success(t('alerts.channelUpdated'))
       } else {
         await createNotificationChannel(req)
-        message.success('Channel created')
+        message.success(t('alerts.channelCreated'))
       }
       setModalOpen(false)
       loadData()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to save channel'))
+      message.error(getErrorMessage(e, t('alerts.channelSaveFailed')))
     }
   }
 
   const handleDelete = async (id: number) => {
     try {
       await deleteNotificationChannel(id)
-      message.success('Channel deleted')
+      message.success(t('alerts.channelDeleted'))
       loadData()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to delete channel'))
+      message.error(getErrorMessage(e, t('alerts.channelDeleteFailed')))
     }
   }
 
@@ -275,34 +278,34 @@ function ChannelsTab({ canManage, isAdmin, currentUserId }: { canManage: boolean
     setTestingId(id)
     try {
       await testNotificationChannel(id)
-      message.success('Test notification sent')
+      message.success(t('alerts.testSent'))
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Test notification failed'))
+      message.error(getErrorMessage(e, t('alerts.testFailed')))
     } finally {
       setTestingId(null)
     }
   }
 
   const columns = [
-    { title: 'Name', dataIndex: 'name', key: 'name' },
-    { title: 'Type', dataIndex: 'type', key: 'type', render: (v: NotificationChannelType) => <Tag color="blue">{channelTypeLabels[v]}</Tag> },
-    { title: 'Status', dataIndex: 'enabled', key: 'enabled', render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? 'Enabled' : 'Disabled'}</Tag> },
+    { title: t('common.name'), dataIndex: 'name', key: 'name' },
+    { title: t('common.type'), dataIndex: 'type', key: 'type', render: (v: NotificationChannelType) => <Tag color="blue">{channelTypeLabels[v]}</Tag> },
+    { title: t('common.status'), dataIndex: 'enabled', key: 'enabled', render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? t('common.enabled') : t('common.disabled')}</Tag> },
     {
-      title: 'Owner', dataIndex: 'created_by_username', key: 'created_by_username',
+      title: t('alerts.owner'), dataIndex: 'created_by_username', key: 'created_by_username',
       render: (username: string | undefined) => {
         if (username) return username
-        return <Tag color="default">No owner</Tag>
+        return <Tag color="default">{t('alerts.noOwner')}</Tag>
       },
     },
     {
-      title: 'Actions', key: 'actions',
+      title: t('common.actions'), key: 'actions',
       render: (_v: unknown, r: NotificationChannel) => {
         const canEditRow = r.created_by != null ? canManage && r.created_by === currentUserId : isAdmin
         return (
           <Space>
-            <Button size="small" icon={<ExperimentOutlined />} loading={testingId === r.id} onClick={() => handleTest(r.id)}>Test</Button>
+            <Button size="small" icon={<ExperimentOutlined />} loading={testingId === r.id} onClick={() => handleTest(r.id)}>{t('alerts.test')}</Button>
             {canEditRow && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />}
-            {canEditRow && <Popconfirm title="Delete channel?" onConfirm={() => handleDelete(r.id)}>
+            {canEditRow && <Popconfirm title={t('alerts.deleteChannelConfirm')} onConfirm={() => handleDelete(r.id)}>
               <Button size="small" danger icon={<DeleteOutlined />} />
             </Popconfirm>}
           </Space>
@@ -314,7 +317,7 @@ function ChannelsTab({ canManage, isAdmin, currentUserId }: { canManage: boolean
   return (
     <>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        {canManage && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Channel</Button>}
+        {canManage && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>{t('alerts.newChannel')}</Button>}
       </div>
       <Table dataSource={channels} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
 
@@ -331,6 +334,7 @@ function ChannelsTab({ canManage, isAdmin, currentUserId }: { canManage: boolean
 }
 
 function HistoryTab({ isAdmin, active, focusInAppId, focusFiringId, onFocusConsumed }: { isAdmin: boolean; active: boolean; focusInAppId?: number; focusFiringId?: string; onFocusConsumed: () => void }) {
+  const { t } = useTranslation()
   const [entries, setEntries] = useState<NotificationLogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
@@ -338,7 +342,7 @@ function HistoryTab({ isAdmin, active, focusInAppId, focusFiringId, onFocusConsu
 
   const loadData = () => {
     setLoading(true)
-    getNotificationHistory().then(setEntries).catch(() => message.error('Failed to load notification history')).finally(() => setLoading(false))
+    getNotificationHistory().then(setEntries).catch(() => message.error(t('alerts.historyFailedToLoad'))).finally(() => setLoading(false))
   }
 
   useEffect(() => { loadData() }, [])
@@ -358,7 +362,7 @@ function HistoryTab({ isAdmin, active, focusInAppId, focusFiringId, onFocusConsu
     if (match) {
       setViewing(match)
     } else {
-      message.info('No matching history entry was found for that notification (it may be too old, or a test notification, which is never recorded in history).')
+      message.info(t('alerts.noMatchingHistory'))
     }
     onFocusConsumed()
   }, [focusInAppId, focusFiringId, loading, entries, onFocusConsumed])
@@ -367,20 +371,20 @@ function HistoryTab({ isAdmin, active, focusInAppId, focusFiringId, onFocusConsu
     setClearing(true)
     try {
       await clearNotificationHistory()
-      message.success('Notification history cleared')
+      message.success(t('alerts.historyCleared'))
       loadData()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to clear notification history'))
+      message.error(getErrorMessage(e, t('alerts.historyClearFailed')))
     } finally {
       setClearing(false)
     }
   }
 
   const columns = [
-    { title: 'Time', dataIndex: 'createdAt', key: 'createdAt', render: (v: string) => new Date(v).toLocaleString() },
-    { title: 'Alert', dataIndex: 'alertName', key: 'alertName' },
+    { title: t('common.time'), dataIndex: 'createdAt', key: 'createdAt', render: (v: string) => new Date(v).toLocaleString() },
+    { title: t('alerts.alert'), dataIndex: 'alertName', key: 'alertName' },
     {
-      title: 'Channels', key: 'channels',
+      title: t('alerts.channels'), key: 'channels',
       render: (_v: unknown, g: HistoryGroup) => (
         <Space size={4} wrap>
           {g.channels.map((c) => (
@@ -390,9 +394,9 @@ function HistoryTab({ isAdmin, active, focusInAppId, focusFiringId, onFocusConsu
       ),
     },
     {
-      title: 'Actions', key: 'actions',
+      title: t('common.actions'), key: 'actions',
       render: (_v: unknown, g: HistoryGroup) => (
-        <Button size="small" icon={<EyeOutlined />} onClick={() => setViewing(g)}>Details</Button>
+        <Button size="small" icon={<EyeOutlined />} onClick={() => setViewing(g)}>{t('common.details')}</Button>
       ),
     },
   ]
@@ -401,8 +405,8 @@ function HistoryTab({ isAdmin, active, focusInAppId, focusFiringId, onFocusConsu
     <>
       {isAdmin && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-          <Popconfirm title="Clear all notification history?" onConfirm={handleClear}>
-            <Button danger loading={clearing} disabled={entries.length === 0}>Clear History</Button>
+          <Popconfirm title={t('alerts.clearHistoryConfirm')} onConfirm={handleClear}>
+            <Button danger loading={clearing} disabled={entries.length === 0}>{t('alerts.clearHistory')}</Button>
           </Popconfirm>
         </div>
       )}
@@ -422,6 +426,7 @@ function HistoryTab({ isAdmin, active, focusInAppId, focusFiringId, onFocusConsu
 }
 
 export default function AlertsPage() {
+  const { t } = useTranslation()
   const { user } = useAuth()
   const canEdit = user?.role === 'admin' || user?.role === 'editor'
   const isAdmin = user?.role === 'admin'
@@ -435,10 +440,10 @@ export default function AlertsPage() {
   const [focusFiringId, setFocusFiringId] = useState<string | undefined>(initialFocusFiringID)
 
   const items = [
-    { key: 'rules', label: 'Alert Rules', children: <RulesTab canEdit={canEdit} isAdmin={isAdmin} active={activeTab === 'rules'} /> },
-    { key: 'channels', label: 'Notification Channels', children: <ChannelsTab canManage={canEdit} isAdmin={isAdmin} currentUserId={user?.id} /> },
+    { key: 'rules', label: t('alerts.rules'), children: <RulesTab canEdit={canEdit} isAdmin={isAdmin} active={activeTab === 'rules'} /> },
+    { key: 'channels', label: t('alerts.notificationChannels'), children: <ChannelsTab canManage={canEdit} isAdmin={isAdmin} currentUserId={user?.id} /> },
     {
-      key: 'history', label: 'History',
+      key: 'history', label: t('common.history'),
       children: (
         <HistoryTab
           isAdmin={isAdmin}
@@ -453,7 +458,7 @@ export default function AlertsPage() {
 
   return (
     <>
-      <Title level={3} style={{ marginTop: 0 }}>Alerts &amp; Notifications</Title>
+      <Title level={3} style={{ marginTop: 0 }}>{t('alerts.title')}</Title>
       <Card>
         <Tabs items={items} activeKey={activeTab} onChange={setActiveTab} />
       </Card>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, message, Popconfirm, Typography, Spin } from 'antd'
 import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
@@ -13,6 +14,7 @@ import { getErrorMessage } from '../utils/error'
 const { Title } = Typography
 
 export default function DashboardsPage() {
+  const { t } = useTranslation()
   const { user } = useAuth()
   const canEdit = user?.role === 'admin' || user?.role === 'editor'
   const isAdmin = user?.role === 'admin'
@@ -98,7 +100,7 @@ export default function DashboardsPage() {
   const handleTogglePin = async (id: number) => {
     try {
       const res = await togglePinDashboard(id)
-      message.success(res.pinned ? 'Dashboard pinned' : 'Dashboard unpinned')
+      message.success(res.pinned ? t('dashboards.pinned') : t('dashboards.unpinned'))
       refresh()
       window.dispatchEvent(new CustomEvent('dashboards-pinned-changed'))
     } catch (e: unknown) {
@@ -109,10 +111,10 @@ export default function DashboardsPage() {
   const handleTogglePublic = async (id: number) => {
     try {
       const res = await togglePublicDashboard(id)
-      message.success(res.is_public ? 'Dashboard is now public' : 'Dashboard is now private')
+      message.success(res.is_public ? t('dashboard.isPublic') : t('dashboard.isPrivate'))
       refresh()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to toggle public'))
+      message.error(getErrorMessage(e, t('dashboards.failedTogglePublic')))
     }
   }
 
@@ -144,14 +146,14 @@ export default function DashboardsPage() {
 
   const columns = [
     {
-      title: 'Name',
+      title: t('dashboards.name'),
       dataIndex: 'name',
       key: 'name',
       render: (v: string, r: Dashboard) => (
         <Space>
           <Tag color="cyan">{v}</Tag>
-          {r.pinned && <Tag color="gold">📌 Pinned</Tag>}
-          {r.is_public && <Tag color="green">Public</Tag>}
+          {r.pinned && <Tag color="gold">{t('dashboards.pinnedTag')}</Tag>}
+          {r.is_public && <Tag color="green">{t('dashboard.public')}</Tag>}
           {r.description && (
             <Tag style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.description}>
               {r.description}
@@ -161,55 +163,55 @@ export default function DashboardsPage() {
       ),
     },
     {
-      title: 'Devices',
+      title: t('dashboard.devices'),
       key: 'devices',
       render: (_v: unknown, r: Dashboard) => {
         const devs = r.config?.devices || []
         return devs.length
           ? devs.slice(0, 3).map(d => <Tag key={d}>{d}</Tag>)
-          : <Tag color="default">All</Tag>
+          : <Tag color="default">{t('common.all')}</Tag>
       },
     },
     {
-      title: 'Fields',
+      title: t('dashboard.fields'),
       key: 'fields',
       render: (_v: unknown, r: Dashboard) => {
         const fs = r.config?.fields || []
-        return fs.length ? fs.map(f => <Tag key={f} color="green">{f}</Tag>) : <Tag color="default">Default</Tag>
+        return fs.length ? fs.map(f => <Tag key={f} color="green">{f}</Tag>) : <Tag color="default">{t('common.default')}</Tag>
       },
     },
     {
-      title: 'Owner',
+      title: t('dashboards.owner'),
       dataIndex: 'owner_username',
       key: 'owner_username',
       render: (v: string) => v || '-',
     },
     {
-      title: 'Created',
+      title: t('dashboards.created'),
       dataIndex: 'created_at',
       key: 'created_at',
       render: (v: string) => new Date(v).toLocaleDateString(),
     },
     {
-      title: 'Last Modified',
+      title: t('dashboards.lastModified'),
       key: 'last_modified',
       render: (_v: unknown, r: Dashboard) => {
         if (!r.updated_at) return '-'
         const date = new Date(r.updated_at).toLocaleDateString()
         const by = r.updated_by_username || r.owner_username
-        return `${date} by ${by}`
+        return `${date} ${t('common.by')} ${by}`
       },
     },
     {
-      title: 'Actions',
+      title: t('common.actions'),
       key: 'actions',
       render: (_v: unknown, r: Dashboard) => {
         const isOwner = r.owner_id === user?.id
         const canManage = isOwner && canEdit || isAdmin
         return (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/dashboards/${r.id}`)}>View</Button>
-            {canManage && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>Edit</Button>}
+            <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/dashboards/${r.id}`)}>{t('common.view')}</Button>
+            {canManage && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>{t('common.edit')}</Button>}
             <Button
               size="small"
               icon={r.pinned ? <PushpinFilled /> : <PushpinOutlined />}
@@ -222,9 +224,9 @@ export default function DashboardsPage() {
               onClick={() => handleTogglePublic(r.id)}
               type={r.is_public ? 'primary' : 'default'}
             >
-              {r.is_public ? 'Public' : 'Private'}
+              {r.is_public ? t('dashboard.public') : t('dashboard.private')}
             </Button>}
-            {canManage && <Popconfirm title="Delete dashboard?" onConfirm={() => handleDelete(r.id)}>
+            {canManage && <Popconfirm title={t('dashboards.deleteConfirm')} onConfirm={() => handleDelete(r.id)}>
               <Button size="small" danger icon={<DeleteOutlined />} />
             </Popconfirm>}
           </div>
@@ -236,22 +238,22 @@ export default function DashboardsPage() {
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
-        <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>Custom Dashboards</Title>
+        <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>{t('dashboards.title')}</Title>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
-          {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Dashboard</Button>}
+          {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>{t('dashboards.resetColumns')}</Button>}
+          {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>{t('dashboards.newDashboard')}</Button>}
         </div>
       </div>
 
       {loading && dashboards.length === 0 && (
         <div style={{ textAlign: 'center', padding: 48 }}>
-          <Spin size="large" tip="Loading dashboards..." />
+          <Spin size="large" tip={t('dashboards.loading')} />
         </div>
       )}
       {dashboards.length === 0 && !loading && (
         <Card style={{ marginBottom: 16 }}>
           <Typography.Paragraph>
-            No dashboards yet. Create one to monitor specific devices with custom fields and filters.
+            {t('dashboards.empty')}
           </Typography.Paragraph>
         </Card>
       )}
@@ -261,7 +263,7 @@ export default function DashboardsPage() {
         if (isAdmin) {
           return (
             <div>
-              <Title level={5}>All Dashboards</Title>
+              <Title level={5}>{t('dashboards.allDashboards')}</Title>
               <Table
                 dataSource={dashboards}
                 columns={enhanceColumns(columns)}
@@ -281,7 +283,7 @@ export default function DashboardsPage() {
           <>
             {myDashboards.length > 0 && (
               <div style={{ marginBottom: 16 }}>
-                <Title level={5}>My Dashboards</Title>
+                <Title level={5}>{t('dashboards.myDashboards')}</Title>
                 <Table
                   dataSource={myDashboards}
                   columns={enhanceColumns(columns)}
@@ -294,7 +296,7 @@ export default function DashboardsPage() {
             )}
             {publicDashboards.length > 0 && (
               <div>
-                <Title level={5}>Public Dashboards</Title>
+                <Title level={5}>{t('dashboards.publicDashboards')}</Title>
                 <Table
                   dataSource={publicDashboards}
                   columns={enhanceColumns(columns)}
@@ -310,7 +312,7 @@ export default function DashboardsPage() {
       })()}
 
       <Modal
-        title={editing ? 'Edit Dashboard' : 'New Dashboard'}
+        title={editing ? t('dashboards.editDashboard') : t('dashboards.newDashboard')}
         open={modalOpen}
         onCancel={closeModal}
         onOk={() => { form.validateFields().then(values => editing ? handleUpdate(values) : handleCreate(values)) }}
@@ -329,18 +331,18 @@ export default function DashboardsPage() {
             form.setFieldValue(['config', 'fields'], [])
           }
         }}>
-          <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Name is required' }, { max: 50, message: 'Name must be 50 characters or less' }]}>
-            <Input placeholder="e.g. Firewall Monitoring" />
+          <Form.Item name="name" label={t('dashboards.name')} rules={[{ required: true, message: t('dashboards.nameRequired') }, { max: 50, message: t('dashboards.nameMax') }]}>
+            <Input placeholder={t('dashboards.namePlaceholder')} />
           </Form.Item>
-          <Form.Item name="description" label="Description">
-            <Input.TextArea rows={2} placeholder="Optional description..." />
+          <Form.Item name="description" label={t('dashboards.description')}>
+            <Input.TextArea rows={2} placeholder={t('dashboards.descriptionPlaceholder')} />
           </Form.Item>
 
-          <Form.Item label="Monitored Devices">
+          <Form.Item label={t('dashboards.monitoredDevices')}>
             <Form.Item name={['config', 'devices']} noStyle>
               <Select
                 mode="multiple"
-                placeholder="Select devices to monitor (leave empty for all)"
+                placeholder={t('dashboards.selectDevices')}
                 style={{ width: '100%' }}
                 options={devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))}
               />
@@ -348,40 +350,40 @@ export default function DashboardsPage() {
           </Form.Item>
 
           {selectedDevices.length > 0 && (
-            <Form.Item label="Parser(s)">
+            <Form.Item label={t('dashboards.parsers')}>
               <Form.Item name={['config', 'parsers']} noStyle>
                 <Select
                   mode="multiple"
                   allowClear
-                  placeholder="Select parser(s) used by the selected device(s) (leave empty for all)"
+                  placeholder={t('dashboards.selectParsers')}
                   style={{ width: '100%' }}
                   options={parserOptions}
-                  notFoundContent="No parsers matched for the selected device(s) yet"
+                  notFoundContent={t('dashboards.noParsersFound')}
                 />
               </Form.Item>
             </Form.Item>
           )}
 
-          <Form.Item label="Parsed Fields to Show">
+          <Form.Item label={t('dashboards.parsedFieldsToShow')}>
             <Form.Item name={['config', 'fields']} noStyle>
               <Select
                 mode="multiple"
-                placeholder="Select fields from parsed data (leave empty for default)"
+                placeholder={t('dashboards.selectFields')}
                 style={{ width: '100%' }}
                 options={fieldOptions}
               />
             </Form.Item>
           </Form.Item>
 
-          <Form.Item label="Filters">
+          <Form.Item label={t('dashboards.filters')}>
             <Space direction="vertical" style={{ width: '100%' }}>
-              <Form.Item label="Severity" noStyle>
+              <Form.Item label={t('dashboard.severity')} noStyle>
                 <Form.Item name={['config', 'filters', 'severity']} noStyle>
                   <Select
-                    placeholder="All severities"
+                    placeholder={t('common.all')}
                     style={{ width: '100%' }}
                     options={[
-                      { label: 'All', value: '' },
+                      { label: t('common.all'), value: '' },
                       { label: 'emerg', value: 'emerg' },
                       { label: 'alert', value: 'alert' },
                       { label: 'crit', value: 'crit' },
@@ -394,15 +396,15 @@ export default function DashboardsPage() {
                   />
                 </Form.Item>
               </Form.Item>
-              <Form.Item label="Search Term" noStyle>
+              <Form.Item label={t('dashboards.searchTerm')} noStyle>
                 <Form.Item name={['config', 'filters', 'search']} noStyle>
-                  <Input placeholder="Filter by keyword in message/hostname" />
+                  <Input placeholder={t('dashboards.searchPlaceholder')} />
                 </Form.Item>
               </Form.Item>
             </Space>
           </Form.Item>
 
-          <Form.Item label="Field Filters">
+          <Form.Item label={t('dashboards.fieldFilters')}>
             <Space direction="vertical" style={{ width: '100%' }}>
               <Form.Item name={['config', 'filters', 'fieldFilters']} noStyle>
                 <DashboardFieldFilters availableFields={parsedFields.map(f => f.field_name)} />

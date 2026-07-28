@@ -7,6 +7,7 @@ import { getErrorMessage } from '../utils/error'
 import { useAuth } from '../services/auth'
 import AdminUsers from '../components/AdminUsers'
 import { containerStateColor } from '../utils/adminUtils'
+import { useTranslation } from 'react-i18next'
 
 const { Option } = Select
 
@@ -23,6 +24,7 @@ function formatDurationAgo(ms: number): string {
 
 export default function Admin() {
   const { refreshUser } = useAuth()
+  const { t, i18n } = useTranslation()
   const [settings, setSettings] = useState<Record<string, string>>({})
   const [settingsForm] = Form.useForm()
   const [devices, setDevices] = useState<DeviceStats[]>([])
@@ -360,14 +362,20 @@ const handleCleanup = async () => {
                       <InputNumber min={1} max={1440} style={{ width: '100%' }} />
                     </Form.Item>
                     <Divider orientation="left">CORS</Divider>
-                   <Form.Item
-                     label="Allowed CORS Origins"
-                     name="cors_origins"
-                     tooltip="Comma-separated list of origins allowed to call the API from a browser (e.g. http://localhost:3000,https://example.com). Leave empty to only allow the origin the app is served from."
-                   >
-                     <Input placeholder="http://localhost:3000,https://yourdomain.com" />
-                   </Form.Item>
-                   <Divider orientation="left">HTTPS</Divider>
+<Form.Item
+                      label="Allowed CORS Origins"
+                      name="cors_origins"
+                      tooltip="Comma-separated list of origins allowed to call the API from a browser (e.g. http://localhost:3000,https://example.com). Leave empty to only allow the origin the app is served from."
+                    >
+                      <Input placeholder="http://localhost:3000,https://yourdomain.com" />
+                    </Form.Item>
+                    <Divider orientation="left">{t('admin.languageSettings')}</Divider>
+                    <Form.Item label={t('admin.defaultLanguage')} name="default_language" tooltip={t('admin.defaultLanguageTooltip')}>
+                      <Select
+                        options={Object.keys((i18n as any).resourceStore?.data || {}).map((l: string) => ({ value: l, label: l.charAt(0).toUpperCase() + l.slice(1) }))}
+                      />
+                    </Form.Item>
+                    <Divider orientation="left">HTTPS</Divider>
                    <Form.Item label="Enable HTTPS" name="https_enabled" valuePropName="checked">
                      <Switch checked={httpsEnabled} onChange={(v) => {
                        setHttpsEnabled(v)

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, Switch, message, Popconfirm, Tooltip, Typography, Divider, Descriptions, Row, Col, Statistic } from 'antd'
 import { PlusOutlined, PlayCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, RestOutlined, CopyOutlined } from '@ant-design/icons'
 import { getParsers, createParser, updateParser, deleteParser, cloneParser, testParser, reparseUnparsed, getParsedFields, Parser, ParsedField, ParserFieldDef } from '../services/api'
@@ -13,6 +14,7 @@ const deviceTypes = ['all', 'mikrotik', 'ubiquiti', 'cisco', 'palo_alto', 'pfsen
 const matchTypes = ['hostname', 'app_name', 'message', 'all']
 
 export default function ParsersPage() {
+  const { t } = useTranslation()
   const { user } = useAuth()
   const canEdit = user?.role === 'admin' || user?.role === 'editor'
   const [form] = Form.useForm()
@@ -80,16 +82,16 @@ export default function ParsersPage() {
   const handleClone = async (id: number) => {
     try {
       await cloneParser(id)
-      message.success('Parser cloned')
+      message.success(t('parsers.cloned'))
       refresh()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to clone parser'))
+      message.error(getErrorMessage(e, t('parsers.cloneFailed')))
     }
   }
 
   const handleTest = async () => {
     if (!pattern.trim() || !sampleLog.trim()) {
-      message.warning('Enter both pattern and sample log')
+      message.warning(t('parsers.enterPatternAndSample'))
       return
     }
     setTestLoading(true)
@@ -97,7 +99,7 @@ export default function ParsersPage() {
       const res = await testParser(pattern, sampleLog)
       setTestResult(res)
     } catch (e: unknown) {
-      const msg = getErrorMessage(e, 'Test failed')
+      const msg = getErrorMessage(e, t('parsers.testFailed'))
       message.error(msg)
       setTestResult({ matched: false, parser_name: null, fields: null, message: msg })
     } finally {
@@ -108,39 +110,39 @@ export default function ParsersPage() {
   const handleReparse = async () => {
     try {
       await reparseUnparsed()
-      message.success('Reparse started in background')
+      message.success(t('parsers.reparseStarted'))
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to start reparse'))
+      message.error(getErrorMessage(e, t('parsers.reparseFailed')))
     }
   }
 
   const columns = [
     {
-      title: 'Name',
+      title: t('common.name'),
       dataIndex: 'name',
       key: 'name',
       render: (v: string, r: Parser) => (
         <Space>
           <Text strong>{v}</Text>
-          {r.is_builtin && <Tag color="purple">Built-in</Tag>}
+          {r.is_builtin && <Tag color="purple">{t('parsers.builtIn')}</Tag>}
         </Space>
       ),
     },
     {
-      title: 'Device Type',
+      title: t('parsers.deviceType'),
       dataIndex: 'device_type',
       key: 'device_type',
       render: (v: string) => <Tag color="blue">{v}</Tag>,
     },
     {
-      title: 'Match',
+      title: t('parsers.match'),
       key: 'match',
       width: 180,
       ellipsis: true,
       render: (_v: unknown, r: Parser) => `${r.match_type}: ${r.match_value || '-'}`,
     },
     {
-      title: 'Regex',
+      title: t('parsers.regex'),
       dataIndex: 'regex',
       key: 'regex',
       width: 250,
@@ -148,7 +150,7 @@ export default function ParsersPage() {
       render: (v: string) => <Text code style={{ fontSize: 11 }}>{v}</Text>,
     },
     {
-      title: 'Fields',
+      title: t('common.fields'),
       key: 'fields',
       render: (_v: unknown, r: Parser) => {
         const fs = parserFields(r.id)
@@ -156,23 +158,23 @@ export default function ParsersPage() {
       },
     },
     {
-      title: 'Status',
+      title: t('common.status'),
       dataIndex: 'enabled',
       key: 'enabled',
-      render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? 'Enabled' : 'Disabled'}</Tag>,
+      render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? t('common.enabled') : t('common.disabled')}</Tag>,
     },
     {
-      title: 'Actions',
+      title: t('common.actions'),
       key: 'actions',
       render: (_v: unknown, r: Parser) => (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {canEdit && <Tooltip title="Edit">
+          {canEdit && <Tooltip title={t('common.edit')}>
             <Button size="small" icon={<EditOutlined />} disabled={r.is_builtin} onClick={() => openEdit(r)} />
           </Tooltip>}
-          {canEdit && <Tooltip title="Clone">
+          {canEdit && <Tooltip title={t('parsers.clone')}>
             <Button size="small" icon={<CopyOutlined />} onClick={() => handleClone(r.id)} />
           </Tooltip>}
-          {canEdit && <Popconfirm title="Delete parser?" onConfirm={() => handleDelete(r.id)} disabled={r.is_builtin}>
+          {canEdit && <Popconfirm title={t('parsers.deleteConfirm')} onConfirm={() => handleDelete(r.id)} disabled={r.is_builtin}>
             <Button size="small" danger icon={<DeleteOutlined />} disabled={r.is_builtin} />
           </Popconfirm>}
         </div>
@@ -183,30 +185,30 @@ export default function ParsersPage() {
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
-        <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>Parser Engine</Title>
+        <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>{t('parsers.title')}</Title>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
-          {canEdit && <Button icon={<ReloadOutlined />} onClick={handleReparse}>Reparse Unparsed</Button>}
-          {canEdit && <Button icon={<PlayCircleOutlined />} onClick={() => setTestModalOpen(true)}>Test Regex</Button>}
+          {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>{t('parsers.resetColumns')}</Button>}
+          {canEdit && <Button icon={<ReloadOutlined />} onClick={handleReparse}>{t('parsers.reparseUnparsed')}</Button>}
+          {canEdit && <Button icon={<PlayCircleOutlined />} onClick={() => setTestModalOpen(true)}>{t('parsers.testRegex')}</Button>}
           {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={() => {
             form.setFieldsValue({ enabled: true, match_type: 'hostname', device_type: 'all', fields: [] })
             openCreate()
-          }}>New Parser</Button>}
+          }}>{t('parsers.new')}</Button>}
         </div>
       </div>
 
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col xs={24} sm={12} md={6}>
-          <Card size="small"><Statistic title="Total Parsers" value={parsers.length} /></Card>
+          <Card size="small"><Statistic title={t('parsers.totalParsers')} value={parsers.length} /></Card>
         </Col>
         <Col xs={24} sm={12} md={6}>
-          <Card size="small"><Statistic title="Built-in" value={parsers.filter(p => p.is_builtin).length} /></Card>
+          <Card size="small"><Statistic title={t('parsers.builtInCount')} value={parsers.filter(p => p.is_builtin).length} /></Card>
         </Col>
         <Col xs={24} sm={12} md={6}>
-          <Card size="small"><Statistic title="Custom" value={parsers.filter(p => !p.is_builtin).length} /></Card>
+          <Card size="small"><Statistic title={t('parsers.customCount')} value={parsers.filter(p => !p.is_builtin).length} /></Card>
         </Col>
         <Col xs={24} sm={12} md={6}>
-          <Card size="small"><Statistic title="Field Definitions" value={fields.length} /></Card>
+          <Card size="small"><Statistic title={t('parsers.fieldDefinitions')} value={fields.length} /></Card>
         </Col>
       </Row>
 
@@ -222,54 +224,54 @@ export default function ParsersPage() {
       />
 
       <Modal
-        title={editing ? 'Edit Parser' : 'New Parser'}
+        title={editing ? t('parsers.editTitle') : t('parsers.newTitle')}
         open={modalOpen}
         onCancel={closeModal}
         onOk={() => { form.validateFields().then(values => editing ? handleUpdate(values) : handleCreate(values)) }}
         width={{ sm: '90%', md: 700 }}
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="name" label="Name" rules={[{ required: true }]}>
+          <Form.Item name="name" label={t('common.name')} rules={[{ required: true }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="description" label="Description">
+          <Form.Item name="description" label={t('common.description')}>
             <Input.TextArea rows={2} />
           </Form.Item>
-          <Form.Item name="device_type" label="Device Type" rules={[{ required: true }]}>
+          <Form.Item name="device_type" label={t('parsers.deviceType')} rules={[{ required: true }]}>
             <Select options={deviceTypes.map(d => ({ label: d, value: d }))} />
           </Form.Item>
-          <Form.Item name="match_type" label="Match Type" rules={[{ required: true }]}>
+          <Form.Item name="match_type" label={t('parsers.matchType')} rules={[{ required: true }]}>
             <Select options={matchTypes.map(m => ({ label: m, value: m }))} />
           </Form.Item>
-          <Form.Item name="match_value" label="Match Value (glob patterns supported)">
-            <Input placeholder="e.g. router*, *.lan" />
+          <Form.Item name="match_value" label={t('parsers.matchValue')}>
+            <Input placeholder={t('parsers.matchValuePlaceholder')} />
           </Form.Item>
-          <Form.Item name="regex" label="Regex (with named groups)" rules={[{ required: true }]}>
+          <Form.Item name="regex" label={t('parsers.regexLabel')} rules={[{ required: true }]}>
             <Input.TextArea rows={3} placeholder='(?P<action>\w+) (?P<ip>\d+\.\d+\.\d+\.\d+)' />
           </Form.Item>
-          <Form.Item name="enabled" label="Enabled" valuePropName="checked">
+          <Form.Item name="enabled" label={t('common.enabled')} valuePropName="checked">
             <Switch />
           </Form.Item>
           <Divider />
-          <Text>Field definitions (named groups in regex will auto-extract)</Text>
+          <Text>{t('parsers.fieldDefsNote')}</Text>
           <Form.List name="fields">
             {(fieldsList, { add, remove }) => (
               <>
                 {fieldsList.map((field, index) => (
                   <div key={field.key} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'baseline', marginBottom: 8 }}>
                     <Form.Item name={[index, 'name']} rules={[{ required: true }]}>
-                      <Input placeholder="Field name" style={{ width: 150 }} />
+                      <Input placeholder={t('parsers.fieldNamePlaceholder')} style={{ width: 150 }} />
                     </Form.Item>
                     <Form.Item name={[index, 'label']}>
-                      <Input placeholder="Label" style={{ width: 150 }} />
+                      <Input placeholder={t('common.label')} style={{ width: 150 }} />
                     </Form.Item>
                     <Form.Item name={[index, 'type']}>
                       <Select options={['string', 'number', 'ip', 'mac', 'duration'].map(t => ({ label: t, value: t }))} style={{ width: 120 }} />
                     </Form.Item>
-                    <Button type="link" danger onClick={() => remove(index)}>Remove</Button>
+                    <Button type="link" danger onClick={() => remove(index)}>{t('common.remove')}</Button>
                   </div>
                 ))}
-                <Button type="dashed" onClick={() => add({ name: '', label: '', type: 'string' })} block>+ Add Field</Button>
+                <Button type="dashed" onClick={() => add({ name: '', label: '', type: 'string' })} block>{t('parsers.addField')}</Button>
               </>
             )}
           </Form.List>
@@ -277,28 +279,28 @@ export default function ParsersPage() {
       </Modal>
 
       <Modal
-        title="Test Regex Pattern"
+        title={t('parsers.testTitle')}
         open={testModalOpen}
         onCancel={() => { setTestModalOpen(false); setTestResult(null) }}
         footer={null}
         width={{ sm: '95%', md: 800 }}
       >
         <Form layout="vertical">
-          <Form.Item label="Regex Pattern">
+          <Form.Item label={t('parsers.regexPattern')}>
             <Input.TextArea rows={2} value={pattern} onChange={e => setPattern(e.target.value)} placeholder='(?P<action>\w+) (?P<ip>\d+\.\d+\.\d+\.\d+)' />
           </Form.Item>
-          <Form.Item label="Sample Log Message">
-            <Input.TextArea rows={4} value={sampleLog} onChange={e => setSampleLog(e.target.value)} placeholder="Paste a log line here..." />
+          <Form.Item label={t('parsers.sampleLog')}>
+            <Input.TextArea rows={4} value={sampleLog} onChange={e => setSampleLog(e.target.value)} placeholder={t('parsers.pasteLogLine')} />
           </Form.Item>
-          <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleTest} loading={testLoading} block>Test</Button>
+          <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleTest} loading={testLoading} block>{t('parsers.test')}</Button>
         </Form>
         {testResult && (
           <Card
             style={{ marginTop: 16 }}
             type="inner"
-            title={testResult.matched ? '✅ Matched' : '❌ No Match'}
+            title={testResult.matched ? t('parsers.matched') : t('parsers.noMatch')}
           >
-            {testResult.parser_name && <p><Text strong>Parser:</Text> {testResult.parser_name}</p>}
+            {testResult.parser_name && <p><Text strong>{t('parsers.parser')}:</Text> {testResult.parser_name}</p>}
             {testResult.fields && Object.keys(testResult.fields).length > 0 && (
               <Descriptions column={2} size="small">
                 {Object.entries(testResult.fields).map(([k, v]) => (

@@ -2,6 +2,8 @@ import { useEffect, useState, createContext, useContext } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link as RouterLink } from 'react-router-dom'
 import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Space, Typography, Skeleton } from 'antd'
 import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, BellOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined, LogoutOutlined, UserOutlined, NodeIndexOutlined } from '@ant-design/icons'
+import { initI18n } from './i18n'
+import { useTranslation } from 'react-i18next'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import LogsViewer from './pages/LogsViewer'
@@ -20,6 +22,8 @@ import { NotificationBell } from './components/NotificationBell'
 import { AuthProvider, useAuth } from './services/auth'
 import { getDashboards, getDashboard, Dashboard as DashboardType, checkInitialized } from './services/api'
 import { useIsMobile } from './hooks/useIsMobile'
+import { I18nextProvider } from 'react-i18next'
+import type { i18n as I18nInstance } from 'i18next'
 
 const { Sider, Content, Header } = Layout
 
@@ -35,6 +39,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, loading
 }) {
   const { token } = theme.useToken()
   const { themeMode } = useTheme()
+  const { t } = useTranslation()
   const activeBg = themeMode === 'dark' ? '#2a2a2a' : '#e6f7ff'
   const renderLinks = () => (
     <>
@@ -62,7 +67,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, loading
             }}
           >
             <span style={{ fontSize: 18 }}>{item.icon}</span>
-            {!collapsed && item.label}
+            {!collapsed && t(item.labelKey)}
           </RouterLink>
         ))}
         {loadingDashboards ? (
@@ -74,7 +79,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, loading
           <>
             {!collapsed && (
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: token.colorTextTertiary, textTransform: 'uppercase', letterSpacing: 1 }}>
-              Pinned
+              {t('nav.pinned')}
             </div>
           )}
             {pinnedDashboards.map(d => (
@@ -158,19 +163,20 @@ function ThemeProvider({ children }: { children: React.ReactNode }) {
 }
 
 const navItems = [
-  { key: '/', label: 'Dashboard', icon: <DashboardOutlined /> },
-  { key: '/logs', label: 'Logs', icon: <FileTextOutlined /> },
-  { key: '/parsers', label: 'Parsers', icon: <SettingOutlined /> },
-  { key: '/dashboards', label: 'Dashboards', icon: <FundOutlined /> },
-  { key: '/alerts', label: 'Alerts', icon: <BellOutlined />, hideWhenNotificationsDisabled: true },
-  { key: '/relay', label: 'Syslog Relay', icon: <NodeIndexOutlined />, adminOnly: true, hideWhenRelayDisabled: true },
-  { key: '/admin', label: 'Admin', icon: <SafetyOutlined />, adminOnly: true },
+  { key: '/', labelKey: 'nav.dashboard', icon: <DashboardOutlined /> },
+  { key: '/logs', labelKey: 'nav.logs', icon: <FileTextOutlined /> },
+  { key: '/parsers', labelKey: 'nav.parsers', icon: <SettingOutlined /> },
+  { key: '/dashboards', labelKey: 'nav.dashboards', icon: <FundOutlined /> },
+  { key: '/alerts', labelKey: 'nav.alerts', icon: <BellOutlined />, hideWhenNotificationsDisabled: true },
+  { key: '/relay', labelKey: 'nav.relay', icon: <NodeIndexOutlined />, adminOnly: true, hideWhenRelayDisabled: true },
+  { key: '/admin', labelKey: 'nav.admin', icon: <SafetyOutlined />, adminOnly: true },
 ]
 
 function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, logout, isAdmin, showSessionWarning, sessionWarningCountdown, extendSession } = useAuth()
   const { token } = theme.useToken()
   const { themeMode, toggleTheme } = useTheme()
+  const { t } = useTranslation()
   const location = useLocation()
   const [pinnedDashboards, setPinnedDashboards] = useState<DashboardType[]>([])
   const [loadingDashboards, setLoadingDashboards] = useState(true)
@@ -267,10 +273,11 @@ function AppLayout({ children }: { children: React.ReactNode }) {
             )}
             <span style={{ fontSize: 16, fontWeight: 500 }}>
               {(() => {
-                if (location.pathname === '/') return 'Dashboard'
+                if (location.pathname === '/') return t('nav.dashboard')
                 const match = location.pathname.match(/^\/dashboards\/([^/]+)$/)?.[1]
-                if (match && dashboardTitle) return `Dashboards / ${dashboardTitle}`
-                return location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'Logmara'
+                if (match && dashboardTitle) return `${t('nav.dashboards')} / ${dashboardTitle}`
+                const key = `nav.${location.pathname.replace('/', '')}`
+                return t(key) || (location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'Logmara')
               })()}
             </span>
           </div>
@@ -280,7 +287,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
               type="text"
               onClick={() => setSessionsModalOpen(true)}
               style={{ fontSize: 13, color: token.colorTextSecondary, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
-              title="My Sessions"
+              title={t('nav.sessions')}
             >
               <UserOutlined /> {user?.username}
             </Button>
@@ -289,7 +296,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
               icon={themeMode === 'dark' ? <SunOutlined /> : <MoonOutlined />}
               onClick={toggleTheme}
             >
-              <span className="navbar-text-label">{themeMode === 'dark' ? 'Light' : 'Dark'}</span>
+              <span className="navbar-text-label">{themeMode === 'dark' ? t('nav.themeLight') : t('nav.themeDark')}</span>
             </Button>
             <Button
               type="text"
@@ -297,7 +304,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
               icon={<LogoutOutlined />}
               onClick={logout}
             >
-              <span className="navbar-text-label">Logout</span>
+              <span className="navbar-text-label">{t('nav.logout')}</span>
             </Button>
           </div>
         </Header>
@@ -326,9 +333,30 @@ function PrivateRoute({ children, requireAdmin }: { children: React.ReactNode; r
   return <AppLayout>{children}</AppLayout>
 }
 
+function NotFoundPage() {
+  const { t } = useTranslation()
+  return <Result status="404" title={t('notFound.title')} subTitle={t('notFound.subtitle')} />
+}
+
 export default function App() {
   const [initialized, setInitialized] = useState<boolean | null>(null)
   const [starting, setStarting] = useState(false)
+  const [i18n, setI18n] = useState<I18nInstance | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const init = async () => {
+      try {
+        const instance = await initI18n()
+        if (cancelled) return
+        setI18n(instance)
+      } catch (e) {
+        console.error('Failed to initialize i18n', e)
+      }
+    }
+    init()
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -365,7 +393,7 @@ export default function App() {
     )
   }
 
-  if (initialized === null) {
+  if (initialized === null || !i18n) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
         <Spin size="large" />
@@ -374,33 +402,35 @@ export default function App() {
   }
 
   return (
-    <ThemeProvider>
-      <BrowserRouter>
-        <AuthProvider>
-          <Routes>
-          {!initialized ? (
-            <>
-              <Route path="/setup" element={<SetupWizard />} />
-              <Route path="*" element={<Navigate to="/setup" replace />} />
-            </>
-          ) : (
-            <>
-              <Route path="/login" element={<Login />} />
-              
-              <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
-              <Route path="/logs" element={<PrivateRoute><LogsViewer /></PrivateRoute>} />
-              <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />
-              <Route path="/dashboards" element={<PrivateRoute><DashboardsPage /></PrivateRoute>} />
-              <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
-              <Route path="/alerts" element={<PrivateRoute><AlertsPage /></PrivateRoute>} />
-              <Route path="/admin" element={<PrivateRoute requireAdmin><Admin /></PrivateRoute>} />
-              <Route path="/relay" element={<PrivateRoute requireAdmin><SyslogRelay /></PrivateRoute>} />
-              <Route path="*" element={<PrivateRoute><Result status="404" title="404" subTitle="Page not found" /></PrivateRoute>} />
-            </>
-          )}
-        </Routes>
-        </AuthProvider>
-      </BrowserRouter>
-    </ThemeProvider>
+    <I18nextProvider i18n={i18n}>
+      <ThemeProvider>
+        <BrowserRouter>
+          <AuthProvider>
+            <Routes>
+            {!initialized ? (
+              <>
+                <Route path="/setup" element={<SetupWizard />} />
+                <Route path="*" element={<Navigate to="/setup" replace />} />
+              </>
+            ) : (
+              <>
+                <Route path="/login" element={<Login />} />
+
+                <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
+                <Route path="/logs" element={<PrivateRoute><LogsViewer /></PrivateRoute>} />
+                <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />
+                <Route path="/dashboards" element={<PrivateRoute><DashboardsPage /></PrivateRoute>} />
+                <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
+                <Route path="/alerts" element={<PrivateRoute><AlertsPage /></PrivateRoute>} />
+                <Route path="/admin" element={<PrivateRoute requireAdmin><Admin /></PrivateRoute>} />
+                <Route path="/relay" element={<PrivateRoute requireAdmin><SyslogRelay /></PrivateRoute>} />
+                <Route path="*" element={<PrivateRoute><NotFoundPage /></PrivateRoute>} />
+              </>
+            )}
+          </Routes>
+          </AuthProvider>
+        </BrowserRouter>
+      </ThemeProvider>
+    </I18nextProvider>
   )
 }
