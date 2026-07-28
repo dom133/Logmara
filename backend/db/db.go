@@ -667,6 +667,7 @@ func seedSettings(db *sql.DB) error {
 		"retention_days":                "30",
 		"session_timeout_min":           "15",
 		"is_initialized":                "false",
+		"default_language":              "en",
 		"ldap_enabled":                  "false",
 		"ldap_server":                   "",
 		"ldap_port":                     "389",
@@ -712,6 +713,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "Session timeout in minutes"
 		case "is_initialized":
 			desc = "Application initialization flag"
+		case "default_language":
+			desc = "Default UI language for new sessions"
 		case "ldap_enabled":
 			desc = "Enable LDAP authentication"
 		case "ldap_server":
