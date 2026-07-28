@@ -318,33 +318,35 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           <Content style={{ margin: 16, padding: 24, background: token.colorBgContainer, borderRadius: 8 }}>
             <ErrorBoundary>{children}</ErrorBoundary>
           </Content>
+          <Footer
+            style={{
+              background: token.colorPrimaryBg,
+              color: token.colorPrimaryText,
+              fontSize: 12,
+              padding: '12px 16px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: 8,
+            }}
+          >
+            <span>Logmara {appVersion}</span>
+            <span>
+              © {new Date().getFullYear()}{' '}
+              <a href="https://github.com/dom133" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
+                Dominik Kruszewski
+              </a>
+              {' · '}
+              <a href="https://github.com/dom133/Logmara" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
+                GitHub
+              </a>
+              {' · '}
+              AGPL-3.0
+            </span>
+          </Footer>
         </Layout>
       </Layout>
-      <Footer
-        style={{
-          color: token.colorTextTertiary,
-          fontSize: 12,
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: 8,
-        }}
-      >
-        <span>Logmara {appVersion}</span>
-        <span>
-          © {new Date().getFullYear()}{' '}
-          <a href="https://github.com/dom133" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
-            Dominik Kruszewski
-          </a>
-          {' · '}
-          <a href="https://github.com/dom133/Logmara" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
-            GitHub
-          </a>
-          {' · '}
-          AGPL-3.0
-        </span>
-      </Footer>
       {showSessionWarning && (
         <SessionWarningModal
           countdown={sessionWarningCountdown}
