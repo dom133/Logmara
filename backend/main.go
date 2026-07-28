@@ -597,6 +597,18 @@ r := gin.New()
 		// editing and deleting channels stays admin-only (adminGroup below).
 		authGroup.GET("/admin/notification-channels", notificationsGate, handler.ListNotificationChannels(database))
 
+		// Readable by every authenticated role (including viewer) - db.GetAllAlerts
+		// and db.GetNotificationHistory already drop admin-only rule types for
+		// non-admins, unless the caller is specifically targeted via a channel's
+		// user_ids (same override used at notification-delivery time in
+		// notify/push.go and handler.StreamNotifications). Gating the route to
+		// admin/editor only would make that per-row filtering unreachable for
+		// viewers and hide non-admin-only rules/history from them too. Creating,
+		// updating and deleting alert rules stays editor/admin-only (editorGroup
+		// below).
+		authGroup.GET("/alerts", notificationsGate, handler.ListAlerts(database))
+		authGroup.POST("/admin/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
+
 		authGroup.GET("/parsers", handler.ListParsers(engine))
 		authGroup.POST("/parsers/fields", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ListParsedFields(engine))
 		authGroup.GET("/dashboards", handler.ListDashboards(database))
@@ -622,7 +634,6 @@ r := gin.New()
 			editorGroup.DELETE("/dashboards/:id", handler.DeleteDashboard(database))
 			editorGroup.PATCH("/dashboards/:id/public", handler.TogglePublicDashboard(database))
 
-			editorGroup.GET("/alerts", notificationsGate, handler.ListAlerts(database))
 			editorGroup.POST("/alerts", notificationsGate, handler.CreateAlert(alertEngine))
 			editorGroup.PUT("/alerts/:id", notificationsGate, handler.UpdateAlert(alertEngine))
 			editorGroup.DELETE("/alerts/:id", notificationsGate, handler.DeleteAlert(alertEngine))
@@ -676,10 +687,11 @@ r := gin.New()
 		// creator at the handler level (see handler.channelOwnedByCaller) -
 		// an editor (or admin) can only ever modify a channel they made
 		// themselves, or one predating the created_by column entirely.
+		// (Notification history itself now lives on authGroup above - see
+		// comment there - since viewers need read access too.)
 		adminEditorGroup := authGroup.Group("/admin")
 		adminEditorGroup.Use(authCfg.RoleRequired("admin", "editor"))
 		{
-			adminEditorGroup.POST("/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
 			adminEditorGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))
 			adminEditorGroup.PUT("/notification-channels/:id", notificationsGate, handler.UpdateNotificationChannel(database))
 			adminEditorGroup.DELETE("/notification-channels/:id", notificationsGate, handler.DeleteNotificationChannel(database))
