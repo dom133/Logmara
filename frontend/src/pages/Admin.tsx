@@ -8,6 +8,7 @@ import { useAuth } from '../services/auth'
 import AdminUsers from '../components/AdminUsers'
 import { containerStateColor } from '../utils/adminUtils'
 import { useTranslation } from 'react-i18next'
+import { languageDisplayName, sortLanguagesEnglishFirst } from '../i18n'
 
 const { Option } = Select
 
@@ -372,7 +373,7 @@ const handleCleanup = async () => {
                     <Divider orientation="left">{t('admin.languageSettings')}</Divider>
                     <Form.Item label={t('admin.defaultLanguage')} name="default_language" tooltip={t('admin.defaultLanguageTooltip')}>
                       <Select
-                        options={Object.keys((i18n as any).resourceStore?.data || {}).map((l: string) => ({ value: l, label: l.charAt(0).toUpperCase() + l.slice(1) }))}
+                        options={sortLanguagesEnglishFirst(Object.keys((i18n as any).resourceStore?.data || {})).map((l: string) => ({ value: l, label: languageDisplayName(l) }))}
                       />
                     </Form.Item>
                     <Divider orientation="left">HTTPS</Divider>
