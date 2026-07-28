@@ -30,6 +30,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const appVersion = "0.0.1"
+
+func versionHandler(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"version": appVersion})
+}
+
 // RateLimiter is satisfied by both the local, in-memory limiter (default,
 // single-server/single-replica) and sharedstate.RedisRateLimiter (used
 // instead when Redis is configured, so limits are shared across every api
@@ -521,6 +527,7 @@ r := gin.New()
 	changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute, "/data/ratelimit-change-password.json")
 
 	r.GET("/api/health", handler.HealthCheck(database))
+	r.GET("/api/version", versionHandler)
 
 	metricsGroup := r.Group("/api")
 	metricsGroup.Use(authCfg.JWTRequired())
@@ -718,6 +725,7 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	initLimiter := newLimiter(sharedClient, "wizard-init", 3, time.Hour, "")
 	testDbLimiter := newLimiter(sharedClient, "wizard-test-db", 20, 10*time.Minute, "")
 	r.GET("/api/health", handler.HealthCheckStandalone())
+	r.GET("/api/version", versionHandler)
 	r.GET("/api/status/initialized", handler.CheckInitializedStandalone())
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
 	r.GET("/api/init/db-config", handler.GetDbConfig(nil))

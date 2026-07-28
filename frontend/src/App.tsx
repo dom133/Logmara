@@ -20,12 +20,12 @@ import { SessionWarningModal } from './components/SessionWarningModal'
 import { SessionsModal } from './components/SessionsModal'
 import { NotificationBell } from './components/NotificationBell'
 import { AuthProvider, useAuth } from './services/auth'
-import { getDashboards, getDashboard, Dashboard as DashboardType, checkInitialized } from './services/api'
+import { getDashboards, getDashboard, Dashboard as DashboardType, checkInitialized, getVersion } from './services/api'
 import { useIsMobile } from './hooks/useIsMobile'
 import { I18nextProvider } from 'react-i18next'
 import type { i18n as I18nInstance } from 'i18next'
 
-const { Sider, Content, Header } = Layout
+const { Sider, Content, Header, Footer } = Layout
 
 function NavContent({ location, user, logout, isAdmin, pinnedDashboards, loadingDashboards, collapsed, onClose }: {
   location: ReturnType<typeof useLocation>
@@ -183,6 +183,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false)
   const [drawerVisible, setDrawerVisible] = useState(false)
   const [sessionsModalOpen, setSessionsModalOpen] = useState(false)
+  const [appVersion, setAppVersion] = useState('')
   const isMobile = useIsMobile()
 
   useEffect(() => {
@@ -200,6 +201,11 @@ function AppLayout({ children }: { children: React.ReactNode }) {
     const handler = () => load()
     window.addEventListener('dashboards-pinned-changed', handler)
     return () => window.removeEventListener('dashboards-pinned-changed', handler)
+  }, [user])
+
+  useEffect(() => {
+    if (!user) return
+    getVersion().then(r => setAppVersion(r.version)).catch(() => {})
   }, [user])
 
   useEffect(() => {
@@ -311,6 +317,9 @@ function AppLayout({ children }: { children: React.ReactNode }) {
         <Content style={{ margin: 16, padding: 24, background: token.colorBgContainer, borderRadius: 8 }}>
           <ErrorBoundary>{children}</ErrorBoundary>
         </Content>
+        <Footer style={{ margin: '0 16px 16px', textAlign: 'center', color: token.colorTextQuaternary, fontSize: 12 }}>
+          Logmara {appVersion}
+        </Footer>
       </Layout>
       {showSessionWarning && (
         <SessionWarningModal

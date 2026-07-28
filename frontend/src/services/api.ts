@@ -708,6 +708,11 @@ export interface ContainersHealthResponse {
 	refreshed_at: string
 }
 
+export async function getVersion() {
+	const res = await api.get('/version')
+	return res.data as { version: string }
+}
+
 export async function getContainersHealth() {
 	const res = await api.get('/admin/health/containers')
 	return res.data as ContainersHealthResponse
