@@ -110,7 +110,51 @@ func MigrateWithLock(db *sql.DB) error {
 	return Migrate(db)
 }
 
+// schemaVersion must be bumped whenever a statement is appended to
+// statements/partitionStmts/postStmts below. Migrate short-circuits once the
+// schema_version table already records this value, so a forgotten bump
+// means an already-deployed instance will never see the new statement
+// applied.
+const schemaVersion = 1
+
+func ensureSchemaVersionTable(db *sql.DB) error {
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
+		version INTEGER NOT NULL,
+		applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	)`)
+	return err
+}
+
+func getSchemaVersion(db *sql.DB) (int, error) {
+	var version int
+	err := db.QueryRow(`SELECT version FROM schema_version ORDER BY version DESC LIMIT 1`).Scan(&version)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return version, err
+}
+
+func setSchemaVersion(db *sql.DB, version int) error {
+	if _, err := db.Exec(`DELETE FROM schema_version`); err != nil {
+		return err
+	}
+	_, err := db.Exec(`INSERT INTO schema_version (version) VALUES ($1)`, version)
+	return err
+}
+
 func Migrate(db *sql.DB) error {
+	if err := ensureSchemaVersionTable(db); err != nil {
+		return fmt.Errorf("ensure schema_version table: %w", err)
+	}
+	current, err := getSchemaVersion(db)
+	if err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if current >= schemaVersion {
+		slog.Info("schema up to date, skipping migration", "version", current)
+		return nil
+	}
+
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS syslog_logs (
 			id BIGSERIAL PRIMARY KEY,
@@ -563,7 +607,11 @@ END $$`,
 		slog.Warn("seeding settings failed", "error", err)
 	}
 
-	slog.Info("database migration completed")
+	if err := setSchemaVersion(db, schemaVersion); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
+	}
+
+	slog.Info("database migration completed", "version", schemaVersion)
 	return nil
 }
 
