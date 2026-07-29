@@ -304,4 +304,41 @@ func TestWindowsEventLogJSONParsers(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("workstation unlock", func(t *testing.T) {
+		envelopeSeed := findSeed("Windows Event Log (JSON)")
+		unlockSeed := findSeed("Windows Workstation Unlock")
+
+		line := `{"message":"Odblokowano stację roboczą.\\r\\n\\r\\nPodmiot:\\r\\n\\tIdentyfikator zabezpieczeń:\\t\\tS-1-5-21-3699043479-1619627317-4020929063-1118\\r\\n\\tNazwa konta:\\t\\tdkr\\r\\n\\tDomena konta:\\t\\tDOM133\\r\\n\\tIdentyfikator logowania:\\t\\t0x4068C2\\r\\n\\tIdentyfikator sesji:\\t2","eventId":4801,"providerName":"Microsoft-Windows-Security-Auditing","level":"LogAlways","timeCreated":"2026-07-29T23:22:31.7278542+02:00","logName":"Security","machineName":"AD.dom133.local","userId":"-","activityId":"152c42ee-0bb0-0001-7e43-2c15b00bdd01"}`
+
+		envelopeRe, err := compileCached(envelopeSeed.Regex)
+		if err != nil {
+			t.Fatalf("envelope regex compile error: %v", err)
+		}
+		if !envelopeRe.MatchString(line) {
+			t.Error("envelope parser regex did not match workstation unlock line")
+		}
+
+		unlockParser := toModelParser(unlockSeed)
+		extracted := e.Extract(&unlockParser, line)
+		if extracted == nil {
+			t.Fatal("expected workstation unlock regex to match sample line")
+		}
+
+		want := map[string]string{
+			"security_id":    "S-1-5-21-3699043479-1619627317-4020929063-1118",
+			"account_name":   "dkr",
+			"account_domain": "DOM133",
+			"logon_id":       "0x4068C2",
+			"session_id":     "2",
+		}
+		for k, v := range want {
+			if extracted[k] != v {
+				t.Errorf("field %q = %q, want %q", k, extracted[k], v)
+			}
+		}
+		if len(extracted) != len(unlockSeed.Fields) {
+			t.Errorf("extracted %d fields, want %d (regex capture groups vs field list mismatch)", len(extracted), len(unlockSeed.Fields))
+		}
+	})
 }

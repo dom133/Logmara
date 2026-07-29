@@ -78,5 +78,40 @@
         "type": "ip"
       }
     ]
+  },
+  {
+    "name": "Windows Workstation Unlock",
+    "description": "Extracts subject (account/session) fields from Microsoft-Windows-Security-Auditing workstation unlock events (eventId 4801)",
+    "device_type": "windows",
+    "match_type": "message",
+    "match_value": "\"eventId\":4801,\"providerName\":\"Microsoft-Windows-Security-Auditing\"",
+    "regex": "Identyfikator zabezpieczeń:(?:\\\\+t)+(.+?)(?:\\\\+[rnt])+Nazwa konta:(?:\\\\+t)+(.+?)(?:\\\\+[rnt])+Domena konta:(?:\\\\+t)+(.+?)(?:\\\\+[rnt])+Identyfikator logowania:(?:\\\\+t)+(.+?)(?:\\\\+[rnt])+Identyfikator sesji:(?:\\\\+t)+(\\d+)",
+    "fields": [
+      {
+        "name": "security_id",
+        "label": "Security ID",
+        "type": "string"
+      },
+      {
+        "name": "account_name",
+        "label": "Account Name",
+        "type": "string"
+      },
+      {
+        "name": "account_domain",
+        "label": "Account Domain",
+        "type": "string"
+      },
+      {
+        "name": "logon_id",
+        "label": "Logon ID",
+        "type": "string"
+      },
+      {
+        "name": "session_id",
+        "label": "Session ID",
+        "type": "number"
+      }
+    ]
   }
 ]
