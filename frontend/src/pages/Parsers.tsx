@@ -10,7 +10,7 @@ import { getErrorMessage } from '../utils/error'
 
 const { Title, Text } = Typography
 
-const deviceTypes = ['all', 'mikrotik', 'ubiquiti', 'cisco', 'palo_alto', 'pfsense', 'linux', 'generic']
+const deviceTypes = ['all', 'mikrotik', 'ubiquiti', 'cisco', 'palo_alto', 'pfsense', 'linux', 'windows', 'generic']
 const matchTypes = ['hostname', 'app_name', 'message', 'all']
 
 export default function ParsersPage() {
