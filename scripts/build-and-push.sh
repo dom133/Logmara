@@ -34,11 +34,11 @@ done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 declare -A IMAGES=(
-    [syslog-gui-backend]="Dockerfile.backend"
-    [syslog-gui-frontend]="Dockerfile.frontend"
-    [syslog-gui-patroni]="Dockerfile.patroni"
-    [syslog-gui-rsyslog]="Dockerfile.rsyslog"
-    [syslog-gui-rsyslog-relay]="Dockerfile.rsyslog-relay"
+    [logmara-backend]="Dockerfile.backend"
+    [logmara-frontend]="Dockerfile.frontend"
+    [logmara-patroni]="Dockerfile.patroni"
+    [logmara-rsyslog]="Dockerfile.rsyslog"
+    [logmara-rsyslog-relay]="Dockerfile.rsyslog-relay"
 )
 
 echo "Docker Hub namespace: $DOCKERHUB_USER"

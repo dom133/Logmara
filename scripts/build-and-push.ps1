@@ -29,11 +29,11 @@ $DockerHubUser = "logmara"
 $RepoRoot = Resolve-Path "$PSScriptRoot\.."
 
 $Images = @(
-    @{ Name = "syslog-gui-backend";       Dockerfile = "Dockerfile.backend" },
-    @{ Name = "syslog-gui-frontend";      Dockerfile = "Dockerfile.frontend" },
-    @{ Name = "syslog-gui-patroni";       Dockerfile = "Dockerfile.patroni" },
-    @{ Name = "syslog-gui-rsyslog";       Dockerfile = "Dockerfile.rsyslog" },
-    @{ Name = "syslog-gui-rsyslog-relay"; Dockerfile = "Dockerfile.rsyslog-relay" }
+    @{ Name = "logmara-backend";       Dockerfile = "Dockerfile.backend" },
+    @{ Name = "logmara-frontend";      Dockerfile = "Dockerfile.frontend" },
+    @{ Name = "logmara-patroni";       Dockerfile = "Dockerfile.patroni" },
+    @{ Name = "logmara-rsyslog";       Dockerfile = "Dockerfile.rsyslog" },
+    @{ Name = "logmara-rsyslog-relay"; Dockerfile = "Dockerfile.rsyslog-relay" }
 )
 
 Write-Host "Docker Hub namespace: $DockerHubUser" -ForegroundColor Cyan
