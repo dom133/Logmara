@@ -1,6 +1,7 @@
 import React from 'react';
 import { Tag, Typography } from 'antd';
-import { SEVERITY_COLORS, SEVERITY_LABELS } from '../constants';
+import { useTranslation } from 'react-i18next';
+import { SEVERITY_COLORS, getSeverityLabels } from '../constants';
 
 const { Text } = Typography;
 
@@ -9,8 +10,9 @@ interface SeverityTagProps {
 }
 
 const SeverityTag: React.FC<SeverityTagProps> = ({ severity }) => {
+  const { t } = useTranslation();
   const color = SEVERITY_COLORS[severity.toLowerCase()] || SEVERITY_COLORS['info'];
-  const label = SEVERITY_LABELS[severity.toLowerCase()] || severity;
+  const label = getSeverityLabels(t)[severity.toLowerCase()] || severity;
 
   return (
     <Tag color={color}>

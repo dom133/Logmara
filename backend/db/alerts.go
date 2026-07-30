@@ -161,11 +161,13 @@ const alertColumns = `id, name, description, rule_type, severity, device_ips, pa
 // GetAllAlerts lists every alert rule. isAdmin=false drops admin-only rule
 // types (see model.AdminOnlyRuleTypes) *unless* userID is specifically
 // listed as a target user on one of the alert's attached in_app/push
-// channels - being deliberately targeted by whoever set up that channel
-// overrides the admin-only default, same as at notification-delivery time
-// (see notify/push.go, handler/notifications.go's SSE stream). Editing is
-// unaffected here - CreateAlert/UpdateAlert still gate on role, not on
-// whether the caller happens to be a target user.
+// channels, or the alert has a broadcast (no target list) push channel -
+// being deliberately targeted, or having the admin send it to literally
+// everyone via push, overrides the admin-only default, same as at
+// notification-delivery time (see notify/push.go's dispatchPush,
+// handler/notifications.go's SSE stream). Editing is unaffected here -
+// CreateAlert/UpdateAlert still gate on role, not on whether the caller
+// happens to be a target user.
 func GetAllAlerts(db *sql.DB, isAdmin bool, userID int64) ([]model.Alert, error) {
 	query := `SELECT ` + alertColumns + ` FROM alerts a`
 	args := []interface{}{}
@@ -174,7 +176,10 @@ func GetAllAlerts(db *sql.DB, isAdmin bool, userID int64) ([]model.Alert, error)
 			OR EXISTS (
 				SELECT 1 FROM alert_channels ac
 				JOIN notification_channels nc ON nc.id = ac.channel_id
-				WHERE ac.alert_id = a.id AND nc.config -> 'user_ids' @> to_jsonb($1::bigint)
+				WHERE ac.alert_id = a.id AND (
+					nc.config -> 'user_ids' @> to_jsonb($1::bigint)
+					OR (nc.type = 'push' AND COALESCE(jsonb_array_length(nc.config -> 'user_ids'), 0) = 0)
+				)
 			)`
 		args = append(args, userID)
 	}
@@ -591,12 +596,15 @@ func nullableJSON(b []byte) interface{} {
 
 // GetNotificationHistory lists recent notification firings. isAdmin=false
 // drops admin-only rule types (see model.AdminOnlyRuleTypes) *unless* userID
-// was specifically a target user of the firing's channel - joins back to
+// was specifically a target user of the firing's channel, or the firing's
+// channel is a broadcast (no target list) push channel - joins back to
 // in_app_notifications (in_app channels: target_user_ids is the actual
 // deduped/merged set a given firing used, see notify/dispatch.go) and to
 // notification_channels (push and everything else: the channel's own
-// configured user_ids) to check that. Same "deliberate targeting overrides
-// the admin-only default" reasoning as GetAllAlerts and notify/push.go.
+// configured user_ids, or its type/broadcast status) to check that. Same
+// "deliberate targeting, or the admin sending a push to literally everyone,
+// overrides the admin-only default" reasoning as GetAllAlerts and
+// notify/push.go's dispatchPush.
 func GetNotificationHistory(db *sql.DB, limit int, isAdmin bool, userID int64) ([]model.NotificationLogEntry, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
@@ -609,7 +617,8 @@ func GetNotificationHistory(db *sql.DB, limit int, isAdmin bool, userID int64) (
 			LEFT JOIN notification_channels nc ON nc.id = nl.channel_id
 			WHERE nl.rule_type NOT IN (` + adminOnlyRuleTypesSQL + `)
 				OR $2 = ANY(ian.target_user_ids)
-				OR nc.config -> 'user_ids' @> to_jsonb($2::bigint)`
+				OR nc.config -> 'user_ids' @> to_jsonb($2::bigint)
+				OR (nc.type = 'push' AND COALESCE(jsonb_array_length(nc.config -> 'user_ids'), 0) = 0)`
 		args = append(args, userID)
 	}
 	query += ` ORDER BY nl.created_at DESC LIMIT $1`

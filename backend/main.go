@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"flag"
 	"log/slog"
 	"net/http"
 	"os"
@@ -29,6 +30,27 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+const appVersion = "0.0.1"
+
+func versionHandler(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"version": appVersion})
+}
+
+// defaultLanguageHandler exposes only the configured default UI language,
+// unauthenticated, so the login page and setup wizard can pick it before
+// anyone has signed in. It intentionally never touches handler.GetSettings
+// (the admin-only endpoint), which returns internal config - SMTP/LDAP
+// hosts, CORS origins, session limits - that must not be public.
+func defaultLanguageHandler(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		lang := "en"
+		if database != nil {
+			lang = db.GetSetting(database, "default_language", "en")
+		}
+		c.JSON(http.StatusOK, gin.H{"default_language": lang})
+	}
+}
 
 // RateLimiter is satisfied by both the local, in-memory limiter (default,
 // single-server/single-replica) and sharedstate.RedisRateLimiter (used
@@ -220,6 +242,33 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
+
+	// --migrate-only runs just the DB schema migration plus builtin
+	// parser/settings seeding, then exits - for manually applying a
+	// migration (e.g. via `docker exec <api container> ./server
+	// --migrate-only`) without waiting on a full service restart/rolling
+	// update and its healthcheck start-period.
+	migrateOnly := flag.Bool("migrate-only", false, "run pending DB migration and builtin parser/settings seeding, then exit")
+	flag.Parse()
+	if *migrateOnly {
+		dsn := util.ResolveDatabaseURL()
+		if dsn == "" {
+			slog.Error("DATABASE_URL not set; cannot run --migrate-only")
+			os.Exit(1)
+		}
+		database, err := db.Connect(dsn)
+		if err != nil {
+			slog.Error("failed to connect to database", "error", err)
+			os.Exit(1)
+		}
+		defer database.Close()
+		if err := db.MigrateWithLock(database); err != nil {
+			slog.Error("migration failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("migrate-only: schema migration and builtin parser/settings seeding complete")
+		return
+	}
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -521,6 +570,8 @@ r := gin.New()
 	changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute, "/data/ratelimit-change-password.json")
 
 	r.GET("/api/health", handler.HealthCheck(database))
+	r.GET("/api/version", versionHandler)
+	r.GET("/api/settings/default-language", defaultLanguageHandler(database))
 
 	metricsGroup := r.Group("/api")
 	metricsGroup.Use(authCfg.JWTRequired())
@@ -574,6 +625,18 @@ r := gin.New()
 		// editing and deleting channels stays admin-only (adminGroup below).
 		authGroup.GET("/admin/notification-channels", notificationsGate, handler.ListNotificationChannels(database))
 
+		// Readable by every authenticated role (including viewer) - db.GetAllAlerts
+		// and db.GetNotificationHistory already drop admin-only rule types for
+		// non-admins, unless the caller is specifically targeted via a channel's
+		// user_ids (same override used at notification-delivery time in
+		// notify/push.go and handler.StreamNotifications). Gating the route to
+		// admin/editor only would make that per-row filtering unreachable for
+		// viewers and hide non-admin-only rules/history from them too. Creating,
+		// updating and deleting alert rules stays editor/admin-only (editorGroup
+		// below).
+		authGroup.GET("/alerts", notificationsGate, handler.ListAlerts(database))
+		authGroup.POST("/admin/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
+
 		authGroup.GET("/parsers", handler.ListParsers(engine))
 		authGroup.POST("/parsers/fields", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ListParsedFields(engine))
 		authGroup.GET("/dashboards", handler.ListDashboards(database))
@@ -599,7 +662,6 @@ r := gin.New()
 			editorGroup.DELETE("/dashboards/:id", handler.DeleteDashboard(database))
 			editorGroup.PATCH("/dashboards/:id/public", handler.TogglePublicDashboard(database))
 
-			editorGroup.GET("/alerts", notificationsGate, handler.ListAlerts(database))
 			editorGroup.POST("/alerts", notificationsGate, handler.CreateAlert(alertEngine))
 			editorGroup.PUT("/alerts/:id", notificationsGate, handler.UpdateAlert(alertEngine))
 			editorGroup.DELETE("/alerts/:id", notificationsGate, handler.DeleteAlert(alertEngine))
@@ -653,10 +715,11 @@ r := gin.New()
 		// creator at the handler level (see handler.channelOwnedByCaller) -
 		// an editor (or admin) can only ever modify a channel they made
 		// themselves, or one predating the created_by column entirely.
+		// (Notification history itself now lives on authGroup above - see
+		// comment there - since viewers need read access too.)
 		adminEditorGroup := authGroup.Group("/admin")
 		adminEditorGroup.Use(authCfg.RoleRequired("admin", "editor"))
 		{
-			adminEditorGroup.POST("/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
 			adminEditorGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))
 			adminEditorGroup.PUT("/notification-channels/:id", notificationsGate, handler.UpdateNotificationChannel(database))
 			adminEditorGroup.DELETE("/notification-channels/:id", notificationsGate, handler.DeleteNotificationChannel(database))
@@ -718,6 +781,8 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	initLimiter := newLimiter(sharedClient, "wizard-init", 3, time.Hour, "")
 	testDbLimiter := newLimiter(sharedClient, "wizard-test-db", 20, 10*time.Minute, "")
 	r.GET("/api/health", handler.HealthCheckStandalone())
+	r.GET("/api/version", versionHandler)
+	r.GET("/api/settings/default-language", defaultLanguageHandler(nil))
 	r.GET("/api/status/initialized", handler.CheckInitializedStandalone())
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
 	r.GET("/api/init/db-config", handler.GetDbConfig(nil))

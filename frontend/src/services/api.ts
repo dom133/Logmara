@@ -556,12 +556,15 @@ export async function updateSettings(settings: Record<string, string>) {
 }
 
 export async function cleanupLogs() {
-	const res = await api.post('/admin/settings/cleanup')
+	// Batched delete over a large backlog of old logs can run well past the
+	// default timeout - same reasoning as uploadSSLCerts above.
+	const res = await api.post('/admin/settings/cleanup', undefined, { timeout: 300000 })
 	return res.data
 }
 
 export async function purgeAllLogs(pauseDuringPurge: boolean) {
-	const res = await api.delete('/admin/logs', { data: { pause_during_purge: pauseDuringPurge } })
+	// TRUNCATE can queue behind an in-progress VACUUM/MV refresh on syslog_logs.
+	const res = await api.delete('/admin/logs', { data: { pause_during_purge: pauseDuringPurge }, timeout: 300000 })
 	return res.data
 }
 
@@ -706,6 +709,11 @@ export interface ContainersHealthResponse {
 	relays: RelayHealth[]
 	message?: string
 	refreshed_at: string
+}
+
+export async function getVersion() {
+	const res = await api.get('/version')
+	return res.data as { version: string }
 }
 
 export async function getContainersHealth() {
@@ -1016,6 +1024,8 @@ export interface InAppNotification {
 	title: string
 	message: string
 	severity: string
+	alert_rule_type?: string
+	target_user_ids?: number[]
 	created_at: string
 }
 

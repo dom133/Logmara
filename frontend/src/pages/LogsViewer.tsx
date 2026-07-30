@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
 import { Table, Input, InputRef, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Modal, Descriptions } from 'antd'
 import { RestOutlined, UnorderedListOutlined, ClockCircleOutlined } from '@ant-design/icons'
@@ -8,7 +9,7 @@ import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import EmptyState from '../components/EmptyState'
 import LogTable, { useDeviceMap, buildDefaultColumns, resolveHostname } from '../components/LogTable'
-import { DATE_PRESETS } from '../constants'
+import { getDatePresets } from '../constants'
 import { useAuth } from '../services/auth'
 
 const { Title, Text } = Typography
@@ -18,6 +19,7 @@ const severities = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info'
 const INTERVAL_OPTIONS = [1, 3, 5, 10, 30]
 
 export default function LogsViewer() {
+  const { t } = useTranslation()
   const [searchParams] = useSearchParams()
   const { user } = useAuth()
   const urlHostname = searchParams.get('hostname') || ''
@@ -194,7 +196,7 @@ export default function LogsViewer() {
 
     if (format === 'csv') exportCSV(params)
     else exportHTML(params)
-    message.success(`Exporting ${format.toUpperCase()}...`)
+    message.success(t('dashboard.exporting', { format: format.toUpperCase() }))
   }
 
   const handleRowClick = (record: LogEntry) => {
@@ -205,9 +207,9 @@ export default function LogsViewer() {
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
-        <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>Logs</Title>
-        <Text type="secondary">({totalLogs.toLocaleString()} total)</Text>
-        {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
+        <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>{t('nav.logs')}</Title>
+        <Text type="secondary">({totalLogs.toLocaleString()} {t('logs.total')})</Text>
+        {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>{t('dashboards.resetColumns')}</Button>}
         <Select
           size="small"
           style={{ width: 100 }}
@@ -222,7 +224,7 @@ export default function LogsViewer() {
           onClick={() => setAppendMode(!appendMode)}
           style={{ color: appendMode ? '#1890ff' : undefined }}
         >
-          Live
+          {t('dashboard.live')}
         </Button>
       </div>
 
@@ -230,14 +232,14 @@ export default function LogsViewer() {
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <Input
             ref={searchRef}
-            placeholder="Search messages... (Ctrl+K)"
+            placeholder={t('logs.searchPlaceholder')}
             style={{ minWidth: 200, flex: '1 1 200px' }}
             allowClear
             onChange={e => handleSearch(e.target.value)}
             value={filters.search}
           />
           <Select
-            placeholder="Device"
+            placeholder={t('dashboard.device')}
             style={{ minWidth: 140, flex: '1 1 140px' }}
             allowClear
             options={devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip || '__unknown__' }))}
@@ -245,7 +247,7 @@ export default function LogsViewer() {
             onChange={v => setFilters(f => ({ ...f, fromhost_ip: v || '' }))}
           />
           <Select
-            placeholder="Severity"
+            placeholder={t('dashboard.severity')}
             style={{ minWidth: 100, flex: '1 1 100px' }}
             allowClear
             options={severities.map(s => ({ label: s.toUpperCase(), value: s }))}
@@ -253,10 +255,10 @@ export default function LogsViewer() {
             onChange={v => setFilters(f => ({ ...f, severity: v || '' }))}
           />
           <Select
-            placeholder="Date Preset"
+            placeholder={t('logs.datePreset')}
             style={{ minWidth: 120, flex: '1 1 120px' }}
             allowClear
-            options={DATE_PRESETS}
+            options={getDatePresets(t)}
             onChange={v => {
               const now = dayjs()
               const to = now.format()
@@ -269,30 +271,30 @@ export default function LogsViewer() {
             onChange={handleDateRange}
           />
           <Select
-            placeholder="Sort"
+            placeholder={t('dashboard.sort')}
             style={{ minWidth: 130, flex: '1 1 130px' }}
             value={filters.sort}
             onChange={v => setFilters(f => ({ ...f, sort: v }))}
             options={[
-              { label: 'Newest First', value: 'timestamp_desc' },
-              { label: 'Oldest First', value: 'timestamp_asc' },
-              { label: 'By Severity', value: 'severity' },
-              { label: 'By Device', value: 'hostname' },
+              { label: t('dashboard.newestFirst'), value: 'timestamp_desc' },
+              { label: t('dashboard.oldestFirst'), value: 'timestamp_asc' },
+              { label: t('dashboard.bySeverity'), value: 'severity' },
+              { label: t('dashboard.byDevice'), value: 'hostname' },
             ]}
           />
-          <Popconfirm title="Export as CSV?" onConfirm={() => handleExport('csv')}>
-            <Button>CSV</Button>
+          <Popconfirm title={t('dashboard.exportCsv')} onConfirm={() => handleExport('csv')}>
+            <Button>{t('dashboard.csv')}</Button>
           </Popconfirm>
-          <Popconfirm title="Export as HTML?" onConfirm={() => handleExport('html')}>
-            <Button>HTML</Button>
+          <Popconfirm title={t('dashboard.exportHtml')} onConfirm={() => handleExport('html')}>
+            <Button>{t('dashboard.html')}</Button>
           </Popconfirm>
         </div>
       </Card>
 
       {!loading && logs.length === 0 ? (
         <EmptyState
-          description="No logs found. Try adjusting your filters."
-          actionLabel="Clear Filters"
+          description={t('logs.noLogsFound')}
+          actionLabel={t('logs.clearFilters')}
           actionClick={() => {
             setFilters({ hostname: '', fromhost_ip: '', severity: '', search: '', from: '', to: '', sort: 'timestamp_desc' })
           }}
@@ -315,37 +317,37 @@ export default function LogsViewer() {
             enhanceColumns={enhanceColumns}
           />
           <Modal
-            title="Log Details"
+            title={t('dashboard.logDetails')}
             open={detailModalOpen}
             onCancel={() => setDetailModalOpen(false)}
             footer={[
-              <Button key="close" onClick={() => setDetailModalOpen(false)} style={{ width: '100%' }}>Close</Button>
+              <Button key="close" onClick={() => setDetailModalOpen(false)} style={{ width: '100%' }}>{t('common.close')}</Button>
             ]}
             width={{ sm: '90%', md: 700 }}
           >
             {selectedLog && (
               <Descriptions bordered column={1} size="small">
-                <Descriptions.Item label="Timestamp">{new Date(selectedLog.timestamp).toLocaleString()}</Descriptions.Item>
-                <Descriptions.Item label="Severity"><SeverityTag severity={selectedLog.severity} /></Descriptions.Item>
-                <Descriptions.Item label="Device"><Tag color="blue">{resolveHostname(deviceMap, selectedLog.hostname, selectedLog.fromhost_ip, selectedLog.display_name)}</Tag></Descriptions.Item>
-                {selectedLog.fromhost_ip && <Descriptions.Item label="Source IP"><Tag color="green">{selectedLog.fromhost_ip}</Tag></Descriptions.Item>}
-                {selectedLog.app_name && <Descriptions.Item label="App">{selectedLog.app_name}</Descriptions.Item>}
-                <Descriptions.Item label="Message">
+                <Descriptions.Item label={t('dashboard.timestamp')}>{new Date(selectedLog.timestamp).toLocaleString()}</Descriptions.Item>
+                <Descriptions.Item label={t('dashboard.severity')}><SeverityTag severity={selectedLog.severity} /></Descriptions.Item>
+                <Descriptions.Item label={t('dashboard.device')}><Tag color="blue">{resolveHostname(deviceMap, selectedLog.hostname, selectedLog.fromhost_ip, selectedLog.display_name)}</Tag></Descriptions.Item>
+                {selectedLog.fromhost_ip && <Descriptions.Item label={t('dashboard.sourceIp')}><Tag color="green">{selectedLog.fromhost_ip}</Tag></Descriptions.Item>}
+                {selectedLog.app_name && <Descriptions.Item label={t('dashboard.app')}>{selectedLog.app_name}</Descriptions.Item>}
+                <Descriptions.Item label={t('dashboard.message')}>
                   <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', width: '100%', maxWidth: '100%', fontFamily: 'Consolas, Monaco, monospace', fontSize: 12, lineHeight: 1.4 }}>
                     {selectedLog.raw_message || selectedLog.message}
                   </pre>
                 </Descriptions.Item>
                 {selectedLog.raw_message && selectedLog.raw_message !== selectedLog.message && (
-                  <Descriptions.Item label="Raw Message">
+                  <Descriptions.Item label={t('logs.rawMessage')}>
                     <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', width: '100%', maxWidth: '100%', fontFamily: 'Consolas, Monaco, monospace', fontSize: 12, lineHeight: 1.4 }}>
                       {selectedLog.raw_message}
                     </pre>
                   </Descriptions.Item>
                 )}
-                <Descriptions.Item label="Matched Parsers">
+                <Descriptions.Item label={t('dashboard.matchedParsers')}>
                   {selectedLog.matched_parsers && selectedLog.matched_parsers.length > 0
                     ? selectedLog.matched_parsers.map(p => <Tag key={p} color="purple">{p}</Tag>)
-                    : 'None'}
+                    : t('common.none')}
                 </Descriptions.Item>
               </Descriptions>
             )}

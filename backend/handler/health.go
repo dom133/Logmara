@@ -6,13 +6,32 @@ import (
 	"runtime"
 	"time"
 
+	"logmara/db"
+
 	"github.com/gin-gonic/gin"
 )
 
 var startTime = time.Now()
 
+// HealthCheck backs the Dockerfile's HEALTHCHECK (CMD curl .../api/health),
+// which in turn gates every "depends_on: api: condition: service_healthy"
+// dependent (e.g. rsyslog in docker-compose.yml). It reports "starting"
+// (still HTTP 200, so curl -f and Docker's health status both succeed)
+// while db.IsAppStarting() is true, rather than failing the check - the
+// slower part of startup (RefreshMaterializedViews/ApplyEnvSettingOverrides,
+// see main.go) can take as long as the accumulated log volume does, and
+// this must not turn into an "unhealthy" container / block dependents on
+// every restart just because that background pass hasn't finished yet.
 func HealthCheck(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if db.IsAppStarting() {
+			c.JSON(http.StatusOK, gin.H{
+				"status": "starting",
+				"db":     "initializing",
+			})
+			return
+		}
+
 		dbOK := true
 		dbMsg := "connected"
 

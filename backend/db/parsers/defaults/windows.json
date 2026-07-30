@@ -1,0 +1,117 @@
+[
+  {
+    "name": "Windows Event Log (JSON)",
+    "description": "Extracts envelope fields from Windows Event Log entries forwarded as JSON (eventId, providerName, level, timeCreated, logName, machineName, userId, activityId)",
+    "device_type": "windows",
+    "match_type": "message",
+    "match_value": "\"providerName\":\"Microsoft-Windows-",
+    "regex": "\"message\":\"(.*?)\",\"eventId\":(\\d+),\"providerName\":\"([^\"]*)\",\"level\":\"([^\"]*)\",\"timeCreated\":\"([^\"]*)\",\"logName\":\"([^\"]*)\",\"machineName\":\"([^\"]*)\",\"userId\":\"([^\"]*)\",\"activityId\":\"([^\"]*)\"",
+    "fields": [
+      {
+        "name": "event_message",
+        "label": "Event Message",
+        "type": "string"
+      },
+      {
+        "name": "event_id",
+        "label": "Event ID",
+        "type": "number"
+      },
+      {
+        "name": "provider_name",
+        "label": "Provider",
+        "type": "string"
+      },
+      {
+        "name": "level",
+        "label": "Level",
+        "type": "string"
+      },
+      {
+        "name": "time_created",
+        "label": "Time Created",
+        "type": "string"
+      },
+      {
+        "name": "log_name",
+        "label": "Log Name",
+        "type": "string"
+      },
+      {
+        "name": "machine_name",
+        "label": "Machine Name",
+        "type": "string"
+      },
+      {
+        "name": "user_id",
+        "label": "User SID",
+        "type": "string"
+      },
+      {
+        "name": "activity_id",
+        "label": "Activity ID",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Windows RDP Session Reconnect",
+    "description": "Extracts user, session ID and source IP from Microsoft-Windows-TerminalServices-LocalSessionManager session reconnect events",
+    "device_type": "windows",
+    "match_type": "message",
+    "match_value": "\"providerName\":\"Microsoft-Windows-TerminalServices-LocalSessionManager\"",
+    "regex": "Użytkownik:\\s*(.+?)(?:\\\\+[rn])*Identyfikator sesji:\\s*(\\d+)(?:\\\\+[rn])*Źródłowy adres sieciowy:\\s*(\\d+\\.\\d+\\.\\d+\\.\\d+)",
+    "fields": [
+      {
+        "name": "rdp_user",
+        "label": "RDP User",
+        "type": "string"
+      },
+      {
+        "name": "rdp_session_id",
+        "label": "Session ID",
+        "type": "number"
+      },
+      {
+        "name": "src_ip",
+        "label": "Source IP",
+        "type": "ip"
+      }
+    ]
+  },
+  {
+    "name": "Windows Workstation Unlock",
+    "description": "Extracts subject (account/session) fields from Microsoft-Windows-Security-Auditing workstation unlock events (eventId 4801)",
+    "device_type": "windows",
+    "match_type": "message",
+    "match_value": "\"eventId\":4801,\"providerName\":\"Microsoft-Windows-Security-Auditing\"",
+    "regex": "Identyfikator zabezpieczeń:(?:\\\\+t)+(.+?)(?:\\\\+[rnt])+Nazwa konta:(?:\\\\+t)+(.+?)(?:\\\\+[rnt])+Domena konta:(?:\\\\+t)+(.+?)(?:\\\\+[rnt])+Identyfikator logowania:(?:\\\\+t)+(.+?)(?:\\\\+[rnt])+Identyfikator sesji:(?:\\\\+t)+(\\d+)",
+    "fields": [
+      {
+        "name": "security_id",
+        "label": "Security ID",
+        "type": "string"
+      },
+      {
+        "name": "account_name",
+        "label": "Account Name",
+        "type": "string"
+      },
+      {
+        "name": "account_domain",
+        "label": "Account Domain",
+        "type": "string"
+      },
+      {
+        "name": "logon_id",
+        "label": "Logon ID",
+        "type": "string"
+      },
+      {
+        "name": "session_id",
+        "label": "Session ID",
+        "type": "number"
+      }
+    ]
+  }
+]

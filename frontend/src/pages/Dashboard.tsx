@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Row, Col, Card, Table, Tag, Spin, Typography, Button } from 'antd'
 import { RestOutlined, FileTextOutlined, ClockCircleOutlined, CalendarOutlined, DesktopOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
@@ -6,11 +7,12 @@ import { getDashboardStats, getTimeline, getSeverityStats, getDevices, getLogsRa
 import { DashboardStats, TimelinePoint } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import StatCard from '../components/StatCard'
-import { SEVERITY_HEX, SEVERITY_LABELS, SEVERITY_ORDER } from '../constants'
+import { SEVERITY_HEX, getSeverityLabels, SEVERITY_ORDER } from '../constants'
 
 const { Title } = Typography
 
 export default function Dashboard() {
+  const { t } = useTranslation()
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [timeline, setTimeline] = useState<TimelinePoint[]>([])
   const [severityData, setSeverityData] = useState<Array<{ severity: string; count: number }>>([])
@@ -146,7 +148,7 @@ export default function Dashboard() {
     },
     title: {
       text: totalSeverity.toLocaleString(),
-      subtext: 'Total',
+      subtext: t('dashboard.total'),
       left: 'center' as const,
       top: '38%' as const,
       textStyle: { fontSize: 22, fontWeight: 600 },
@@ -158,7 +160,7 @@ export default function Dashboard() {
       center: ['50%', '44%'],
       avoidLabelOverlap: true,
       data: sortedSeverity.map(s => ({
-        name: SEVERITY_LABELS[s.severity] || s.severity,
+        name: getSeverityLabels(t)[s.severity] || s.severity,
         value: s.count,
         itemStyle: { color: SEVERITY_HEX[s.severity] || '#bfbfbf' },
       })),
@@ -172,31 +174,31 @@ export default function Dashboard() {
   }
 
   const topDevicesColumns = [
-    { title: 'Device', dataIndex: 'hostname', key: 'hostname', width: 160, render: (v: string, record: DeviceStats) => (
+    { title: t('dashboard.device'), dataIndex: 'hostname', key: 'hostname', width: 160, render: (v: string, record: DeviceStats) => (
       <a onClick={() => window.location.href = `/logs?fromhost_ip=${encodeURIComponent(record.fromhost_ip)}`}><Tag color="blue">{resolveHostname(v, record.fromhost_ip)}</Tag></a>
     )},
-    { title: 'Logs', dataIndex: 'total_logs', key: 'total_logs', width: 100, sorter: (a: DeviceStats, b: DeviceStats) => a.total_logs - b.total_logs },
+    { title: t('dashboard.logs'), dataIndex: 'total_logs', key: 'total_logs', width: 100, sorter: (a: DeviceStats, b: DeviceStats) => a.total_logs - b.total_logs },
   ]
 
   const topErrorsColumns = [
-    { title: 'Message', dataIndex: 'message', key: 'message', width: 140, ellipsis: true },
-    { title: 'Source', dataIndex: 'hostname', key: 'hostname', width: 120, render: (v: string, record: { hostname: string; fromhost_ip?: string; count: number }) => (
+    { title: t('dashboard.message'), dataIndex: 'message', key: 'message', width: 140, ellipsis: true },
+    { title: t('dashboard.source'), dataIndex: 'hostname', key: 'hostname', width: 120, render: (v: string, record: { hostname: string; fromhost_ip?: string; count: number }) => (
       <a onClick={() => window.location.href = `/logs?fromhost_ip=${encodeURIComponent(record.fromhost_ip || '')}`}><Tag color="blue">{resolveHostname(v, record.fromhost_ip)}</Tag></a>
     )},
-    { title: 'Count', dataIndex: 'count', key: 'count', width: 70 },
+    { title: t('dashboard.count'), dataIndex: 'count', key: 'count', width: 70 },
   ]
 
   const statTiles = [
-    { title: 'Total Logs', value: stats?.total_logs || 0, icon: <FileTextOutlined />, color: '#1890ff' },
-    { title: 'Last Hour', value: stats?.logs_last_hour || 0, icon: <ClockCircleOutlined />, color: '#3f8600' },
-    { title: 'Last 24h', value: stats?.logs_last_day || 0, icon: <CalendarOutlined />, color: '#cf1322' },
-    { title: 'Logs / sec', value: logsPerSec.toFixed(1), subtitle: 'avg. last 10s', icon: <ThunderboltOutlined />, color: '#13c2c2' },
-    { title: 'Devices', value: stats?.unique_devices || 0, icon: <DesktopOutlined />, color: '#722ed1' },
+    { title: t('dashboard.totalLogs'), value: stats?.total_logs || 0, icon: <FileTextOutlined />, color: '#1890ff' },
+    { title: t('dashboard.lastHour'), value: stats?.logs_last_hour || 0, icon: <ClockCircleOutlined />, color: '#3f8600' },
+    { title: t('dashboard.last24h'), value: stats?.logs_last_day || 0, icon: <CalendarOutlined />, color: '#cf1322' },
+    { title: t('dashboard.logsPerSec'), value: logsPerSec.toFixed(1), subtitle: t('dashboard.avgLast10s'), icon: <ThunderboltOutlined />, color: '#13c2c2' },
+    { title: t('dashboard.devices'), value: stats?.unique_devices || 0, icon: <DesktopOutlined />, color: '#722ed1' },
   ]
 
   return (
     <>
-      <Title level={3}>Dashboard</Title>
+      <Title level={3}>{t('dashboard.title')}</Title>
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
@@ -211,12 +213,12 @@ export default function Dashboard() {
 
       <Row gutter={16} style={{ marginBottom: 24 }}>
         <Col xs={24} lg={14}>
-          <Card title="Logs Timeline (Last 24h)">
+          <Card title={t('dashboard.logsTimeline')}>
             <ReactECharts option={timelineOption} style={{ height: 300 }} />
           </Card>
         </Col>
         <Col xs={24} lg={10}>
-          <Card title="Severity Distribution">
+          <Card title={t('dashboard.severityDistribution')}>
             <ReactECharts option={severityOption} style={{ height: 340 }} />
           </Card>
         </Col>
@@ -225,8 +227,8 @@ export default function Dashboard() {
       <Row gutter={16}>
         <Col xs={24} md={12}>
           <Card
-            title="Top Devices"
-            extra={devChanged ? <Button size="small" icon={<RestOutlined />} onClick={resetDevices}>Reset</Button> : undefined}
+            title={t('dashboard.topDevices')}
+            extra={devChanged ? <Button size="small" icon={<RestOutlined />} onClick={resetDevices}>{t('common.reset')}</Button> : undefined}
           >
             <Table
               dataSource={stats?.top_devices || []}
@@ -240,8 +242,8 @@ export default function Dashboard() {
         </Col>
         <Col xs={24} md={12}>
           <Card
-            title="Top Errors"
-            extra={errChanged ? <Button size="small" icon={<RestOutlined />} onClick={resetErrors}>Reset</Button> : undefined}
+            title={t('dashboard.topErrors')}
+            extra={errChanged ? <Button size="small" icon={<RestOutlined />} onClick={resetErrors}>{t('common.reset')}</Button> : undefined}
           >
             <Table
               dataSource={stats?.top_errors || []}

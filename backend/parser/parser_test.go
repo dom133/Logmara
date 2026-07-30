@@ -205,3 +205,140 @@ func TestUbiquitiWANFailoverParser(t *testing.T) {
 		t.Errorf("extracted %d fields, want %d (regex capture groups vs field list mismatch)", len(extracted), len(fields))
 	}
 }
+
+// TestWindowsEventLogJSONParsers is a regression test for the two builtin
+// "windows" device_type parsers (see defaults/windows.json): the generic
+// envelope parser that extracts eventId/providerName/etc. from any
+// Windows Event Log forwarded as JSON, and the more specific RDP session
+// reconnect parser that additionally pulls user/session/source IP out of a
+// Microsoft-Windows-TerminalServices-LocalSessionManager event's message
+// text. It loads the real embedded seed definitions and checks each against
+// an actual sample log line so a future regex/field edit can't silently drop
+// a capture group without a test catching it.
+func TestWindowsEventLogJSONParsers(t *testing.T) {
+	seeds, errs := dbparsers.LoadAll("")
+	for _, err := range errs {
+		t.Fatalf("LoadAll error: %v", err)
+	}
+
+	findSeed := func(name string) *dbparsers.ParserSeed {
+		for i := range seeds {
+			if seeds[i].Name == name {
+				return &seeds[i]
+			}
+		}
+		t.Fatalf("builtin parser %q not found in embedded defaults", name)
+		return nil
+	}
+
+	toModelParser := func(seed *dbparsers.ParserSeed) model.Parser {
+		fields := make([]model.ParsedField, len(seed.Fields))
+		for i, f := range seed.Fields {
+			fields[i] = model.ParsedField{Name: f.Name}
+		}
+		return model.Parser{Name: seed.Name, Regex: seed.Regex, Fields: fields}
+	}
+
+	e := &Engine{}
+
+	t.Run("envelope", func(t *testing.T) {
+		seed := findSeed("Windows Event Log (JSON)")
+		parser := toModelParser(seed)
+
+		line := `{"message":"Zatwierdzono pamięć podręczną programu rozpoznawania aplikacji.","eventId":28019,"providerName":"Microsoft-Windows-Shell-Core","level":"Informational","timeCreated":"2026-07-29T19:54:51.4646243+02:00","logName":"Microsoft-Windows-Shell-Core/Operational","machineName":"AD.dom133.local","userId":"S-1-5-21-3699043479-1619627317-4020929063-1118","activityId":"-"}`
+
+		extracted := e.Extract(&parser, line)
+		if extracted == nil {
+			t.Fatal("expected regex to match sample Shell-Core event")
+		}
+
+		want := map[string]string{
+			"event_id":      "28019",
+			"provider_name": "Microsoft-Windows-Shell-Core",
+			"level":         "Informational",
+			"log_name":      "Microsoft-Windows-Shell-Core/Operational",
+			"machine_name":  "AD.dom133.local",
+			"activity_id":   "-",
+		}
+		for k, v := range want {
+			if extracted[k] != v {
+				t.Errorf("field %q = %q, want %q", k, extracted[k], v)
+			}
+		}
+		if len(extracted) != len(seed.Fields) {
+			t.Errorf("extracted %d fields, want %d (regex capture groups vs field list mismatch)", len(extracted), len(seed.Fields))
+		}
+	})
+
+	t.Run("rdp reconnect", func(t *testing.T) {
+		envelopeSeed := findSeed("Windows Event Log (JSON)")
+		rdpSeed := findSeed("Windows RDP Session Reconnect")
+
+		line := `{"message":"Usługi pulpitu zdalnego: ponowne nawiązanie połączenia sesji powiodło się:\\r\\n\\r\\nUżytkownik: DOM133\\\\dkr\\r\\nIdentyfikator sesji: 2\\r\\nŹródłowy adres sieciowy: 10.1.10.253","eventId":25,"providerName":"Microsoft-Windows-TerminalServices-LocalSessionManager","level":"Informational","timeCreated":"2026-07-29T19:40:59.1914177+02:00","logName":"Microsoft-Windows-TerminalServices-LocalSessionManager/Operational","machineName":"AD.dom133.local","userId":"S-1-5-18","activityId":"f420ec05-775d-4e0f-974e-ff54e0c40000"}`
+
+		// The envelope parser must still match this provider (it's just a
+		// generic "any Microsoft-Windows- provider" match), and the RDP
+		// parser must additionally match/extract on top of it.
+		envelopeRe, err := compileCached(envelopeSeed.Regex)
+		if err != nil {
+			t.Fatalf("envelope regex compile error: %v", err)
+		}
+		if !envelopeRe.MatchString(line) {
+			t.Error("envelope parser regex did not match RDP reconnect line")
+		}
+
+		rdpParser := toModelParser(rdpSeed)
+		extracted := e.Extract(&rdpParser, line)
+		if extracted == nil {
+			t.Fatal("expected RDP regex to match sample reconnect line")
+		}
+
+		want := map[string]string{
+			"rdp_user":       `DOM133\\\\dkr`,
+			"rdp_session_id": "2",
+			"src_ip":         "10.1.10.253",
+		}
+		for k, v := range want {
+			if extracted[k] != v {
+				t.Errorf("field %q = %q, want %q", k, extracted[k], v)
+			}
+		}
+	})
+
+	t.Run("workstation unlock", func(t *testing.T) {
+		envelopeSeed := findSeed("Windows Event Log (JSON)")
+		unlockSeed := findSeed("Windows Workstation Unlock")
+
+		line := `{"message":"Odblokowano stację roboczą.\\r\\n\\r\\nPodmiot:\\r\\n\\tIdentyfikator zabezpieczeń:\\t\\tS-1-5-21-3699043479-1619627317-4020929063-1118\\r\\n\\tNazwa konta:\\t\\tdkr\\r\\n\\tDomena konta:\\t\\tDOM133\\r\\n\\tIdentyfikator logowania:\\t\\t0x4068C2\\r\\n\\tIdentyfikator sesji:\\t2","eventId":4801,"providerName":"Microsoft-Windows-Security-Auditing","level":"LogAlways","timeCreated":"2026-07-29T23:22:31.7278542+02:00","logName":"Security","machineName":"AD.dom133.local","userId":"-","activityId":"152c42ee-0bb0-0001-7e43-2c15b00bdd01"}`
+
+		envelopeRe, err := compileCached(envelopeSeed.Regex)
+		if err != nil {
+			t.Fatalf("envelope regex compile error: %v", err)
+		}
+		if !envelopeRe.MatchString(line) {
+			t.Error("envelope parser regex did not match workstation unlock line")
+		}
+
+		unlockParser := toModelParser(unlockSeed)
+		extracted := e.Extract(&unlockParser, line)
+		if extracted == nil {
+			t.Fatal("expected workstation unlock regex to match sample line")
+		}
+
+		want := map[string]string{
+			"security_id":    "S-1-5-21-3699043479-1619627317-4020929063-1118",
+			"account_name":   "dkr",
+			"account_domain": "DOM133",
+			"logon_id":       "0x4068C2",
+			"session_id":     "2",
+		}
+		for k, v := range want {
+			if extracted[k] != v {
+				t.Errorf("field %q = %q, want %q", k, extracted[k], v)
+			}
+		}
+		if len(extracted) != len(unlockSeed.Fields) {
+			t.Errorf("extracted %d fields, want %d (regex capture groups vs field list mismatch)", len(extracted), len(unlockSeed.Fields))
+		}
+	})
+}

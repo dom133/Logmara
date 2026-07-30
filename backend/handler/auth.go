@@ -27,6 +27,17 @@ const (
 	deviceIDCookieMaxAge   = 400 * 24 * 60 * 60 // ~400 days, the practical cap browsers enforce on cookie lifetime
 )
 
+// isHTTPS returns true if the request arrived over HTTPS, either directly
+// (TLS termination on this server) or via a reverse proxy that forwards
+// X-Forwarded-Proto. This prevents Secure cookies from being dropped when
+// the proxy omits the header.
+func isHTTPS(c *gin.Context) bool {
+	if c.GetHeader("X-Forwarded-Proto") == "https" {
+		return true
+	}
+	return c.Request.TLS != nil
+}
+
 // deviceID returns the long-lived per-browser identifier used to group
 // "remember this device" refresh tokens into sessions a user can review and
 // revoke individually. It reads the existing device_id cookie, or mints and
@@ -36,14 +47,13 @@ func deviceID(c *gin.Context) string {
 		return id
 	}
 	id := auth.GenerateDeviceID()
-	secure := c.GetHeader("X-Forwarded-Proto") == "https"
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     DeviceIDCookieName,
 		Value:    id,
 		Path:     "/",
 		MaxAge:   deviceIDCookieMaxAge,
 		HttpOnly: true,
-		Secure:   secure,
+		Secure:   isHTTPS(c),
 		SameSite: http.SameSiteLaxMode,
 	})
 	return id
@@ -53,7 +63,7 @@ func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpi
 	csrf := generateCSRFToken()
 	accessMaxAge := int(time.Until(accessExpiry).Seconds())
 	refreshMaxAge := int(time.Until(refreshExpiry).Seconds())
-	secure := c.GetHeader("X-Forwarded-Proto") == "https"
+	secure := isHTTPS(c)
 
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     CSRFTokenCookieName,
@@ -90,7 +100,7 @@ func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpi
 }
 
 func clearAuthCookies(c *gin.Context) {
-	secure := c.GetHeader("X-Forwarded-Proto") == "https"
+	secure := isHTTPS(c)
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     CSRFTokenCookieName,
 		Value:    "",

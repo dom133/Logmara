@@ -110,7 +110,72 @@ func MigrateWithLock(db *sql.DB) error {
 	return Migrate(db)
 }
 
+// schemaVersion must be bumped whenever a statement is appended to
+// statements/partitionStmts/postStmts below. Migrate short-circuits once the
+// schema_version table already records this value, so a forgotten bump
+// means an already-deployed instance will never see the new statement
+// applied.
+const schemaVersion = 1
+
+func ensureSchemaVersionTable(db *sql.DB) error {
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
+		version INTEGER NOT NULL,
+		applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	)`)
+	return err
+}
+
+func getSchemaVersion(db *sql.DB) (int, error) {
+	var version int
+	err := db.QueryRow(`SELECT version FROM schema_version ORDER BY version DESC LIMIT 1`).Scan(&version)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return version, err
+}
+
+func setSchemaVersion(db *sql.DB, version int) error {
+	if _, err := db.Exec(`DELETE FROM schema_version`); err != nil {
+		return err
+	}
+	_, err := db.Exec(`INSERT INTO schema_version (version) VALUES ($1)`, version)
+	return err
+}
+
 func Migrate(db *sql.DB) error {
+	if err := ensureSchemaVersionTable(db); err != nil {
+		return fmt.Errorf("ensure schema_version table: %w", err)
+	}
+	current, err := getSchemaVersion(db)
+	if err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+
+	if current >= schemaVersion {
+		slog.Info("schema up to date, skipping DDL migration", "version", current)
+	} else {
+		if err := runSchemaMigration(db); err != nil {
+			return err
+		}
+	}
+
+	// Builtin parser/setting definitions (e.g. PARSER_DEFS_DIR contents) can
+	// change independently of the schema DDL above, so these must always
+	// re-sync on every start rather than being gated on schemaVersion - a
+	// gate here would mean an already-migrated instance never picks up a
+	// newly added/edited builtin parser.
+	if err := seedParsers(db); err != nil {
+		slog.Warn("seeding parsers failed", "error", err)
+	}
+
+	if err := seedSettings(db); err != nil {
+		slog.Warn("seeding settings failed", "error", err)
+	}
+
+	return nil
+}
+
+func runSchemaMigration(db *sql.DB) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS syslog_logs (
 			id BIGSERIAL PRIMARY KEY,
@@ -555,15 +620,11 @@ END $$`,
 		}
 	}
 
-	if err := seedParsers(db); err != nil {
-		slog.Warn("seeding parsers failed", "error", err)
+	if err := setSchemaVersion(db, schemaVersion); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
 	}
 
-	if err := seedSettings(db); err != nil {
-		slog.Warn("seeding settings failed", "error", err)
-	}
-
-	slog.Info("database migration completed")
+	slog.Info("database migration completed", "version", schemaVersion)
 	return nil
 }
 
@@ -667,6 +728,7 @@ func seedSettings(db *sql.DB) error {
 		"retention_days":                "30",
 		"session_timeout_min":           "15",
 		"is_initialized":                "false",
+		"default_language":              "en",
 		"ldap_enabled":                  "false",
 		"ldap_server":                   "",
 		"ldap_port":                     "389",
@@ -712,6 +774,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "Session timeout in minutes"
 		case "is_initialized":
 			desc = "Application initialization flag"
+		case "default_language":
+			desc = "Default UI language for new sessions"
 		case "ldap_enabled":
 			desc = "Enable LDAP authentication"
 		case "ldap_server":

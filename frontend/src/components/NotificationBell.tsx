@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Badge, Button, Card, Drawer, Dropdown, Empty, List, Space, Switch, Tag, Typography, message } from 'antd'
+import { useTranslation } from 'react-i18next'
 import { BellOutlined } from '@ant-design/icons'
 import {
   getNotifications, markNotificationsRead, streamNotifications, InAppNotification,
@@ -51,6 +52,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 export function NotificationBell() {
+  const { t } = useTranslation()
   const isMobile = useIsMobile()
   const [enabled, setEnabled] = useState(false)
   const [items, setItems] = useState<InAppNotification[]>([])
@@ -109,7 +111,7 @@ export function NotificationBell() {
         // indefinitely if the service worker is stuck installing.
         const permission = await Notification.requestPermission()
         if (permission !== 'granted') {
-          message.warning('Notification permission was not granted')
+          message.warning(t('notifications.permissionDenied'))
           return
         }
         // Register explicitly here rather than relying on the fire-and-
@@ -130,7 +132,7 @@ export function NotificationBell() {
         )
         await withTimeout(subscribePush(sub.toJSON()), 10_000, 'saving the subscription on the server')
         setPushSubscribed(true)
-        message.success('Push notifications enabled')
+        message.success(t('notifications.pushEnabled'))
       } else {
         const reg = await withTimeout(navigator.serviceWorker.ready, 10_000, 'waiting for the service worker')
         const sub = await reg.pushManager.getSubscription()
@@ -139,11 +141,11 @@ export function NotificationBell() {
           await sub.unsubscribe()
         }
         setPushSubscribed(false)
-        message.success('Push notifications disabled')
+        message.success(t('notifications.pushDisabled'))
       }
     } catch (e) {
       console.error('push notification toggle failed', e)
-      message.error(getErrorMessage(e, 'Failed to update push notification setting'))
+      message.error(getErrorMessage(e, t('notifications.pushToggleFailed')))
     } finally {
       setPushBusy(false)
     }
@@ -176,7 +178,7 @@ export function NotificationBell() {
   }
 
   const panelBody = items.length === 0 ? (
-    <Empty description="No notifications" style={{ padding: 24 }} />
+    <Empty description={t('notifications.empty')} style={{ padding: 24 }} />
   ) : (
     <List
       dataSource={items}
@@ -197,12 +199,12 @@ export function NotificationBell() {
   )
 
   const clearButton = items.length > 0 && (
-    <Button type="link" size="small" style={{ padding: 0 }} onClick={handleClearAll}>Clear all</Button>
+    <Button type="link" size="small" style={{ padding: 0 }} onClick={handleClearAll}>{t('notifications.clearAll')}</Button>
   )
 
   const pushRow = pushSupported && (
     <div style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(128,128,128,0.2)' }}>
-      <Typography.Text style={{ fontSize: 12 }}>Push notifications</Typography.Text>
+      <Typography.Text style={{ fontSize: 12 }}>{t('notifications.push')}</Typography.Text>
       <Switch size="small" checked={pushSubscribed} loading={pushBusy} onChange={handleTogglePush} />
     </div>
   )
@@ -231,7 +233,7 @@ export function NotificationBell() {
       <>
         {bellButton}
         <Drawer
-          title="Notifications"
+          title={t('admin.notifications')}
           placement="bottom"
           height="70%"
           open={open}
@@ -254,7 +256,7 @@ export function NotificationBell() {
       dropdownRender={() => (
         <Card
           size="small"
-          title="Notifications"
+          title={t('admin.notifications')}
           extra={clearButton}
           style={{ width: 360 }}
           styles={{ body: { padding: 0, maxHeight: 380, overflowY: 'auto' } }}

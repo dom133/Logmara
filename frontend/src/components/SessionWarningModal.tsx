@@ -1,4 +1,5 @@
 import { Modal, Button, Space, Alert } from 'antd'
+import { useTranslation } from 'react-i18next'
 import { WarningOutlined, ReloadOutlined, LogoutOutlined } from '@ant-design/icons'
 
 interface SessionWarningModalProps {
@@ -8,9 +9,10 @@ interface SessionWarningModalProps {
 }
 
 export function SessionWarningModal({ onExtend, onLogout, countdown }: SessionWarningModalProps) {
+  const { t } = useTranslation()
   return (
     <Modal
-      title={<span><WarningOutlined style={{ marginRight: 8 }} />Session Expiring</span>}
+      title={<span><WarningOutlined style={{ marginRight: 8 }} />{t('sessionWarning.title')}</span>}
       open={true}
       footer={null}
       closable={false}
@@ -18,19 +20,18 @@ export function SessionWarningModal({ onExtend, onLogout, countdown }: SessionWa
       width={420}
     >
       <Alert
-        message="Your session is about to expire"
-        description={`Session will expire in ${countdown} seconds. Extend it or log out now.`
-        }
+        message={t('sessionWarning.message')}
+        description={t('sessionWarning.description', { seconds: countdown })}
         type="warning"
         showIcon
         style={{ marginBottom: 16 }}
       />
       <Space style={{ justifyContent: 'flex-end' }}>
         <Button icon={<LogoutOutlined />} onClick={onLogout}>
-          Log Out
+          {t('sessionWarning.logOut')}
         </Button>
         <Button type="primary" icon={<ReloadOutlined />} onClick={onExtend}>
-          Extend Session
+          {t('sessionWarning.extendSession')}
         </Button>
       </Space>
     </Modal>

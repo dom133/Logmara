@@ -651,6 +651,13 @@ func SyncNginxHTTPSWithRetry(database *sql.DB, attempts int, delay time.Duration
 
 func CleanupLogs(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// On a large table this can run well past the server's default 15s
+		// WriteTimeout (see main.go) - the batched delete alone can take
+		// minutes. Same fix as StreamNotifications: lift the per-connection
+		// write deadline so a slow cleanup doesn't get its response write
+		// silently killed out from under it.
+		_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
+
 		retentionDays := 30
 		if val := db.GetSetting(database, "retention_days", "30"); val != "" {
 			if d, err := strconv.Atoi(val); err == nil {
@@ -677,6 +684,13 @@ type PurgeRequest struct {
 
 func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// TRUNCATE needs an ACCESS EXCLUSIVE lock and can sit queued behind
+		// an in-progress VACUUM/MV refresh/long transaction on syslog_logs
+		// well past the server's default 15s WriteTimeout (see main.go).
+		// Same fix as StreamNotifications: lift the per-connection write
+		// deadline so that wait doesn't kill the response write.
+		_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
+
 		var req PurgeRequest
 		_ = c.ShouldBindJSON(&req)
 

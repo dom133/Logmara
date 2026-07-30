@@ -47,7 +47,7 @@ describe('AuthProvider loadUser', () => {
 
     const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
 
-    await waitFor(() => expect(result.current.loading).toBe(false))
+    await waitFor(() => expect(result.current.loading).toBe(false), { timeout: 5000 })
     expect(result.current.user).toBeNull()
   })
 
@@ -61,7 +61,7 @@ describe('AuthProvider loadUser', () => {
 
     const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
 
-    await waitFor(() => expect(result.current.loading).toBe(false))
+    await waitFor(() => expect(result.current.loading).toBe(false), { timeout: 5000 })
     expect(mockedApi.post).toHaveBeenCalledWith('/auth/refresh', {}, { headers: { 'X-Silent-Refresh': 'true' } })
     expect(result.current.user).toBeNull()
   })

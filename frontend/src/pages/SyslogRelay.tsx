@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Space, Tag, message, Tabs, Popconfirm, Alert, Typography } from 'antd'
+import { Trans, useTranslation } from 'react-i18next'
 import { PlusOutlined, DeleteOutlined, SafetyCertificateOutlined, DownloadOutlined } from '@ant-design/icons'
 import {
   getRelayWhitelist, addRelayWhitelistEntry, deleteRelayWhitelistEntry,
@@ -12,6 +13,7 @@ import { getErrorMessage } from '../utils/error'
 const { Text, Paragraph } = Typography
 
 export default function SyslogRelay() {
+  const { t } = useTranslation()
   const [whitelist, setWhitelist] = useState<RelayWhitelistEntry[]>([])
   const [whitelistLoading, setWhitelistLoading] = useState(false)
   const [whitelistModalOpen, setWhitelistModalOpen] = useState(false)
@@ -31,7 +33,7 @@ export default function SyslogRelay() {
     try {
       setWhitelist(await getRelayWhitelist())
     } catch {
-      message.error('Failed to load relay whitelist')
+      message.error(t('relay.loadWhitelistFailed'))
     } finally {
       setWhitelistLoading(false)
     }
@@ -42,7 +44,7 @@ export default function SyslogRelay() {
     try {
       setCerts(await getRelayCertificates())
     } catch {
-      message.error('Failed to load relay certificates')
+      message.error(t('relay.loadCertsFailed'))
     } finally {
       setCertsLoading(false)
     }
@@ -58,12 +60,12 @@ export default function SyslogRelay() {
     setWhitelistSaving(true)
     try {
       await addRelayWhitelistEntry(values)
-      message.success('Whitelist entry added')
+      message.success(t('relay.whitelistAdded'))
       setWhitelistModalOpen(false)
       whitelistForm.resetFields()
       loadWhitelist()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to add whitelist entry'))
+      message.error(getErrorMessage(e, t('relay.addWhitelistFailed')))
     } finally {
       setWhitelistSaving(false)
     }
@@ -72,25 +74,28 @@ export default function SyslogRelay() {
   const handleDeleteWhitelist = async (id: number) => {
     try {
       await deleteRelayWhitelistEntry(id)
-      message.success('Whitelist entry removed')
+      message.success(t('relay.whitelistRemoved'))
       loadWhitelist()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to remove whitelist entry'))
+      message.error(getErrorMessage(e, t('relay.removeWhitelistFailed')))
     }
   }
 
   const warnSaveNow = (filename: string) => {
     Modal.warning({
-      title: 'Save this file now',
+      title: t('relay.saveFileNowTitle'),
       width: 520,
       content: (
         <div>
           <Paragraph>
-            Downloaded <Text code>{filename}</Text>. It contains the relay's private key (<Text code>client.key</Text>) -
-            the server doesn't store it, and <Text strong>it cannot be downloaded again</Text>.
+            <Trans
+              i18nKey="relay.saveFileNowP1"
+              values={{ filename }}
+              components={{ code: <Text code />, strong: <Text strong /> }}
+            />
           </Paragraph>
           <Paragraph>
-            If you lose this file, the only option is to revoke this certificate and generate a new one.
+            {t('relay.saveFileNowP2')}
           </Paragraph>
         </div>
       ),
@@ -108,7 +113,7 @@ export default function SyslogRelay() {
       loadCerts()
       loadWhitelist()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to generate certificate'))
+      message.error(getErrorMessage(e, t('relay.generateCertFailed')))
     } finally {
       setCertGenerating(false)
     }
@@ -122,7 +127,7 @@ export default function SyslogRelay() {
       loadCerts()
       loadWhitelist()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to generate certificate'))
+      message.error(getErrorMessage(e, t('relay.generateCertFailed')))
     } finally {
       setGeneratingForWhitelistId(null)
     }
@@ -131,11 +136,11 @@ export default function SyslogRelay() {
   const handleRevokeCert = async (id: number) => {
     try {
       await revokeRelayCertificate(id)
-      message.success('Certificate revoked')
+      message.success(t('relay.certRevoked'))
       loadCerts()
       loadWhitelist()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to revoke certificate'))
+      message.error(getErrorMessage(e, t('relay.revokeCertFailed')))
     }
   }
 
@@ -147,7 +152,7 @@ export default function SyslogRelay() {
       loadCerts()
       loadWhitelist()
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to regenerate certificate'))
+      message.error(getErrorMessage(e, t('relay.regenerateCertFailed')))
     } finally {
       setRegeneratingCertId(null)
     }
@@ -160,28 +165,28 @@ export default function SyslogRelay() {
   const isNearingExpiry = (record: RelayCertificate) => daysUntil(record.expires_at) <= RELAY_CERT_RENEWAL_WINDOW_DAYS
 
   const whitelistColumns = [
-    { title: 'IP', dataIndex: 'ip_address', key: 'ip_address' },
-    { title: 'Label', dataIndex: 'label', key: 'label' },
+    { title: t('relay.ip'), dataIndex: 'ip_address', key: 'ip_address' },
+    { title: t('common.label'), dataIndex: 'label', key: 'label' },
     {
-      title: 'Access',
+      title: t('relay.access'),
       key: 'access',
       render: (_v: unknown, record: RelayWhitelistEntry) => {
-        if (!record.relay_cert_id) return <Tag>No certificate</Tag>
+        if (!record.relay_cert_id) return <Tag>{t('relay.noCertificate')}</Tag>
         const cert = linkedCert(record)
         if (cert?.status === 'revoked') {
-          return <Tag color="red">Blocked (certificate #{record.relay_cert_id} revoked)</Tag>
+          return <Tag color="red">{t('relay.blocked', { id: record.relay_cert_id })}</Tag>
         }
-        return <Tag color="green">Active (certificate #{record.relay_cert_id})</Tag>
+        return <Tag color="green">{t('relay.active', { id: record.relay_cert_id })}</Tag>
       },
     },
     {
-      title: 'Added',
+      title: t('relay.added'),
       dataIndex: 'created_at',
       key: 'created_at',
       render: (date: string) => new Date(date).toLocaleString(),
     },
     {
-      title: 'Actions',
+      title: t('common.actions'),
       key: 'actions',
       render: (_v: unknown, record: RelayWhitelistEntry) => {
         const cert = linkedCert(record)
@@ -190,22 +195,22 @@ export default function SyslogRelay() {
           <Space>
             {canGenerate && (
               <Popconfirm
-                title="Generate a certificate for this entry?"
-                description="Downloads a one-time bundle (ca.crt, client.crt, client.key, relay.conf) for this IP - save it, it can't be fetched again."
-                okText="Yes, generate"
-                cancelText="No"
+                title={t('relay.generateCertConfirmTitle')}
+                description={t('relay.generateCertConfirmDesc')}
+                okText={t('relay.yesGenerate')}
+                cancelText={t('common.no')}
                 onConfirm={() => handleGenerateCertForWhitelistEntry(record)}
               >
                 <Button size="small" icon={<SafetyCertificateOutlined />} loading={generatingForWhitelistId === record.id}>
-                  Generate Certificate
+                  {t('relay.generateCertificate')}
                 </Button>
               </Popconfirm>
             )}
             <Popconfirm
-              title="Remove this whitelist entry?"
-              description="If it has a certificate, that certificate will be revoked too."
-              okText="Yes"
-              cancelText="No"
+              title={t('relay.removeConfirmTitle')}
+              description={t('relay.removeConfirmDesc')}
+              okText={t('common.yes')}
+              cancelText={t('common.no')}
               onConfirm={() => handleDeleteWhitelist(record.id)}
             >
               <Button size="small" danger icon={<DeleteOutlined />} />
@@ -217,53 +222,53 @@ export default function SyslogRelay() {
   ]
 
   const certColumns = [
-    { title: 'Label', dataIndex: 'label', key: 'label' },
+    { title: t('common.label'), dataIndex: 'label', key: 'label' },
     {
-      title: 'Status',
+      title: t('common.status'),
       dataIndex: 'status',
       key: 'status',
-      render: (status: string) => <Tag color={status === 'issued' ? 'green' : 'red'}>{status === 'issued' ? 'issued' : 'revoked'}</Tag>,
+      render: (status: string) => <Tag color={status === 'issued' ? 'green' : 'red'}>{status === 'issued' ? t('relay.issuedStatus') : t('relay.revokedStatus')}</Tag>,
     },
     {
-      title: 'Fingerprint (SHA-256)',
+      title: t('relay.fingerprint'),
       dataIndex: 'fingerprint_sha256',
       key: 'fingerprint_sha256',
       render: (fp: string) => <Text code style={{ fontSize: 12 }}>{fp.slice(0, 16)}…</Text>,
     },
     {
-      title: 'Issued',
+      title: t('relay.issued'),
       dataIndex: 'issued_at',
       key: 'issued_at',
       render: (date: string) => new Date(date).toLocaleString(),
     },
     {
-      title: 'Expires',
+      title: t('relay.expires'),
       dataIndex: 'expires_at',
       key: 'expires_at',
       render: (date: string, record: RelayCertificate) => {
         const days = daysUntil(date)
         const formatted = new Date(date).toLocaleDateString()
         if (record.status !== 'issued') return <Text type="secondary">{formatted}</Text>
-        if (days <= 0) return <Space><Text>{formatted}</Text><Tag color="red">Expired</Tag></Space>
-        if (days <= RELAY_CERT_RENEWAL_WINDOW_DAYS) return <Space><Text>{formatted}</Text><Tag color="orange">Expires in {days}d</Tag></Space>
+        if (days <= 0) return <Space><Text>{formatted}</Text><Tag color="red">{t('relay.expired')}</Tag></Space>
+        if (days <= RELAY_CERT_RENEWAL_WINDOW_DAYS) return <Space><Text>{formatted}</Text><Tag color="orange">{t('relay.expiresIn', { days })}</Tag></Space>
         return formatted
       },
     },
     {
-      title: 'Actions',
+      title: t('common.actions'),
       key: 'actions',
       render: (_v: unknown, record: RelayCertificate) => {
         if (record.status !== 'issued') {
           return (
             <Popconfirm
-              title="Regenerate this certificate?"
-              description="Issues a new certificate for the same whitelist entry and downloads it once. This revoked one stays in the list."
-              okText="Yes, regenerate"
-              cancelText="No"
+              title={t('relay.regenerateConfirmTitle')}
+              description={t('relay.regenerateConfirmDesc')}
+              okText={t('relay.yesRegenerate')}
+              cancelText={t('common.no')}
               onConfirm={() => handleRegenerateCert(record)}
             >
               <Button size="small" icon={<SafetyCertificateOutlined />} loading={regeneratingCertId === record.id}>
-                Regenerate
+                {t('relay.regenerate')}
               </Button>
             </Popconfirm>
           )
@@ -272,25 +277,25 @@ export default function SyslogRelay() {
           <Space>
             {isNearingExpiry(record) && (
               <Popconfirm
-                title="Renew this certificate?"
-                description="Issues a replacement for the same whitelist entry and downloads it once - this certificate is revoked as soon as the new one is linked."
-                okText="Yes, renew"
-                cancelText="No"
+                title={t('relay.renewConfirmTitle')}
+                description={t('relay.renewConfirmDesc')}
+                okText={t('relay.yesRenew')}
+                cancelText={t('common.no')}
                 onConfirm={() => handleRegenerateCert(record)}
               >
                 <Button size="small" type="primary" icon={<SafetyCertificateOutlined />} loading={regeneratingCertId === record.id}>
-                  Renew
+                  {t('relay.renew')}
                 </Button>
               </Popconfirm>
             )}
             <Popconfirm
-              title="Revoke this certificate?"
-              description="Blocks this relay immediately - its IP is dropped from the active allow-list. The device stays listed (shown as Blocked) so you can generate a new certificate for it whenever you're ready."
-              okText="Yes, revoke"
-              cancelText="No"
+              title={t('relay.revokeConfirmTitle')}
+              description={t('relay.revokeConfirmDesc')}
+              okText={t('relay.yesRevoke')}
+              cancelText={t('common.no')}
               onConfirm={() => handleRevokeCert(record.id)}
             >
-              <Button size="small" danger>Revoke</Button>
+              <Button size="small" danger>{t('relay.revoke')}</Button>
             </Popconfirm>
           </Space>
         )
@@ -301,8 +306,8 @@ export default function SyslogRelay() {
   return (
     <div>
       <Card style={{ marginBottom: 16 }}>
-        <h2 style={{ margin: 0 }}>Syslog Relay</h2>
-        <Text type="secondary">Manage syslog relays for multi-VLAN deployments (mTLS + IP whitelist). Central server address is set under Admin &gt; Settings &gt; Syslog Relay.</Text>
+        <h2 style={{ margin: 0 }}>{t('nav.relay')}</h2>
+        <Text type="secondary">{t('relay.description')}</Text>
       </Card>
 
       <Tabs
@@ -310,17 +315,17 @@ export default function SyslogRelay() {
         items={[
           {
             key: 'whitelist',
-            label: 'Whitelist IP',
+            label: t('relay.whitelistTab'),
             children: (
               <Card
-                title="Allowed relay IP addresses"
-                extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setWhitelistModalOpen(true)}>Add IP</Button>}
+                title={t('relay.allowedIps')}
+                extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setWhitelistModalOpen(true)}>{t('relay.addIp')}</Button>}
               >
                 <Alert
                   style={{ marginBottom: 16 }}
                   type="info"
                   showIcon
-                  message="Only connections from an IP whose current certificate is Active are accepted on the mTLS port (6515) - everything else, including a Blocked entry's old (revoked) key, is dropped. Removing an entry here revokes its certificate too."
+                  message={t('relay.whitelistInfo')}
                 />
                 <Table
                   rowKey="id"
@@ -334,17 +339,17 @@ export default function SyslogRelay() {
           },
           {
             key: 'certificates',
-            label: 'Certificates',
+            label: t('relay.certificatesTab'),
             children: (
               <Card
-                title="Relay certificates"
-                extra={<Button type="primary" icon={<SafetyCertificateOutlined />} onClick={() => setCertModalOpen(true)}>Generate Certificate</Button>}
+                title={t('relay.relayCertificates')}
+                extra={<Button type="primary" icon={<SafetyCertificateOutlined />} onClick={() => setCertModalOpen(true)}>{t('relay.generateCertificate')}</Button>}
               >
                 <Alert
                   style={{ marginBottom: 16 }}
                   type="warning"
                   showIcon
-                  message="The private key is only ever shown once, at generation time. The server doesn't store it - if it's lost, the only option is to revoke the certificate and generate a new one."
+                  message={t('relay.certInfo')}
                 />
                 <Table
                   rowKey="id"
@@ -360,46 +365,46 @@ export default function SyslogRelay() {
       />
 
       <Modal
-        title="Add IP to whitelist"
+        title={t('relay.addToWhitelist')}
         open={whitelistModalOpen}
         onOk={handleAddWhitelist}
         onCancel={() => { setWhitelistModalOpen(false); whitelistForm.resetFields() }}
         confirmLoading={whitelistSaving}
-        okText="Add"
-        cancelText="Cancel"
+        okText={t('relay.add')}
+        cancelText={t('common.cancel')}
       >
         <Form form={whitelistForm} layout="vertical">
-          <Form.Item label="Relay IP address" name="ip_address" rules={[{ required: true, message: 'Required' }]}>
-            <Input placeholder="e.g. 10.20.0.10" />
+          <Form.Item label={t('relay.relayIpAddress')} name="ip_address" rules={[{ required: true, message: t('relay.required') }]}>
+            <Input placeholder={t('relay.ipPlaceholder')} />
           </Form.Item>
-          <Form.Item label="Label" name="label" rules={[{ required: true, message: 'Required' }]}>
-            <Input placeholder="e.g. relay-vlan-b" />
+          <Form.Item label={t('common.label')} name="label" rules={[{ required: true, message: t('relay.required') }]}>
+            <Input placeholder={t('relay.labelPlaceholder')} />
           </Form.Item>
         </Form>
       </Modal>
 
       <Modal
-        title="Generate relay certificate"
+        title={t('relay.generateRelayCertificate')}
         open={certModalOpen}
         onOk={handleGenerateCert}
         onCancel={() => { setCertModalOpen(false); certForm.resetFields() }}
         confirmLoading={certGenerating}
-        okText="Generate & Download"
-        cancelText="Cancel"
+        okText={t('relay.generateAndDownload')}
+        cancelText={t('common.cancel')}
         okButtonProps={{ icon: <DownloadOutlined /> }}
       >
         <Space direction="vertical" style={{ width: '100%' }}>
           <Alert
             type="info"
             showIcon
-            message="This will generate a client certificate signed by this server's CA and add the given IP address to the whitelist. The bundle (ca.crt, client.crt, client.key, relay.conf) downloads automatically - this one time only."
+            message={t('relay.generateInfo')}
           />
           <Form form={certForm} layout="vertical" style={{ width: '100%' }}>
-            <Form.Item label="Relay label" name="label" rules={[{ required: true, message: 'Required' }]}>
-              <Input placeholder="e.g. relay-vlan-b" />
+            <Form.Item label={t('relay.relayLabel')} name="label" rules={[{ required: true, message: t('relay.required') }]}>
+              <Input placeholder={t('relay.labelPlaceholder')} />
             </Form.Item>
-            <Form.Item label="Relay IP address" name="ip_address" rules={[{ required: true, message: 'Required' }]}>
-              <Input placeholder="e.g. 10.20.0.10" />
+            <Form.Item label={t('relay.relayIpAddress')} name="ip_address" rules={[{ required: true, message: t('relay.required') }]}>
+              <Input placeholder={t('relay.ipPlaceholder')} />
             </Form.Item>
           </Form>
         </Space>

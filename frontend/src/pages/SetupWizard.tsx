@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { Layout, Card, Form, Input, Button, message, Typography, Steps, Space, Divider, Switch, Checkbox, Spin, Select, Alert } from 'antd'
 import { UploadOutlined, CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons'
@@ -9,6 +10,7 @@ const { Title, Text } = Typography
 const { Step } = Steps
 
 export default function SetupWizard() {
+  const { t } = useTranslation()
   const [form] = Form.useForm()
   const [current, setCurrent] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -23,6 +25,8 @@ export default function SetupWizard() {
   const [dbTestMessage, setDbTestMessage] = useState('')
   const [ldapTestStatus, setLdapTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle')
   const [ldapTestMessage, setLdapTestMessage] = useState('')
+  const ldapEnabled = Form.useWatch('ldap_enabled', form)
+  const ldapAutoProvision = Form.useWatch('ldap_auto_provision', form)
   const [collectedData, setCollectedData] = useState({
     username: '',
     email: '',
@@ -78,11 +82,11 @@ export default function SetupWizard() {
   }, [])
 
   const allSteps = [
-    { key: 'admin', title: 'Admin Account', description: 'Create administrator account' },
-    { key: 'database', title: 'Database', description: 'Database connection settings' },
-    { key: 'security', title: 'Security Keys', description: 'JWT & encryption keys' },
-    { key: 'optional', title: 'Optional Settings', description: 'LDAP & CORS configuration' },
-    { key: 'review', title: 'Review & Submit', description: 'Confirm and initialize' },
+    { key: 'admin', title: t('setup.adminAccount'), description: t('setup.createAdminAccount') },
+    { key: 'database', title: t('setup.database'), description: t('setup.dbConnectionSettings') },
+    { key: 'security', title: t('setup.securityKeys'), description: t('setup.jwtEncryptionKeys') },
+    { key: 'optional', title: t('setup.optionalSettings'), description: t('setup.ldapCorsConfiguration') },
+    { key: 'review', title: t('setup.reviewSubmit'), description: t('setup.confirmAndInitialize') },
   ]
   const steps = allSteps.filter(s => {
     if (s.key === 'database' && dbConfigured) return false
@@ -98,7 +102,7 @@ export default function SetupWizard() {
     try {
       await form.validateFields(['db_host', 'db_port', 'db_name', 'db_user', 'db_password'])
     } catch {
-      message.error('Please fill in all required fields')
+      message.error(t('setup.fillRequiredFields'))
       return
     }
     const values = form.getFieldsValue(['db_host', 'db_port', 'db_name', 'db_user', 'db_password'])
@@ -113,11 +117,11 @@ export default function SetupWizard() {
         password: values.db_password,
       })
       setDbTestStatus('success')
-      message.success('Connection successful')
+      message.success(t('setup.connectionSuccessful'))
     } catch (e: unknown) {
       setDbTestStatus('failed')
-      setDbTestMessage(getErrorMessage(e, 'Connection failed'))
-      message.error(getErrorMessage(e, 'Connection failed'))
+      setDbTestMessage(getErrorMessage(e, t('setup.connectionFailed')))
+      message.error(getErrorMessage(e, t('setup.connectionFailed')))
     }
   }
 
@@ -125,7 +129,7 @@ export default function SetupWizard() {
     try {
       await form.validateFields(['ldap_server', 'ldap_port', 'ldap_base_dn', 'ldap_bind_dn', 'ldap_bind_password'])
     } catch {
-      message.error('Please fill in all required LDAP fields')
+      message.error(t('setup.fillRequiredLdapFields'))
       return
     }
     const values = form.getFieldsValue(['ldap_server', 'ldap_port', 'ldap_use_tls', 'ldap_verify_cert', 'ldap_ca_cert', 'ldap_base_dn', 'ldap_bind_dn', 'ldap_bind_password'])
@@ -143,11 +147,11 @@ export default function SetupWizard() {
         bind_password: values.ldap_bind_password,
       })
       setLdapTestStatus('success')
-      message.success('LDAP connection successful')
+      message.success(t('setup.ldapConnectionSuccessful'))
     } catch (e: unknown) {
       setLdapTestStatus('failed')
-      setLdapTestMessage(getErrorMessage(e, 'LDAP connection failed'))
-      message.error(getErrorMessage(e, 'LDAP connection failed'))
+      setLdapTestMessage(getErrorMessage(e, t('setup.ldapConnectionFailed')))
+      message.error(getErrorMessage(e, t('setup.ldapConnectionFailed')))
     }
   }
 
@@ -187,10 +191,10 @@ export default function SetupWizard() {
     setLoading(true)
     try {
       await initialize(data)
-      message.success('Application initialized! Redirecting...')
+      message.success(t('setup.initialized'))
       setTimeout(() => { window.location.href = '/login' }, 1000)
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Initialization failed'))
+      message.error(getErrorMessage(e, t('setup.initFailed')))
       setLoading(false)
     }
   }
@@ -203,25 +207,25 @@ export default function SetupWizard() {
         setCollectedData(prev => ({ ...prev, ...values }))
         setCurrent(current + 1)
       } catch {
-        message.error('Please fill in all required fields')
+        message.error(t('setup.fillRequiredFields'))
       }
     } else if (stepKey === 'database') {
       try {
         await form.validateFields(['db_host', 'db_port', 'db_name', 'db_user', 'db_password'])
         if (dbTestStatus !== 'success') {
-          message.error('Please test the database connection first')
+          message.error(t('setup.testDbFirst'))
           return
         }
         const values = form.getFieldsValue(['db_host', 'db_port', 'db_name', 'db_user', 'db_password'])
         setCollectedData(prev => ({ ...prev, ...values, db_port: values.db_port || 0 }))
         setCurrent(current + 1)
       } catch {
-        message.error('Please fill in all required fields')
+        message.error(t('setup.fillRequiredFields'))
       }
     } else if (stepKey === 'security') {
       // Only reached when keys are missing from the environment; the operator
       // must set them and restart, so there is nothing to advance to.
-      message.error('Set JWT_SECRET and ENCRYPTION_KEY in the server environment, then restart')
+      message.error(t('setup.setKeysEnv'))
     } else if (stepKey === 'optional') {
       const values = form.getFieldsValue([
         'cors_origins', 'ldap_enabled', 'ldap_server', 'ldap_port',
@@ -248,51 +252,51 @@ export default function SetupWizard() {
       case 'admin':
         return (
           <>
-            <Form.Item name="username" label="Username" rules={[{ required: true, min: 3 }]}>
+            <Form.Item name="username" label={t('setup.username')} rules={[{ required: true, min: 3 }]}>
               <Input size="large" placeholder="admin" />
             </Form.Item>
-            <Form.Item name="email" label="Email" rules={[{ required: true, type: 'email' }]}>
+            <Form.Item name="email" label={t('common.email')} rules={[{ required: true, type: 'email' }]}>
               <Input size="large" placeholder="admin@example.com" />
             </Form.Item>
-            <Form.Item name="password" label="Password" rules={[{ required: true, min: 8 }]}>
-              <Input.Password size="large" placeholder="Min 8 characters" />
+            <Form.Item name="password" label={t('common.password')} rules={[{ required: true, min: 8 }]}>
+              <Input.Password size="large" placeholder={t('setup.min8Chars')} />
             </Form.Item>
             <Form.Item
               name="confirm"
-              label="Confirm Password"
+              label={t('setup.confirmPassword')}
               dependencies={['password']}
               rules={[
-                { required: true, message: 'Please confirm your password' },
+                { required: true, message: t('setup.confirmPasswordMsg') },
                 ({getFieldValue}) => ({
                   validator(_, value) {
                     if (!value || getFieldValue('password') === value) {
                       return Promise.resolve()
                     }
-                    return Promise.reject(new Error('Passwords do not match'))
+                    return Promise.reject(new Error(t('setup.passwordsNotMatch')))
                   },
                 }),
               ]}
             >
-              <Input.Password size="large" placeholder="Repeat password" />
+              <Input.Password size="large" placeholder={t('setup.repeatPassword')} />
             </Form.Item>
           </>
         )
       case 'database':
         return (
           <>
-            <Form.Item name="db_host" label="Host" rules={[{ required: true, message: 'Host is required' }]}>
+            <Form.Item name="db_host" label={t('setup.dbHost')} rules={[{ required: true, message: t('setup.dbHostRequired') }]}>
               <Input size="large" placeholder="postgres" />
             </Form.Item>
-            <Form.Item name="db_port" label="Port" rules={[{ required: true, message: 'Port is required' }]}>
+            <Form.Item name="db_port" label={t('setup.dbPort')} rules={[{ required: true, message: t('setup.dbPortRequired') }]}>
               <Input type="number" size="large" placeholder="5432" />
             </Form.Item>
-            <Form.Item name="db_name" label="Database Name" rules={[{ required: true, message: 'Database name is required' }]}>
+            <Form.Item name="db_name" label={t('setup.dbName')} rules={[{ required: true, message: t('setup.dbNameRequired') }]}>
               <Input size="large" placeholder="syslog_db" />
             </Form.Item>
-            <Form.Item name="db_user" label="User" rules={[{ required: true, message: 'User is required' }]}>
+            <Form.Item name="db_user" label={t('setup.dbUser')} rules={[{ required: true, message: t('setup.dbUserRequired') }]}>
               <Input size="large" placeholder="syslog" />
             </Form.Item>
-            <Form.Item name="db_password" label="Password" rules={[{ required: true, message: 'Password is required' }]}>
+            <Form.Item name="db_password" label={t('common.password')} rules={[{ required: true, message: t('setup.dbPassRequired') }]}>
               <Input.Password size="large" placeholder="syslogpass" />
             </Form.Item>
             <Button
@@ -300,16 +304,16 @@ export default function SetupWizard() {
               loading={dbTestStatus === 'testing'}
               style={{ marginBottom: 8, width: '100%' }}
             >
-              Test Connection
+              {t('setup.testConnection')}
             </Button>
             {dbTestStatus === 'success' && (
               <Text type="success" style={{ display: 'block', marginBottom: 16 }}>
-                <CheckCircleFilled /> Connection successful
+                <CheckCircleFilled /> {t('setup.connectionSuccessful')}
               </Text>
             )}
             {dbTestStatus === 'failed' && (
               <Text type="danger" style={{ display: 'block', marginBottom: 16 }}>
-                <CloseCircleFilled /> {dbTestMessage || 'Connection failed'}
+                <CloseCircleFilled /> {dbTestMessage || t('setup.connectionFailed')}
               </Text>
             )}
           </>
@@ -319,19 +323,14 @@ export default function SetupWizard() {
           <Alert
             type="warning"
             showIcon
-            message="Security keys are not configured"
+            message={t('setup.keysNotConfigured')}
             description={
               <>
                 <p style={{ marginTop: 0 }}>
-                  This server has no <code>JWT_SECRET</code> and/or <code>ENCRYPTION_KEY</code> in its
-                  environment. For security these keys are never stored in the database, so they
-                  can't be entered here.
+                  {t('setup.keysNotConfiguredDesc1')}
                 </p>
                 <p style={{ marginBottom: 0 }}>
-                  Generate each one (e.g. <code>openssl rand -base64 48</code>), set them via the
-                  <code> JWT_SECRET</code> and <code>ENCRYPTION_KEY</code> environment variables
-                  (or their <code>*_FILE</code> equivalents), restart the server, then reload this
-                  page. See the README "Security keys" section.
+                  {t('setup.keysNotConfiguredDesc2')}
                 </p>
               </>
             }
@@ -340,29 +339,29 @@ export default function SetupWizard() {
       case 'optional':
         return (
           <>
-            <Form.Item name="cors_origins" label="CORS Origins" tooltip="Comma-separated allowed origins (e.g., http://localhost:3000)">
+            <Form.Item name="cors_origins" label={t('setup.corsOrigins')} tooltip={t('setup.corsTooltip')}>
               <Input size="large" placeholder="http://localhost:3000,https://yourdomain.com" />
             </Form.Item>
             <Divider />
-            <Form.Item name="ldap_enabled" label="Enable LDAP Authentication" valuePropName="checked">
+            <Form.Item name="ldap_enabled" label={t('setup.enableLdap')} valuePropName="checked">
               <Switch />
             </Form.Item>
-            {form.getFieldValue('ldap_enabled') && (
+            {ldapEnabled && (
               <>
-                <Divider orientation="left">Connection</Divider>
-                <Form.Item name="ldap_server" label="LDAP Server">
+                <Divider orientation="left">{t('setup.connection')}</Divider>
+                <Form.Item name="ldap_server" label={t('setup.ldapServer')}>
                   <Input size="large" placeholder="ldap.example.com" />
                 </Form.Item>
-                <Form.Item name="ldap_port" label="Port">
+                <Form.Item name="ldap_port" label={t('setup.dbPort')}>
                   <Input type="number" size="large" placeholder="636" />
                 </Form.Item>
-                <Form.Item name="ldap_use_tls" label="Use TLS" valuePropName="checked">
+                <Form.Item name="ldap_use_tls" label={t('setup.useTls')} valuePropName="checked">
                   <Switch />
                 </Form.Item>
-                <Form.Item name="ldap_verify_cert" label="Verify Certificate" valuePropName="checked">
+                <Form.Item name="ldap_verify_cert" label={t('setup.verifyCert')} valuePropName="checked">
                   <Switch />
                 </Form.Item>
-                <Form.Item name="ldap_ca_cert" label="CA Certificate (PEM)">
+                <Form.Item name="ldap_ca_cert" label={t('setup.caCert')}>
                   <Input.TextArea rows={2} placeholder="-----BEGIN CERTIFICATE-----..." style={{ resize: 'none' }} />
                 </Form.Item>
                 <Form.Item>
@@ -380,67 +379,67 @@ export default function SetupWizard() {
                           const text = ev.target?.result
                           if (typeof text === 'string') {
                             form.setFieldValue('ldap_ca_cert', text)
-                            message.success('PEM file loaded')
+                            message.success(t('setup.pemLoaded'))
                           }
                         }
-                        reader.onerror = () => message.error('Failed to read PEM file')
+                        reader.onerror = () => message.error(t('setup.pemReadFailed'))
                         reader.readAsText(file)
                         e.target.value = ''
                       }}
                     />
                     <Button icon={<UploadOutlined />} block onClick={() => { document.getElementById('ca-cert-upload-wizard')?.click() }}>
-                      Upload PEM
+                      {t('setup.uploadPem')}
                     </Button>
                   </div>
                 </Form.Item>
-                <Divider orientation="left">Authentication</Divider>
-                <Form.Item name="ldap_base_dn" label="Base DN">
+                <Divider orientation="left">{t('setup.authentication')}</Divider>
+                <Form.Item name="ldap_base_dn" label={t('setup.baseDn')}>
                   <Input size="large" placeholder="dc=example,dc=com" />
                 </Form.Item>
-                <Form.Item name="ldap_bind_dn" label="Bind DN">
+                <Form.Item name="ldap_bind_dn" label={t('setup.bindDn')}>
                   <Input size="large" placeholder="cn=admin,dc=example,dc=com" />
                 </Form.Item>
-                <Form.Item name="ldap_bind_password" label="Bind Password">
-                  <Input.Password size="large" placeholder="LDAP bind password" />
+                <Form.Item name="ldap_bind_password" label={t('setup.bindPassword')}>
+                  <Input.Password size="large" placeholder={t('setup.ldapBindPassword')} />
                 </Form.Item>
-                <Divider orientation="left">User Search</Divider>
-                <Form.Item name="ldap_user_filter" label="User Filter">
+                <Divider orientation="left">{t('setup.userSearch')}</Divider>
+                <Form.Item name="ldap_user_filter" label={t('setup.userFilter')}>
                   <Input size="large" placeholder="(uid=%s)" />
                 </Form.Item>
-                <Form.Item name="ldap_username_attr" label="Username Attribute">
+                <Form.Item name="ldap_username_attr" label={t('setup.usernameAttr')}>
                   <Input size="large" placeholder="uid" />
                 </Form.Item>
-                <Form.Item name="ldap_email_attr" label="Email Attribute">
+                <Form.Item name="ldap_email_attr" label={t('setup.emailAttr')}>
                   <Input size="large" placeholder="mail" />
                 </Form.Item>
-                <Divider orientation="left">Auto-Provisioning</Divider>
-                <Form.Item name="ldap_auto_provision" label="Auto-Provision Users" valuePropName="checked">
+                <Divider orientation="left">{t('setup.autoProvisioning')}</Divider>
+                <Form.Item name="ldap_auto_provision" label={t('setup.autoProvisionUsers')} valuePropName="checked">
                   <Switch />
                 </Form.Item>
-                <Form.Item name="ldap_default_role" label="Default Role">
-                  <Select size="large" placeholder="Select role" options={[
-                    { label: 'Viewer', value: 'viewer' },
-                    { label: 'Editor', value: 'editor' },
-                    { label: 'Admin', value: 'admin' },
-                  ]} disabled={!form.getFieldValue('ldap_auto_provision')} />
+                <Form.Item name="ldap_default_role" label={t('setup.defaultRole')}>
+                  <Select size="large" placeholder={t('setup.selectRole')} options={[
+                    { label: t('roles.viewer'), value: 'viewer' },
+                    { label: t('roles.editor'), value: 'editor' },
+                    { label: t('roles.admin'), value: 'admin' },
+                  ]} disabled={!ldapAutoProvision} />
                 </Form.Item>
-                <Divider orientation="left">Test</Divider>
+                <Divider orientation="left">{t('common.test')}</Divider>
                 <Button
                   type="primary"
                   onClick={handleTestLdap}
                   loading={ldapTestStatus === 'testing'}
                   style={{ width: '100%' }}
                 >
-                  Test LDAP Connection
+                  {t('setup.testLdapConnection')}
                 </Button>
                 {ldapTestStatus === 'success' && (
                   <Text type="success" style={{ display: 'block' }}>
-                    <CheckCircleFilled /> LDAP connection successful
+                    <CheckCircleFilled /> {t('setup.ldapConnectionSuccessful')}
                   </Text>
                 )}
                 {ldapTestStatus === 'failed' && (
                   <Text type="danger" style={{ display: 'block' }}>
-                    <CloseCircleFilled /> {ldapTestMessage || 'LDAP connection failed'}
+                    <CloseCircleFilled /> {ldapTestMessage || t('setup.ldapConnectionFailed')}
                   </Text>
                 )}
               </>
@@ -450,40 +449,40 @@ export default function SetupWizard() {
       case 'review':
         return (
           <Card size="small" style={{ marginBottom: 16 }}>
-            <Title level={5}>Admin Account</Title>
-            <Text><strong>Username:</strong> {collectedData.username}</Text><br />
-            <Text><strong>Email:</strong> {collectedData.email}</Text><br /><br />
+            <Title level={5}>{t('setup.adminAccount')}</Title>
+            <Text><strong>{t('setup.username')}:</strong> {collectedData.username}</Text><br />
+            <Text><strong>{t('common.email')}:</strong> {collectedData.email}</Text><br /><br />
             {(collectedData.db_host || collectedData.db_port || collectedData.db_name || collectedData.db_user || collectedData.db_password) && (
               <>
-                <Title level={5}>Database</Title>
-                {collectedData.db_host && <Text><strong>Host:</strong> {collectedData.db_host}</Text>}
-                {collectedData.db_port && <Text> <strong>Port:</strong> {collectedData.db_port}</Text>}
-                {collectedData.db_name && <Text><br /><strong>Name:</strong> {collectedData.db_name}</Text>}
-                {collectedData.db_user && <Text> <strong>User:</strong> {collectedData.db_user}</Text>}
+                <Title level={5}>{t('setup.database')}</Title>
+                {collectedData.db_host && <Text><strong>{t('setup.dbHost')}:</strong> {collectedData.db_host}</Text>}
+                {collectedData.db_port && <Text> <strong>{t('setup.dbPort')}:</strong> {collectedData.db_port}</Text>}
+                {collectedData.db_name && <Text><br /><strong>{t('setup.dbName')}:</strong> {collectedData.db_name}</Text>}
+                {collectedData.db_user && <Text> <strong>{t('setup.dbUser')}:</strong> {collectedData.db_user}</Text>}
                 <br />
               </>
             )}
-            <Title level={5}>Security</Title>
-            <Text type="success"><CheckCircleFilled /> JWT &amp; encryption keys loaded from the server environment</Text>
+            <Title level={5}>{t('setup.security')}</Title>
+            <Text type="success"><CheckCircleFilled /> {t('setup.keysLoaded')}</Text>
             <br />
             {collectedData.cors_origins && (
               <>
                 <Title level={5}>CORS</Title>
-                <Text><strong>Origins:</strong> {collectedData.cors_origins}</Text>
+                <Text><strong>{t('setup.origins')}:</strong> {collectedData.cors_origins}</Text>
                 <br />
               </>
             )}
             {collectedData.ldap_enabled && (
               <>
                 <Title level={5}>LDAP</Title>
-                <Text><strong>Server:</strong> {collectedData.ldap_server}:{collectedData.ldap_port}</Text><br />
-                <Text><strong>Base DN:</strong> {collectedData.ldap_base_dn}</Text><br />
-                {collectedData.ldap_user_filter && <Text><strong>User Filter:</strong> {collectedData.ldap_user_filter}</Text>}
-                {collectedData.ldap_username_attr && <Text> <strong>Username Attr:</strong> {collectedData.ldap_username_attr}</Text>}
-                {collectedData.ldap_email_attr && <Text><br /><strong>Email Attr:</strong> {collectedData.ldap_email_attr}</Text>}
+                <Text><strong>{t('setup.ldapServer')}:</strong> {collectedData.ldap_server}:{collectedData.ldap_port}</Text><br />
+                <Text><strong>{t('setup.baseDn')}:</strong> {collectedData.ldap_base_dn}</Text><br />
+                {collectedData.ldap_user_filter && <Text><strong>{t('setup.userFilter')}:</strong> {collectedData.ldap_user_filter}</Text>}
+                {collectedData.ldap_username_attr && <Text> <strong>{t('setup.usernameAttr')}:</strong> {collectedData.ldap_username_attr}</Text>}
+                {collectedData.ldap_email_attr && <Text><br /><strong>{t('setup.emailAttr')}:</strong> {collectedData.ldap_email_attr}</Text>}
                 <br />
-                <Text><strong>Auto-Provision:</strong> {collectedData.ldap_auto_provision ? 'Yes' : 'No'}</Text>
-                {collectedData.ldap_auto_provision && <Text> <strong>Default Role:</strong> {collectedData.ldap_default_role}</Text>}
+                <Text><strong>{t('setup.autoProvision')}:</strong> {collectedData.ldap_auto_provision ? t('common.yes') : t('common.no')}</Text>
+                {collectedData.ldap_auto_provision && <Text> <strong>{t('setup.defaultRole')}:</strong> {collectedData.ldap_default_role}</Text>}
               </>
             )}
           </Card>
@@ -501,7 +500,7 @@ export default function SetupWizard() {
             <img src="/icons/icon-192.png" alt="Logmara" style={{ width: 28, height: 28, borderRadius: 6 }} />
             Logmara
           </Title>
-          <Text type="secondary">First-time setup wizard</Text>
+          <Text type="secondary">{t('setup.wizardTitle')}</Text>
         </div>
 
         {!configLoaded ? (
@@ -530,7 +529,7 @@ export default function SetupWizard() {
 
               <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
                 <Button disabled={current === 0} onClick={prev} size="large">
-                  {current === lastStep ? 'Back' : 'Previous'}
+                  {current === lastStep ? t('common.back') : t('setup.previous')}
                 </Button>
                 <Button
                   type="primary"
@@ -539,7 +538,7 @@ export default function SetupWizard() {
                   disabled={stepKey === 'security' || (stepKey === 'database' && dbTestStatus !== 'success') || (stepKey === 'optional' && collectedData.ldap_enabled && ldapTestStatus !== 'success')}
                   onClick={next}
                 >
-                  {current === lastStep ? 'Initialize' : current === lastStep - 1 ? 'Review' : 'Next'}
+                  {current === lastStep ? t('setup.initialize') : current === lastStep - 1 ? t('setup.review') : t('setup.next')}
                 </Button>
               </div>
             </Form>
