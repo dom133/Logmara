@@ -144,18 +144,19 @@ func startArchiveCleanupScheduler(ctx context.Context, db *sql.DB, interval time
 
 // cleanupArchivedLogs deletes logs older than the configured retention period.
 func cleanupArchivedLogs(db *sql.DB) {
-	var retentionDays int
-	err := db.QueryRow(`SELECT COALESCE(value, '30')::int FROM app_settings WHERE key = 'log_retention_days'`).Scan(&retentionDays)
-	if err != nil {
-		retentionDays = 30
+	retentionDays := 30
+	if val := GetSetting(db, "retention_days", "30"); val != "" {
+		if d, err := strconv.Atoi(val); err == nil {
+			retentionDays = d
+		}
 	}
 
-	res, err := db.Exec("DELETE FROM syslog_logs WHERE timestamp < NOW() - ($1 || ' days')::INTERVAL", retentionDays)
+	n, err := CleanupOldLogs(db, retentionDays)
 	if err != nil {
 		slog.Error("archive cleanup failed", "err", err)
 		return
 	}
-	if n, err := res.RowsAffected(); err == nil && n > 0 {
+	if n > 0 {
 		slog.Info("archive cleanup completed", "rows_deleted", n, "retention_days", retentionDays)
 	}
 }
