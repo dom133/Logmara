@@ -150,11 +150,32 @@ func Migrate(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
+
 	if current >= schemaVersion {
-		slog.Info("schema up to date, skipping migration", "version", current)
-		return nil
+		slog.Info("schema up to date, skipping DDL migration", "version", current)
+	} else {
+		if err := runSchemaMigration(db); err != nil {
+			return err
+		}
 	}
 
+	// Builtin parser/setting definitions (e.g. PARSER_DEFS_DIR contents) can
+	// change independently of the schema DDL above, so these must always
+	// re-sync on every start rather than being gated on schemaVersion - a
+	// gate here would mean an already-migrated instance never picks up a
+	// newly added/edited builtin parser.
+	if err := seedParsers(db); err != nil {
+		slog.Warn("seeding parsers failed", "error", err)
+	}
+
+	if err := seedSettings(db); err != nil {
+		slog.Warn("seeding settings failed", "error", err)
+	}
+
+	return nil
+}
+
+func runSchemaMigration(db *sql.DB) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS syslog_logs (
 			id BIGSERIAL PRIMARY KEY,
@@ -597,14 +618,6 @@ END $$`,
 			}
 			return fmt.Errorf("post-migration failed (%s): %w", truncated, err)
 		}
-	}
-
-	if err := seedParsers(db); err != nil {
-		slog.Warn("seeding parsers failed", "error", err)
-	}
-
-	if err := seedSettings(db); err != nil {
-		slog.Warn("seeding settings failed", "error", err)
 	}
 
 	if err := setSchemaVersion(db, schemaVersion); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"flag"
 	"log/slog"
 	"net/http"
 	"os"
@@ -241,6 +242,33 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
+
+	// --migrate-only runs just the DB schema migration plus builtin
+	// parser/settings seeding, then exits - for manually applying a
+	// migration (e.g. via `docker exec <api container> ./server
+	// --migrate-only`) without waiting on a full service restart/rolling
+	// update and its healthcheck start-period.
+	migrateOnly := flag.Bool("migrate-only", false, "run pending DB migration and builtin parser/settings seeding, then exit")
+	flag.Parse()
+	if *migrateOnly {
+		dsn := util.ResolveDatabaseURL()
+		if dsn == "" {
+			slog.Error("DATABASE_URL not set; cannot run --migrate-only")
+			os.Exit(1)
+		}
+		database, err := db.Connect(dsn)
+		if err != nil {
+			slog.Error("failed to connect to database", "error", err)
+			os.Exit(1)
+		}
+		defer database.Close()
+		if err := db.MigrateWithLock(database); err != nil {
+			slog.Error("migration failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("migrate-only: schema migration and builtin parser/settings seeding complete")
+		return
+	}
 
 	port := os.Getenv("PORT")
 	if port == "" {
