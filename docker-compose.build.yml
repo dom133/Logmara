@@ -1,10 +1,13 @@
-# Pulls pre-built images from Docker Hub (dom133/logmara-*) - no repo clone,
-# no local build needed. Just this file + .env.example are required (see
-# README "Quick Start"). Bump IMAGE_TAG in .env to move to a newer release.
+# Builds every image from source instead of pulling the pre-built ones from
+# Docker Hub (see docker-compose.yml). Use this file when you need to deploy
+# local changes, or anything not yet published under dom133/logmara-* on
+# Docker Hub - requires the full repo (source + Dockerfiles), not just this
+# file. See README "Deploying local changes / building from source".
 #
-# Need to deploy local/uncommitted changes, or anything not yet published to
-# Docker Hub? Use docker-compose.build.yml instead (requires the full repo) -
-# see README "Deploying local changes / building from source".
+#   git clone https://github.com/dom133/Logmara.git
+#   cd syslog_gui
+#   cp .env.example .env   # fill in POSTGRES_PASSWORD, JWT_SECRET, ENCRYPTION_KEY
+#   docker compose -f docker-compose.build.yml up -d --build
 
 name: logmara
 
@@ -51,7 +54,9 @@ services:
         max-file: "3"
 
   rsyslog:
-    image: dom133/logmara-rsyslog:${IMAGE_TAG:-v0.0.1}
+    build:
+      context: .
+      dockerfile: Dockerfile.rsyslog
     environment:
       - TZ=UTC
     volumes:
@@ -118,7 +123,9 @@ services:
         max-file: "3"
 
   api:
-    image: dom133/logmara-api:${IMAGE_TAG:-v0.0.1}
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
     environment:
       TZ: UTC
       # Built from components (not a raw DATABASE_URL) so a password containing
@@ -188,7 +195,9 @@ services:
         max-file: "3"
 
   frontend:
-    image: dom133/logmara-frontend:${IMAGE_TAG:-v0.0.1}
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
     volumes:
       - log_data:/data
     ports:

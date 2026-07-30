@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-DOCKERHUB_USER="logmara"
+DOCKERHUB_USER="dom133"
 TAG="latest"
 PLATFORMS=""
 SKIP_PUSH=0
@@ -34,7 +34,7 @@ done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 declare -A IMAGES=(
-    [logmara-backend]="Dockerfile.backend"
+    [logmara-api]="Dockerfile.backend"
     [logmara-frontend]="Dockerfile.frontend"
     [logmara-patroni]="Dockerfile.patroni"
     [logmara-rsyslog]="Dockerfile.rsyslog"

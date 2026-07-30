@@ -25,11 +25,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$DockerHubUser = "logmara"
+$DockerHubUser = "dom133"
 $RepoRoot = Resolve-Path "$PSScriptRoot\.."
 
 $Images = @(
-    @{ Name = "logmara-backend";       Dockerfile = "Dockerfile.backend" },
+    @{ Name = "logmara-api";           Dockerfile = "Dockerfile.backend" },
     @{ Name = "logmara-frontend";      Dockerfile = "Dockerfile.frontend" },
     @{ Name = "logmara-patroni";       Dockerfile = "Dockerfile.patroni" },
     @{ Name = "logmara-rsyslog";       Dockerfile = "Dockerfile.rsyslog" },
