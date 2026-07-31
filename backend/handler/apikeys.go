@@ -2,6 +2,7 @@ package handler
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"logmara/middleware"
 	"logmara/model"
 
 	"github.com/gin-gonic/gin"
@@ -18,6 +20,14 @@ func GenerateAPIKey() string {
 	b := make([]byte, 32)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// hashAPIKey returns the SHA-256 digest of a plaintext API key, hex-encoded.
+// Only the digest is ever persisted (key_hash) - the plaintext key is shown
+// to the caller once, at creation/reset time, and never stored.
+func hashAPIKey(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
 }
 
 func CreateAPIKey(database *sql.DB) gin.HandlerFunc {
@@ -54,7 +64,7 @@ func CreateAPIKey(database *sql.DB) gin.HandlerFunc {
 		}
 
 		key := GenerateAPIKey()
-		keyHash := hex.EncodeToString([]byte(key))
+		keyHash := hashAPIKey(key)
 		keyPrefix := key[:8]
 
 		_, err := database.Exec(`
@@ -95,12 +105,12 @@ func ListAPIKeys(database *sql.DB) gin.HandlerFunc {
 			var name, keyPrefix string
 			var permsJSON, scopeJSON []byte
 			var isActive bool
-			var expiresAt, lastUsedAt, createdAt time.Time
-			var createdByUsername string
-			var expiresNull, lastUsedNull bool
+			var expiresAt, lastUsedAt sql.NullTime
+			var createdAt time.Time
+			var createdByUsername sql.NullString
 
 			err := rows.Scan(&id, &name, &keyPrefix, &permsJSON, &scopeJSON, &isActive,
-				&rateLimit, &expiresNull, &lastUsedNull, &totalReqs, &createdAt, &createdByUsername)
+				&rateLimit, &expiresAt, &lastUsedAt, &totalReqs, &createdAt, &createdByUsername)
 			if err != nil {
 				continue
 			}
@@ -113,6 +123,14 @@ func ListAPIKeys(database *sql.DB) gin.HandlerFunc {
 				json.Unmarshal(scopeJSON, &scopeFilters)
 			}
 
+			var expiresAtOut, lastUsedAtOut interface{}
+			if expiresAt.Valid {
+				expiresAtOut = expiresAt.Time
+			}
+			if lastUsedAt.Valid {
+				lastUsedAtOut = lastUsedAt.Time
+			}
+
 			keys = append(keys, gin.H{
 				"id":                id,
 				"name":              name,
@@ -121,11 +139,11 @@ func ListAPIKeys(database *sql.DB) gin.HandlerFunc {
 				"scope_filters":     scopeFilters,
 				"is_active":         isActive,
 				"rate_limit_per_min": rateLimit,
-				"expires_at":        expiresAt,
-				"last_used_at":      lastUsedAt,
+				"expires_at":        expiresAtOut,
+				"last_used_at":      lastUsedAtOut,
 				"total_requests":    totalReqs,
 				"created_at":        createdAt,
-				"created_by":        createdByUsername,
+				"created_by":        createdByUsername.String,
 			})
 		}
 
@@ -232,6 +250,7 @@ func DeleteAPIKey(database *sql.DB) gin.HandlerFunc {
 			c.AbortWithError(http.StatusInternalServerError, model.NewInternal("Failed to delete API key", err))
 			return
 		}
+		middleware.RemoveRateLimiter(id)
 
 		c.JSON(http.StatusOK, gin.H{"message": "API key deleted"})
 	}
@@ -243,7 +262,7 @@ func ResetAPIKey(database *sql.DB) gin.HandlerFunc {
 		id, _ := strconv.Atoi(idStr)
 
 		key := GenerateAPIKey()
-		keyHash := hex.EncodeToString([]byte(key))
+		keyHash := hashAPIKey(key)
 		keyPrefix := key[:8]
 
 		_, err := database.Exec("UPDATE api_keys SET key_hash = $1, key_prefix = $2 WHERE id = $3", keyHash, keyPrefix, id)

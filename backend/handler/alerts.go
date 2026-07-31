@@ -18,7 +18,7 @@ func ListAlerts(database *sql.DB) gin.HandlerFunc {
 		isAdmin := db.IsUserAdmin(database, userID)
 		alerts, err := db.GetAllAlerts(database, isAdmin, userID)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternalKey("alerts.listFailed", err))
+			middleware.HandleError(c, model.NewInternalKey("alerts.listFailed", "Failed to list alert rules", err))
 			return
 		}
 		c.JSON(http.StatusOK, alerts)
@@ -30,7 +30,7 @@ func CreateAlert(engine *alertengine.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req model.AlertRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
 			return
 		}
 
@@ -38,7 +38,7 @@ func CreateAlert(engine *alertengine.Engine) gin.HandlerFunc {
 		// model.AdminOnlyRuleTypes) from non-admins in the UI - this is the
 		// actual enforcement, since the API can be called directly.
 		if model.IsAdminOnlyRuleType(req.RuleType) && !db.IsUserAdmin(database, c.GetInt64("user_id")) {
-			middleware.HandleError(c, model.NewForbiddenKey("alerts.adminOnlyCreate", nil))
+			middleware.HandleError(c, model.NewForbiddenKey("alerts.adminOnlyCreate", "Only admins can create alert rules", nil))
 			return
 		}
 
@@ -49,7 +49,7 @@ func CreateAlert(engine *alertengine.Engine) gin.HandlerFunc {
 
 		alert, err := db.CreateAlert(database, req, createdBy)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternalKey("alerts.createFailed", err))
+			middleware.HandleError(c, model.NewInternalKey("alerts.createFailed", "Failed to create alert rule", err))
 			return
 		}
 		engine.Reload()
@@ -62,13 +62,13 @@ func UpdateAlert(engine *alertengine.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequestKey("error.invalidID", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidID", "Invalid ID", nil))
 			return
 		}
 
 		var req model.AlertRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
 			return
 		}
 
@@ -76,17 +76,17 @@ func UpdateAlert(engine *alertengine.Engine) gin.HandlerFunc {
 		// from touching an existing admin-only rule at all, since RuleType
 		// is required on every update (full-replace semantics, not partial).
 		if model.IsAdminOnlyRuleType(req.RuleType) && !db.IsUserAdmin(database, c.GetInt64("user_id")) {
-			middleware.HandleError(c, model.NewForbiddenKey("alerts.adminOnlyModify", nil))
+			middleware.HandleError(c, model.NewForbiddenKey("alerts.adminOnlyModify", "Only admins can modify this alert rule", nil))
 			return
 		}
 
 		alert, err := db.UpdateAlert(database, id, req)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				middleware.HandleError(c, model.NewNotFoundKey("alerts.notFound", nil))
+				middleware.HandleError(c, model.NewNotFoundKey("alerts.notFound", "Alert rule not found", nil))
 				return
 			}
-			middleware.HandleError(c, model.NewInternalKey("alerts.updateFailed", err))
+			middleware.HandleError(c, model.NewInternalKey("alerts.updateFailed", "Failed to update alert rule", err))
 			return
 		}
 		engine.Reload()
@@ -99,12 +99,12 @@ func DeleteAlert(engine *alertengine.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequestKey("error.invalidID", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidID", "Invalid ID", nil))
 			return
 		}
 
 		if err := db.DeleteAlert(database, id); err != nil {
-			middleware.HandleError(c, model.NewInternalKey("alerts.deleteFailed", err))
+			middleware.HandleError(c, model.NewInternalKey("alerts.deleteFailed", "Failed to delete alert rule", err))
 			return
 		}
 		engine.Reload()

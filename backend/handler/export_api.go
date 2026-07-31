@@ -287,18 +287,23 @@ func queryLogs(database *sql.DB, whereSQL string, args []interface{}, limit int,
 func scanLogRowsJSON(rows *sql.Rows) []gin.H {
 	var logs []gin.H
 	for rows.Next() {
-		var l gin.H
 		var tsStr string
 		var id float64
+		var hostname, severity, facility, message string
 		var fromHostIP, appName, processID, msgID, rawMessage sql.NullString
 		var parsedFields json.RawMessage
 		var matchedParsers []string
 
-		err := rows.Scan(&tsStr, &id, &l["hostname"], &fromHostIP, &appName, &processID, &msgID, &l["severity"], &l["facility"], &l["message"], &rawMessage, &parsedFields, &matchedParsers)
+		err := rows.Scan(&tsStr, &id, &hostname, &fromHostIP, &appName, &processID, &msgID, &severity, &facility, &message, &rawMessage, &parsedFields, &matchedParsers)
 		if err != nil {
 			continue
 		}
 
+		l := gin.H{}
+		l["hostname"] = hostname
+		l["severity"] = severity
+		l["facility"] = facility
+		l["message"] = message
 		l["ts"] = tsStr
 		l["id"] = id
 		l["fromhost_ip"] = fromHostIP.String

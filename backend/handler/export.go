@@ -102,7 +102,7 @@ func ExportHTML(db *sql.DB) gin.HandlerFunc {
 func writeCSVExport(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int, fields []string) {
 	rows, err := queryExportRows(c, db, whereSQL, args, limit)
 	if err != nil {
-		middleware.HandleError(c, model.NewInternalKey("error.queryFailed", err))
+		middleware.HandleError(c, model.NewInternalKey("error.queryFailed", "Query failed", err))
 		return
 	}
 	defer rows.Close()
@@ -142,7 +142,7 @@ func writeCSVExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfac
 func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int, fields []string) {
 	rows, err := queryExportRows(c, db, whereSQL, args, limit)
 	if err != nil {
-		middleware.HandleError(c, model.NewInternalKey("error.queryFailed", err))
+		middleware.HandleError(c, model.NewInternalKey("error.queryFailed", "Query failed", err))
 		return
 	}
 	defer rows.Close()

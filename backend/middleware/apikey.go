@@ -1,11 +1,13 @@
 package middleware
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,6 +17,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// hashAPIKey returns the SHA-256 digest of a plaintext API key, hex-encoded.
+// Must stay in sync with handler.hashAPIKey (the two packages can't share the
+// function directly - handler already imports middleware).
+func hashAPIKey(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
+}
 
 type APIKeyPermissions struct {
 	ExportJSON   bool `json:"export_json"`
@@ -49,7 +59,7 @@ func APIKeyAuth(database *sql.DB) gin.HandlerFunc {
 		}
 
 		keyPrefix := apiKey[:8]
-		keyHash := hex.EncodeToString([]byte(apiKey))
+		keyHash := hashAPIKey(apiKey)
 
 		row := database.QueryRow(`
 			SELECT id, key_hash, is_active, permissions, scope_filters, rate_limit_per_min, expires_at
@@ -62,9 +72,9 @@ func APIKeyAuth(database *sql.DB) gin.HandlerFunc {
 		var isActive bool
 		var permissionsJSON, scopeFiltersJSON []byte
 		var rateLimitPerMin int
-		var expiresAtNull bool
+		var expiresAt sql.NullTime
 
-		err := row.Scan(&id, &storedHash, &isActive, &permissionsJSON, &scopeFiltersJSON, &rateLimitPerMin, &expiresAtNull)
+		err := row.Scan(&id, &storedHash, &isActive, &permissionsJSON, &scopeFiltersJSON, &rateLimitPerMin, &expiresAt)
 		if err != nil {
 			c.AbortWithError(http.StatusUnauthorized, model.NewUnauthorizedKey("unauthorized", "Invalid API key", nil))
 			return
@@ -75,7 +85,7 @@ func APIKeyAuth(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		if expiresAtNull {
+		if expiresAt.Valid && expiresAt.Time.Before(time.Now()) {
 			c.AbortWithError(http.StatusUnauthorized, model.NewUnauthorizedKey("unauthorized", "API key has expired", nil))
 			return
 		}
@@ -119,14 +129,17 @@ var (
 )
 
 type RateLimiter struct {
+	mu       sync.Mutex
 	tokens   int
 	maxToken int
+	stop     chan struct{}
 }
 
 func NewRateLimiter(maxTokens int) *RateLimiter {
 	rl := &RateLimiter{
 		tokens:   maxTokens,
 		maxToken: maxTokens,
+		stop:     make(chan struct{}),
 	}
 	go rl.refill()
 	return rl
@@ -135,12 +148,21 @@ func NewRateLimiter(maxTokens int) *RateLimiter {
 func (rl *RateLimiter) refill() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		rl.tokens = rl.maxToken
+	for {
+		select {
+		case <-ticker.C:
+			rl.mu.Lock()
+			rl.tokens = rl.maxToken
+			rl.mu.Unlock()
+		case <-rl.stop:
+			return
+		}
 	}
 }
 
 func (rl *RateLimiter) Allow() bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
 	if rl.tokens > 0 {
 		rl.tokens--
 		return true
@@ -157,6 +179,18 @@ func getRateLimiter(keyID int, rateLimit int) *RateLimiter {
 	rl := NewRateLimiter(rateLimit)
 	rateLimiters[keyID] = rl
 	return rl
+}
+
+// RemoveRateLimiter stops a key's background refill goroutine and drops its
+// entry, so deleted API keys don't accumulate leaked limiters/goroutines
+// forever. Safe to call even if no limiter was ever created for keyID.
+func RemoveRateLimiter(keyID int) {
+	rateLimitersMu.Lock()
+	defer rateLimitersMu.Unlock()
+	if rl, ok := rateLimiters[keyID]; ok {
+		close(rl.stop)
+		delete(rateLimiters, keyID)
+	}
 }
 
 func CheckPermission(c *gin.Context, perm string) bool {
@@ -181,13 +215,13 @@ func ApplyScopeFilters(c *gin.Context, query string, args *[]any) (string, []any
 	if !exists {
 		return query, *args
 	}
-	f := filters.(ScopeFilters)
+	f := filters.(*ScopeFilters)
 	conds := []string{}
 	if len(f.Hostnames) > 0 {
 		placeholders := make([]string, len(f.Hostnames))
 		vals := make([]any, len(f.Hostnames))
 		for i, h := range f.Hostnames {
-			placeholders[i] = "$" + string(rune(len(*args)+i+1))
+			placeholders[i] = "$" + strconv.Itoa(len(*args)+i+1)
 			vals[i] = h
 		}
 		conds = append(conds, "host_address IN ("+strings.Join(placeholders, ",")+")")
@@ -197,7 +231,7 @@ func ApplyScopeFilters(c *gin.Context, query string, args *[]any) (string, []any
 		placeholders := make([]string, len(f.Severities))
 		vals := make([]any, len(f.Severities))
 		for i, s := range f.Severities {
-			placeholders[i] = "$" + string(rune(len(*args)+i+1))
+			placeholders[i] = "$" + strconv.Itoa(len(*args)+i+1)
 			vals[i] = s
 		}
 		conds = append(conds, "severity IN ("+strings.Join(placeholders, ",")+")")
