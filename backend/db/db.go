@@ -115,7 +115,7 @@ func MigrateWithLock(db *sql.DB) error {
 // schema_version table already records this value, so a forgotten bump
 // means an already-deployed instance will never see the new statement
 // applied.
-const schemaVersion = 2
+const schemaVersion = 3
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -443,6 +443,21 @@ func runSchemaMigration(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='relay_certificates' AND column_name='expires_at') THEN ALTER TABLE relay_certificates ADD COLUMN expires_at TIMESTAMPTZ; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='in_app_notifications' AND column_name='alert_rule_type') THEN ALTER TABLE in_app_notifications ADD COLUMN alert_rule_type VARCHAR(50) DEFAULT ''; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='in_app_notifications' AND column_name='target_user_ids') THEN ALTER TABLE in_app_notifications ADD COLUMN target_user_ids INT[]; END IF; END $$`,
+		`CREATE TABLE IF NOT EXISTS api_keys (
+			id SERIAL PRIMARY KEY,
+			name VARCHAR(255) NOT NULL,
+			key_hash VARCHAR(128) NOT NULL UNIQUE,
+			key_prefix VARCHAR(8) NOT NULL,
+			permissions JSONB NOT NULL DEFAULT '{"export_json":false,"export_parsed":false,"view_stats":false}',
+			scope_filters JSONB DEFAULT NULL,
+			is_active BOOLEAN DEFAULT TRUE,
+			rate_limit_per_min INTEGER DEFAULT 60,
+			expires_at TIMESTAMPTZ DEFAULT NULL,
+			last_used_at TIMESTAMPTZ DEFAULT NULL,
+			total_requests BIGINT DEFAULT 0,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+		)`,
 	}
 
 	for _, stmt := range statements {

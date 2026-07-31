@@ -1106,9 +1106,62 @@ export function streamNotifications(onNotification: (n: InAppNotification) => vo
 		}
 	}
 
-	connect()
-	return () => {
-		stopped = true
-		controller.abort()
-	}
+  connect()
+  return () => {
+    stopped = true
+    controller.abort()
+  }
+}
+
+// API Keys
+
+export interface APIKey {
+  id: number
+  name: string
+  keyPrefix: string
+  permissions: Record<string, boolean>
+  scope_filters: { hostnames?: string[]; severities?: string[] } | null
+  is_active: boolean
+  rate_limit_per_min: number
+  expires_at: string | null
+  last_used_at: string | null
+  total_requests: number
+  created_at: string
+  created_by: string
+}
+
+export async function listAPIKeys(): Promise<APIKey[]> {
+  const res = await api.get('/admin/api-keys')
+  return res.data.data
+}
+
+export async function createAPIKey(body: {
+  name: string
+  permissions: Record<string, boolean>
+  scope_filters: { hostnames?: string[]; severities?: string[] } | null
+  rate_limit_per_min: number
+  ttl_days: number
+}): Promise<{ key: string; keyPrefix: string }> {
+  const res = await api.post('/admin/api-keys', body)
+  return res.data
+}
+
+export async function updateAPIKey(id: number, body: {
+  name?: string
+  permissions?: Record<string, boolean>
+  scope_filters?: { hostnames?: string[]; severities?: string[] } | null
+  is_active?: boolean
+  rate_limit_per_min?: number
+  ttl_days?: number
+}): Promise<void> {
+  await api.put(`/admin/api-keys/${id}`, body)
+}
+
+export async function deleteAPIKey(id: number): Promise<void> {
+  await api.delete(`/admin/api-keys/${id}`)
+}
+
+export async function resetAPIKey(id: number): Promise<{ key: string; keyPrefix: string }> {
+  const res = await api.post(`/admin/api-keys/${id}/reset`)
+  return res.data
 }

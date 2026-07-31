@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip } from 'antd'
-import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
-import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary } from '../services/api'
+import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PlusOutlined, CopyOutlined, KeyOutlined } from '@ant-design/icons'
+import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey } from '../services/api'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
 import { useAuth } from '../services/auth'
@@ -63,6 +63,14 @@ export default function Admin() {
   const [auditDetailRecord, setAuditDetailRecord] = useState<AuditLog | null>(null)
   const [activeTab, setActiveTab] = useState('users')
   const tabCacheRef = useRef<Map<string, { loadedAt: number }>>(new Map())
+
+  // API Keys state
+  const [apiKeys, setApiKeys] = useState<APIKey[]>([])
+  const [apiKeysLoading, setApiKeysLoading] = useState(false)
+  const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false)
+  const [apiKeyEditing, setApiKeyEditing] = useState<APIKey | null>(null)
+  const [apiKeyForm] = Form.useForm()
+  const [newKeyDisplay, setNewKeyDisplay] = useState<string | null>(null)
 
   const loadSettings = async () => {
     try {
@@ -225,6 +233,87 @@ await testLDAPConnection({
     }
   }
 
+  const loadAPIKeys = async () => {
+    setApiKeysLoading(true)
+    try {
+      const data = await listAPIKeys()
+      setApiKeys(data)
+    } catch {
+      message.error(t('admin.apiKeysLoadFailed'))
+    } finally {
+      setApiKeysLoading(false)
+    }
+  }
+
+  const handleCreateAPIKey = async () => {
+    const values = apiKeyForm.getFieldsValue()
+    try {
+      const result = await createAPIKey(values)
+      setNewKeyDisplay(result.key)
+      message.success(t('admin.apiKeyCreated'))
+      apiKeyForm.resetFields()
+      loadAPIKeys()
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, t('admin.apiKeyCreateFailed')))
+    }
+  }
+
+  const handleUpdateAPIKey = async () => {
+    if (!apiKeyEditing) return
+    const values = apiKeyForm.getFieldsValue()
+    try {
+      await updateAPIKey(apiKeyEditing.id, values)
+      message.success(t('admin.apiKeyUpdated'))
+      setApiKeyModalOpen(false)
+      setApiKeyEditing(null)
+      apiKeyForm.resetFields()
+      loadAPIKeys()
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, t('admin.apiKeyUpdateFailed')))
+    }
+  }
+
+  const handleDeleteAPIKey = async (id: number) => {
+    try {
+      await deleteAPIKey(id)
+      message.success(t('admin.apiKeyDeleted'))
+      loadAPIKeys()
+    } catch {
+      message.error(t('admin.apiKeyDeleteFailed'))
+    }
+  }
+
+  const handleResetAPIKey = async (id: number) => {
+    try {
+      const result = await resetAPIKey(id)
+      setNewKeyDisplay(result.key)
+      message.success(t('admin.apiKeyReset'))
+      loadAPIKeys()
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, t('admin.apiKeyResetFailed')))
+    }
+  }
+
+  const openCreateKeyModal = () => {
+    setApiKeyEditing(null)
+    apiKeyForm.resetFields()
+    apiKeyForm.setFieldsValue({ ttl_days: 30, rate_limit_per_min: 60 })
+    setApiKeyModalOpen(true)
+  }
+
+  const openEditKeyModal = (key: APIKey) => {
+    setApiKeyEditing(key)
+    apiKeyForm.setFieldsValue({
+      name: key.name,
+      permissions: key.permissions || {},
+      scope_filters: key.scope_filters || null,
+      is_active: key.is_active,
+      rate_limit_per_min: key.rate_limit_per_min,
+      ttl_days: key.expires_at ? Math.max(0, Math.ceil((new Date(key.expires_at).getTime() - Date.now()) / 86400000)) : 0,
+    })
+    setApiKeyModalOpen(true)
+  }
+
   const handleClearSlowQueries = async () => {
     try {
       await clearSlowQueries()
@@ -274,6 +363,7 @@ await testLDAPConnection({
         await loadAuditLogs(0)
         getUserDirectory().then(setUserDirectory).catch(() => { /* filter falls back to no options */ })
         break
+      case 'api_keys': await loadAPIKeys(); break
     }
     tabCacheRef.current.set(tab, { loadedAt: Date.now() })
   }
@@ -1134,7 +1224,137 @@ const handleCleanup = async () => {
                   }}
                   onChange={(pag) => { if (pag.current) loadAuditLogs((pag.current - 1) * 50) }}
                   tableLayout="fixed"
+                  scroll={{ x: 'max-content'                   }}
+                />
+              </Card>
+            ),
+          },
+          {
+            key: 'api_keys',
+            label: t('admin.apiKeys'),
+            children: (
+              <Card
+                title={t('admin.apiKeysTitle')}
+                extra={
+                  <Button type="primary" icon={<PlusOutlined />} onClick={openCreateKeyModal}>
+                    {t('admin.createApiKey')}
+                  </Button>
+                }
+              >
+                <Table
+                  loading={apiKeysLoading}
+                  rowKey="id"
+                  dataSource={apiKeys}
+                  pagination={false}
+                  tableLayout="fixed"
                   scroll={{ x: 'max-content' }}
+                  columns={[
+                    {
+                      title: t('admin.name'),
+                      dataIndex: 'name',
+                      key: 'name',
+                      width: 150,
+                    },
+                    {
+                      title: t('admin.keyPrefix'),
+                      dataIndex: 'keyPrefix',
+                      key: 'keyPrefix',
+                      width: 120,
+                      render: (v: string) => <Tag>{v}</Tag>,
+                    },
+                    {
+                      title: t('admin.permissions'),
+                      dataIndex: 'permissions',
+                      key: 'permissions',
+                      width: 200,
+                      render: (p: Record<string, boolean>) => (
+                        <Space wrap>
+                          {p?.export_json && <Tag color="blue">{t('admin.permExportJson')}</Tag>}
+                          {p?.export_parsed && <Tag color="purple">{t('admin.permExportParsed')}</Tag>}
+                          {p?.view_stats && <Tag color="cyan">{t('admin.permViewStats')}</Tag>}
+                        </Space>
+                      ),
+                    },
+                    {
+                      title: t('admin.scopeFilters'),
+                      dataIndex: 'scope_filters',
+                      key: 'scope_filters',
+                      width: 200,
+                      render: (sf: { hostnames?: string[]; severities?: string[] }) => {
+                        if (!sf) return <span>-</span>
+                        const parts: string[] = []
+                        if (sf.hostnames?.length) parts.push(t('admin.scopeHosts', { count: sf.hostnames.length }))
+                        if (sf.severities?.length) parts.push(t('admin.scopeSevs', { count: sf.severities.length }))
+                        return parts.length ? <Tag>{parts.join(', ')}</Tag> : <span>-</span>
+                      },
+                    },
+                    {
+                      title: t('admin.rateLimit'),
+                      dataIndex: 'rate_limit_per_min',
+                      key: 'rate_limit_per_min',
+                      width: 100,
+                      render: (v: number) => `${v}/min`,
+                    },
+                    {
+                      title: t('admin.expires'),
+                      dataIndex: 'expires_at',
+                      key: 'expires_at',
+                      width: 150,
+                      render: (v: string | null) => v ? new Date(v).toLocaleDateString() : <Tag color="green">{t('admin.never')}</Tag>,
+                    },
+                    {
+                      title: t('admin.active'),
+                      dataIndex: 'is_active',
+                      key: 'is_active',
+                      width: 80,
+                      render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? t('common.yes') : t('common.no')}</Tag>,
+                    },
+                    {
+                      title: t('admin.createdBy'),
+                      dataIndex: 'created_by',
+                      key: 'created_by',
+                      width: 120,
+                    },
+                    {
+                      title: t('admin.usage'),
+                      dataIndex: 'total_requests',
+                      key: 'total_requests',
+                      width: 100,
+                      render: (v: number) => v.toLocaleString(),
+                    },
+                    {
+                      title: t('common.actions'),
+                      key: 'actions',
+                      width: 200,
+                      render: (_: unknown, record: APIKey) => (
+                        <Space>
+                          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEditKeyModal(record)}>
+                            {t('common.edit')}
+                          </Button>
+                          <Popconfirm
+                            title={t('admin.revokeConfirm')}
+                            onConfirm={() => handleDeleteAPIKey(record.id)}
+                            okText={t('common.yes')}
+                            cancelText={t('common.no')}
+                          >
+                            <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+                              {t('admin.revoke')}
+                            </Button>
+                          </Popconfirm>
+                          <Popconfirm
+                            title={t('admin.resetConfirm')}
+                            onConfirm={() => handleResetAPIKey(record.id)}
+                            okText={t('common.yes')}
+                            cancelText={t('common.no')}
+                          >
+                            <Button type="link" size="small" icon={<RestOutlined />}>
+                              {t('admin.regenerate')}
+                            </Button>
+                          </Popconfirm>
+                        </Space>
+                      ),
+                    },
+                  ]}
                 />
               </Card>
             ),
@@ -1182,6 +1402,83 @@ const handleCleanup = async () => {
             </Descriptions>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        title={apiKeyEditing ? t('admin.editApiKey') : t('admin.createApiKey')}
+        open={apiKeyModalOpen}
+        onCancel={() => { setApiKeyModalOpen(false); setApiKeyEditing(null); apiKeyForm.resetFields() }}
+        onOk={apiKeyEditing ? handleUpdateAPIKey : handleCreateAPIKey}
+        okText={apiKeyEditing ? t('common.save') : t('admin.createApiKey')}
+        cancelText={t('common.cancel')}
+        width={{ sm: '90%', md: 600 }}
+      >
+        <Form form={apiKeyForm} layout="vertical">
+          <Form.Item name="name" label={t('admin.name')} rules={[{ required: true, message: t('admin.nameRequired') }]}>
+            <Input placeholder="My API Key" />
+          </Form.Item>
+          <Form.Item name="permissions" label={t('admin.permissions')}>
+            <Space direction="vertical">
+              <label><input type="checkbox" /> {t('admin.permExportJson')}</label>
+              <label><input type="checkbox" /> {t('admin.permExportParsed')}</label>
+              <label><input type="checkbox" /> {t('admin.permViewStats')}</label>
+            </Space>
+          </Form.Item>
+          <Form.Item name="scope_filters" label={t('admin.scopeFilters')} tooltip={t('admin.scopeFiltersTooltip')}>
+            <Space direction="vertical">
+              <Form.Item label={t('admin.hostnames')} noStyle>
+                <Input placeholder={t('admin.hostnamesPlaceholder')} />
+              </Form.Item>
+              <Form.Item label={t('admin.severities')} noStyle>
+                <Input placeholder={t('admin.severitiesPlaceholder')} />
+              </Form.Item>
+            </Space>
+          </Form.Item>
+          <Form.Item name="rate_limit_per_min" label={t('admin.rateLimit')} rules={[{ required: true, message: t('admin.rateLimitRequired') }]}>
+            <InputNumber min={1} max={10000} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="ttl_days" label={t('admin.ttlDays')}>
+            <Select>
+              <Select.Option value={7}>7 {t('admin.days')}</Select.Option>
+              <Select.Option value={30}>30 {t('admin.days')}</Select.Option>
+              <Select.Option value={90}>90 {t('admin.days')}</Select.Option>
+              <Select.Option value={0}>{t('admin.never')}</Select.Option>
+            </Select>
+          </Form.Item>
+          {!apiKeyEditing && (
+            <Form.Item name="is_active" label={t('admin.active')} valuePropName="checked" initialValue={true}>
+              <Switch />
+            </Form.Item>
+          )}
+          {apiKeyEditing && (
+            <Form.Item name="is_active" label={t('admin.active')} valuePropName="checked">
+              <Switch />
+            </Form.Item>
+          )}
+        </Form>
+      </Modal>
+
+      <Modal
+        title={t('admin.apiKeyGenerated')}
+        open={!!newKeyDisplay}
+        onCancel={() => setNewKeyDisplay(null)}
+        onOk={() => setNewKeyDisplay(null)}
+        okText={t('common.close')}
+        width={{ sm: '90%', md: 500 }}
+      >
+        <p>{t('admin.apiKeyCopyWarning')}</p>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <Input value={newKeyDisplay || ''} readOnly style={{ flex: 1 }} />
+          <Button
+            icon={<CopyOutlined />}
+            onClick={() => {
+              navigator.clipboard.writeText(newKeyDisplay || '')
+              message.success(t('admin.apiKeyCopied'))
+            }}
+          >
+            {t('admin.copy')}
+          </Button>
+        </div>
       </Modal>
     </div>
   )
