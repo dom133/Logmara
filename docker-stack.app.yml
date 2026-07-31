@@ -164,6 +164,14 @@ services:
 
   api:
     image: ${REGISTRY:?set REGISTRY to your image registry}/logmara-api:${TAG:-latest}
+    # Must be >= main.go's srv.Shutdown() context timeout (30s). Without this,
+    # Docker's default 10s stop_grace_period SIGKILLs the container while it's
+    # still draining in-flight requests (on `docker service update`'s
+    # stop-first rollout, or a task being rescheduled after a node failure) -
+    # any response whose body hadn't finished writing yet arrives at nginx/the
+    # browser truncated mid-stream, which surfaces as a JSON parse error on
+    # whatever request was unlucky enough to be in flight at that moment.
+    stop_grace_period: 35s
     environment:
       TZ: UTC
       # Every credential below is mounted as a Docker Swarm secret (see the

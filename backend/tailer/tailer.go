@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -229,7 +231,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 				slog.Error("final flush error", "error", err)
 			} else {
 				flushedPos = batchStartPos
-				savePosition(posFile, flushedPos)
+				savePosition(posFile, flushedPos, filePath)
 				alerts.EvaluateBatch(db, entries)
 			}
 		}
@@ -273,7 +275,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			} else {
 				filePos = 0
 				flushedPos = 0
-				savePosition(posFile, 0)
+				savePosition(posFile, 0, filePath)
 				lastCompaction = time.Now()
 			}
 		}
@@ -379,7 +381,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 						slog.Error("flush error", "error", err)
 					} else {
 						flushedPos = curFilePos
-						savePosition(posFile, flushedPos)
+						savePosition(posFile, flushedPos, filePath)
 						alerts.EvaluateBatch(db, entries)
 					}
 				}
@@ -418,7 +420,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 				slog.Error("flush error", "error", err)
 			} else {
 				flushedPos = batchStartPos
-				savePosition(posFile, flushedPos)
+				savePosition(posFile, flushedPos, filePath)
 				alerts.EvaluateBatch(db, entries)
 			}
 			entries = entries[:0]
@@ -636,32 +638,96 @@ func nullStr(s string) *string {
 	return &s
 }
 
-func savePosition(path string, pos int64) {
-	if err := os.WriteFile(path, []byte(strconv.FormatInt(pos, 10)), 0644); err != nil {
+// posFingerprintWindow is how many bytes immediately before a saved position
+// get hashed into that position's fingerprint (see positionFingerprint) -
+// large enough to make an accidental hash collision against unrelated
+// content practically impossible, small enough that computing it on every
+// save/load is unnoticeable next to the read/write work already happening
+// around it.
+const posFingerprintWindow = 256
+
+// positionFingerprint hashes the bytes immediately before pos in filePath, so
+// a saved position can be verified against the file's actual current content
+// before being trusted - not just checked against the file's current size.
+// compactFile rewrites the shared log file in place (truncate, then write
+// the still-unflushed tail back); a crash between those two steps (Swarm
+// killing the container on a node failure or a rolling update, see the
+// stop_grace_period comment on the api service in docker-stack.app.yml)
+// leaves it truncated or partially rewritten. If rsyslog - a separate,
+// uncoordinated process/container still appending to the same file over NFS,
+// see rsyslog/syslog.conf's omfile action - keeps growing it afterward, the
+// file can coincidentally grow back past the stale saved position, which
+// would let the old "pos <= file size" check alone wrongly trust it even
+// though the content actually there now is completely different. Position 0
+// has nothing before it, so it's always trivially valid regardless of
+// content - loadStartPosition's DB fallback already treats "start of file"
+// as always safe.
+func positionFingerprint(filePath string, pos int64) (fingerprint string, ok bool) {
+	if pos <= 0 {
+		return "", true
+	}
+	f, err := os.Open(filePath)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	start := pos - posFingerprintWindow
+	if start < 0 {
+		start = 0
+	}
+	buf := make([]byte, pos-start)
+	if _, err := f.ReadAt(buf, start); err != nil {
+		return "", false
+	}
+	sum := sha256.Sum256(buf)
+	return hex.EncodeToString(sum[:]), true
+}
+
+func savePosition(path string, pos int64, filePath string) {
+	fp, ok := positionFingerprint(filePath, pos)
+	if !ok {
+		slog.Warn("could not fingerprint position for save, next restart will fall back to DB if needed", "pos", pos)
+	}
+	if err := os.WriteFile(path, []byte(strconv.FormatInt(pos, 10)+":"+fp), 0644); err != nil {
 		slog.Error("save position error", "error", err)
 	}
 }
 
-func loadPosition(path string) (int64, bool) {
+// loadPosition parses the "pos:fingerprint" format savePosition writes.
+// ok is false both when the file is missing/malformed and when it's in the
+// old bare-integer format written before fingerprinting existed (no ':') -
+// either way there's no fingerprint to verify the position against, so the
+// caller can't safely trust it and falls back to the DB-based scan instead.
+// That fallback only costs a slower single startup right after upgrading to
+// this format; every restart after that reads the new format.
+func loadPosition(path string) (pos int64, fingerprint string, ok bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, false
+		return 0, "", false
 	}
-	pos, err := strconv.ParseInt(string(data), 10, 64)
+	raw := strings.TrimSpace(string(data))
+	sep := strings.IndexByte(raw, ':')
+	if sep < 0 {
+		return 0, "", false
+	}
+	pos, err = strconv.ParseInt(raw[:sep], 10, 64)
 	if err != nil {
-		return 0, false
+		return 0, "", false
 	}
-	return pos, true
+	return pos, raw[sep+1:], true
 }
 
 func loadStartPosition(db *sql.DB, filePath, posFile string) (filePos, flushedPos int64) {
-	if pos, ok := loadPosition(posFile); ok {
+	if pos, fp, ok := loadPosition(posFile); ok {
 		if f, err := os.Open(filePath); err == nil {
 			stat, _ := f.Stat()
 			f.Close()
 			if pos <= stat.Size() {
-				slog.Info("restored position from file", "pos", pos)
-				return pos, pos
+				if curFp, fpOK := positionFingerprint(filePath, pos); fpOK && curFp == fp {
+					slog.Info("restored position from file", "pos", pos)
+					return pos, pos
+				}
+				slog.Warn("saved position's content no longer matches the file (likely an interrupted compaction), falling back to DB", "pos", pos)
 			}
 		}
 		slog.Info("saved position invalid, falling back to DB")
