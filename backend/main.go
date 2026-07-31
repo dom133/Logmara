@@ -543,7 +543,7 @@ func main() {
 	// everything else gated on sharedClient above.
 	logRate := sharedstate.NewRateCounter(sharedClient, "lograte")
 	handler.SetLogRateCounter(logRate)
-	go tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine, logRate)
+	go tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine, logRate, handler.ReopenRsyslogLogFile)
 
 	// Device silence checks run independently on every replica: the read
 	// (mv_device_stats) is cheap and the per-rule-per-device cooldown key in
