@@ -45,6 +45,7 @@ export default function Admin() {
   const [purgeModalOpen, setPurgeModalOpen] = useState(false)
   const [pauseDuringPurge, setPauseDuringPurge] = useState(false)
   const [purging, setPurging] = useState(false)
+  const [cleaning, setCleaning] = useState(false)
   const [slowQueries, setSlowQueries] = useState<SlowQueryRecord[]>([])
   const [slowQueriesLoading, setSlowQueriesLoading] = useState(false)
   const [sslUploading, setSslUploading] = useState(false)
@@ -404,11 +405,14 @@ const handleSaveSettings = async () => {
   }
 
 const handleCleanup = async () => {
+    setCleaning(true)
     try {
       const result = await cleanupLogs()
       message.success(t('admin.logsDeleted', { count: result.deleted_count }))
     } catch (e: unknown) {
       message.error(getErrorMessage(e, t('admin.cleanupFailed')))
+    } finally {
+      setCleaning(false)
     }
   }
 
@@ -623,7 +627,7 @@ const handleCleanup = async () => {
                     <Button type="primary" htmlType="submit">
                       {t('admin.saveSettings')}
                     </Button>
-                    <Button danger icon={<ThunderboltOutlined />} onClick={handleCleanup}>
+                    <Button danger icon={<ThunderboltOutlined />} onClick={handleCleanup} disabled={cleaning} loading={cleaning}>
                       {t('admin.cleanOldLogs')}
                     </Button>
                     <Button danger type="primary" onClick={() => setPurgeModalOpen(true)}>
