@@ -254,6 +254,7 @@
     "apiKeys": "API Keys",
     "apiKeysTitle": "API Key Management",
     "createApiKey": "Create API Key",
+    "name": "Name",
     "editApiKey": "Edit API Key",
     "apiKeyCreated": "API key created",
     "apiKeyUpdated": "API key updated",

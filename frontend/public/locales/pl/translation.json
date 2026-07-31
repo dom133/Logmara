@@ -254,6 +254,7 @@
     "apiKeys": "Klucze API",
     "apiKeysTitle": "Zarządzanie kluczami API",
     "createApiKey": "Stwórz klucz API",
+    "name": "Nazwa",
     "editApiKey": "Edytuj klucz API",
     "apiKeyCreated": "Klucz API utworzony",
     "apiKeyUpdated": "Klucz API zaktualizowany",
