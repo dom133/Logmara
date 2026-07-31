@@ -31,7 +31,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const appVersion = "0.0.1"
+const appVersion = "0.0.2"
 
 func versionHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"version": appVersion})
