@@ -317,14 +317,6 @@ services:
   # for HTTP traffic instead of only a failover target.
   haproxy-app:
     image: haproxy:2.9-alpine
-    environment:
-      # haproxy-app.cfg's server-template lines reference these directly
-      # (HAProxy expands ${VAR} in its own config file from the process
-      # environment) - keeps the frontend_http/frontend_https/api_http pool
-      # sizes in lockstep with the actual replica counts below without
-      # having to hand-edit haproxy-app.cfg whenever those change.
-      FRONTEND_REPLICAS: ${FRONTEND_REPLICAS:-2}
-      API_REPLICAS: ${API_REPLICAS:-2}
     configs:
       - source: haproxy_app_cfg
         target: /usr/local/etc/haproxy/haproxy.cfg
