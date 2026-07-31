@@ -15,7 +15,10 @@ FROM nginx:alpine
 RUN apk add --no-cache openssl busybox-extras
 
 COPY --from=builder /app/dist /usr/share/nginx/html
-COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+# .template suffix, rendered by entrypoint.sh (envsubst on $API_UPSTREAM
+# only) at container start, not by nginx's own image-provided templating -
+# that would substitute the file's other, legitimate nginx $-variables too.
+COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf.template
 COPY frontend/docker/entrypoint.sh /entrypoint.sh
 COPY frontend/docker/healthcheck.sh /healthcheck.sh
 COPY frontend/docker/reload-sidecar/cgi-bin/reload.sh /srv/reload-sidecar/cgi-bin/reload.sh

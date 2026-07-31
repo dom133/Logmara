@@ -269,6 +269,12 @@ services:
 
   frontend:
     image: ${REGISTRY:?set REGISTRY to your image registry}/logmara-frontend:${TAG:-latest}
+    environment:
+      # Routes /api/ through haproxy-app's api_http listener instead of
+      # nginx.conf's plain-docker-compose default (api:8080 directly) - see
+      # haproxy/haproxy-app.cfg for the health-checked load balancing this
+      # buys across every api task.
+      API_UPSTREAM: http://haproxy-app:8090
     volumes:
       - log_data:/data
     networks:
@@ -311,6 +317,14 @@ services:
   # for HTTP traffic instead of only a failover target.
   haproxy-app:
     image: haproxy:2.9-alpine
+    environment:
+      # haproxy-app.cfg's server-template lines reference these directly
+      # (HAProxy expands ${VAR} in its own config file from the process
+      # environment) - keeps the frontend_http/frontend_https/api_http pool
+      # sizes in lockstep with the actual replica counts below without
+      # having to hand-edit haproxy-app.cfg whenever those change.
+      FRONTEND_REPLICAS: ${FRONTEND_REPLICAS:-2}
+      API_REPLICAS: ${API_REPLICAS:-2}
     configs:
       - source: haproxy_app_cfg
         target: /usr/local/etc/haproxy/haproxy.cfg
@@ -320,6 +334,16 @@ services:
         mode: host
       - target: 443
         published: ${FRONTEND_HTTPS_PORT:-443}
+        mode: host
+      # Stats page (haproxy/haproxy-app.cfg's `listen stats`) - published
+      # per-node via mode: host, same as 80/443, so http://<node-ip>:7001/
+      # shows that specific node's view (which frontend-*/api-* slots it
+      # sees as UP). No `stats auth` is set, so anyone who can reach this
+      # port sees internal service topology (task names/IPs) - firewall
+      # ${HAPROXY_APP_STATS_PORT:-7001} to trusted/admin source IPs only if
+      # the edge nodes are reachable from anywhere untrusted.
+      - target: 7001
+        published: ${HAPROXY_APP_STATS_PORT:-7001}
         mode: host
     networks:
       - syslog_net
