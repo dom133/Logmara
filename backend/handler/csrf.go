@@ -34,7 +34,7 @@ func CSRFRequired() gin.HandlerFunc {
 		cookieToken, err := c.Cookie(CSRFTokenCookieName)
 
 		if err != nil || cookieToken == "" || headerToken == "" || headerToken != cookieToken {
-			c.JSON(http.StatusForbidden, gin.H{"error": "CSRF token mismatch"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "CSRF token mismatch", "error_key": "auth.csrfMismatch"})
 			c.Abort()
 			return
 		}

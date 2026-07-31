@@ -38,6 +38,10 @@ func ErrorHandler() gin.HandlerFunc {
 					"error": appErr.Message,
 				}
 
+				if appErr.ErrorKey != "" {
+					response["error_key"] = appErr.ErrorKey
+				}
+
 				if appErr.Details != "" {
 					response["details"] = appErr.Details
 				}
@@ -55,6 +59,10 @@ func HandleError(c *gin.Context, err error) {
 	if ok := errors.As(err, &appErr); ok {
 		response := gin.H{
 			"error": appErr.Message,
+		}
+
+		if appErr.ErrorKey != "" {
+			response["error_key"] = appErr.ErrorKey
 		}
 
 		if appErr.Details != "" {
@@ -75,6 +83,7 @@ func HandleError(c *gin.Context, err error) {
 	)
 
 	c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-		"error": "Internal server error",
+		"error":     "Internal server error",
+		"error_key": "error.internalServerError",
 	})
 }

@@ -55,7 +55,7 @@ func CheckInitializedStandalone() gin.HandlerFunc {
 func GetDbConfig(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if database != nil && db.GetSetting(database, "is_initialized", "false") == "true" {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Application already initialized"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "Application already initialized", "error_key": "init.alreadyInitialized"})
 			return
 		}
 		dsn := util.ResolveDatabaseURL()

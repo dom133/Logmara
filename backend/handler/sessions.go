@@ -18,7 +18,7 @@ func ListSessions(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid, ok := extractUserID(c)
 		if !ok {
-			middleware.HandleError(c, model.NewAppError(http.StatusUnauthorized, "Authentication required", nil))
+			middleware.HandleError(c, model.NewUnauthorizedKey("auth.required", "Authentication required", nil))
 			return
 		}
 
@@ -26,7 +26,7 @@ func ListSessions(database *sql.DB) gin.HandlerFunc {
 
 		sessions, err := db.ListUserSessions(database, uid)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to list sessions", err))
+			middleware.HandleError(c, model.NewInternalKey("sessions.listFailed", "Failed to list sessions", err))
 			return
 		}
 
@@ -47,22 +47,22 @@ func RevokeSession(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid, ok := extractUserID(c)
 		if !ok {
-			middleware.HandleError(c, model.NewAppError(http.StatusUnauthorized, "Authentication required", nil))
+			middleware.HandleError(c, model.NewUnauthorizedKey("auth.required", "Authentication required", nil))
 			return
 		}
 
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("sessions.invalidId", "invalid id", nil))
 			return
 		}
 
 		if err := db.RevokeSession(database, uid, id); err != nil {
 			if err == sql.ErrNoRows {
-				middleware.HandleError(c, model.NewNotFound("Session not found", nil))
+				middleware.HandleError(c, model.NewNotFoundKey("sessions.notFound", "Session not found", nil))
 				return
 			}
-			middleware.HandleError(c, model.NewInternal("Failed to revoke session", err))
+			middleware.HandleError(c, model.NewInternalKey("sessions.revokeFailed", "Failed to revoke session", err))
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "session revoked"})

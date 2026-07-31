@@ -24,7 +24,7 @@ import (
 func RequireNotificationsEnabled(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if db.GetSetting(database, "notifications_enabled", "true") != "true" {
-			middleware.HandleError(c, model.NewForbidden("Notifications are disabled", nil))
+			middleware.HandleError(c, model.NewForbiddenKey("notifications.disabled", "Notifications are disabled", nil))
 			return
 		}
 		c.Next()
@@ -35,7 +35,7 @@ func ListNotificationChannels(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		channels, err := db.GetAllNotificationChannels(database)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to list notification channels", err))
+			middleware.HandleError(c, model.NewInternalKey("notifications.channelsListFailed", "Failed to list notification channels", err))
 			return
 		}
 		c.JSON(http.StatusOK, channels)
@@ -46,7 +46,7 @@ func CreateNotificationChannel(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req model.NotificationChannelRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
 			return
 		}
 
@@ -57,7 +57,7 @@ func CreateNotificationChannel(database *sql.DB) gin.HandlerFunc {
 
 		channel, err := db.CreateNotificationChannel(database, req, createdBy)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to create notification channel", err))
+			middleware.HandleError(c, model.NewInternalKey("notifications.channelCreateFailed", "Failed to create notification channel", err))
 			return
 		}
 		c.JSON(http.StatusCreated, channel)
@@ -77,18 +77,18 @@ func channelOwnedByCaller(c *gin.Context, database *sql.DB, id int64) (*model.No
 	channel, err := db.GetNotificationChannel(database, id)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			middleware.HandleError(c, model.NewNotFound("Notification channel not found", nil))
+			middleware.HandleError(c, model.NewNotFoundKey("notifications.channelNotFound", "Notification channel not found", nil))
 			return nil, false
 		}
-		middleware.HandleError(c, model.NewInternal("Failed to load notification channel", err))
+		middleware.HandleError(c, model.NewInternalKey("notifications.channelLoadFailed", "Failed to load notification channel", err))
 		return nil, false
 	}
 
 	if !callerCanModifyChannel(c, channel) {
 		if channel.CreatedBy != nil {
-			middleware.HandleError(c, model.NewForbidden("You can only modify notification channels you created", nil))
+			middleware.HandleError(c, model.NewForbiddenKey("notifications.modifyOwnOnly", "You can only modify notification channels you created", nil))
 		} else {
-			middleware.HandleError(c, model.NewForbidden("Only an admin can modify a channel with no recorded owner", nil))
+			middleware.HandleError(c, model.NewForbiddenKey("notifications.adminOnlyModify", "Only an admin can modify a channel with no recorded owner", nil))
 		}
 		return nil, false
 	}
@@ -120,7 +120,7 @@ func UpdateNotificationChannel(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidId", "invalid id", nil))
 			return
 		}
 
@@ -130,17 +130,17 @@ func UpdateNotificationChannel(database *sql.DB) gin.HandlerFunc {
 
 		var req model.NotificationChannelRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
 			return
 		}
 
 		channel, err := db.UpdateNotificationChannel(database, id, req)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				middleware.HandleError(c, model.NewNotFound("Notification channel not found", nil))
+				middleware.HandleError(c, model.NewNotFoundKey("notifications.channelNotFound", "Notification channel not found", nil))
 				return
 			}
-			middleware.HandleError(c, model.NewInternal("Failed to update notification channel", err))
+			middleware.HandleError(c, model.NewInternalKey("notifications.channelUpdateFailed", "Failed to update notification channel", err))
 			return
 		}
 		c.JSON(http.StatusOK, channel)
@@ -151,7 +151,7 @@ func DeleteNotificationChannel(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidId", "invalid id", nil))
 			return
 		}
 
@@ -160,7 +160,7 @@ func DeleteNotificationChannel(database *sql.DB) gin.HandlerFunc {
 		}
 
 		if err := db.DeleteNotificationChannel(database, id); err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to delete notification channel", err))
+			middleware.HandleError(c, model.NewInternalKey("notifications.channelDeleteFailed", "Failed to delete notification channel", err))
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "notification channel deleted"})
@@ -171,22 +171,22 @@ func TestNotificationChannel(database *sql.DB, hub *notifyhub.Hub) gin.HandlerFu
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidId", "invalid id", nil))
 			return
 		}
 
 		channel, err := db.GetNotificationChannel(database, id)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				middleware.HandleError(c, model.NewNotFound("Notification channel not found", nil))
+				middleware.HandleError(c, model.NewNotFoundKey("notifications.channelNotFound", "Notification channel not found", nil))
 				return
 			}
-			middleware.HandleError(c, model.NewInternal("Failed to load notification channel", err))
+		middleware.HandleError(c, model.NewInternalKey("notifications.channelLoadFailed", "Failed to load notification channel", err))
 			return
 		}
 
 		if err := notify.TestChannel(database, *channel, hub.Publish); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Test notification failed", err))
+			middleware.HandleError(c, model.NewInternalKey("notifications.testFailed", "Test notification failed", err))
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "test notification sent"})
@@ -210,7 +210,7 @@ func GetNotificationHistory(database *sql.DB) gin.HandlerFunc {
 		isAdmin := db.IsUserAdmin(database, userID)
 		entries, err := db.GetNotificationHistory(database, limit, isAdmin, userID)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to load notification history", err))
+			middleware.HandleError(c, model.NewInternalKey("notifications.historyLoadFailed", "Failed to load notification history", err))
 			return
 		}
 		c.JSON(http.StatusOK, entries)
@@ -220,7 +220,7 @@ func GetNotificationHistory(database *sql.DB) gin.HandlerFunc {
 func ClearNotificationHistory(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if err := db.ClearNotificationHistory(database); err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to clear notification history", err))
+			middleware.HandleError(c, model.NewInternalKey("notifications.historyClearFailed", "Failed to clear notification history", err))
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "notification history cleared"})
@@ -241,17 +241,17 @@ func GetNotifications(database *sql.DB) gin.HandlerFunc {
 
 		lastRead, err := db.GetLastReadID(database, userID)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to load notifications", err))
+			middleware.HandleError(c, model.NewInternalKey("notifications.loadFailed", "Failed to load notifications", err))
 			return
 		}
 		count, lastID, err := db.GetUnreadNotificationCount(database, userID, isAdmin)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to load notifications", err))
+			middleware.HandleError(c, model.NewInternalKey("notifications.loadFailed", "Failed to load notifications", err))
 			return
 		}
 		items, err := db.GetInAppNotifications(database, lastRead, 20, isAdmin, userID)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to load notifications", err))
+			middleware.HandleError(c, model.NewInternalKey("notifications.loadFailed", "Failed to load notifications", err))
 			return
 		}
 
@@ -274,12 +274,12 @@ func MarkNotificationsRead(database *sql.DB) gin.HandlerFunc {
 
 		var req MarkNotificationsReadRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
 			return
 		}
 
 		if err := db.MarkNotificationsRead(database, userID, req.LastReadID); err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to mark notifications read", err))
+			middleware.HandleError(c, model.NewInternalKey("notifications.markReadFailed", "Failed to mark notifications read", err))
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "marked read"})
@@ -294,7 +294,7 @@ func StreamNotifications(hub *notifyhub.Hub, database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		flusher, ok := c.Writer.(http.Flusher)
 		if !ok {
-			middleware.HandleError(c, model.NewInternal("Streaming unsupported", nil))
+			middleware.HandleError(c, model.NewInternalKey("notifications.streamingUnsupported", "Streaming unsupported", nil))
 			return
 		}
 

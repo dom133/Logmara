@@ -78,6 +78,13 @@ export default function Admin() {
       if (data['session_timeout_min'] !== undefined && data['session_timeout_min'] !== '') formValues['session_timeout_min'] = parseInt(data['session_timeout_min'], 10)
       if (data['security_max_failed_attempts']) formValues['security_max_failed_attempts'] = parseInt(data['security_max_failed_attempts'], 10)
       if (data['security_lockout_duration_min']) formValues['security_lockout_duration_min'] = parseInt(data['security_lockout_duration_min'], 10)
+      if (data['security_password_min_length']) formValues['security_password_min_length'] = parseInt(data['security_password_min_length'], 10)
+      if (data['security_password_max_length']) formValues['security_password_max_length'] = parseInt(data['security_password_max_length'], 10)
+      formValues['security_password_require_upper'] = data['security_password_require_upper'] === 'true'
+      formValues['security_password_require_lower'] = data['security_password_require_lower'] === 'true'
+      formValues['security_password_require_digit'] = data['security_password_require_digit'] === 'true'
+      formValues['security_password_require_special'] = data['security_password_require_special'] === 'true'
+      if (data['security_password_history_count']) formValues['security_password_history_count'] = parseInt(data['security_password_history_count'], 10)
       formValues['https_enabled'] = data['https_enabled'] === 'true'
       formValues['https_redirect'] = data['https_redirect'] === 'true'
       formValues['notifications_enabled'] = data['notifications_enabled'] === 'true'
@@ -361,6 +368,28 @@ const handleCleanup = async () => {
                     </Form.Item>
                     <Form.Item label={t('admin.lockoutDuration')} name="security_lockout_duration_min" tooltip={t('admin.lockoutDurationTooltip')}>
                       <InputNumber min={1} max={1440} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Divider orientation="left">{t('admin.passwordPolicy')}</Divider>
+                    <Form.Item label={t('admin.passwordMinLength')} name="security_password_min_length">
+                      <InputNumber min={1} max={128} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item label={t('admin.passwordMaxLength')} name="security_password_max_length">
+                      <InputNumber min={1} max={256} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item label={t('admin.passwordRequireUpper')} name="security_password_require_upper" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item label={t('admin.passwordRequireLower')} name="security_password_require_lower" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item label={t('admin.passwordRequireDigit')} name="security_password_require_digit" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item label={t('admin.passwordRequireSpecial')} name="security_password_require_special" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item label={t('admin.passwordHistoryCount')} name="security_password_history_count" tooltip={t('admin.passwordHistoryCountTooltip')}>
+                      <InputNumber min={0} max={100} style={{ width: '100%' }} />
                     </Form.Item>
                     <Divider orientation="left">{t('admin.cors')}</Divider>
 <Form.Item

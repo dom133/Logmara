@@ -272,7 +272,7 @@ func ListRelayWhitelist(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		entries, err := db.GetRelayWhitelist(database)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to list relay whitelist", err))
+			middleware.HandleError(c, model.NewInternalKey("relay.listWhitelistFailed", err))
 			return
 		}
 		c.JSON(http.StatusOK, entries)
@@ -283,14 +283,14 @@ func CreateRelayWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req model.RelayWhitelistRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", err))
 			return
 		}
 
 		actorID, actorName := actorFromContext(c)
 		entry, err := db.AddRelayWhitelistEntry(database, req.IPAddress, req.Label, nil, actorID)
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Failed to add whitelist entry (IP may already be listed)", err))
+			middleware.HandleError(c, model.NewBadRequestKey("relay.addWhitelistEntryFailed", err))
 			return
 		}
 
@@ -314,18 +314,18 @@ func DeleteRelayWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", nil))
 			return
 		}
 
 		entry, err := db.GetRelayWhitelistEntry(database, id)
 		if err != nil && err != sql.ErrNoRows {
-			middleware.HandleError(c, model.NewInternal("Failed to load whitelist entry", err))
+			middleware.HandleError(c, model.NewInternalKey("relay.loadWhitelistEntryFailed", err))
 			return
 		}
 
 		if err := db.DeleteRelayWhitelistEntry(database, id); err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to delete whitelist entry", err))
+			middleware.HandleError(c, model.NewInternalKey("relay.deleteWhitelistEntryFailed", err))
 			return
 		}
 
@@ -355,7 +355,7 @@ func ListRelayCertificates(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		certs, err := db.GetRelayCertificates(database)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to list relay certificates", err))
+			middleware.HandleError(c, model.NewInternalKey("relay.listCertificatesFailed", err))
 			return
 		}
 		c.JSON(http.StatusOK, certs)
@@ -400,7 +400,7 @@ func respondWithCertificateBundle(c *gin.Context, database *sql.DB, issued *rela
 
 	bundle, err := buildRelayBundle(database, issued, label)
 	if err != nil {
-		middleware.HandleError(c, model.NewInternal("Failed to build certificate bundle", err))
+			middleware.HandleError(c, model.NewInternalKey("relay.buildCertBundleFailed", err))
 		return
 	}
 
@@ -420,7 +420,7 @@ func CreateRelayCertificate(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req model.RelayCertificateRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", err))
 			return
 		}
 
@@ -428,12 +428,12 @@ func CreateRelayCertificate(database *sql.DB) gin.HandlerFunc {
 
 		issued, certID, err := issueRelayCertificate(database, req.Label, actorID)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to issue relay certificate", err))
+			middleware.HandleError(c, model.NewInternalKey("relay.issueCertificateFailed", err))
 			return
 		}
 
 		if _, err := db.AddRelayWhitelistEntry(database, req.IPAddress, req.Label, &certID, actorID); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Failed to whitelist relay IP - it may already be listed. If so, generate a certificate for that existing entry from the Whitelist IP tab instead.", err))
+			middleware.HandleError(c, model.NewBadRequestKey("relay.whitelistIPFailed", err))
 			return
 		}
 
@@ -455,27 +455,27 @@ func GenerateCertificateForWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", nil))
 			return
 		}
 
 		entry, err := db.GetRelayWhitelistEntry(database, id)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				middleware.HandleError(c, model.NewNotFound("Whitelist entry not found", nil))
+				middleware.HandleError(c, model.NewNotFoundKey("relay.notFound", nil))
 				return
 			}
-			middleware.HandleError(c, model.NewInternal("Failed to load whitelist entry", err))
+			middleware.HandleError(c, model.NewInternalKey("relay.loadWhitelistEntryFailed", err))
 			return
 		}
 		if entry.RelayCertID != nil {
 			status, err := db.GetRelayCertificateStatus(database, *entry.RelayCertID)
 			if err != nil && err != sql.ErrNoRows {
-				middleware.HandleError(c, model.NewInternal("Failed to check existing certificate", err))
+				middleware.HandleError(c, model.NewInternalKey("relay.checkCertificateFailed", err))
 				return
 			}
 			if status == model.RelayCertStatusIssued {
-				middleware.HandleError(c, model.NewBadRequest("This whitelist entry already has an active certificate - revoke it first to issue a new one", nil))
+				middleware.HandleError(c, model.NewBadRequestKey("relay.certAlreadyActive", nil))
 				return
 			}
 		}
@@ -484,12 +484,12 @@ func GenerateCertificateForWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 
 		issued, certID, err := issueRelayCertificate(database, entry.Label, actorID)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to issue relay certificate", err))
+			middleware.HandleError(c, model.NewInternalKey("relay.issueCertificateFailed", err))
 			return
 		}
 
 		if err := db.LinkRelayCertificateToWhitelist(database, entry.ID, certID); err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to link certificate to whitelist entry", err))
+			middleware.HandleError(c, model.NewInternalKey("relay.linkCertToWhitelistFailed", err))
 			return
 		}
 
@@ -516,12 +516,12 @@ func RevokeRelayCertificate(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", nil))
 			return
 		}
 
 		if err := db.RevokeRelayCertificate(database, id); err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to revoke relay certificate", err))
+			middleware.HandleError(c, model.NewInternalKey("relay.revokeCertificateFailed", err))
 			return
 		}
 
@@ -559,34 +559,33 @@ func RegenerateRelayCertificate(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", nil))
 			return
 		}
 
 		cert, err := db.GetRelayCertificate(database, id)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				middleware.HandleError(c, model.NewNotFound("Certificate not found", nil))
+				middleware.HandleError(c, model.NewNotFoundKey("relay.notFound", nil))
 				return
 			}
-			middleware.HandleError(c, model.NewInternal("Failed to load certificate", err))
+			middleware.HandleError(c, model.NewInternalKey("relay.loadCertificateFailed", err))
 			return
 		}
 
 		nearingExpiry := time.Until(cert.ExpiresAt) <= model.RelayCertRenewalWindowDays*24*time.Hour
 		if cert.Status == model.RelayCertStatusIssued && !nearingExpiry {
-			middleware.HandleError(c, model.NewBadRequest(
-				fmt.Sprintf("This certificate is still active and not within %d days of expiring - revoke it first to replace it early", model.RelayCertRenewalWindowDays), nil))
+		middleware.HandleError(c, model.NewBadRequestKey("relay.certNotEligibleForRegen", nil))
 			return
 		}
 
 		entry, err := db.GetRelayWhitelistEntryByCertID(database, id)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				middleware.HandleError(c, model.NewBadRequest("No whitelist entry is linked to this certificate anymore - add the relay's IP on the Whitelist IP tab, then generate a certificate for it there", nil))
+				middleware.HandleError(c, model.NewBadRequestKey("relay.noLinkedWhitelistEntry", nil))
 				return
 			}
-			middleware.HandleError(c, model.NewInternal("Failed to load linked whitelist entry", err))
+			middleware.HandleError(c, model.NewInternalKey("relay.loadLinkedWhitelistFailed", err))
 			return
 		}
 
@@ -594,12 +593,12 @@ func RegenerateRelayCertificate(database *sql.DB) gin.HandlerFunc {
 
 		issued, newCertID, err := issueRelayCertificate(database, entry.Label, actorID)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to issue relay certificate", err))
+			middleware.HandleError(c, model.NewInternalKey("relay.issueCertificateFailed", err))
 			return
 		}
 
 		if err := db.LinkRelayCertificateToWhitelist(database, entry.ID, newCertID); err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to link certificate to whitelist entry", err))
+			middleware.HandleError(c, model.NewInternalKey("relay.linkCertToWhitelistFailed", err))
 			return
 		}
 

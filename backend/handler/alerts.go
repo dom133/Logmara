@@ -18,7 +18,7 @@ func ListAlerts(database *sql.DB) gin.HandlerFunc {
 		isAdmin := db.IsUserAdmin(database, userID)
 		alerts, err := db.GetAllAlerts(database, isAdmin, userID)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to list alerts", err))
+			middleware.HandleError(c, model.NewInternalKey("alerts.listFailed", err))
 			return
 		}
 		c.JSON(http.StatusOK, alerts)
@@ -30,7 +30,7 @@ func CreateAlert(engine *alertengine.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req model.AlertRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", err))
 			return
 		}
 
@@ -38,7 +38,7 @@ func CreateAlert(engine *alertengine.Engine) gin.HandlerFunc {
 		// model.AdminOnlyRuleTypes) from non-admins in the UI - this is the
 		// actual enforcement, since the API can be called directly.
 		if model.IsAdminOnlyRuleType(req.RuleType) && !db.IsUserAdmin(database, c.GetInt64("user_id")) {
-			middleware.HandleError(c, model.NewForbidden("Only an admin can create this rule type", nil))
+			middleware.HandleError(c, model.NewForbiddenKey("alerts.adminOnlyCreate", nil))
 			return
 		}
 
@@ -49,7 +49,7 @@ func CreateAlert(engine *alertengine.Engine) gin.HandlerFunc {
 
 		alert, err := db.CreateAlert(database, req, createdBy)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to create alert", err))
+			middleware.HandleError(c, model.NewInternalKey("alerts.createFailed", err))
 			return
 		}
 		engine.Reload()
@@ -62,13 +62,13 @@ func UpdateAlert(engine *alertengine.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidID", nil))
 			return
 		}
 
 		var req model.AlertRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", err))
 			return
 		}
 
@@ -76,17 +76,17 @@ func UpdateAlert(engine *alertengine.Engine) gin.HandlerFunc {
 		// from touching an existing admin-only rule at all, since RuleType
 		// is required on every update (full-replace semantics, not partial).
 		if model.IsAdminOnlyRuleType(req.RuleType) && !db.IsUserAdmin(database, c.GetInt64("user_id")) {
-			middleware.HandleError(c, model.NewForbidden("Only an admin can modify this rule type", nil))
+			middleware.HandleError(c, model.NewForbiddenKey("alerts.adminOnlyModify", nil))
 			return
 		}
 
 		alert, err := db.UpdateAlert(database, id, req)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				middleware.HandleError(c, model.NewNotFound("Alert not found", nil))
+				middleware.HandleError(c, model.NewNotFoundKey("alerts.notFound", nil))
 				return
 			}
-			middleware.HandleError(c, model.NewInternal("Failed to update alert", err))
+			middleware.HandleError(c, model.NewInternalKey("alerts.updateFailed", err))
 			return
 		}
 		engine.Reload()
@@ -99,12 +99,12 @@ func DeleteAlert(engine *alertengine.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidID", nil))
 			return
 		}
 
 		if err := db.DeleteAlert(database, id); err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to delete alert", err))
+			middleware.HandleError(c, model.NewInternalKey("alerts.deleteFailed", err))
 			return
 		}
 		engine.Reload()

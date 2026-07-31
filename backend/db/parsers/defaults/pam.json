@@ -1,0 +1,67 @@
+[
+  {
+    "name": "PAM Session",
+    "description": "Parses PAM session open/close events (pam_unix, pam_systemd, etc.)",
+    "device_type": "linux",
+    "match_type": "message",
+    "match_value": "pam_unix(",
+    "regex": "pam_unix\\((\\w+):session\\):\\s+(opened|closed)\\s+for\\s+user\\s+(\\S+)(?:\\(uid=(\\d+)\\))?\\s*(?:by\\s+(\\S+))?",
+    "fields": [
+      {
+        "name": "service",
+        "label": "PAM Service",
+        "type": "string"
+      },
+      {
+        "name": "action",
+        "label": "Action",
+        "type": "string"
+      },
+      {
+        "name": "user",
+        "label": "User",
+        "type": "string"
+      },
+      {
+        "name": "uid",
+        "label": "UID",
+        "type": "number"
+      },
+      {
+        "name": "by_user",
+        "label": "By User",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "PAM Authentication",
+    "description": "Parses PAM authentication success/failure events",
+    "device_type": "linux",
+    "match_type": "message",
+    "match_value": "pam_unix(",
+    "regex": "pam_unix\\((\\w+):(auth|session)\\):\\s+(authentication failure|session opened|session closed)(?:.*(?:user|(for user))\\s+=(\\S+))?",
+    "fields": [
+      {
+        "name": "service",
+        "label": "PAM Service",
+        "type": "string"
+      },
+      {
+        "name": "module",
+        "label": "Module",
+        "type": "string"
+      },
+      {
+        "name": "action",
+        "label": "Action",
+        "type": "string"
+      },
+      {
+        "name": "user",
+        "label": "User",
+        "type": "string"
+      }
+    ]
+  }
+]

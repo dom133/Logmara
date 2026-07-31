@@ -44,7 +44,7 @@ func ListUsers(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 users, err := db.GetAllUsers(database)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to list users", err))
+			middleware.HandleError(c, model.NewInternalKey("admin.usersListFailed", "Failed to list users", err))
 			return
 		}
 		c.JSON(http.StatusOK, users)
@@ -61,7 +61,7 @@ func ListUserDirectory(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		users, err := db.GetUserDirectory(database)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to list users", err))
+			middleware.HandleError(c, model.NewInternalKey("admin.usersListFailed", "Failed to list users", err))
 			return
 		}
 		c.JSON(http.StatusOK, users)
@@ -72,12 +72,12 @@ func CreateUser(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req CreateUserRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
 			return
 		}
 
 		if !isValidRole(req.Role) {
-			middleware.HandleError(c, model.NewBadRequest("Invalid role. Must be admin, editor, or viewer", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("admin.invalidRole", "Invalid role. Must be admin, editor, or viewer", nil))
 			return
 		}
 
@@ -90,7 +90,7 @@ func CreateUser(database *sql.DB) gin.HandlerFunc {
 			isAdmin := req.Role == RoleAdmin
 			user, err := db.CreateLDAPUser(database, req.Username, req.Email, req.Role, isAdmin)
 			if err != nil {
-				middleware.HandleError(c, model.NewBadRequest("Failed to create LDAP user", err))
+				middleware.HandleError(c, model.NewBadRequestKey("admin.ldapUserCreationFailed", "Failed to create LDAP user", err))
 				return
 			}
 			actorID, actorName := actorFromContext(c)
@@ -100,26 +100,29 @@ func CreateUser(database *sql.DB) gin.HandlerFunc {
 		}
 
 		if req.Password == "" || len(req.Password) < 8 {
-			middleware.HandleError(c, model.NewBadRequest("Password is required and must be at least 8 characters", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("admin.passwordRequired", "Password is required and must be at least 8 characters", nil))
 			return
 		}
-		if err := auth.ValidatePassword(req.Password); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Password does not meet requirements", err))
+		policy := auth.LoadPasswordPolicy(func(k, def string) string { return db.GetSetting(database, k, def) })
+		if err := auth.ValidatePasswordWithPolicy(policy, req.Password); err != nil {
+			middleware.HandleError(c, model.NewBadRequestKey("admin.passwordRequirements", "Password does not meet requirements", err))
 			return
 		}
 
 		hash, err := auth.HashPassword(req.Password)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Could not hash password", err))
+			middleware.HandleError(c, model.NewInternalKey("admin.hashFailed", "Could not hash password", err))
 			return
 		}
 
 		isAdmin := req.Role == RoleAdmin
 		user, err := db.CreateUser(database, req.Username, hash, req.Email, isAdmin, req.Role)
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Failed to create user", err))
+			middleware.HandleError(c, model.NewBadRequestKey("admin.userCreationFailed", "Failed to create user", err))
 			return
 		}
+
+		_ = db.AddPasswordHistory(database, user.ID, hash)
 
 		actorID, actorName := actorFromContext(c)
 		audit.LogAudit(database, actorID, actorName, "user_created", c.ClientIP(), fmt.Sprintf("created local user %s", req.Username))
@@ -131,30 +134,30 @@ func UpdateUser(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid user ID", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidUserID", "Invalid user ID", nil))
 			return
 		}
 
 		var req UpdateUserRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
 			return
 		}
 
 		if req.Role != nil && !isValidRole(*req.Role) {
-			middleware.HandleError(c, model.NewBadRequest("Invalid role", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("admin.invalidRole", "Invalid role", nil))
 			return
 		}
 
 		oldUser, err := db.GetUserByID(database, id)
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("User not found", err))
+			middleware.HandleError(c, model.NewNotFoundKey("admin.userNotFound", "User not found", err))
 			return
 		}
 
 		user, err := db.UpdateUser(database, id, req.Role, req.IsActive)
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Failed to update user", err))
+			middleware.HandleError(c, model.NewBadRequestKey("admin.userUpdateFailed", "Failed to update user", err))
 			return
 		}
 
@@ -179,12 +182,12 @@ func DeleteUser(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid user ID", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidUserID", "Invalid user ID", nil))
 			return
 		}
 
 		if err := db.DeleteUser(database, id); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Failed to delete user", err))
+			middleware.HandleError(c, model.NewBadRequestKey("admin.userDeleteFailed", "Failed to delete user", err))
 			return
 		}
 
@@ -198,40 +201,44 @@ func ResetPassword(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid user ID", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidUserID", "Invalid user ID", nil))
 			return
 		}
 
 		var req ResetPasswordRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
 			return
 		}
-		if err := auth.ValidatePassword(req.Password); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Password does not meet requirements", err))
+		policy := auth.LoadPasswordPolicy(func(k, def string) string { return db.GetSetting(database, k, def) })
+		if err := auth.ValidatePasswordWithPolicy(policy, req.Password); err != nil {
+			middleware.HandleError(c, model.NewBadRequestKey("admin.passwordRequirements", "Password does not meet requirements", err))
 			return
 		}
 
 		var authType string
 		if err := database.QueryRow("SELECT auth_type FROM users WHERE id = $1", id).Scan(&authType); err != nil {
-			middleware.HandleError(c, model.NewNotFound("User not found", err))
+			middleware.HandleError(c, model.NewNotFoundKey("admin.userNotFound", "User not found", err))
 			return
 		}
 		if authType == "ldap" {
-			middleware.HandleError(c, model.NewBadRequest("Cannot reset password for LDAP users", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("admin.ldapPasswordResetNotAllowed", "Cannot reset password for LDAP users", nil))
 			return
 		}
 
 		hash, err := auth.HashPassword(req.Password)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Could not hash password", err))
+			middleware.HandleError(c, model.NewInternalKey("admin.hashFailed", "Could not hash password", err))
 			return
 		}
 
 		if err := db.ResetUserPassword(database, id, hash); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Failed to reset password", err))
+			middleware.HandleError(c, model.NewBadRequestKey("admin.passwordResetFailed", "Failed to reset password", err))
 			return
 		}
+
+		_ = db.AddPasswordHistory(database, id, hash)
+		_ = db.TrimPasswordHistory(database, id)
 
 		actorID, actorName := actorFromContext(c)
 		audit.LogAudit(database, actorID, actorName, "password_reset_by_admin", c.ClientIP(), fmt.Sprintf("reset password for user id %d", id))
@@ -243,12 +250,12 @@ func UnlockUserHandler(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid user ID", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidUserID", "Invalid user ID", nil))
 			return
 		}
 
 		if err := db.UnlockUser(database, id); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Failed to unlock user", err))
+			middleware.HandleError(c, model.NewBadRequestKey("admin.unlockFailed", "Failed to unlock user", err))
 			return
 		}
 
@@ -262,7 +269,7 @@ func GetSettings(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		settings, err := db.GetAllSettings(database)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to get settings", err))
+			middleware.HandleError(c, model.NewInternalKey("admin.settingsLoadFailed", "Failed to get settings", err))
 			return
 		}
 		// Not used by the frontend and not worth exposing: encryption keys and
@@ -284,7 +291,7 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var settings map[string]string
 		if err := c.ShouldBindJSON(&settings); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
 			return
 		}
 
@@ -322,11 +329,11 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 			certPath := filepath.Join(sslDir, "server.crt")
 			keyPath := filepath.Join(sslDir, "server.key")
 		if _, err := os.Stat(certPath); os.IsNotExist(err) {
-			middleware.HandleError(c, model.NewBadRequest("Cannot enable HTTPS: SSL certificate not found. Please upload certificate and key first.", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("admin.sslCertNotFound", "Cannot enable HTTPS: SSL certificate not found. Please upload certificate and key first.", nil))
 			return
 		}
 		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
-			middleware.HandleError(c, model.NewBadRequest("Cannot enable HTTPS: SSL private key not found. Please upload certificate and key first.", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("admin.sslKeyNotFound", "Cannot enable HTTPS: SSL private key not found. Please upload certificate and key first.", nil))
 				return
 			}
 		}
@@ -339,7 +346,7 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 
 		for k, v := range settings {
 			if err := db.UpdateSetting(database, k, v); err != nil {
-				middleware.HandleError(c, model.NewBadRequest("Failed to update setting: "+k, err))
+				middleware.HandleError(c, model.NewBadRequestKey("admin.settingUpdateFailed", "Failed to update setting: "+k, err))
 				return
 			}
 		}
@@ -621,7 +628,7 @@ func reloadNginxWithRetry(httpsEnabled, redirectEnabled bool, corsOrigins string
 func ReloadNginx(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if err := SyncNginxHTTPS(database); err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to reload nginx", err))
+			middleware.HandleError(c, model.NewInternalKey("admin.nginxReloadFailed", "Failed to reload nginx", err))
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "nginx reloaded"})
@@ -667,7 +674,7 @@ func CleanupLogs(database *sql.DB) gin.HandlerFunc {
 
 		deleted, err := db.CleanupOldLogs(database, retentionDays)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to cleanup logs", err))
+			middleware.HandleError(c, model.NewInternalKey("admin.cleanupFailed", "Failed to cleanup logs", err))
 			return
 		}
 
@@ -710,7 +717,7 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 			if !wasPaused {
 				ic.Resume()
 			}
-			middleware.HandleError(c, model.NewInternal("Failed to purge logs", err))
+			middleware.HandleError(c, model.NewInternalKey("admin.purgeFailed", "Failed to purge logs", err))
 			return
 		}
 		InvalidateAllCaches()
@@ -755,7 +762,7 @@ func TestLDAP(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req TestLDAPRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
 			return
 		}
 
@@ -765,7 +772,7 @@ func TestLDAP(database *sql.DB) gin.HandlerFunc {
 
 		err := ldap.TestConnection(req.Server, req.Port, req.UseTLS, req.VerifyCert, req.CaCert, req.BaseDN, req.BindDN, req.BindPassword)
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("LDAP connection test failed", err))
+			middleware.HandleError(c, model.NewBadRequestKey("admin.ldapTestFailed", "LDAP connection test failed", err))
 			return
 		}
 
@@ -791,7 +798,7 @@ func GetAuditLog(database *sql.DB) gin.HandlerFunc {
 			limit,
 		)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to fetch audit log", err))
+			middleware.HandleError(c, model.NewInternalKey("admin.auditLogFailed", "Failed to fetch audit log", err))
 			return
 		}
 		defer rows.Close()
@@ -842,7 +849,7 @@ func GetAuditLogsHandler(database *sql.DB) gin.HandlerFunc {
 
 		logs, total, err := db.GetAuditLogs(database, filter)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to fetch audit logs", err))
+			middleware.HandleError(c, model.NewInternalKey("admin.auditLogsFailed", "Failed to fetch audit logs", err))
 			return
 		}
 

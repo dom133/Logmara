@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { t } from 'i18next'
 import { api, checkSession } from './api'
 
 interface User {
@@ -186,7 +187,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setupSessionWarning(res.data.expires_at)
       return { ok: true }
     } catch (error: any) {
-      return { ok: false, error: error.response?.data?.error || 'Login failed' }
+      return { ok: false, error: error.response?.data?.error || t('login.loginFailed') }
     }
   }, [setupSessionWarning])
 
