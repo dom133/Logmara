@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip } from 'antd'
+import { Card, Table, Button, Modal, Form, Input, Select, Switch, Checkbox, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip } from 'antd'
 import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PlusOutlined, CopyOutlined, KeyOutlined } from '@ant-design/icons'
 import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey } from '../services/api'
 import SeverityTag from '../components/SeverityTag'
@@ -21,6 +21,14 @@ function formatDurationAgo(ms: number): string {
   if (hours < 24) return i18nInstance.t('admin.hoursAgo', { hours, minutes: minutes % 60 })
   const days = Math.floor(hours / 24)
   return i18nInstance.t('admin.daysAgo', { days, hours: hours % 24 })
+}
+
+function parseScopeFilters(sf?: { hostnames?: string; severities?: string } | null): { hostnames: string[]; severities: string[] } | null {
+  if (!sf) return null
+  const hostnames = (sf.hostnames || '').split(',').map(s => s.trim()).filter(Boolean)
+  const severities = (sf.severities || '').split(',').map(s => s.trim()).filter(Boolean)
+  if (hostnames.length === 0 && severities.length === 0) return null
+  return { hostnames, severities }
 }
 
 export default function Admin() {
@@ -249,7 +257,7 @@ await testLDAPConnection({
   const handleCreateAPIKey = async () => {
     const values = apiKeyForm.getFieldsValue()
     try {
-      const result = await createAPIKey(values)
+      const result = await createAPIKey({ ...values, scope_filters: parseScopeFilters(values.scope_filters) })
       setNewKeyDisplay(result.key)
       message.success(t('admin.apiKeyCreated'))
       apiKeyForm.resetFields()
@@ -263,7 +271,7 @@ await testLDAPConnection({
     if (!apiKeyEditing) return
     const values = apiKeyForm.getFieldsValue()
     try {
-      await updateAPIKey(apiKeyEditing.id, values)
+      await updateAPIKey(apiKeyEditing.id, { ...values, scope_filters: parseScopeFilters(values.scope_filters) })
       message.success(t('admin.apiKeyUpdated'))
       setApiKeyModalOpen(false)
       setApiKeyEditing(null)
@@ -307,7 +315,12 @@ await testLDAPConnection({
     apiKeyForm.setFieldsValue({
       name: key.name,
       permissions: key.permissions || {},
-      scope_filters: key.scope_filters || null,
+      scope_filters: key.scope_filters
+        ? {
+            hostnames: (key.scope_filters.hostnames || []).join(', '),
+            severities: (key.scope_filters.severities || []).join(', '),
+          }
+        : undefined,
       is_active: key.is_active,
       rate_limit_per_min: key.rate_limit_per_min,
       ttl_days: key.expires_at ? Math.max(0, Math.ceil((new Date(key.expires_at).getTime() - Date.now()) / 86400000)) : 0,
@@ -1421,19 +1434,25 @@ const handleCleanup = async () => {
           <Form.Item name="name" label={t('admin.name')} rules={[{ required: true, message: t('admin.nameRequired') }]}>
             <Input placeholder="My API Key" />
           </Form.Item>
-          <Form.Item name="permissions" label={t('admin.permissions')}>
+          <Form.Item label={t('admin.permissions')}>
             <Space direction="vertical">
-              <label><input type="checkbox" /> {t('admin.permExportJson')}</label>
-              <label><input type="checkbox" /> {t('admin.permExportParsed')}</label>
-              <label><input type="checkbox" /> {t('admin.permViewStats')}</label>
+              <Form.Item name={['permissions', 'export_json']} valuePropName="checked" noStyle>
+                <Checkbox>{t('admin.permExportJson')}</Checkbox>
+              </Form.Item>
+              <Form.Item name={['permissions', 'export_parsed']} valuePropName="checked" noStyle>
+                <Checkbox>{t('admin.permExportParsed')}</Checkbox>
+              </Form.Item>
+              <Form.Item name={['permissions', 'view_stats']} valuePropName="checked" noStyle>
+                <Checkbox>{t('admin.permViewStats')}</Checkbox>
+              </Form.Item>
             </Space>
           </Form.Item>
-          <Form.Item name="scope_filters" label={t('admin.scopeFilters')} tooltip={t('admin.scopeFiltersTooltip')}>
-            <Space direction="vertical">
-              <Form.Item label={t('admin.hostnames')} noStyle>
+          <Form.Item label={t('admin.scopeFilters')} tooltip={t('admin.scopeFiltersTooltip')}>
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Form.Item name={['scope_filters', 'hostnames']} label={t('admin.hostnames')} noStyle>
                 <Input placeholder={t('admin.hostnamesPlaceholder')} />
               </Form.Item>
-              <Form.Item label={t('admin.severities')} noStyle>
+              <Form.Item name={['scope_filters', 'severities']} label={t('admin.severities')} noStyle>
                 <Input placeholder={t('admin.severitiesPlaceholder')} />
               </Form.Item>
             </Space>
