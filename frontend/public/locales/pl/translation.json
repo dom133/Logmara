@@ -291,7 +291,9 @@
     "scopeSevs": "{{count}} poważności",
     "usage": "Użycie",
     "createdBy": "Utworzone przez",
-    "nameRequired": "Nazwa jest wymagana"
+    "nameRequired": "Nazwa jest wymagana",
+    "expires": "Wygasa",
+    "active": "Aktywny"
   },
   "system": {
     "starting": "System uruchamiany... Proszę czekać"

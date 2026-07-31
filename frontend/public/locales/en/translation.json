@@ -291,7 +291,9 @@
     "scopeSevs": "{{count}} severities",
     "usage": "Usage",
     "createdBy": "Created By",
-    "nameRequired": "Name is required"
+    "nameRequired": "Name is required",
+    "expires": "Expires",
+    "active": "Active"
   },
   "system": {
     "starting": "System starting... Please wait"
