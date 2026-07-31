@@ -115,7 +115,7 @@ func MigrateWithLock(db *sql.DB) error {
 // schema_version table already records this value, so a forgotten bump
 // means an already-deployed instance will never see the new statement
 // applied.
-const schemaVersion = 1
+const schemaVersion = 2
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
