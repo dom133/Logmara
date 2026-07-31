@@ -557,14 +557,19 @@ export async function updateSettings(settings: Record<string, string>) {
 
 export async function cleanupLogs() {
 	// Batched delete over a large backlog of old logs can run well past the
-	// default timeout - same reasoning as uploadSSLCerts above.
-	const res = await api.post('/admin/settings/cleanup', undefined, { timeout: 300000 })
+	// default timeout - same reasoning as uploadSSLCerts above. Admins have
+	// seen this take close to 5 minutes on large tables, so give it real
+	// headroom above that instead of cutting it close (matches nginx.conf's
+	// proxy_read_timeout/proxy_send_timeout for this route).
+	const res = await api.post('/admin/settings/cleanup', undefined, { timeout: 600000 })
 	return res.data
 }
 
 export async function purgeAllLogs(pauseDuringPurge: boolean) {
-	// TRUNCATE can queue behind an in-progress VACUUM/MV refresh on syslog_logs.
-	const res = await api.delete('/admin/logs', { data: { pause_during_purge: pauseDuringPurge }, timeout: 300000 })
+	// TRUNCATE can queue behind an in-progress VACUUM/MV refresh on syslog_logs,
+	// and admins have seen this take close to 5 minutes on large tables - same
+	// headroom reasoning as cleanupLogs above.
+	const res = await api.delete('/admin/logs', { data: { pause_during_purge: pauseDuringPurge }, timeout: 600000 })
 	return res.data
 }
 
