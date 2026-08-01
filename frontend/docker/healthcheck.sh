@@ -13,7 +13,8 @@
 # nginx is running and serving.
 # Accept any HTTP response from nginx (200, 301, etc.). We only need to
 # confirm nginx is running and responding, not what status it returns.
-# --max-redirect=0 prevents wget from following a 301 to :443, which would
-# fail with PROXY protocol errors in Swarm (see comment above).
-wget --no-verbose --tries=1 --max-redirect=0 --spider \
-  --server-response http://127.0.0.1:80/ 2>&1 | grep -q "HTTP/1"
+# BusyBox wget does NOT follow redirects by default, so a 301 from
+# https_redirect won't cause it to hit :443 (which would fail with PROXY
+# protocol errors in Swarm). -S dumps the server response headers to stderr,
+# which is what we grep for.
+wget -q --spider -S http://127.0.0.1:80/ -T 2 2>&1 | grep -q "HTTP/"
