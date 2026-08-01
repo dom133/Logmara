@@ -426,7 +426,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		}); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
-		if _, err := database.Exec("UPDATE refresh_tokens SET replaced_by = $1 WHERE token_hash = $2", newRefreshToken, rh); err != nil {
+		if _, err := database.Exec("UPDATE refresh_tokens SET used = true, used_at = NOW(), replaced_by = $1 WHERE token_hash = $2", newRefreshToken, rh); err != nil {
 			slog.Error("failed to link rotated refresh token", "error", err)
 		}
 

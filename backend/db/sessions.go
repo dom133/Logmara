@@ -27,6 +27,7 @@ func ListUserSessions(database *sql.DB, userID int64) ([]Session, error) {
 		`SELECT id, COALESCE(device_id, ''), COALESCE(user_agent, ''), COALESCE(ip, ''), remember, created_at, last_used_at, expires_at
 		 FROM refresh_tokens
 		 WHERE user_id = $1 AND used = false AND expires_at > NOW()
+		   AND (replaced_by IS NULL OR replaced_by = '')
 		 ORDER BY COALESCE(last_used_at, created_at) DESC`,
 		userID,
 	)
