@@ -11,4 +11,9 @@
 # header, so nginx would reject it with "broken header" errors. :80 works
 # in both topologies (plain compose and Swarm) and is sufficient to confirm
 # nginx is running and serving.
-wget --no-verbose --tries=1 --max-redirect=0 --spider http://127.0.0.1:80/ || exit 1
+# Accept any HTTP response from nginx (200, 301, etc.). We only need to
+# confirm nginx is running and responding, not what status it returns.
+# --max-redirect=0 prevents wget from following a 301 to :443, which would
+# fail with PROXY protocol errors in Swarm (see comment above).
+wget --no-verbose --tries=1 --max-redirect=0 --spider \
+  --server-response http://127.0.0.1:80/ 2>&1 | grep -q "HTTP/1"
