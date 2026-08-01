@@ -443,7 +443,7 @@ func main() {
 				return
 			case <-ticker.C:
 				if db.HasActiveSession(database) {
-					db.RefreshMV(database)
+					db.RefreshMV(ctx, database)
 				}
 			}
 		}

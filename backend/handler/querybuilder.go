@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
 )
+
+// validJSONBKey ensures the field name is a safe JSONB key identifier
+// (alphanumeric + underscore only). This prevents SQL injection via the
+// parsed_fields->>'<field>' accessor, where the field name is embedded
+// directly in the SQL string.
+var validJSONBKey = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
 
 // filteredQueryTimeout bounds queries that carry user-supplied field filters
 // (notably the "regex" operator, which runs as Postgres' backtracking `~` and
@@ -122,18 +129,23 @@ func buildLogWhereClauses(opts LogFilterOptions) ([]string, []interface{}, int) 
 		idx++
 	}
 
-	// Dynamic field filters for parsed_fields and static columns
-	if len(opts.FieldFilters) > 0 {
-		staticFields := map[string]bool{
-			"hostname": true, "fromhost_ip": true, "severity": true,
-			"app_name": true, "facility": true, "process_id": true,
-			"msg_id": true, "message": true, "raw_message": true,
-		}
-		for _, ff := range opts.FieldFilters {
-			fieldCol := ff.Field
-			if !staticFields[fieldCol] {
-				fieldCol = fmt.Sprintf("parsed_fields->>'%s'", strings.ReplaceAll(ff.Field, "'", "''"))
+		// Dynamic field filters for parsed_fields and static columns
+		if len(opts.FieldFilters) > 0 {
+			staticFields := map[string]bool{
+				"hostname": true, "fromhost_ip": true, "severity": true,
+				"app_name": true, "facility": true, "process_id": true,
+				"msg_id": true, "message": true, "raw_message": true,
 			}
+			for _, ff := range opts.FieldFilters {
+				// Reject any field name that isn't in the static whitelist
+				// and doesn't match a safe JSONB key pattern.
+				if !staticFields[ff.Field] && !validJSONBKey.MatchString(ff.Field) {
+					continue
+				}
+				fieldCol := ff.Field
+				if !staticFields[fieldCol] {
+					fieldCol = fmt.Sprintf("parsed_fields->>'%s'", strings.ReplaceAll(ff.Field, "'", "''"))
+				}
 			op := normalizeOperator(ff.Operator)
 			switch op {
 			case "eq":
@@ -308,7 +320,9 @@ func scanLogRows(rows *sql.Rows) []model.SyslogLog {
 		}
 		l.MatchedParsers = parsers
 		if len(rawParsed) > 0 {
-			json.Unmarshal(rawParsed, &l.ParsedFields)
+			if err := json.Unmarshal(rawParsed, &l.ParsedFields); err != nil {
+				slog.Warn("failed to unmarshal parsed_fields", "log_id", l.ID, "error", err)
+			}
 		}
 		logs = append(logs, l)
 	}

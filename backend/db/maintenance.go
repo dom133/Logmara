@@ -59,7 +59,7 @@ func startMVScheduler(ctx context.Context, db *sql.DB, interval time.Duration) f
 				close(done)
 				return
 			case <-ticker.C:
-				RefreshMV(db)
+				RefreshMV(ctx, db)
 			}
 		}
 	}()
@@ -269,7 +269,7 @@ func HasActiveSession(db *sql.DB) bool {
 	return active
 }
 
-func RefreshMV(db *sql.DB) {
+func RefreshMV(ctx context.Context, db *sql.DB) {
 	// Migrate() runs in its own goroutine and can take a while on a large
 	// table (index builds, mv_device_stats aggregation) - the periodic
 	// refresh tickers start immediately regardless, so without this guard
@@ -281,7 +281,7 @@ func RefreshMV(db *sql.DB) {
 	}
 	slog.Info("refreshing materialized views")
 	for _, mv := range []string{"mv_dashboard_summary", "mv_dashboard_severity", "mv_timeline_hourly", "mv_device_stats", "mv_dashboard_top_errors"} {
-		_, err := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY " + mv)
+		_, err := db.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY " + mv)
 		if err != nil {
 			slog.Error("mv refresh failed", "view", mv, "err", err)
 		} else {
