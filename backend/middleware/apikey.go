@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lib/pq"
 )
 
 // hashAPIKey returns the SHA-256 digest of a plaintext API key, hex-encoded.
@@ -67,7 +69,7 @@ func APIKeyAuth(database *sql.DB) gin.HandlerFunc {
 		keyHash := hashAPIKey(apiKey)
 
 		row := database.QueryRow(`
-			SELECT id, key_hash, is_active, permissions, scope_filters, rate_limit_per_min, expires_at
+			SELECT id, key_hash, is_active, permissions, scope_filters, rate_limit_per_min, expires_at, allowed_ips
 			FROM api_keys
 			WHERE key_hash = $1
 		`, keyHash)
@@ -78,8 +80,9 @@ func APIKeyAuth(database *sql.DB) gin.HandlerFunc {
 		var permissionsJSON, scopeFiltersJSON []byte
 		var rateLimitPerMin int
 		var expiresAt sql.NullTime
+		var allowedIPs pq.StringArray
 
-		err := row.Scan(&id, &storedHash, &isActive, &permissionsJSON, &scopeFiltersJSON, &rateLimitPerMin, &expiresAt)
+		err := row.Scan(&id, &storedHash, &isActive, &permissionsJSON, &scopeFiltersJSON, &rateLimitPerMin, &expiresAt, &allowedIPs)
 		if err != nil {
 			c.AbortWithError(http.StatusUnauthorized, model.NewUnauthorizedKey("unauthorized", "Invalid API key", nil))
 			return
@@ -92,6 +95,11 @@ func APIKeyAuth(database *sql.DB) gin.HandlerFunc {
 
 		if expiresAt.Valid && expiresAt.Time.Before(time.Now()) {
 			c.AbortWithError(http.StatusUnauthorized, model.NewUnauthorizedKey("unauthorized", "API key has expired", nil))
+			return
+		}
+
+		if len(allowedIPs) > 0 && !ipAllowed(c.ClientIP(), allowedIPs) {
+			c.AbortWithError(http.StatusForbidden, model.NewForbiddenKey("ip_not_allowed", "API key is not permitted from this IP address", nil))
 			return
 		}
 
@@ -196,6 +204,33 @@ func RemoveRateLimiter(keyID int) {
 		close(rl.stop)
 		delete(rateLimiters, keyID)
 	}
+}
+
+// ipAllowed reports whether clientIP matches any entry in allowed - each
+// entry is either a single IP ("10.0.0.5") or a CIDR range ("10.0.0.0/24").
+// Malformed entries and an unparsable clientIP never match (fail closed).
+func ipAllowed(clientIP string, allowed []string) bool {
+	ip := net.ParseIP(clientIP)
+	if ip == nil {
+		return false
+	}
+	for _, entry := range allowed {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if strings.Contains(entry, "/") {
+			_, ipNet, err := net.ParseCIDR(entry)
+			if err == nil && ipNet.Contains(ip) {
+				return true
+			}
+			continue
+		}
+		if entryIP := net.ParseIP(entry); entryIP != nil && entryIP.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func CheckPermission(c *gin.Context, perm string) bool {

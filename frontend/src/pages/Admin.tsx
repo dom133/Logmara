@@ -7,6 +7,7 @@ import { getErrorMessage } from '../utils/error'
 import { useAuth } from '../services/auth'
 import AdminUsers from '../components/AdminUsers'
 import { containerStateColor } from '../utils/adminUtils'
+import { SEVERITY_ORDER, SEVERITY_COLORS, getSeverityLabels } from '../constants'
 import { useTranslation } from 'react-i18next'
 import i18nInstance, { languageDisplayName, sortLanguagesEnglishFirst } from '../i18n'
 
@@ -23,10 +24,14 @@ function formatDurationAgo(ms: number): string {
   return i18nInstance.t('admin.daysAgo', { days, hours: hours % 24 })
 }
 
-function parseScopeFilters(sf?: { hostnames?: string; severities?: string; match_mode?: 'and' | 'or' } | null): { hostnames: string[]; severities: string[]; match_mode: 'and' | 'or' } | null {
+// Loose client-side check (full IPv4/IPv6/CIDR validation happens server-side) -
+// this just catches obvious typos before a round trip.
+const ipOrCidrPattern = /^[0-9a-fA-F:.]+(\/\d{1,3})?$/
+
+function parseScopeFilters(sf?: { hostnames?: string[]; severities?: string[]; match_mode?: 'and' | 'or' } | null): { hostnames: string[]; severities: string[]; match_mode: 'and' | 'or' } | null {
   if (!sf) return null
-  const hostnames = (sf.hostnames || '').split(',').map(s => s.trim()).filter(Boolean)
-  const severities = (sf.severities || '').split(',').map(s => s.trim()).filter(Boolean)
+  const hostnames = (sf.hostnames || []).map(s => s.trim()).filter(Boolean)
+  const severities = (sf.severities || []).map(s => s.trim()).filter(Boolean)
   if (hostnames.length === 0 && severities.length === 0) return null
   return { hostnames, severities, match_mode: sf.match_mode === 'or' ? 'or' : 'and' }
 }
@@ -319,11 +324,12 @@ await testLDAPConnection({
       permissions: key.permissions || {},
       scope_filters: key.scope_filters
         ? {
-            hostnames: (key.scope_filters.hostnames || []).join(', '),
-            severities: (key.scope_filters.severities || []).join(', '),
+            hostnames: key.scope_filters.hostnames || [],
+            severities: key.scope_filters.severities || [],
             match_mode: key.scope_filters.match_mode === 'or' ? 'or' : 'and',
           }
         : { match_mode: 'and' },
+      allowed_ips: key.allowed_ips || [],
       is_active: key.is_active,
       rate_limit_per_min: key.rate_limit_per_min,
       ttl_days: key.expires_at ? Math.max(0, Math.ceil((new Date(key.expires_at).getTime() - Date.now()) / 86400000)) : 0,
@@ -380,7 +386,9 @@ await testLDAPConnection({
         await loadAuditLogs(0)
         getUserDirectory().then(setUserDirectory).catch(() => { /* filter falls back to no options */ })
         break
-      case 'api_keys': await loadAPIKeys(); break
+      case 'api_keys':
+        await Promise.all([loadAPIKeys(), devices.length === 0 ? loadDevices() : Promise.resolve()])
+        break
     }
     tabCacheRef.current.set(tab, { loadedAt: Date.now() })
   }
@@ -1310,6 +1318,14 @@ const handleCleanup = async () => {
                       },
                     },
                     {
+                      title: t('admin.allowedIps'),
+                      dataIndex: 'allowed_ips',
+                      key: 'allowed_ips',
+                      width: 150,
+                      render: (ips: string[] | undefined) =>
+                        ips?.length ? <Tag>{t('admin.scopeIps', { count: ips.length })}</Tag> : <span>-</span>,
+                    },
+                    {
                       title: t('admin.rateLimit'),
                       dataIndex: 'rate_limit_per_min',
                       key: 'rate_limit_per_min',
@@ -1454,10 +1470,28 @@ const handleCleanup = async () => {
           <Form.Item label={t('admin.scopeFilters')} tooltip={t('admin.scopeFiltersTooltip')}>
             <Space direction="vertical" style={{ width: '100%' }}>
               <Form.Item name={['scope_filters', 'hostnames']} label={t('admin.hostnames')} noStyle>
-                <Input placeholder={t('admin.hostnamesPlaceholder')} />
+                <Select
+                  mode="tags"
+                  allowClear
+                  style={{ width: '100%' }}
+                  placeholder={t('admin.hostnamesPlaceholder')}
+                  options={Array.from(new Set(devices.map(d => d.hostname).filter(Boolean))).map(h => ({ value: h, label: h }))}
+                />
               </Form.Item>
               <Form.Item name={['scope_filters', 'severities']} label={t('admin.severities')} noStyle>
-                <Input placeholder={t('admin.severitiesPlaceholder')} />
+                <Select
+                  mode="multiple"
+                  allowClear
+                  style={{ width: '100%' }}
+                  placeholder={t('admin.severitiesPlaceholder')}
+                  options={SEVERITY_ORDER.map(sev => ({ value: sev, label: getSeverityLabels(t)[sev] }))}
+                  optionRender={(option) => <Tag color={SEVERITY_COLORS[option.value as string]}>{option.label}</Tag>}
+                  tagRender={({ value, closable, onClose }) => (
+                    <Tag color={SEVERITY_COLORS[value as string]} closable={closable} onClose={onClose} style={{ marginInlineEnd: 4 }}>
+                      {getSeverityLabels(t)[value as string] || value}
+                    </Tag>
+                  )}
+                />
               </Form.Item>
               <Form.Item name={['scope_filters', 'match_mode']} label={t('admin.scopeMatchMode')} tooltip={t('admin.scopeMatchModeTooltip')} initialValue="and" noStyle>
                 <Select style={{ width: '100%' }}>
@@ -1466,6 +1500,26 @@ const handleCleanup = async () => {
                 </Select>
               </Form.Item>
             </Space>
+          </Form.Item>
+          <Form.Item
+            name="allowed_ips"
+            label={t('admin.allowedIps')}
+            tooltip={t('admin.allowedIpsTooltip')}
+            rules={[{
+              validator: (_, value: string[] = []) =>
+                value.every(v => ipOrCidrPattern.test(v))
+                  ? Promise.resolve()
+                  : Promise.reject(new Error(t('admin.allowedIpsInvalid'))),
+            }]}
+          >
+            <Select
+              mode="tags"
+              allowClear
+              style={{ width: '100%' }}
+              placeholder={t('admin.allowedIpsPlaceholder')}
+              tokenSeparators={[',', ' ']}
+              options={Array.from(new Set(devices.map(d => d.fromhost_ip).filter(Boolean))).map(ip => ({ value: ip, label: ip }))}
+            />
           </Form.Item>
           <Form.Item name="rate_limit_per_min" label={t('admin.rateLimit')} rules={[{ required: true, message: t('admin.rateLimitRequired') }]}>
             <InputNumber min={1} max={10000} style={{ width: '100%' }} />

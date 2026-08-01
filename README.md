@@ -1212,7 +1212,7 @@ Either way you can edit, add, or remove builtin parser definitions on disk (same
 
 ## External API
 
-Generate API keys from the Admin panel to programmatically export logs and view statistics. Keys support permission scoping, host/severity filters, rate limiting, and optional TTL expiration.
+Generate API keys from the Admin panel to programmatically export logs and view statistics. Keys support permission scoping, host/severity filters, an IP allowlist, rate limiting, and optional TTL expiration.
 
 ### Endpoints
 
@@ -1274,6 +1274,10 @@ When creating a key, you can restrict it to specific hostnames and/or severities
 - `or` — a log must match one of the hostnames **or** one of the severities.
 
 Set it via `POST`/`PUT /api/admin/api-keys` (`scope_filters.match_mode`) or from Admin > API Keys > Scope Filters > Match Mode. Existing keys created before this option existed default to `and`, preserving their original behavior.
+
+### IP Allowlist
+
+Restrict a key to specific client IPs via `allowed_ips` (`POST`/`PUT /api/admin/api-keys`) or from Admin > API Keys > Allowed IPs. Each entry is a single IP (`203.0.113.5`) or a CIDR range (`203.0.113.0/24`); a request from any other IP gets `403 Forbidden`. Leave it empty to allow any IP (the default).
 
 ---
 
