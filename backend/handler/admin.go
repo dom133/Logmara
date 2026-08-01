@@ -440,8 +440,8 @@ func nginxProxyProtocolEnabled() bool {
 
 // httpsServerBlockTemplate is the nginx 443 server block, written verbatim
 // to https.conf whenever https_enabled is on. It mirrors the :80 server
-// block in frontend/nginx.conf. %%LISTEN%% and %%REAL_IP%% are filled in by
-// httpsServerBlock() - see nginxProxyProtocolEnabled for why.
+// block in frontend/nginx.conf. %%LISTEN%%, %%REAL_IP%%, and %%API_UPSTREAM%%
+// are filled in by httpsServerBlock() - see nginxProxyProtocolEnabled for why.
 const httpsServerBlockTemplate = `server {
     %%LISTEN%%
     server_name localhost;
@@ -460,7 +460,7 @@ const httpsServerBlockTemplate = `server {
         add_header Access-Control-Allow-Origin $cors_allow_origin always;
         add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, PATCH, OPTIONS" always;
         add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-        proxy_pass http://api:8080;
+        proxy_pass %%API_UPSTREAM%%;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -479,7 +479,7 @@ const httpsServerBlockTemplate = `server {
         if ($request_method = OPTIONS) {
             return 204;
         }
-        proxy_pass http://api:8080;
+        proxy_pass %%API_UPSTREAM%%;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -488,11 +488,11 @@ const httpsServerBlockTemplate = `server {
 }
 `
 
-// httpsServerBlock fills httpsServerBlockTemplate's %%LISTEN%% and
-// %%REAL_IP%% placeholders. With NGINX_PROXY_PROTOCOL unset (the
-// docker-compose.yml default), both resolve to exactly the original
-// plain-TLS block; with it set to "true" (docker-stack.app.yml), nginx
-// additionally expects and trusts a PROXY protocol header from
+// httpsServerBlock fills httpsServerBlockTemplate's %%LISTEN%%,
+// %%REAL_IP%%, and %%API_UPSTREAM%% placeholders. With NGINX_PROXY_PROTOCOL
+// unset (the docker-compose.yml default), both resolve to exactly the
+// original plain-TLS block; with it set to "true" (docker-stack.app.yml),
+// nginx additionally expects and trusts a PROXY protocol header from
 // httpsProxyProtocolTrustedCIDRs - see nginxProxyProtocolEnabled.
 func httpsServerBlock() string {
 	listen := "listen 443 ssl;"
@@ -506,8 +506,13 @@ func httpsServerBlock() string {
 		b.WriteString("    real_ip_header proxy_protocol;\n\n")
 		realIP = b.String()
 	}
+	apiUpstream := os.Getenv("API_UPSTREAM")
+	if apiUpstream == "" {
+		apiUpstream = "http://api:8080"
+	}
 	block := strings.Replace(httpsServerBlockTemplate, "%%LISTEN%%", listen, 1)
-	return strings.Replace(block, "%%REAL_IP%%", realIP, 1)
+	block = strings.Replace(block, "%%REAL_IP%%", realIP, 1)
+	return strings.Replace(block, "%%API_UPSTREAM%%", apiUpstream, -1)
 }
 
 // corsMapDirective renders the nginx `map` block that resolves the

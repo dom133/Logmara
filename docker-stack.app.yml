@@ -207,6 +207,11 @@ services:
       NGINX_RELOAD_TARGETS_HOST: tasks.frontend
       NGINX_RELOAD_PORT: "8081"
       NGINX_CONF_DIR: /data/nginx
+      # Tells the https.conf generator (backend/handler/admin.go) which
+      # upstream to proxy /api/ to. In Swarm this is haproxy-app's
+      # api_http listener, not the raw api service (which would only hit
+      # one replica behind the VIP).
+      API_UPSTREAM: http://haproxy-app:8090
       # haproxy-app's frontend_https listener (haproxy/haproxy-app.cfg) is a
       # raw TCP passthrough to nginx's TLS termination, so it conveys the
       # real client IP via a PROXY protocol header (send-proxy) instead of

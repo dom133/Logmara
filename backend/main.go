@@ -467,19 +467,6 @@ func main() {
 	// refresh below.
 	<-schemaReady
 
-	// Schema is ready - hand the port over from the startup stub to the
-	// real server built below. Shutdown stops it from accepting new
-	// connections and releases the listening socket immediately, so the
-	// real srv.ListenAndServe() further down can bind the same port right
-	// after.
-	{
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := startupSrv.Shutdown(shutdownCtx); err != nil {
-			slog.Warn("startup health server did not shut down cleanly", "error", err)
-		}
-		cancel()
-	}
-
 	// Validate TLS configuration: warn if HTTPS is enabled but certificates are missing
 	if tlsEnabled := db.GetSetting(database, "https_enabled", "false"); tlsEnabled == "true" {
 		certPath := os.Getenv("TLS_CERT_PATH")
@@ -819,6 +806,14 @@ r := gin.New()
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
+	}
+
+	{
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := startupSrv.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("startup health server did not shut down cleanly", "error", err)
+		}
+		cancel()
 	}
 
 	go func() {
