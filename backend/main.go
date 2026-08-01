@@ -368,7 +368,11 @@ func main() {
 		}
 	}()
 
+	wg := sync.WaitGroup{}
+
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		defer close(migrationDone)
 		if err := db.MigrateWithLock(database); err != nil {
 			slog.Error("failed to migrate database", "error", err)
@@ -396,7 +400,9 @@ func main() {
 	// startup on it; nginx already defaults to HTTPS-off, so this only
 	// matters for applying an env-var override or a state left over from
 	// before a restart.
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		<-migrationDone
 		const attempts = 10
 		const delay = 3 * time.Second
@@ -410,7 +416,9 @@ func main() {
 	// `docker compose up`, and /data/relay's PKI material + ACL live on the
 	// shared volume, not in the database, so they need to be re-applied on
 	// every restart regardless of whether relay_ingestion_enabled changed.
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		<-migrationDone
 		const attempts = 10
 		const delay = 3 * time.Second
@@ -547,27 +555,6 @@ func main() {
 	// everything else gated on sharedClient above.
 	logRate := sharedstate.NewRateCounter(sharedClient, "lograte")
 	handler.SetLogRateCounter(logRate)
-	go func() {
-		// With multiple replicas, hold off starting this replica's tailer
-		// (and therefore its leader-election Acquire race) until every
-		// sibling api replica has reached this same point in its own
-		// startup - otherwise, on a cold `docker stack deploy`/rescale, the
-		// first replica to get here would immediately win leadership and
-		// start ingesting/compacting the shared log file while its siblings
-		// are still mid-startup (schema migration, DB connection retries,
-		// etc). Bounded wait, not required for correctness (leader election
-		// itself is already safe regardless of start order) - see
-		// sharedstate.WaitForReplicas' own comment for why it gives up
-		// rather than blocking forever.
-		identity := os.Getenv("SWARM_TASK_IDENTITY")
-		if identity == "" {
-			if h, err := os.Hostname(); err == nil {
-				identity = h
-			}
-		}
-		sharedstate.WaitForReplicas(ctx, sharedClient, identity, apiReplicas, 90*time.Second)
-		tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine, logRate, handler.ReopenRsyslogLogFile)
-	}()
 
 	// Device silence checks run independently on every replica: the read
 	// (mv_device_stats) is cheap and the per-rule-per-device cooldown key in
@@ -808,6 +795,23 @@ r := gin.New()
 		publicAPI.POST("/logs/export-parsed", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportParsedJSON(database))
 		publicAPI.GET("/stats", handler.ExportStats(database))
 	}
+
+	// Wait for all startup tasks (migration + MV refresh, nginx sync, relay
+	// sync) to finish before registering this replica and starting the
+	// tailer - this ensures every replica reaches the same point in its
+	// startup sequence before the leader-election race begins.
+	wg.Wait()
+
+	go func() {
+		identity := os.Getenv("SWARM_TASK_IDENTITY")
+		if identity == "" {
+			if h, err := os.Hostname(); err == nil {
+				identity = h
+			}
+		}
+		sharedstate.WaitForReplicas(ctx, sharedClient, identity, apiReplicas, 10*time.Minute)
+		tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine, logRate, handler.ReopenRsyslogLogFile)
+	}()
 
 	srv := &http.Server{
 		Addr:         ":" + port,
