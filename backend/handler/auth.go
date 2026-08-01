@@ -247,6 +247,20 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		db.UpdateLastLogin(database, user.Username)
 		user.LastLoginAt = ptrTime(time.Now())
 
+		if user.AuthType == "local" {
+			if expired, _ := db.IsPasswordExpired(database, user.ID); expired {
+				audit.LogAudit(database, user.ID, user.Username, "login_password_expired", c.ClientIP(), "password expired, user must change")
+				c.JSON(http.StatusOK, gin.H{
+					"password_expired": true,
+					"user": gin.H{
+						"id":       user.ID,
+						"username": user.Username,
+					},
+				})
+				return
+			}
+		}
+
 		token, jti, accessExpiresAt, err := authCfg.GenerateToken(user.ID, user.Username, user.Role, req.Remember)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token", "error_key": "auth.tokenGenerationFailed"})
@@ -290,6 +304,12 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			"last_login_at":           user.LastLoginAt,
 			"notifications_enabled":   db.GetSetting(database, "notifications_enabled", "true") == "true",
 			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "true",
+		}
+
+		if user.AuthType == "local" {
+			if expDate, err := db.GetPasswordExpiryDate(database, user.ID); err == nil && expDate != nil {
+				userResp["password_expires_at"] = expDate.Unix()
+			}
 		}
 
 		c.JSON(http.StatusOK, gin.H{
@@ -515,13 +535,16 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 
 		userID := int((*mapClaims)["user_id"].(float64))
 		var isAdmin bool
-		err := database.QueryRow("SELECT is_admin FROM users WHERE id = $1", userID).Scan(&isAdmin)
+		var authType string
+		err := database.QueryRow("SELECT is_admin, auth_type FROM users WHERE id = $1", userID).Scan(&isAdmin, &authType)
 		if err != nil {
 			isAdmin = false
+			authType = "local"
 		}
 		exp := int64((*mapClaims)["exp"].(float64))
 		remembered, _ := (*mapClaims)["remember"].(bool)
-		c.JSON(http.StatusOK, gin.H{
+
+		resp := gin.H{
 			"id":                      userID,
 			"username":                username,
 			"role":                    role,
@@ -531,7 +554,18 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "true",
 			"expires_at":              exp,
 			"remembered":              remembered,
-		})
+		}
+
+		if authType == "local" {
+			if expired, _ := db.IsPasswordExpired(database, int64(userID)); expired {
+				resp["password_expired"] = true
+			}
+			if expDate, err := db.GetPasswordExpiryDate(database, int64(userID)); err == nil && expDate != nil {
+				resp["password_expires_at"] = expDate.Unix()
+			}
+		}
+
+		c.JSON(http.StatusOK, resp)
 	}
 }
 

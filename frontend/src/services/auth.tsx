@@ -11,12 +11,14 @@ interface User {
   is_active: boolean
   notifications_enabled: boolean
   relay_ingestion_enabled: boolean
+  password_expires_at?: number
+  password_expired?: boolean
 }
 
 interface AuthContextType {
   user: User | null
   loading: boolean
-  login: (username: string, password: string, remember?: boolean) => Promise<{ ok: boolean; error?: string }>
+  login: (username: string, password: string, remember?: boolean) => Promise<{ ok: boolean; error?: string; passwordExpired?: boolean }>
   logout: () => Promise<void>
   isAdmin: boolean
   canEdit: boolean
@@ -28,6 +30,8 @@ interface AuthContextType {
   sessionWarningCountdown: number
   extendSession: () => Promise<void>
   refreshUser: () => Promise<void>
+  showPasswordExpired: boolean
+  setShowPasswordExpired: (show: boolean) => void
 }
 
 const AuthContext = createContext<AuthContextType>({} as AuthContextType)
@@ -45,6 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isSessionExpiringSoon, setIsSessionExpiringSoon] = useState(false)
   const [showSessionWarning, setShowSessionWarning] = useState(false)
   const [sessionWarningCountdown, setSessionWarningCountdown] = useState(0)
+  const [showPasswordExpired, setShowPasswordExpired] = useState(false)
   const sessionExpiryRef = useRef<number | null>(null)
   const checkIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const extendingRef = useRef(false)
@@ -148,6 +153,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loadUser = useCallback(async () => {
     try {
       const res = await api.get('/auth/me')
+      if (res.data.password_expired) {
+        setShowPasswordExpired(true)
+      }
       setUser(res.data)
       rememberedRef.current = !!res.data.remembered
       const expiresAt = res.data.expires_at
@@ -174,6 +182,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (username: string, password: string, remember?: boolean) => {
     try {
       const res = await api.post('/auth/login', { username, password, remember: !!remember })
+      if (res.data.password_expired) {
+        setShowPasswordExpired(true)
+        return { ok: false, passwordExpired: true }
+      }
       const userData = res.data.user
       setUser({
         id: userData.id,
@@ -183,6 +195,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         is_active: userData.is_active,
         notifications_enabled: userData.notifications_enabled ?? true,
         relay_ingestion_enabled: userData.relay_ingestion_enabled ?? false,
+        password_expires_at: res.data.user?.password_expires_at,
       })
       rememberedRef.current = !!res.data.remembered
       setupSessionWarning(res.data.expires_at)
@@ -268,7 +281,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setShowSessionWarning,
       sessionWarningCountdown,
       extendSession,
-      refreshUser: loadUser
+      refreshUser: loadUser,
+      showPasswordExpired,
+      setShowPasswordExpired,
     }}>
       {children}
     </AuthContext.Provider>

@@ -107,6 +107,7 @@ export default function Admin() {
       formValues['security_password_require_digit'] = data['security_password_require_digit'] === 'true'
       formValues['security_password_require_special'] = data['security_password_require_special'] === 'true'
       if (data['security_password_history_count']) formValues['security_password_history_count'] = parseInt(data['security_password_history_count'], 10)
+      if (data['security_password_expiry_days']) formValues['security_password_expiry_days'] = parseInt(data['security_password_expiry_days'], 10)
       formValues['https_enabled'] = data['https_enabled'] === 'true'
       formValues['https_redirect'] = data['https_redirect'] === 'true'
       formValues['notifications_enabled'] = data['notifications_enabled'] === 'true'
@@ -508,6 +509,9 @@ const handleCleanup = async () => {
                     </Form.Item>
                     <Form.Item label={t('admin.passwordHistoryCount')} name="security_password_history_count" tooltip={t('admin.passwordHistoryCountTooltip')}>
                       <InputNumber min={0} max={100} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item label={t('admin.passwordExpiryDays')} name="security_password_expiry_days" tooltip={t('admin.passwordExpiryDaysTooltip')}>
+                      <InputNumber min={0} max={3650} style={{ width: '100%' }} />
                     </Form.Item>
                     <Divider orientation="left">{t('admin.cors')}</Divider>
 <Form.Item

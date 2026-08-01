@@ -511,6 +511,11 @@ export async function unlockUser(id: number) {
 	return res.data
 }
 
+export async function changePassword(currentPassword: string, newPassword: string) {
+	const res = await api.put('/auth/password', { current_password: currentPassword, new_password: newPassword })
+	return res.data
+}
+
 export interface AuditLog {
 	id: number
 	user_id: number | null
