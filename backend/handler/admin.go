@@ -413,14 +413,40 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// httpsServerBlock is the nginx 443 server block, written verbatim to
-// https.conf whenever https_enabled is on. It mirrors the :80 server block
-// in frontend/nginx.conf.
-const httpsServerBlock = `server {
-    listen 443 ssl;
+// httpsProxyProtocolTrustedCIDRs lists the ranges nginx will trust a PROXY
+// protocol header from when NGINX_PROXY_PROTOCOL is enabled - mirrors
+// main.go's defaultTrustedProxies (same "private network this app is
+// deployed on" trust boundary, just enforced at the nginx layer instead of
+// Gin's, since here the PROXY protocol comes from haproxy-app rather than
+// nginx forwarding a header to Gin directly).
+var httpsProxyProtocolTrustedCIDRs = []string{
+	"127.0.0.1/32", "::1/128",
+	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",
+}
+
+// nginxProxyProtocolEnabled reports whether nginx's HTTPS listener should
+// expect a PROXY protocol v1 header ahead of the TLS handshake instead of
+// terminating TLS directly against the client. Needed only for the HA stack
+// (docker-stack.app.yml): haproxy-app's frontend_https listener is a raw TCP
+// passthrough (TLS terminates at nginx, so HAProxy can't rewrite HTTP
+// headers the way it does for :80's forwardfor) and uses send-proxy to
+// convey the real client IP instead - see haproxy/haproxy-app.cfg. Left off
+// (the default) for plain docker-compose.yml, where nginx receives HTTPS
+// directly from the client and a PROXY protocol header would just break the
+// handshake.
+func nginxProxyProtocolEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("NGINX_PROXY_PROTOCOL")), "true")
+}
+
+// httpsServerBlockTemplate is the nginx 443 server block, written verbatim
+// to https.conf whenever https_enabled is on. It mirrors the :80 server
+// block in frontend/nginx.conf. %%LISTEN%% and %%REAL_IP%% are filled in by
+// httpsServerBlock() - see nginxProxyProtocolEnabled for why.
+const httpsServerBlockTemplate = `server {
+    %%LISTEN%%
     server_name localhost;
 
-    ssl_certificate /data/ssl/server.crt;
+%%REAL_IP%%    ssl_certificate /data/ssl/server.crt;
     ssl_certificate_key /data/ssl/server.key;
 
     root /usr/share/nginx/html;
@@ -462,6 +488,28 @@ const httpsServerBlock = `server {
 }
 `
 
+// httpsServerBlock fills httpsServerBlockTemplate's %%LISTEN%% and
+// %%REAL_IP%% placeholders. With NGINX_PROXY_PROTOCOL unset (the
+// docker-compose.yml default), both resolve to exactly the original
+// plain-TLS block; with it set to "true" (docker-stack.app.yml), nginx
+// additionally expects and trusts a PROXY protocol header from
+// httpsProxyProtocolTrustedCIDRs - see nginxProxyProtocolEnabled.
+func httpsServerBlock() string {
+	listen := "listen 443 ssl;"
+	realIP := ""
+	if nginxProxyProtocolEnabled() {
+		listen = "listen 443 ssl proxy_protocol;"
+		var b strings.Builder
+		for _, cidr := range httpsProxyProtocolTrustedCIDRs {
+			b.WriteString("    set_real_ip_from " + cidr + ";\n")
+		}
+		b.WriteString("    real_ip_header proxy_protocol;\n\n")
+		realIP = b.String()
+	}
+	block := strings.Replace(httpsServerBlockTemplate, "%%LISTEN%%", listen, 1)
+	return strings.Replace(block, "%%REAL_IP%%", realIP, 1)
+}
+
 // corsMapDirective renders the nginx `map` block that resolves the
 // request's Origin header to an Access-Control-Allow-Origin value.
 // Wildcard "*" is rejected (treated as empty) to prevent unrestricted CORS.
@@ -502,7 +550,7 @@ func reloadNginx(httpsEnabled, redirectEnabled bool, corsOrigins string) error {
 
 	httpsConf := ""
 	if httpsEnabled {
-		httpsConf = httpsServerBlock
+		httpsConf = httpsServerBlock()
 	}
 	if err := os.WriteFile(filepath.Join(confDir, "https.conf"), []byte(httpsConf), 0644); err != nil {
 		return fmt.Errorf("write https.conf: %w", err)
