@@ -1125,7 +1125,7 @@ export interface APIKey {
   name: string
   keyPrefix: string
   permissions: Record<string, boolean>
-  scope_filters: { hostnames?: string[]; severities?: string[] } | null
+  scope_filters: { hostnames?: string[]; severities?: string[]; match_mode?: 'and' | 'or' } | null
   is_active: boolean
   rate_limit_per_min: number
   expires_at: string | null
@@ -1143,7 +1143,7 @@ export async function listAPIKeys(): Promise<APIKey[]> {
 export async function createAPIKey(body: {
   name: string
   permissions: Record<string, boolean>
-  scope_filters: { hostnames?: string[]; severities?: string[] } | null
+  scope_filters: { hostnames?: string[]; severities?: string[]; match_mode?: 'and' | 'or' } | null
   rate_limit_per_min: number
   ttl_days: number
 }): Promise<{ key: string; keyPrefix: string }> {
@@ -1154,7 +1154,7 @@ export async function createAPIKey(body: {
 export async function updateAPIKey(id: number, body: {
   name?: string
   permissions?: Record<string, boolean>
-  scope_filters?: { hostnames?: string[]; severities?: string[] } | null
+  scope_filters?: { hostnames?: string[]; severities?: string[]; match_mode?: 'and' | 'or' } | null
   is_active?: boolean
   rate_limit_per_min?: number
   ttl_days?: number

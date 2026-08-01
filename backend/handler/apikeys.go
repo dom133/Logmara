@@ -40,6 +40,7 @@ func CreateAPIKey(database *sql.DB) gin.HandlerFunc {
 			ScopeFilters    *struct {
 				Hostnames  []string `json:"hostnames"`
 				Severities []string `json:"severities"`
+				MatchMode  string   `json:"match_mode"`
 			} `json:"scope_filters"`
 			RateLimitPerMin int `json:"rate_limit_per_min"`
 			TTLDays         int `json:"ttl_days"`
@@ -52,6 +53,10 @@ func CreateAPIKey(database *sql.DB) gin.HandlerFunc {
 
 		if req.RateLimitPerMin <= 0 {
 			req.RateLimitPerMin = 60
+		}
+
+		if req.ScopeFilters != nil && req.ScopeFilters.MatchMode != "or" {
+			req.ScopeFilters.MatchMode = "and"
 		}
 
 		permsJSON, _ := json.Marshal(req.Permissions)
@@ -162,6 +167,7 @@ func UpdateAPIKey(database *sql.DB) gin.HandlerFunc {
 			ScopeFilters  *struct {
 				Hostnames  []string `json:"hostnames"`
 				Severities []string `json:"severities"`
+				MatchMode  string   `json:"match_mode"`
 			} `json:"scope_filters"`
 			IsActive        *bool `json:"is_active"`
 			RateLimitPerMin *int  `json:"rate_limit_per_min"`
@@ -171,6 +177,10 @@ func UpdateAPIKey(database *sql.DB) gin.HandlerFunc {
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.AbortWithError(http.StatusBadRequest, model.NewBadRequest("Invalid request body", err))
 			return
+		}
+
+		if req.ScopeFilters != nil && req.ScopeFilters.MatchMode != "or" {
+			req.ScopeFilters.MatchMode = "and"
 		}
 
 		setters := []string{}

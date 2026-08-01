@@ -35,6 +35,11 @@ type APIKeyPermissions struct {
 type ScopeFilters struct {
 	Hostnames  []string `json:"hostnames"`
 	Severities []string `json:"severities"`
+	// MatchMode controls how the Hostnames and Severities conditions combine
+	// when both are set: "and" (default) requires both, "or" requires either.
+	// Within a single field, values always combine with OR (an IN clause) -
+	// this only affects combining the two fields with each other.
+	MatchMode string `json:"match_mode"`
 }
 
 func APIKeyAuth(database *sql.DB) gin.HandlerFunc {
@@ -238,10 +243,14 @@ func ApplyScopeFilters(c *gin.Context, query string, args *[]any) (string, []any
 		*args = append(*args, vals...)
 	}
 	if len(conds) > 0 {
+		joiner := " AND "
+		if f.MatchMode == "or" {
+			joiner = " OR "
+		}
 		if query != "" {
 			query += " AND "
 		}
-		query += "(" + strings.Join(conds, " AND ") + ")"
+		query += "(" + strings.Join(conds, joiner) + ")"
 	}
 	return query, *args
 }

@@ -23,12 +23,12 @@ function formatDurationAgo(ms: number): string {
   return i18nInstance.t('admin.daysAgo', { days, hours: hours % 24 })
 }
 
-function parseScopeFilters(sf?: { hostnames?: string; severities?: string } | null): { hostnames: string[]; severities: string[] } | null {
+function parseScopeFilters(sf?: { hostnames?: string; severities?: string; match_mode?: 'and' | 'or' } | null): { hostnames: string[]; severities: string[]; match_mode: 'and' | 'or' } | null {
   if (!sf) return null
   const hostnames = (sf.hostnames || '').split(',').map(s => s.trim()).filter(Boolean)
   const severities = (sf.severities || '').split(',').map(s => s.trim()).filter(Boolean)
   if (hostnames.length === 0 && severities.length === 0) return null
-  return { hostnames, severities }
+  return { hostnames, severities, match_mode: sf.match_mode === 'or' ? 'or' : 'and' }
 }
 
 export default function Admin() {
@@ -260,6 +260,8 @@ await testLDAPConnection({
       const result = await createAPIKey({ ...values, scope_filters: parseScopeFilters(values.scope_filters) })
       setNewKeyDisplay(result.key)
       message.success(t('admin.apiKeyCreated'))
+      setApiKeyModalOpen(false)
+      setApiKeyEditing(null)
       apiKeyForm.resetFields()
       loadAPIKeys()
     } catch (e: unknown) {
@@ -306,7 +308,7 @@ await testLDAPConnection({
   const openCreateKeyModal = () => {
     setApiKeyEditing(null)
     apiKeyForm.resetFields()
-    apiKeyForm.setFieldsValue({ ttl_days: 30, rate_limit_per_min: 60 })
+    apiKeyForm.setFieldsValue({ ttl_days: 30, rate_limit_per_min: 60, scope_filters: { match_mode: 'and' } })
     setApiKeyModalOpen(true)
   }
 
@@ -319,8 +321,9 @@ await testLDAPConnection({
         ? {
             hostnames: (key.scope_filters.hostnames || []).join(', '),
             severities: (key.scope_filters.severities || []).join(', '),
+            match_mode: key.scope_filters.match_mode === 'or' ? 'or' : 'and',
           }
-        : undefined,
+        : { match_mode: 'and' },
       is_active: key.is_active,
       rate_limit_per_min: key.rate_limit_per_min,
       ttl_days: key.expires_at ? Math.max(0, Math.ceil((new Date(key.expires_at).getTime() - Date.now()) / 86400000)) : 0,
@@ -1297,12 +1300,13 @@ const handleCleanup = async () => {
                       dataIndex: 'scope_filters',
                       key: 'scope_filters',
                       width: 200,
-                      render: (sf: { hostnames?: string[]; severities?: string[] }) => {
+                      render: (sf: { hostnames?: string[]; severities?: string[]; match_mode?: 'and' | 'or' }) => {
                         if (!sf) return <span>-</span>
                         const parts: string[] = []
                         if (sf.hostnames?.length) parts.push(t('admin.scopeHosts', { count: sf.hostnames.length }))
                         if (sf.severities?.length) parts.push(t('admin.scopeSevs', { count: sf.severities.length }))
-                        return parts.length ? <Tag>{parts.join(', ')}</Tag> : <span>-</span>
+                        const joiner = sf.match_mode === 'or' ? ` ${t('admin.scopeMatchModeOr')} ` : ` ${t('admin.scopeMatchModeAnd')} `
+                        return parts.length ? <Tag>{parts.join(parts.length > 1 ? joiner : ', ')}</Tag> : <span>-</span>
                       },
                     },
                     {
@@ -1455,6 +1459,12 @@ const handleCleanup = async () => {
               <Form.Item name={['scope_filters', 'severities']} label={t('admin.severities')} noStyle>
                 <Input placeholder={t('admin.severitiesPlaceholder')} />
               </Form.Item>
+              <Form.Item name={['scope_filters', 'match_mode']} label={t('admin.scopeMatchMode')} tooltip={t('admin.scopeMatchModeTooltip')} initialValue="and" noStyle>
+                <Select style={{ width: '100%' }}>
+                  <Option value="and">{t('admin.scopeMatchModeAnd')}</Option>
+                  <Option value="or">{t('admin.scopeMatchModeOr')}</Option>
+                </Select>
+              </Form.Item>
             </Space>
           </Form.Item>
           <Form.Item name="rate_limit_per_min" label={t('admin.rateLimit')} rules={[{ required: true, message: t('admin.rateLimitRequired') }]}>
@@ -1485,8 +1495,11 @@ const handleCleanup = async () => {
         title={t('admin.apiKeyGenerated')}
         open={!!newKeyDisplay}
         onCancel={() => setNewKeyDisplay(null)}
-        onOk={() => setNewKeyDisplay(null)}
-        okText={t('common.close')}
+        footer={
+          <Button type="primary" block onClick={() => setNewKeyDisplay(null)}>
+            {t('common.close')}
+          </Button>
+        }
         width={{ sm: '90%', md: 500 }}
       >
         <p>{t('admin.apiKeyCopyWarning')}</p>
