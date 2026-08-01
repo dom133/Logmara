@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"logmara/model"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lib/pq"
 )
 
 type APIExportRequest struct {
@@ -240,6 +242,7 @@ func queryLogs(database *sql.DB, whereSQL string, args []interface{}, limit int,
 		fullArgs := append(args, tz, ts, ts, id, limit)
 		rows, err := database.Query(query, fullArgs...)
 		if err != nil {
+			slog.Error("export API: cursor query failed", "error", err)
 			return []gin.H{}, false, ""
 		}
 		defer rows.Close()
@@ -258,6 +261,7 @@ func queryLogs(database *sql.DB, whereSQL string, args []interface{}, limit int,
 		fullArgs := append(args, tz, limit)
 		rows, err := database.Query(query, fullArgs...)
 		if err != nil {
+			slog.Error("export API: query failed", "error", err)
 			return []gin.H{}, false, ""
 		}
 		defer rows.Close()
@@ -292,10 +296,11 @@ func scanLogRowsJSON(rows *sql.Rows) []gin.H {
 		var hostname, severity, facility, message string
 		var fromHostIP, appName, processID, msgID, rawMessage sql.NullString
 		var parsedFields json.RawMessage
-		var matchedParsers []string
+		var matchedParsers pq.StringArray
 
 		err := rows.Scan(&tsStr, &id, &hostname, &fromHostIP, &appName, &processID, &msgID, &severity, &facility, &message, &rawMessage, &parsedFields, &matchedParsers)
 		if err != nil {
+			slog.Error("export API: row scan failed", "error", err)
 			continue
 		}
 
