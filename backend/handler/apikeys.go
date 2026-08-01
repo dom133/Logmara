@@ -32,7 +32,7 @@ func hashAPIKey(key string) string {
 
 func CreateAPIKey(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userID := c.GetInt("user_id")
+		userID := c.GetInt64("user_id")
 
 		var req struct {
 			Name            string             `json:"name" binding:"required"`
