@@ -11,4 +11,4 @@
 # header, so nginx would reject it with "broken header" errors. :80 works
 # in both topologies (plain compose and Swarm) and is sufficient to confirm
 # nginx is running and serving.
-wget --no-verbose --tries=1 --spider http://127.0.0.1:80/ || exit 1
+wget --no-verbose --tries=1 --max-redirect=0 --spider http://127.0.0.1:80/ || exit 1
