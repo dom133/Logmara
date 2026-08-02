@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form, Popconfirm, message } from 'antd'
+import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form, message } from 'antd'
 import { ArrowLeftOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined, ClockCircleOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import { getDashboard, getDashboardData, getDashboardDataCount, exportDashboardCSV, exportDashboardHTML, togglePinDashboard, togglePublicDashboard, Dashboard, LogEntry, getDevices, DeviceStats, resolveDeviceDisplayName, sortSupportsCursor, FieldFilter } from '../services/api'
@@ -9,6 +9,7 @@ import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import DashboardFieldFilters from '../components/DashboardFieldFilters'
 import LogTable, { useDeviceMap, buildDefaultColumns, resolveHostname } from '../components/LogTable'
+import ExportDialog from '../components/ExportDialog'
 import { getSeverityLabels } from '../constants'
 import { useAuth } from '../services/auth'
 
@@ -42,6 +43,8 @@ export default function DashboardViewPage() {
   })
   const [fieldFilters, setFieldFilters] = useState<FieldFilter[]>([])
   const [detailLog, setDetailLog] = useState<LogEntry | null>(null)
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportFormat, setExportFormat] = useState<'csv' | 'html'>('csv')
   const [devices, setDevices] = useState<DeviceStats[]>([])
   const { user } = useAuth()
   const isOwner = dashboard?.owner_id === user?.id
@@ -136,19 +139,16 @@ export default function DashboardViewPage() {
   }, [dashboardId, pageSize, filters, appendMode, fieldFilters])
 
   const handleExport = (format: 'csv' | 'html') => {
-    const from = filters.from ? dayjs(filters.from).format() : ''
-    const to = filters.to ? dayjs(filters.to).format() : ''
-    const params: Record<string, string> = {}
-    if (filters.severity) params.severity = filters.severity
-    if (filters.fromhost_ip) params.fromhost_ip = filters.fromhost_ip
-    if (filters.search) params.search = filters.search
-    if (from) params.from = from
-    if (to) params.to = to
+    setExportFormat(format)
+    setExportOpen(true)
+  }
 
+  const handleExportConfirm = async (params: Record<string, string>) => {
     const name = dashboard?.name || 'dashboard'
-    if (format === 'csv') exportDashboardCSV(dashboardId, params, name)
-    else exportDashboardHTML(dashboardId, params, name)
-    message.success(t('dashboard.exporting', { format: format.toUpperCase() }))
+    if (exportFormat === 'csv') await exportDashboardCSV(dashboardId, params, name)
+    else await exportDashboardHTML(dashboardId, params, name)
+    setExportOpen(false)
+    message.success(t('dashboard.exporting', { format: exportFormat.toUpperCase() }))
   }
 
   useEffect(() => {
@@ -380,12 +380,8 @@ export default function DashboardViewPage() {
             onChange={(v) => setFilters(f => ({ ...f, sort: v }))}
             options={sortOptions}
           />
-          <Popconfirm title={t('dashboard.exportCsv')} onConfirm={() => handleExport('csv')}>
-            <Button>{t('dashboard.csv')}</Button>
-          </Popconfirm>
-          <Popconfirm title={t('dashboard.exportHtml')} onConfirm={() => handleExport('html')}>
-            <Button>{t('dashboard.html')}</Button>
-          </Popconfirm>
+          <Button onClick={() => handleExport('csv')}>{t('dashboard.csv')}</Button>
+          <Button onClick={() => handleExport('html')}>{t('dashboard.html')}</Button>
           <Select
             size="small"
             style={{ width: 100 }}
@@ -510,6 +506,14 @@ export default function DashboardViewPage() {
           )
         })()}
       </Modal>
+      <ExportDialog
+        open={exportOpen}
+        onCancel={() => setExportOpen(false)}
+        format={exportFormat}
+        onExport={handleExportConfirm}
+        filters={filters}
+        deviceLabel={filters.fromhost_ip ? resolveDeviceDisplayName(devices.find(d => d.fromhost_ip === filters.fromhost_ip) || { fromhost_ip: filters.fromhost_ip } as DeviceStats) : undefined}
+      />
     </>
   )
 }

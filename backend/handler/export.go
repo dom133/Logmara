@@ -76,11 +76,17 @@ func ExportCSV(db *sql.DB) gin.HandlerFunc {
 			limitStr = "100000"
 		}
 		limit, err := strconv.Atoi(limitStr)
-		if err != nil || limit <= 0 {
+		if err != nil || limit < 0 {
 			limit = DefaultExportLimit
 		}
-		if limit > MaxExportLimit {
+		if limit > MaxExportLimit && limit != 0 {
 			limit = MaxExportLimit
+		}
+
+		if limit == 0 {
+			http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
+		} else {
+			http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(180 * time.Second))
 		}
 
 		whereClauses, args, _ := buildLogWhereClauses(exportFilterOptionsFromBody(c))
@@ -90,6 +96,7 @@ func ExportCSV(db *sql.DB) gin.HandlerFunc {
 
 func ExportHTML(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(180 * time.Second))
 		whereClauses, args, _ := buildLogWhereClauses(exportFilterOptionsFromBody(c))
 		writeHTMLExport(c, db, buildWhereSQL(whereClauses), args, 5000, nil, "Logs")
 	}
@@ -154,7 +161,7 @@ func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 	var rowCount int
 	var rowsData []struct {
 		ts, hostname, app, severity, message string
-		parsed                              map[string]string
+		parsed                               map[string]string
 	}
 
 	for rows.Next() {
@@ -172,7 +179,7 @@ func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 		rowCount++
 		rowsData = append(rowsData, struct {
 			ts, hostname, app, severity, message string
-			parsed                              map[string]string
+			parsed                               map[string]string
 		}{ts, hn, a, sev, msg, parsed})
 	}
 
@@ -282,7 +289,7 @@ func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 // instead of the database server's timezone, so exported files show the same
 // times the visitor sees on screen. Falls back to UTC and retries once if
 // Postgres rejects the zone name (unknown zones only fail at AT TIME ZONE
-// evaluation, not query parse time).
+// evaluation, not query parse time). Pass limit <= 0 to skip the LIMIT clause.
 func queryExportRows(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int) (*sql.Rows, error) {
 	var req ExportFilterRequest
 	_ = c.ShouldBindJSON(&req)
@@ -291,16 +298,28 @@ func queryExportRows(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 		tz = "UTC"
 	}
 	tzIdx := len(args) + 1
-	limitIdx := len(args) + 2
-	query := fmt.Sprintf(
-		"SELECT to_char((timestamp AT TIME ZONE $%d) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts, hostname, app_name, severity, message, parsed_fields FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d",
-		tzIdx, whereSQL, limitIdx,
-	)
+
+	var query string
+	if limit > 0 {
+		limitIdx := len(args) + 2
+		query = fmt.Sprintf(
+			"SELECT to_char((timestamp AT TIME ZONE $%d) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts, hostname, app_name, severity, message, parsed_fields FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d",
+			tzIdx, whereSQL, limitIdx,
+		)
+	} else {
+		query = fmt.Sprintf(
+			"SELECT to_char((timestamp AT TIME ZONE $%d) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts, hostname, app_name, severity, message, parsed_fields FROM syslog_logs %s ORDER BY timestamp DESC",
+			tzIdx, whereSQL,
+		)
+	}
 
 	runQuery := func(tzVal string) (*sql.Rows, error) {
 		fullArgs := make([]interface{}, 0, len(args)+2)
 		fullArgs = append(fullArgs, args...)
-		fullArgs = append(fullArgs, tzVal, limit)
+		fullArgs = append(fullArgs, tzVal)
+		if limit > 0 {
+			fullArgs = append(fullArgs, limit)
+		}
 		return db.Query(query, fullArgs...)
 	}
 

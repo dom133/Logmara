@@ -178,7 +178,8 @@ export async function getSeverityStats(from?: string, to?: string) {
 
 export async function exportCSV(params: Record<string, string>) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const res = await api.post('/export/csv', { ...params, tz }, { responseType: 'blob' })
+  const isUnlimited = params.limit === '' || params.limit === '0'
+  const res = await api.post('/export/csv', { ...params, tz }, { responseType: 'blob', timeout: isUnlimited ? 300000 : 30000 })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -189,7 +190,8 @@ export async function exportCSV(params: Record<string, string>) {
 
 export async function exportHTML(params: Record<string, string>) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const res = await api.post('/export/html', { ...params, tz }, { responseType: 'blob' })
+  const isUnlimited = params.limit === '' || params.limit === '0'
+  const res = await api.post('/export/html', { ...params, tz }, { responseType: 'blob', timeout: isUnlimited ? 300000 : 30000 })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -200,7 +202,8 @@ export async function exportHTML(params: Record<string, string>) {
 
 export async function exportDashboardCSV(id: number, params: Record<string, string>, dashboardName: string) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const res = await api.post(`/dashboards/${id}/export/csv`, { ...params, tz }, { responseType: 'blob' })
+  const isUnlimited = params.limit === '' || params.limit === '0'
+  const res = await api.post(`/dashboards/${id}/export/csv`, { ...params, tz }, { responseType: 'blob', timeout: isUnlimited ? 300000 : 30000 })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -211,7 +214,8 @@ export async function exportDashboardCSV(id: number, params: Record<string, stri
 
 export async function exportDashboardHTML(id: number, params: Record<string, string>, dashboardName: string) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const res = await api.post(`/dashboards/${id}/export/html`, { ...params, tz }, { responseType: 'blob' })
+  const isUnlimited = params.limit === '' || params.limit === '0'
+  const res = await api.post(`/dashboards/${id}/export/html`, { ...params, tz }, { responseType: 'blob', timeout: isUnlimited ? 300000 : 30000 })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url

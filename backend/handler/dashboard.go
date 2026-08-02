@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"logmara/middleware"
 	"logmara/model"
@@ -287,12 +288,12 @@ func DeleteDashboard(db *sql.DB) gin.HandlerFunc {
 }
 
 type DashboardFilterRequest struct {
-	Severity     string           `json:"severity"`
-	From         string           `json:"from"`
-	To           string           `json:"to"`
-	Search       string           `json:"search"`
-	FromHostIP   string           `json:"fromhost_ip"`
-	FieldFilters string           `json:"field_filters"`
+	Severity     string `json:"severity"`
+	From         string `json:"from"`
+	To           string `json:"to"`
+	Search       string `json:"search"`
+	FromHostIP   string `json:"fromhost_ip"`
+	FieldFilters string `json:"field_filters"`
 }
 
 // resolveDashboardFilters loads a dashboard's config and merges it with
@@ -448,16 +449,16 @@ func resolveParsersForFields(db *sql.DB, fields []string) ([]string, error) {
 }
 
 type DashboardDataRequest struct {
-	Severity     string           `json:"severity"`
-	From         string           `json:"from"`
-	To           string           `json:"to"`
-	Search       string           `json:"search"`
-	FromHostIP   string           `json:"fromhost_ip"`
-	FieldFilters string           `json:"field_filters"`
-	Limit        string           `json:"limit"`
-	Offset       string           `json:"offset"`
-	Cursor       string           `json:"cursor"`
-	Sort         string           `json:"sort"`
+	Severity     string `json:"severity"`
+	From         string `json:"from"`
+	To           string `json:"to"`
+	Search       string `json:"search"`
+	FromHostIP   string `json:"fromhost_ip"`
+	FieldFilters string `json:"field_filters"`
+	Limit        string `json:"limit"`
+	Offset       string `json:"offset"`
+	Cursor       string `json:"cursor"`
+	Sort         string `json:"sort"`
 }
 
 func GetDashboardData(db *sql.DB) gin.HandlerFunc {
@@ -604,13 +605,13 @@ func GetDashboardDataCount(db *sql.DB) gin.HandlerFunc {
 // ExportDashboardCSV exports a dashboard's log view as CSV, honoring the
 // same device/field scoping and filter overrides as GetDashboardData.
 type DashboardExportRequest struct {
-	Severity     string           `json:"severity"`
-	From         string           `json:"from"`
-	To           string           `json:"to"`
-	Search       string           `json:"search"`
-	FromHostIP   string           `json:"fromhost_ip"`
-	FieldFilters string           `json:"field_filters"`
-	Limit        string           `json:"limit"`
+	Severity     string `json:"severity"`
+	From         string `json:"from"`
+	To           string `json:"to"`
+	Search       string `json:"search"`
+	FromHostIP   string `json:"fromhost_ip"`
+	FieldFilters string `json:"field_filters"`
+	Limit        string `json:"limit"`
 }
 
 func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
@@ -637,11 +638,17 @@ func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
 			limitStr = "100000"
 		}
 		limit, err := strconv.Atoi(limitStr)
-		if err != nil || limit <= 0 {
+		if err != nil || limit < 0 {
 			limit = DefaultExportLimit
 		}
-		if limit > MaxExportLimit {
+		if limit > MaxExportLimit && limit != 0 {
 			limit = MaxExportLimit
+		}
+
+		if limit == 0 {
+			http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
+		} else {
+			http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(180 * time.Second))
 		}
 
 		whereClauses, args, _ := buildLogWhereClauses(opts)
@@ -654,6 +661,7 @@ func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
 // GetDashboardData.
 func ExportDashboardHTML(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(180 * time.Second))
 		var req DashboardFilterRequest
 		_ = c.ShouldBindJSON(&req)
 		cfg, opts, dashName, err := resolveDashboardFiltersWithName(db, c, req)
