@@ -197,7 +197,7 @@ func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 	sb.WriteString("    .stat-card { background: white; border-radius: 8px; padding: 16px 24px; flex: 1; min-width: 180px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }\n")
 	sb.WriteString("    .stat-card .label { font-size: 12px; color: #999; text-transform: uppercase; letter-spacing: 0.5px; }\n")
 	sb.WriteString("    .stat-card .value { font-size: 20px; font-weight: 600; color: #1890ff; margin-top: 4px; }\n")
-	sb.WriteString("    .table-wrap { background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow: hidden; }\n")
+	sb.WriteString("    .table-wrap { background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow-x: auto; }\n")
 	sb.WriteString("    table { width: 100%; border-collapse: collapse; font-size: 13px; }\n")
 	sb.WriteString("    thead { background: #fafafa; }\n")
 	sb.WriteString("    th { padding: 12px 16px; text-align: left; font-weight: 600; color: #666; border-bottom: 2px solid #e8e8e8; white-space: nowrap; }\n")
@@ -293,7 +293,7 @@ func queryExportRows(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 	tzIdx := len(args) + 1
 	limitIdx := len(args) + 2
 	query := fmt.Sprintf(
-		"SELECT to_char(timestamp AT TIME ZONE $%d, 'YYYY-MM-DD HH24:MI:SS') as ts, hostname, app_name, severity, message, parsed_fields FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d",
+		"SELECT to_char((timestamp AT TIME ZONE $%d) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts, hostname, app_name, severity, message, parsed_fields FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d",
 		tzIdx, whereSQL, limitIdx,
 	)
 

@@ -235,7 +235,7 @@ func queryLogs(database *sql.DB, whereSQL string, args []interface{}, limit int,
 		limitIdx := cursorIdx + 4
 
 		query := fmt.Sprintf(
-			"SELECT to_char(timestamp AT TIME ZONE $%d, 'YYYY-MM-DD HH24:MI:SS') as ts, id, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, extract(epoch from timestamp) as ts_epoch FROM syslog_logs %s AND (timestamp < $%d OR (timestamp = $%d AND id < $%d)) ORDER BY timestamp DESC, id DESC LIMIT $%d",
+			"SELECT to_char((timestamp AT TIME ZONE $%d) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts, id, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, extract(epoch from timestamp) as ts_epoch FROM syslog_logs %s AND (timestamp < $%d OR (timestamp = $%d AND id < $%d)) ORDER BY timestamp DESC, id DESC LIMIT $%d",
 			tzIdx, whereSQL, tsCursorIdx, tsCursorIdx, idCursorIdx, limitIdx,
 		)
 
@@ -254,7 +254,7 @@ func queryLogs(database *sql.DB, whereSQL string, args []interface{}, limit int,
 		limitIdx := tzIdx + 1
 
 		query := fmt.Sprintf(
-			"SELECT to_char(timestamp AT TIME ZONE $%d, 'YYYY-MM-DD HH24:MI:SS') as ts, id, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, extract(epoch from timestamp) as ts_epoch FROM syslog_logs %s ORDER BY timestamp DESC, id DESC LIMIT $%d",
+			"SELECT to_char((timestamp AT TIME ZONE $%d) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts, id, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, extract(epoch from timestamp) as ts_epoch FROM syslog_logs %s ORDER BY timestamp DESC, id DESC LIMIT $%d",
 			tzIdx, whereSQL, limitIdx,
 		)
 
