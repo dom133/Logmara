@@ -91,6 +91,8 @@
     "appSettings": "Ustawienia aplikacji",
     "logRetention": "Czas przechowywania logów (dni)",
     "sessionTimeout": "Limit czasu sesji (minuty)",
+    "rememberedMaxDays": "Maks. czas życia zapamiętanej sesji (dni)",
+    "rememberedMaxDaysTooltip": "Maksymalna liczba dni, przez które sesja 'zapamiętaj to urządzenie' pozostaje ważna. Po tym czasie użytkownik musi się ponownie zalogować.",
     "security": "Bezpieczeństwo",
     "maxFailedAttempts": "Maks. nieudanych prób logowania",
     "maxFailedAttemptsTooltip": "Liczba nieudanych prób logowania przed zablokowaniem konta. Pozostaw puste, aby użyć zmiennej środowiskowej MAX_FAILED_ATTEMPTS lub wartości domyślnej (5).",
@@ -780,7 +782,8 @@
     "message": "Twoja sesja wkrótce wygaśnie",
     "description": "Sesja wygaśnie za {{seconds}} sekund. Przedłuż ją lub wyloguj się teraz.",
     "logOut": "Wyloguj się",
-    "extendSession": "Przedłuż sesję"
+    "extendSession": "Przedłuż sesję",
+    "earlyWarning": "Twoja sesja wygaśnie wkrótce. Pozostawaj aktywny, aby ją zachować."
   },
   "channelForm": {
     "recipients": "Odbiorcy",
@@ -820,7 +823,9 @@
     "thisDevice": "To urządzenie",
     "remembered": "Zapamiętane",
     "unknownBrowser": "Nieznana przeglądarka",
-    "lastActive": "Ostatnia aktywność: {{date}}"
+    "lastActive": "Ostatnia aktywność: {{date}}",
+    "screenResolution": "Ekran",
+    "timezone": "Strefa czasowa"
   },
   "notifications": {
     "permissionDenied": "Nie udzielono zgody na powiadomienia",

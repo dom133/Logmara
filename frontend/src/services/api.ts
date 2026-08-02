@@ -18,6 +18,12 @@ api.interceptors.request.use(config => {
       config.headers['X-CSRF-Token'] = csrfToken
     }
   }
+  if (!config.headers['X-Screen-Resolution']) {
+    config.headers['X-Screen-Resolution'] = `${window.screen.width}x${window.screen.height}`
+  }
+  if (!config.headers['X-Timezone']) {
+    config.headers['X-Timezone'] = Intl.DateTimeFormat().resolvedOptions().timeZone
+  }
   return config
 })
 
@@ -446,6 +452,8 @@ export interface Session {
 	last_used_at?: string | null
 	expires_at: string
 	is_current: boolean
+	screen_resolution?: string
+	timezone?: string
 }
 
 export async function getSessions() {

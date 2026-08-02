@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { message } from 'antd'
 import { t } from 'i18next'
 import { api, checkSession } from './api'
 import { getErrorMessage } from '../utils/error'
@@ -38,9 +39,20 @@ const AuthContext = createContext<AuthContextType>({} as AuthContextType)
 
 const WARNING_LEAD_MS = 30000
 const SILENT_EXTEND_LEAD_MS = 60000
-const EXPIRY_CHECK_INTERVAL_MS = 1000
+const EARLY_WARNING_LEAD_MS = 60000
+const EXPIRY_CHECK_INTERVAL_FAST_MS = 1000
+const EXPIRY_CHECK_INTERVAL_NORMAL_MS = 5000
+const EXPIRY_CHECK_INTERVAL_SLOW_MS = 30000
 const EXTEND_RETRY_MAX = 3
 const EXTEND_RETRY_BASE_MS = 2000
+const SILENT_REFRESH_RETRY_MAX = 3
+const SILENT_REFRESH_RETRY_BASE_MS = 2000
+const SESSION_CHECK_INTERVAL_ACTIVE_MS = 30000
+const SESSION_CHECK_INTERVAL_IDLE_MS = 300000
+const SESSION_CHECK_BACKOFF_FACTOR = 2
+const SESSION_CHECK_BACKOFF_MAX_MS = 300000
+const STORAGE_KEY_EXPIRY = '__session_expiry_ts__'
+const STORAGE_KEY_LAST_ACTIVE = '__session_last_active__'
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
@@ -54,6 +66,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const checkIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const extendingRef = useRef(false)
   const rememberedRef = useRef(false)
+  const earlyWarningShownRef = useRef(false)
   // Bridges checkSessionExpiry -> extendSession without a circular useCallback
   // dependency (extendSession -> setupSessionWarning -> checkSessionExpiry).
   const extendSessionRef = useRef<((retryCount?: number) => Promise<void>)>(async () => {})
@@ -64,6 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       checkIntervalRef.current = null
     }
     sessionExpiryRef.current = null
+    earlyWarningShownRef.current = false
   }, [])
 
   const resetToLoggedOut = useCallback(() => {
@@ -74,6 +88,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsSessionExpiringSoon(false)
     setShowSessionWarning(false)
     setSessionWarningCountdown(0)
+    localStorage.removeItem(STORAGE_KEY_EXPIRY)
+    localStorage.removeItem(STORAGE_KEY_LAST_ACTIVE)
   }, [clearAllTimers])
 
   const logout = useCallback(async () => {
@@ -85,19 +101,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     resetToLoggedOut()
   }, [resetToLoggedOut])
 
+  const getAdaptiveInterval = useCallback((msLeft: number): number => {
+    if (msLeft <= SILENT_EXTEND_LEAD_MS * 2) return EXPIRY_CHECK_INTERVAL_FAST_MS
+    if (msLeft <= 300000) return EXPIRY_CHECK_INTERVAL_NORMAL_MS
+    return EXPIRY_CHECK_INTERVAL_SLOW_MS
+  }, [])
+
   const checkSessionExpiry = useCallback(() => {
     const expiresAt = sessionExpiryRef.current
     if (expiresAt === null || extendingRef.current) return
 
+    const storedExpiry = localStorage.getItem(STORAGE_KEY_EXPIRY)
+    if (storedExpiry) {
+      const storedTs = parseInt(storedExpiry, 10)
+      if (storedTs > expiresAt) {
+        sessionExpiryRef.current = storedTs
+      }
+    }
+
     const msLeft = expiresAt - Date.now()
 
-    // A remembered session can reach msLeft<=0 without ever crossing the
-    // silent-extend threshold below - e.g. a backgrounded tab gets its
-    // interval throttled by the browser for over an hour, then
-    // visibilitychange fires this once the token is already long expired.
-    // The refresh token is still good for up to 60 days, so try it before
-    // giving up instead of hard-logging-out a session that's still valid
-    // server-side.
     if (msLeft <= 0) {
       if (rememberedRef.current) {
         extendSessionRef.current()
@@ -107,9 +130,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return
     }
 
-    // Remembered sessions extend silently at 80% mark (60s before expiry)
-    // to compensate for timer drift from backgrounded tabs.
-    // Non-remembered sessions show the warning modal at 30s before expiry.
+    if (!rememberedRef.current && msLeft <= EARLY_WARNING_LEAD_MS && !earlyWarningShownRef.current) {
+      earlyWarningShownRef.current = true
+      message.info(t('sessionWarning.earlyWarning'), 5)
+    }
+
     const extendThreshold = rememberedRef.current ? SILENT_EXTEND_LEAD_MS : WARNING_LEAD_MS
 
     if (msLeft <= extendThreshold) {
@@ -120,14 +145,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setIsSessionExpiringSoon(true)
       setShowSessionWarning(true)
       setSessionWarningCountdown(Math.max(1, Math.ceil(msLeft / 1000)))
+      return
     }
-  }, [logout])
+
+    if (checkIntervalRef.current) {
+      clearInterval(checkIntervalRef.current)
+    }
+    const adaptiveInterval = getAdaptiveInterval(msLeft)
+    checkIntervalRef.current = setInterval(checkSessionExpiry, adaptiveInterval)
+  }, [logout, getAdaptiveInterval])
 
   const setupSessionWarning = useCallback((expiresAtUnix: number) => {
     clearAllTimers()
-    sessionExpiryRef.current = expiresAtUnix * 1000
+    const expiryMs = expiresAtUnix * 1000
+    sessionExpiryRef.current = expiryMs
+    localStorage.setItem(STORAGE_KEY_EXPIRY, expiryMs.toString())
+    localStorage.setItem(STORAGE_KEY_LAST_ACTIVE, Date.now().toString())
     checkSessionExpiry()
-    checkIntervalRef.current = setInterval(checkSessionExpiry, EXPIRY_CHECK_INTERVAL_MS)
+    checkIntervalRef.current = setInterval(checkSessionExpiry, EXPIRY_CHECK_INTERVAL_NORMAL_MS)
   }, [clearAllTimers, checkSessionExpiry])
 
   const trySilentRefresh = useCallback(async (retryCount = 0): Promise<boolean> => {
@@ -142,8 +177,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return true
     } catch (e) {
       console.error('Silent refresh failed:', e)
-      if (retryCount === 0) {
-        await new Promise(r => setTimeout(r, 1000))
+      if (retryCount < SILENT_REFRESH_RETRY_MAX) {
+        const delay = SILENT_REFRESH_RETRY_BASE_MS * Math.pow(2, retryCount)
+        await new Promise(r => setTimeout(r, delay))
         return trySilentRefresh(retryCount + 1)
       }
       return false
@@ -238,30 +274,57 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loadUser()
   }, [loadUser])
 
+  const sessionCheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sessionCheckBackoffRef = useRef(SESSION_CHECK_INTERVAL_ACTIVE_MS)
+
+  const scheduleSessionCheck = useCallback((backoffMs?: number) => {
+    if (sessionCheckTimerRef.current) {
+      clearTimeout(sessionCheckTimerRef.current)
+    }
+    const interval = backoffMs ?? sessionCheckBackoffRef.current
+    sessionCheckTimerRef.current = setTimeout(async () => {
+      await checkSession().catch(() => { /* handled by the response interceptor */ })
+      sessionCheckBackoffRef.current = Math.min(
+        sessionCheckBackoffRef.current * SESSION_CHECK_BACKOFF_FACTOR,
+        SESSION_CHECK_BACKOFF_MAX_MS
+      )
+      scheduleSessionCheck()
+    }, interval)
+  }, [])
+
+  const resetSessionCheckBackoff = useCallback(() => {
+    sessionCheckBackoffRef.current = SESSION_CHECK_INTERVAL_ACTIVE_MS
+  }, [])
+
   useEffect(() => {
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         checkSessionExpiry()
+        resetSessionCheckBackoff()
       }
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
-  }, [checkSessionExpiry])
+  }, [checkSessionExpiry, resetSessionCheckBackoff])
 
-  // Poll GET /auth/session-check every 30s while logged in, purely to
-  // notice a server-side revocation (Admin, another device's "Sign out" in
-  // My Sessions, or this session's own Logout) quickly instead of waiting
-  // for the access token's own natural expiry. A 401 here is already
-  // handled by the axios response interceptor (redirects to /login), so
-  // this just needs to fire the request - errors are swallowed rather than
-  // handled twice.
+  // Poll GET /auth/session-check while logged in, purely to notice a
+  // server-side revocation (Admin, another device's "Sign out" in My
+  // Sessions, or this session's own Logout) quickly instead of waiting
+  // for the access token's own natural expiry. Uses exponential backoff
+  // when the tab is idle to reduce unnecessary requests - starts at 30s,
+  // doubles on each successful check, caps at 5min. Backoff resets on
+  // visibility change (tab brought to foreground). A 401 here is already
+  // handled by the axios response interceptor (redirects to /login).
   useEffect(() => {
     if (!user) return
-    const interval = setInterval(() => {
-      checkSession().catch(() => { /* handled by the response interceptor */ })
-    }, 30000)
-    return () => clearInterval(interval)
-  }, [user])
+    scheduleSessionCheck()
+    return () => {
+      if (sessionCheckTimerRef.current) {
+        clearTimeout(sessionCheckTimerRef.current)
+        sessionCheckTimerRef.current = null
+      }
+    }
+  }, [user, scheduleSessionCheck])
 
   const isAdmin = user?.is_admin || false
   const canEdit = user?.role === 'admin' || user?.role === 'editor'

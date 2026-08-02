@@ -91,6 +91,8 @@
     "appSettings": "Application Settings",
     "logRetention": "Log Retention (days)",
     "sessionTimeout": "Session Timeout (minutes)",
+    "rememberedMaxDays": "Remembered Session Max Lifetime (days)",
+    "rememberedMaxDaysTooltip": "Maximum days a 'remember this device' session stays valid. After this, the user must re-authenticate.",
     "security": "Security",
     "maxFailedAttempts": "Max Failed Login Attempts",
     "maxFailedAttemptsTooltip": "Number of failed login attempts before account lockout. Leave empty to use MAX_FAILED_ATTEMPTS env var or default (5).",
@@ -780,7 +782,8 @@
     "message": "Your session is about to expire",
     "description": "Session will expire in {{seconds}} seconds. Extend it or log out now.",
     "logOut": "Log Out",
-    "extendSession": "Extend Session"
+    "extendSession": "Extend Session",
+    "earlyWarning": "Your session will expire soon. Stay active to keep it alive."
   },
   "channelForm": {
     "recipients": "Recipients",
@@ -820,7 +823,9 @@
     "thisDevice": "This device",
     "remembered": "Remembered",
     "unknownBrowser": "Unknown browser",
-    "lastActive": "Last active: {{date}}"
+    "lastActive": "Last active: {{date}}",
+    "screenResolution": "Screen",
+    "timezone": "Timezone"
   },
   "notifications": {
     "permissionDenied": "Notification permission was not granted",

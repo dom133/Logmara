@@ -115,7 +115,7 @@ func MigrateWithLock(db *sql.DB) error {
 // schema_version table already records this value, so a forgotten bump
 // means an already-deployed instance will never see the new statement
 // applied.
-const schemaVersion = 5
+const schemaVersion = 6
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -322,6 +322,11 @@ func runSchemaMigration(db *sql.DB) error {
 		// notice that blacklisting quickly rather than on its own schedule.
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='jti') THEN ALTER TABLE refresh_tokens ADD COLUMN jti VARCHAR(64); END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='token_hash') THEN ALTER TABLE refresh_tokens ADD COLUMN token_hash VARCHAR(64); END IF; END $$`,
+		// Screen resolution and timezone fingerprint for session identification
+		// in the "active sessions" list, helping users verify if a session
+		// belongs to their device.
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='screen_resolution') THEN ALTER TABLE refresh_tokens ADD COLUMN screen_resolution VARCHAR(20); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='timezone') THEN ALTER TABLE refresh_tokens ADD COLUMN timezone VARCHAR(50); END IF; END $$`,
 		`CREATE TABLE IF NOT EXISTS password_history (
 			id BIGSERIAL PRIMARY KEY,
 			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -752,6 +757,7 @@ func seedSettings(db *sql.DB) error {
 	settings := map[string]string{
 		"retention_days":                "30",
 		"session_timeout_min":           "15",
+		"session_remembered_max_days":   "60",
 		"is_initialized":                "false",
 		"default_language":              "en",
 		"ldap_enabled":                  "false",
@@ -805,6 +811,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "Days to keep logs before auto-deletion"
 		case "session_timeout_min":
 			desc = "Session timeout in minutes"
+		case "session_remembered_max_days":
+			desc = "Max lifetime in days for remembered sessions"
 		case "is_initialized":
 			desc = "Application initialization flag"
 		case "default_language":

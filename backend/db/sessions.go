@@ -10,21 +10,23 @@ import (
 // device/browser. Used by the "active sessions" self-service list/revoke API
 // so a user can see and sign out their own other devices.
 type Session struct {
-	ID         int64      `json:"id"`
-	DeviceID   string     `json:"device_id,omitempty"`
-	UserAgent  string     `json:"user_agent,omitempty"`
-	IP         string     `json:"ip,omitempty"`
-	Remember   bool       `json:"remember"`
-	CreatedAt  time.Time  `json:"created_at"`
-	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
-	ExpiresAt  time.Time  `json:"expires_at"`
+	ID              int64      `json:"id"`
+	DeviceID        string     `json:"device_id,omitempty"`
+	UserAgent       string     `json:"user_agent,omitempty"`
+	IP              string     `json:"ip,omitempty"`
+	Remember        bool       `json:"remember"`
+	CreatedAt       time.Time  `json:"created_at"`
+	LastUsedAt      *time.Time `json:"last_used_at,omitempty"`
+	ExpiresAt       time.Time  `json:"expires_at"`
+	ScreenResolution string    `json:"screen_resolution,omitempty"`
+	Timezone        string     `json:"timezone,omitempty"`
 }
 
 // ListUserSessions returns userID's still-usable sessions (not logged out,
 // not expired), most recently used first.
 func ListUserSessions(database *sql.DB, userID int64) ([]Session, error) {
 	rows, err := database.Query(
-		`SELECT id, COALESCE(device_id, ''), COALESCE(user_agent, ''), COALESCE(ip, ''), remember, created_at, last_used_at, expires_at
+		`SELECT id, COALESCE(device_id, ''), COALESCE(user_agent, ''), COALESCE(ip, ''), remember, created_at, last_used_at, expires_at, COALESCE(screen_resolution, ''), COALESCE(timezone, '')
 		 FROM refresh_tokens
 		 WHERE user_id = $1 AND used = false AND expires_at > NOW()
 		   AND (replaced_by IS NULL OR replaced_by = '')
@@ -40,7 +42,7 @@ func ListUserSessions(database *sql.DB, userID int64) ([]Session, error) {
 	for rows.Next() {
 		var s Session
 		var lastUsedAt sql.NullTime
-		if err := rows.Scan(&s.ID, &s.DeviceID, &s.UserAgent, &s.IP, &s.Remember, &s.CreatedAt, &lastUsedAt, &s.ExpiresAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.DeviceID, &s.UserAgent, &s.IP, &s.Remember, &s.CreatedAt, &lastUsedAt, &s.ExpiresAt, &s.ScreenResolution, &s.Timezone); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		if lastUsedAt.Valid {

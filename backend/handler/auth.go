@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"logmara/audit"
@@ -25,7 +26,7 @@ const (
 	RefreshTokenCookieName = "refreshToken"
 	CSRFTokenCookieName    = "csrf_token"
 	DeviceIDCookieName     = "device_id"
-	deviceIDCookieMaxAge   = 30 * 24 * 60 * 60 // 30 days
+	deviceIDCookieMaxAge   = 60 * 24 * 60 * 60 // 60 days, matches RememberedRefreshTokenTTL
 )
 
 // isHTTPS returns true if the request arrived over HTTPS, either directly
@@ -269,17 +270,20 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			return
 		}
 
-		refreshToken, refreshExpiresAt := auth.GenerateRefreshToken(int(user.ID), req.Remember)
+		rememberedTTL := getRememberedTTL(database)
+		refreshToken, refreshExpiresAt := auth.GenerateRefreshTokenWithTTL(int(user.ID), req.Remember, rememberedTTL)
 		devID := deviceID(c)
 		if err := insertRefreshToken(database, refreshTokenParams{
-			userID:    int(user.ID),
-			token:     refreshToken,
-			expiresAt: refreshExpiresAt,
-			deviceID:  devID,
-			userAgent: c.Request.UserAgent(),
-			ip:        c.ClientIP(),
-			remember:  req.Remember,
-			jti:       jti,
+			userID:           int(user.ID),
+			token:            refreshToken,
+			expiresAt:        refreshExpiresAt,
+			deviceID:         devID,
+			userAgent:        c.Request.UserAgent(),
+			ip:               c.ClientIP(),
+			remember:         req.Remember,
+			jti:              jti,
+			screenResolution: c.GetHeader("X-Screen-Resolution"),
+			timezone:         c.GetHeader("X-Timezone"),
 		}); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
@@ -331,8 +335,9 @@ func ptrTime(t time.Time) *time.Time {
 // token). The first request rotates the token atomically; a second request
 // arriving within this window is handed the token that already won the race
 // instead of being logged out. Reuse outside this window is treated as a
-// real replay and rejected.
-const refreshReuseGraceWindow = 10 * time.Second
+// real replay and rejected. Increased to 30s to account for users switching
+// between multiple tabs that may have been backgrounded.
+const refreshReuseGraceWindow = 30 * time.Second
 
 func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -415,16 +420,19 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			return
 		}
 
-		newRefreshToken, newExpiresAt := auth.GenerateRefreshToken(userID, remember)
+		rememberedTTL := getRememberedTTL(database)
+		newRefreshToken, newExpiresAt := auth.GenerateRefreshTokenWithTTL(userID, remember, rememberedTTL)
 		if err := insertRefreshToken(database, refreshTokenParams{
-			userID:    userID,
-			token:     newRefreshToken,
-			expiresAt: newExpiresAt,
-			deviceID:  deviceIDVal.String,
-			userAgent: c.Request.UserAgent(),
-			ip:        c.ClientIP(),
-			remember:  remember,
-			jti:       newJTI,
+			userID:           userID,
+			token:            newRefreshToken,
+			expiresAt:        newExpiresAt,
+			deviceID:         deviceIDVal.String,
+			userAgent:        c.Request.UserAgent(),
+			ip:               c.ClientIP(),
+			remember:         remember,
+			jti:              newJTI,
+			screenResolution: c.GetHeader("X-Screen-Resolution"),
+			timezone:         c.GetHeader("X-Timezone"),
 		}); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
@@ -645,22 +653,24 @@ func ChangePassword(database *sql.DB) gin.HandlerFunc {
 }
 
 type refreshTokenParams struct {
-	userID    int
-	token     string
-	expiresAt time.Time
-	deviceID  string
-	userAgent string
-	ip        string
-	remember  bool
-	jti       string
+	userID           int
+	token            string
+	expiresAt        time.Time
+	deviceID         string
+	userAgent        string
+	ip               string
+	remember         bool
+	jti              string
+	screenResolution string
+	timezone         string
 }
 
 func insertRefreshToken(db *sql.DB, p refreshTokenParams) error {
 	tokenHash := auth.HashRefreshToken(p.token)
 	_, err := db.Exec(
-		`INSERT INTO refresh_tokens (user_id, token, token_hash, expires_at, used, device_id, user_agent, ip, remember, jti, last_used_at)
-		 VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8, $9, NOW())`,
-		p.userID, p.token, tokenHash, p.expiresAt, p.deviceID, p.userAgent, p.ip, p.remember, p.jti,
+		`INSERT INTO refresh_tokens (user_id, token, token_hash, expires_at, used, device_id, user_agent, ip, remember, jti, last_used_at, screen_resolution, timezone)
+		 VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8, $9, NOW(), $10, $11)`,
+		p.userID, p.token, tokenHash, p.expiresAt, p.deviceID, p.userAgent, p.ip, p.remember, p.jti, p.screenResolution, p.timezone,
 	)
 	return err
 }
@@ -669,4 +679,13 @@ func getUserID(db *sql.DB, username string) (int64, error) {
 	var id int64
 	err := db.QueryRow("SELECT id FROM users WHERE username = $1", username).Scan(&id)
 	return id, err
+}
+
+func getRememberedTTL(database *sql.DB) time.Duration {
+	val := db.GetSetting(database, "session_remembered_max_days", "60")
+	days, err := strconv.Atoi(val)
+	if err != nil || days <= 0 || days > 365 {
+		return auth.RememberedRefreshTokenTTL
+	}
+	return time.Duration(days) * 24 * time.Hour
 }
