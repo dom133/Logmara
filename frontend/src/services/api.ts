@@ -176,7 +176,7 @@ export async function exportCSV(params: Record<string, string>) {
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
-  a.download = 'syslog_export.csv'
+  a.download = 'syslog_logs.csv'
   a.click()
   URL.revokeObjectURL(url)
 }
@@ -187,29 +187,29 @@ export async function exportHTML(params: Record<string, string>) {
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
-  a.download = 'syslog_report.html'
+  a.download = 'syslog_logs_report.html'
   a.click()
   URL.revokeObjectURL(url)
 }
 
-export async function exportDashboardCSV(id: number, params: Record<string, string>) {
+export async function exportDashboardCSV(id: number, params: Record<string, string>, dashboardName: string) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
   const res = await api.post(`/dashboards/${id}/export/csv`, { ...params, tz }, { responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
-  a.download = 'syslog_export.csv'
+  a.download = `syslog_${dashboardName.replace(/[^a-zA-Z0-9_\-\s]/g, '_')}.csv`
   a.click()
   URL.revokeObjectURL(url)
 }
 
-export async function exportDashboardHTML(id: number, params: Record<string, string>) {
+export async function exportDashboardHTML(id: number, params: Record<string, string>, dashboardName: string) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
   const res = await api.post(`/dashboards/${id}/export/html`, { ...params, tz }, { responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
-  a.download = 'syslog_report.html'
+  a.download = `syslog_${dashboardName.replace(/[^a-zA-Z0-9_\-\s]/g, '_')}_report.html`
   a.click()
   URL.revokeObjectURL(url)
 }

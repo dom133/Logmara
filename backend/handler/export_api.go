@@ -235,7 +235,7 @@ func queryLogs(database *sql.DB, whereSQL string, args []interface{}, limit int,
 		limitIdx := cursorIdx + 4
 
 		query := fmt.Sprintf(
-			"SELECT to_char(timestamp AT TIME ZONE $%d, 'YYYY-MM-DD HH24:MI:SS') as ts, id, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers FROM syslog_logs %s AND (timestamp < $%d OR (timestamp = $%d AND id < $%d)) ORDER BY timestamp DESC, id DESC LIMIT $%d",
+			"SELECT to_char(timestamp AT TIME ZONE $%d, 'YYYY-MM-DD HH24:MI:SS') as ts, id, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, extract(epoch from timestamp) as ts_epoch FROM syslog_logs %s AND (timestamp < $%d OR (timestamp = $%d AND id < $%d)) ORDER BY timestamp DESC, id DESC LIMIT $%d",
 			tzIdx, whereSQL, tsCursorIdx, tsCursorIdx, idCursorIdx, limitIdx,
 		)
 
@@ -247,14 +247,14 @@ func queryLogs(database *sql.DB, whereSQL string, args []interface{}, limit int,
 		}
 		defer rows.Close()
 
-		logs = scanLogRowsJSON(rows)
+		logs = scanLogRowsJSONWithEpoch(rows)
 		hasMore = len(logs) == limit
 	} else {
 		tzIdx := len(args) + 1
 		limitIdx := tzIdx + 1
 
 		query := fmt.Sprintf(
-			"SELECT to_char(timestamp AT TIME ZONE $%d, 'YYYY-MM-DD HH24:MI:SS') as ts, id, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers FROM syslog_logs %s ORDER BY timestamp DESC, id DESC LIMIT $%d",
+			"SELECT to_char(timestamp AT TIME ZONE $%d, 'YYYY-MM-DD HH24:MI:SS') as ts, id, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, extract(epoch from timestamp) as ts_epoch FROM syslog_logs %s ORDER BY timestamp DESC, id DESC LIMIT $%d",
 			tzIdx, whereSQL, limitIdx,
 		)
 
@@ -266,23 +266,23 @@ func queryLogs(database *sql.DB, whereSQL string, args []interface{}, limit int,
 		}
 		defer rows.Close()
 
-		logs = scanLogRowsJSON(rows)
+		logs = scanLogRowsJSONWithEpoch(rows)
 		hasMore = len(logs) == limit
 	}
 
 	if hasMore && len(logs) > 0 {
 		last := logs[len(logs)-1]
-		if tsStr, ok := last["ts"].(string); ok {
+		if tsEpoch, ok := last["ts_epoch"].(float64); ok {
 			if idVal, ok := last["id"].(float64); ok {
-				if ts, err := time.ParseInLocation("2006-01-02 15:04:05", tsStr, time.UTC); err == nil {
-					nextCursor = encodeLogCursor(ts, int64(idVal))
-				}
+				ts := time.Unix(int64(tsEpoch), 0).UTC()
+				nextCursor = encodeLogCursor(ts, int64(idVal))
 			}
 		}
 	}
 
 	for i := range logs {
 		delete(logs[i], "id")
+		delete(logs[i], "ts_epoch")
 	}
 
 	return logs, hasMore, nextCursor
@@ -311,6 +311,53 @@ func scanLogRowsJSON(rows *sql.Rows) []gin.H {
 		l["message"] = message
 		l["ts"] = tsStr
 		l["id"] = id
+		l["fromhost_ip"] = fromHostIP.String
+		l["app_name"] = appName.String
+		l["process_id"] = processID.String
+		l["msg_id"] = msgID.String
+		l["raw_message"] = rawMessage.String
+
+		var pf map[string]string
+		if len(parsedFields) > 0 {
+			json.Unmarshal(parsedFields, &pf)
+		}
+		l["parsed_fields"] = pf
+		l["matched_parsers"] = matchedParsers
+
+		logs = append(logs, l)
+	}
+	if logs == nil {
+		logs = []gin.H{}
+	}
+	return logs
+}
+
+// scanLogRowsJSONWithEpoch is like scanLogRowsJSON but also scans the
+// ts_epoch column for accurate cursor encoding regardless of timezone.
+func scanLogRowsJSONWithEpoch(rows *sql.Rows) []gin.H {
+	var logs []gin.H
+	for rows.Next() {
+		var tsStr string
+		var id, tsEpoch float64
+		var hostname, severity, facility, message string
+		var fromHostIP, appName, processID, msgID, rawMessage sql.NullString
+		var parsedFields json.RawMessage
+		var matchedParsers pq.StringArray
+
+		err := rows.Scan(&tsStr, &id, &hostname, &fromHostIP, &appName, &processID, &msgID, &severity, &facility, &message, &rawMessage, &parsedFields, &matchedParsers, &tsEpoch)
+		if err != nil {
+			slog.Error("export API: row scan failed", "error", err)
+			continue
+		}
+
+		l := gin.H{}
+		l["hostname"] = hostname
+		l["severity"] = severity
+		l["facility"] = facility
+		l["message"] = message
+		l["ts"] = tsStr
+		l["id"] = id
+		l["ts_epoch"] = tsEpoch
 		l["fromhost_ip"] = fromHostIP.String
 		l["app_name"] = appName.String
 		l["process_id"] = processID.String

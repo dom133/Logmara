@@ -145,8 +145,9 @@ export default function DashboardViewPage() {
     if (from) params.from = from
     if (to) params.to = to
 
-    if (format === 'csv') exportDashboardCSV(dashboardId, params)
-    else exportDashboardHTML(dashboardId, params)
+    const name = dashboard?.name || 'dashboard'
+    if (format === 'csv') exportDashboardCSV(dashboardId, params, name)
+    else exportDashboardHTML(dashboardId, params, name)
     message.success(t('dashboard.exporting', { format: format.toUpperCase() }))
   }
 

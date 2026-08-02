@@ -25,7 +25,7 @@ const (
 	RefreshTokenCookieName = "refreshToken"
 	CSRFTokenCookieName    = "csrf_token"
 	DeviceIDCookieName     = "device_id"
-	deviceIDCookieMaxAge   = 400 * 24 * 60 * 60 // ~400 days, the practical cap browsers enforce on cookie lifetime
+	deviceIDCookieMaxAge   = 30 * 24 * 60 * 60 // 30 days
 )
 
 // isHTTPS returns true if the request arrived over HTTPS, either directly
@@ -85,7 +85,7 @@ func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpi
 		MaxAge:   accessMaxAge,
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 	})
 
 	http.SetCookie(c.Writer, &http.Cookie{
@@ -96,7 +96,7 @@ func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpi
 		MaxAge:   refreshMaxAge,
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 	})
 }
 
@@ -121,7 +121,7 @@ func clearAuthCookies(c *gin.Context) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 	})
 
 	http.SetCookie(c.Writer, &http.Cookie{
@@ -132,7 +132,7 @@ func clearAuthCookies(c *gin.Context) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 	})
 }
 
@@ -167,29 +167,43 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 
 		var user *db.User
 
+		// Always run bcrypt to prevent timing-based user enumeration.
+		// Lockout and active checks happen AFTER password verification so
+		// that response timing doesn't leak whether an account exists, is
+		// locked, or is deactivated.
+		dummyHash := "$2b$14$AAAAAAAAAAAAAAAAAAAAAAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 		existing, err := db.GetUserByUsername(database, req.Username)
 		if err == nil {
-			if locked, _ := db.CheckUserLockout(database, existing.ID); locked {
-				audit.LogAudit(database, existing.ID, req.Username, "login_failed_lockout", c.ClientIP(), "account locked due to too many failed attempts")
-				c.JSON(http.StatusTooManyRequests, gin.H{"error": "Account temporarily locked due to too many failed login attempts. Try again later.", "error_key": "auth.accountLocked"})
-				return
-			}
-			if !existing.IsActive {
-				dummyHash := "$2b$14$AAAAAAAAAAAAAAAAAAAAAAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-				bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(req.Password))
-				audit.LogAudit(database, existing.ID, req.Username, "login_failed_inactive", c.ClientIP(), "account deactivated by admin")
-				c.JSON(http.StatusForbidden, gin.H{"error": "Your account has been deactivated. Contact your administrator.", "error_key": "auth.accountDeactivated"})
-				return
-			}
 			if err := bcrypt.CompareHashAndPassword([]byte(existing.PasswordHash), []byte(req.Password)); err == nil {
-				user = existing
+				// Password matched -- now check lockout and active status.
+				if locked, _ := db.CheckUserLockout(database, existing.ID); locked {
+					audit.LogAudit(database, existing.ID, req.Username, "login_failed_lockout", c.ClientIP(), "account locked due to too many failed attempts")
+				} else if !existing.IsActive {
+					audit.LogAudit(database, existing.ID, req.Username, "login_failed_inactive", c.ClientIP(), "account deactivated by admin")
+				} else {
+					user = existing
+				}
+			} else {
+				// Wrong password -- increment failure counter.
+				newFailed, locked, incrErr := db.IncrementFailedLogins(database, existing.ID)
+				if incrErr != nil {
+					slog.Error("failed to increment failed logins", "error", incrErr, "user_id", existing.ID)
+				}
+				if locked {
+					audit.LogAudit(database, existing.ID, req.Username, "user_locked", c.ClientIP(), fmt.Sprintf("account locked after %d failed attempts", newFailed))
+				}
 			}
+			// Consume dummy bcrypt so timing is identical to the "user not
+			// found" path.
+			bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(req.Password))
+		} else {
+			// User not found locally -- still run bcrypt for constant timing.
+			bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(req.Password))
 		}
 
+		// Try LDAP only if no local user authenticated successfully.
 		if user == nil {
-			dummyHash := "$2b$14$AAAAAAAAAAAAAAAAAAAAAAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-			bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(req.Password))
-
 			ldapCfg := ldap.LoadConfig(func(key, def string) string {
 				return db.GetSetting(database, key, def)
 			})
@@ -212,35 +226,23 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 							if err != nil {
 								slog.Error("ldap auto-provision failed", "error", err)
 								audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "auto-provision failed")
-								c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials", "error_key": "auth.invalidCredentials"})
-								return
+							} else {
+								user = u
 							}
-							user = u
 						} else {
 							audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "user not found locally")
-							c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials", "error_key": "auth.invalidCredentials"})
-							return
 						}
 					} else {
 						user = existing
 					}
 				}
 			}
+		}
 
-			if user == nil {
-				if existing != nil {
-					newFailed, locked, err := db.IncrementFailedLogins(database, existing.ID)
-					if err != nil {
-						slog.Error("failed to increment failed logins", "error", err, "user_id", existing.ID)
-					}
-					if locked {
-						audit.LogAudit(database, existing.ID, req.Username, "user_locked", c.ClientIP(), fmt.Sprintf("account locked after %d failed attempts", newFailed))
-					}
-				}
-				audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "invalid user or inactive")
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials", "error_key": "auth.invalidCredentials"})
-				return
-			}
+		if user == nil {
+			audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "invalid credentials")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials", "error_key": "auth.invalidCredentials"})
+			return
 		}
 
 		db.ResetFailedLogins(database, user.ID)
