@@ -627,6 +627,7 @@ r := gin.New()
 
 	authGroup := r.Group("/api")
 	authGroup.Use(authCfg.JWTRequired())
+	authGroup.Use(handler.RefreshDeviceID())
 	authGroup.Use(handler.CSRFRequired())
 	{
 		authGroup.POST("/logs", handler.GetLogs(database))

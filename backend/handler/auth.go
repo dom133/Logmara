@@ -61,6 +61,27 @@ func deviceID(c *gin.Context) string {
 	return id
 }
 
+// RefreshDeviceID is a middleware that keeps the device_id cookie alive by
+// re-setting it on every authenticated request. Without this, the cookie
+// would expire after 60 days while the session in the database is still
+// valid, causing ListSessions to mark no session as "this device".
+func RefreshDeviceID() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if id, err := c.Cookie(DeviceIDCookieName); err == nil && id != "" {
+			http.SetCookie(c.Writer, &http.Cookie{
+				Name:     DeviceIDCookieName,
+				Value:    id,
+				Path:     "/",
+				MaxAge:   deviceIDCookieMaxAge,
+				HttpOnly: true,
+				Secure:   isHTTPS(c),
+				SameSite: http.SameSiteLaxMode,
+			})
+		}
+		c.Next()
+	}
+}
+
 func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpiry, refreshExpiry time.Time) {
 	csrf := generateCSRFToken()
 	accessMaxAge := int(time.Until(accessExpiry).Seconds())
