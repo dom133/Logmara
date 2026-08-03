@@ -425,7 +425,7 @@ export default function App() {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flexDirection: 'column', gap: 16, height: '100vh' }}>
         <Spin size="large" />
-        <Typography.Text type="secondary">{i18n ? t('system.starting') : 'System starting... Please wait'}</Typography.Text>
+        <Typography.Text type="secondary">System starting... Please wait</Typography.Text>
       </div>
     )
   }
