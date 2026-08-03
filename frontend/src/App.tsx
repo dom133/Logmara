@@ -421,19 +421,11 @@ export default function App() {
     return () => { cancelled = true }
   }, [])
 
-  if (starting) {
+  if (starting || initialized === null || !i18n) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flexDirection: 'column', gap: 16, height: '100vh' }}>
         <Spin size="large" />
-        <Typography.Text type="secondary">System starting... Please wait</Typography.Text>
-      </div>
-    )
-  }
-
-  if (initialized === null || !i18n) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
-        <Spin size="large" />
+        <Typography.Text type="secondary">{i18n ? t('system.starting') : 'System starting... Please wait'}</Typography.Text>
       </div>
     )
   }
