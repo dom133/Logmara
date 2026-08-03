@@ -618,7 +618,7 @@ r := gin.New()
 	metricsGroup.GET("/metrics", handler.PrometheusMetrics(database))
 
 	r.POST("/api/auth/login", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(loginLimiter), handler.Login(database, authCfg))
-	r.POST("/api/auth/refresh", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(refreshLimiter), handler.Refresh(database, authCfg))
+	r.POST("/api/auth/refresh", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(refreshLimiter), handler.RefreshDeviceID(), handler.Refresh(database, authCfg))
 	r.POST("/api/auth/logout", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.Logout(database))
 	r.GET("/api/status/initialized", handler.CheckInitialized(database))
 	r.POST("/api/init", middleware.RequireJSON(), middleware.MaxRequestBodySize(8*1024), rateLimitMiddleware(initLimiter), handler.Initialize(database))
