@@ -30,10 +30,11 @@ global_defs {
     # ignored as an unrecognized global_defs key (no parse error, no
     # effect) rather than rejected, which is what makes this so easy to
     # get wrong: see https://github.com/acassen/keepalived/issues/901.
-    # `user root` on the script below is what makes it safe to enable
+    # `user root` on the scripts below is what makes it safe to enable
     # without also having to provision a dedicated unprivileged
     # 'keepalived_script' system user.
     enable_script_security
+    default_user root
 }
 
 vrrp_script check_rsyslog {
