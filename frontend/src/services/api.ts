@@ -479,6 +479,10 @@ export async function checkSession() {
 	await api.get('/auth/session-check')
 }
 
+export async function reportActivity() {
+	await api.post('/auth/activity', {})
+}
+
 export async function getUsers() {
 	const res = await api.get('/admin/users')
 	return (res.data || []) as User[]

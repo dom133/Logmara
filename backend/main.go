@@ -629,6 +629,7 @@ r := gin.New()
 	authGroup.Use(authCfg.JWTRequired())
 	authGroup.Use(handler.RefreshDeviceID())
 	authGroup.Use(handler.CSRFRequired())
+	authGroup.Use(middleware.UpdateSessionActivity(database))
 	{
 		authGroup.POST("/logs", handler.GetLogs(database))
 		authGroup.POST("/logs/count", handler.GetLogsCount(database))
@@ -646,6 +647,7 @@ r := gin.New()
 		authGroup.GET("/auth/sessions", handler.ListSessions(database))
 		authGroup.DELETE("/auth/sessions/:id", handler.RevokeSession(database))
 		authGroup.GET("/auth/session-check", handler.CheckSession(database))
+		authGroup.POST("/auth/activity", handler.Activity(database))
 
 		notificationsGate := handler.RequireNotificationsEnabled(database)
 

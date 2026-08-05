@@ -567,6 +567,16 @@ func CheckSession(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
+// Activity is a lightweight endpoint the frontend calls on user interaction
+// (click, keydown, scroll). The middleware UpdateSessionActivity already
+// updated last_used_at asynchronously - this handler just returns 200 so the
+// frontend can confirm the heartbeat went through.
+func Activity(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	}
+}
+
 func GetMe(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, exists := c.Get("claims")

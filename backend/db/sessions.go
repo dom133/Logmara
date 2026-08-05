@@ -30,6 +30,10 @@ func ListUserSessions(database *sql.DB, userID int64) ([]Session, error) {
 		 FROM refresh_tokens
 		 WHERE user_id = $1 AND used = false AND expires_at > NOW()
 		   AND (replaced_by IS NULL OR replaced_by = '')
+		   AND (
+		     remember = true
+		     OR COALESCE(last_used_at, created_at) > NOW() - (COALESCE((SELECT value FROM app_settings WHERE key = 'session_timeout_min'), '15')::int || ' minutes')::INTERVAL
+		   )
 		 ORDER BY COALESCE(last_used_at, created_at) DESC`,
 		userID,
 	)
