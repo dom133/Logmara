@@ -109,6 +109,11 @@ func (s *lineSplitter) split(data []byte, atEOF bool) (advance int, token []byte
 // malformed JSON from mid-line splits during leader handoff.
 const vipMarkerPath = "/data/.vip_master"
 
+// myNodeEnvKey is the environment variable that holds this API replica's
+// host node hostname (rendered from docker-stack.app.yml via Swarm's
+// {{.Node.Hostname}} template var).
+const myNodeEnvKey = "MY_NODE"
+
 // vipCheckInterval is how often each API replica polls for the VIP marker
 // file. 5s is fast enough to resume tailing after a failover without
 // burning CPU on stat calls.
@@ -148,6 +153,12 @@ func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine
 }
 
 func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+	myNode := strings.TrimSpace(os.Getenv(myNodeEnvKey))
+	if myNode == "" {
+		slog.Warn("tailer: MY_NODE not set, falling back to os.Hostname()")
+		myNode, _ = os.Hostname()
+	}
+
 	startupJitter := time.Duration(rand.Int63n(int64(vipStartupJitterMax)))
 	if !sleepOrDone(ctx, vipStartupDelay+startupJitter) {
 		return
@@ -158,18 +169,18 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 			return
 		}
 
-		// Wait for the VIP marker file to appear on this node's NFS mount.
-		// It's created by keepalived's notify_master when this node becomes
-		// the VRRP master. stat() is cheap and the interval is long enough
-		// to not spin.
-		if _, err := os.Stat(vipMarkerPath); err != nil {
+		// Read the VIP marker file and check if it contains our node's
+		// hostname. The marker is written by keepalived's notify_master
+		// script. Only the replica on the VIP-holding node will match.
+		markerNode, err := readMarkerNode()
+		if err != nil || markerNode != myNode {
 			if !sleepOrDone(ctx, vipCheckInterval) {
 				return
 			}
 			continue
 		}
 
-		slog.Info("tailer: VIP marker detected, starting ingestion")
+		slog.Info("tailer: VIP marker matches this node, starting ingestion", "my_node", myNode)
 		leaderCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
 		go func() {
@@ -177,9 +188,9 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 			runIngestionLoop(leaderCtx, db, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
 		}()
 
-		// While tailing, periodically check that the VIP marker still exists.
-		// If it disappears (this node lost the VIP), stop the tailer and loop
-		// back to wait for it to reappear.
+		// While tailing, periodically check that the VIP marker still
+		// contains our hostname. If it changes or disappears, stop and
+		// loop back.
 	vipLoop:
 		for {
 			select {
@@ -188,8 +199,9 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 				<-done
 				return
 			case <-time.After(vipCheckInterval):
-				if _, err := os.Stat(vipMarkerPath); err != nil {
-					slog.Warn("tailer: VIP marker disappeared, stepping down")
+				markerNode, err := readMarkerNode()
+				if err != nil || markerNode != myNode {
+					slog.Warn("tailer: VIP marker no longer matches this node, stepping down", "my_node", myNode, "marker_node", markerNode)
 					cancel()
 					<-done
 					break vipLoop
@@ -197,6 +209,16 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 			}
 		}
 	}
+}
+
+// readMarkerNode reads the VIP marker file and returns the hostname
+// stored in it. Returns an error if the file doesn't exist or can't be read.
+func readMarkerNode() (string, error) {
+	data, err := os.ReadFile(vipMarkerPath)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 // sleepOrDone waits for d or until ctx is cancelled, whichever comes first.

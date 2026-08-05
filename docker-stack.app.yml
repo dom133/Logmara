@@ -182,6 +182,7 @@ services:
       # os.Hostname() (the container ID) when unset, e.g. plain
       # docker-compose.yml, which doesn't support this templating.
       SWARM_TASK_IDENTITY: "{{.Node.Hostname}}.{{.Task.Slot}}"
+      MY_NODE: "{{.Node.Hostname}}"
       # Every credential below is mounted as a Docker Swarm secret (see the
       # `secrets:` list below and the top-level `secrets:` section) rather
       # than passed as a plain env var - none of them appear in `docker
