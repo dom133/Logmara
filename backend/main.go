@@ -388,7 +388,6 @@ func main() {
 		// auth/routes/tailer below only need the schema, not fresh views.
 		db.RefreshMaterializedViews(database)
 		db.ApplyEnvSettingOverrides(database)
-		db.SetAppStarting(false)
 		slog.Info("database migration and initialization complete")
 	}()
 
@@ -810,6 +809,7 @@ r := gin.New()
 	}
 
 	go func() {
+		db.SetAppStarting(false)
 		slog.Info("server starting", "port", port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server failed", "error", err)
