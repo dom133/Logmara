@@ -116,12 +116,12 @@ func (s *lineSplitter) split(data []byte, atEOF bool) (advance int, token []byte
 // now-unlinked one forever. Callers are expected to pass a real function
 // (main.go wires in handler.ReopenRsyslogLogFile); nil is only tolerated
 // here for tests that don't exercise the compaction path.
-func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error) {
+func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
 	if elector == nil {
-		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile)
+		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
 		return
 	}
-	runWithLeaderElection(ctx, db, filePath, engine, ic, elector, alerts, rate, reopenLogFile)
+	runWithLeaderElection(ctx, db, filePath, engine, ic, elector, alerts, rate, reopenLogFile, sharedClient)
 }
 
 const (
@@ -138,7 +138,7 @@ const (
 	startupJitterMax = 3 * time.Second
 )
 
-func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error) {
+func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
 	startupJitter := time.Duration(rand.Int63n(int64(startupJitterMax)))
 	if !sleepOrDone(ctx, startupJitter) {
 		return
@@ -162,7 +162,7 @@ func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, eng
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			runIngestionLoop(leaderCtx, db, filePath, engine, ic, alerts, rate, reopenLogFile)
+			runIngestionLoop(leaderCtx, db, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
 		}()
 
 		consecutiveFails := 0
@@ -218,13 +218,13 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error) {
+func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
 	slog.Info("file tailer started", "path", filePath)
 	batchSize := 500
 	batchInterval := 2 * time.Second
 
 	posFile := filepath.Join(filepath.Dir(filePath), positionFileName)
-	filePos, flushedPos := loadStartPosition(db, filePath, posFile)
+	filePos, flushedPos := loadStartPosition(db, filePath, posFile, sharedClient)
 
 	var entries []model.IngestEntry
 	lastFlush := time.Now()
@@ -239,7 +239,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 				slog.Error("final flush error", "error", err)
 			} else {
 				flushedPos = batchStartPos
-				savePosition(posFile, flushedPos, filePath)
+				savePosition(posFile, flushedPos, filePath, sharedClient)
 				alerts.EvaluateBatch(db, entries)
 			}
 		}
@@ -295,7 +295,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			f = newF
 			filePos = 0
 			flushedPos = 0
-			savePosition(posFile, 0, filePath)
+			savePosition(posFile, 0, filePath, sharedClient)
 			lastCompaction = time.Now()
 		}
 
@@ -305,6 +305,38 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 				return
 			}
 			continue
+		}
+
+		// Backseek validation: if filePos is in the middle of a line (the
+		// byte before it is not '\n'), seek back to the start of that line.
+		// This protects against a stale NFS position that landed mid-line
+		// after a leader handoff, which would split the line into two bogus
+		// "[MALFORMED JSON]" halves.
+		if filePos > 0 {
+			var checkByte [1]byte
+			if _, err := f.ReadAt(checkByte[:], filePos-1); err == nil && checkByte[0] != '\n' {
+				// Find the previous newline by seeking backward
+				var seekPos int64 = filePos - 1
+				for seekPos > 0 {
+					if _, err := f.ReadAt(checkByte[:], seekPos-1); err != nil {
+						break
+					}
+					if checkByte[0] == '\n' {
+						break
+					}
+					seekPos--
+				}
+				slog.Warn("tailer: position was mid-line, backseeking to line start", "was", filePos, "now", seekPos)
+				filePos = seekPos
+				flushedPos = seekPos
+				if _, err := f.Seek(seekPos, 0); err != nil {
+					f.Close()
+					if !sleepOrDone(ctx, 1*time.Second) {
+						return
+					}
+					continue
+				}
+			}
 		}
 
 		scanner := bufio.NewScanner(f)
@@ -400,7 +432,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 						slog.Error("flush error", "error", err)
 					} else {
 						flushedPos = curFilePos
-						savePosition(posFile, flushedPos, filePath)
+						savePosition(posFile, flushedPos, filePath, sharedClient)
 						alerts.EvaluateBatch(db, entries)
 					}
 				}
@@ -439,7 +471,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 				slog.Error("flush error", "error", err)
 			} else {
 				flushedPos = batchStartPos
-				savePosition(posFile, flushedPos, filePath)
+				savePosition(posFile, flushedPos, filePath, sharedClient)
 				alerts.EvaluateBatch(db, entries)
 			}
 			entries = entries[:0]
@@ -765,13 +797,35 @@ func positionFingerprint(filePath string, pos int64) (fingerprint string, ok boo
 	return hex.EncodeToString(sum[:]), true
 }
 
-func savePosition(path string, pos int64, filePath string) {
+func savePosition(path string, pos int64, filePath string, sharedClient *sharedstate.Client) {
 	fp, ok := positionFingerprint(filePath, pos)
 	if !ok {
 		slog.Warn("could not fingerprint position for save, next restart will fall back to DB if needed", "pos", pos)
 	}
-	if err := os.WriteFile(path, []byte(strconv.FormatInt(pos, 10)+":"+fp), 0644); err != nil {
+	// Use a temp file + rename pattern with Sync to ensure the position
+	// actually hits the NFS disk before a leader handoff occurs.
+	// os.WriteFile does not call Sync, so on NFS the data may linger in
+	// client cache and never reach the server before the old leader is killed.
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(pos, 10)+":"+fp), 0644); err != nil {
 		slog.Error("save position error", "error", err)
+		return
+	}
+	// Sync the temp file to force NFS flush
+	if sf, err := os.OpenFile(tmp, os.O_WRONLY, 0644); err == nil {
+		sf.Sync()
+		sf.Close()
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		slog.Error("save position rename error", "error", err)
+		os.Remove(tmp)
+		return
+	}
+	// Redis-backed position is the primary handoff mechanism in swarm
+	// deployments - NFS file is the fallback. Redis is immediately visible
+	// to the new leader without NFS client-cache delay.
+	if sharedClient != nil {
+		sharedClient.SaveTailerPosition(pos, fp)
 	}
 }
 
@@ -799,7 +853,23 @@ func loadPosition(path string) (pos int64, fingerprint string, ok bool) {
 	return pos, raw[sep+1:], true
 }
 
-func loadStartPosition(db *sql.DB, filePath, posFile string) (filePos, flushedPos int64) {
+func loadStartPosition(db *sql.DB, filePath, posFile string, sharedClient *sharedstate.Client) (filePos, flushedPos int64) {
+	// Try Redis first - immediate visibility across leaders, no NFS cache delay
+	if sharedClient != nil {
+		if pos, flushed, ok := sharedClient.LoadTailerPosition(); ok {
+			if f, err := os.Open(filePath); err == nil {
+				stat, _ := f.Stat()
+				f.Close()
+				if pos <= stat.Size() {
+					slog.Info("restored position from Redis", "pos", pos)
+					return pos, flushed
+				}
+				slog.Warn("Redis position exceeds file size (file was compacted), falling back to file", "pos", pos, "fileSize", stat.Size())
+			}
+		}
+	}
+
+	// Try NFS file as fallback
 	if pos, fp, ok := loadPosition(posFile); ok {
 		if f, err := os.Open(filePath); err == nil {
 			stat, _ := f.Stat()

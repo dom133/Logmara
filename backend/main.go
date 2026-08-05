@@ -800,7 +800,7 @@ r := gin.New()
 			}
 		}
 		sharedstate.WaitForReplicas(ctx, sharedClient, identity, apiReplicas, 10*time.Minute)
-		tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine, logRate, handler.ReopenRsyslogLogFile)
+		tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient)
 	}()
 
 	srv := &http.Server{
