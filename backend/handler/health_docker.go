@@ -75,6 +75,8 @@ type ServiceHealth struct {
 	Image           string            `json:"image"`
 	ReplicasDesired int               `json:"replicas_desired"`
 	ReplicasRunning int               `json:"replicas_running"`
+	OverallState    string            `json:"overall_state"`
+	NodeNames       []string          `json:"node_names"`
 	Tasks           []ContainerHealth `json:"tasks"`
 }
 
@@ -225,6 +227,27 @@ func parseDockerHealth(status string) string {
 	return ""
 }
 
+func computeServiceState(states map[string]int, tasks []ContainerHealth) string {
+	if len(tasks) == 0 {
+		return "none"
+	}
+	total := 0
+	running := 0
+	for state, count := range states {
+		total += count
+		if state == "running" {
+			running += count
+		}
+	}
+	if running == 0 {
+		return "degraded"
+	}
+	if running == total {
+		return "running"
+	}
+	return "partial"
+}
+
 func fetchSwarmServices(ctx context.Context) ([]ServiceHealth, error) {
 	var svcs []struct {
 		ID   string `json:"ID"`
@@ -282,7 +305,8 @@ func fetchSwarmServices(ctx context.Context) ([]ServiceHealth, error) {
 	}
 
 	tasksByService := make(map[string][]ContainerHealth)
-	runningByService := make(map[string]int)
+	stateCountByService := make(map[string]map[string]int)
+	nodeSetByService := make(map[string]map[string]struct{})
 	for _, t := range tasks {
 		if t.DesiredState != "running" {
 			continue
@@ -301,9 +325,14 @@ func fetchSwarmServices(ctx context.Context) ([]ServiceHealth, error) {
 			Status: t.Status.Message,
 			Node:   node,
 		})
-		if t.Status.State == "running" {
-			runningByService[t.ServiceID]++
+		if stateCountByService[t.ServiceID] == nil {
+			stateCountByService[t.ServiceID] = make(map[string]int)
 		}
+		stateCountByService[t.ServiceID][t.Status.State]++
+		if nodeSetByService[t.ServiceID] == nil {
+			nodeSetByService[t.ServiceID] = make(map[string]struct{})
+		}
+		nodeSetByService[t.ServiceID][node] = struct{}{}
 	}
 
 	out := make([]ServiceHealth, 0, len(svcs))
@@ -316,12 +345,22 @@ func fetchSwarmServices(ctx context.Context) ([]ServiceHealth, error) {
 		} else if s.Spec.Mode.Replicated != nil {
 			desired = s.Spec.Mode.Replicated.Replicas
 		}
+
+		overallState := computeServiceState(stateCountByService[s.ID], tasksByService[s.ID])
+
+		var nodeNamesList []string
+		for n := range nodeSetByService[s.ID] {
+			nodeNamesList = append(nodeNamesList, n)
+		}
+
 		out = append(out, ServiceHealth{
 			Name:            s.Spec.Name,
 			Mode:            mode,
 			Image:           s.Spec.TaskTemplate.ContainerSpec.Image,
 			ReplicasDesired: desired,
-			ReplicasRunning: runningByService[s.ID],
+			ReplicasRunning: stateCountByService[s.ID]["running"],
+			OverallState:    overallState,
+			NodeNames:       nodeNamesList,
 			Tasks:           tasksByService[s.ID],
 		})
 	}
