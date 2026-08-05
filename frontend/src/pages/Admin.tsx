@@ -1170,36 +1170,42 @@ const handleCleanup = async () => {
                         expandable={{
                           rowExpandable: (s) => s.tasks.length > 0,
                           expandedRowRender: (s) => (
-                            <Table
-                              rowKey={(t, i) => `${s.name}-${i}`}
-                              dataSource={s.tasks}
-                              pagination={false}
-                              size="small"
-                              columns={[
-                                {
-                                  title: t('admin.node'),
-                                  dataIndex: 'node',
-                                  key: 'node',
-                                  render: (node: string) => (
-                                    <Space>
-                                      <NodeIndexOutlined style={{ color: '#1890ff' }} />
-                                      <span>{node}</span>
-                                    </Space>
-                                  ),
-                                },
-                                {
-                                  title: t('admin.state'),
-                                  dataIndex: 'state',
-                                  key: 'state',
-                                  render: (state: string) => (
-                                    <Tag color={containerStateColor(state)}>
-                                      {containerStateIcon(state)} {state}
-                                    </Tag>
-                                  ),
-                                },
-                                { title: t('admin.message'), dataIndex: 'status', key: 'status', ellipsis: true },
-                              ]}
-                            />
+                            <div style={{ width: '100%', overflow: 'hidden' }}>
+                              <Table
+                                rowKey={(t, i) => `${s.name}-${i}`}
+                                dataSource={s.tasks}
+                                pagination={false}
+                                size="small"
+                                tableLayout="fixed"
+                                scroll={{ x: 600 }}
+                                columns={[
+                                  {
+                                    title: t('admin.node'),
+                                    dataIndex: 'node',
+                                    key: 'node',
+                                    width: 200,
+                                    render: (node: string) => (
+                                      <Space>
+                                        <NodeIndexOutlined style={{ color: '#1890ff' }} />
+                                        <span>{node}</span>
+                                      </Space>
+                                    ),
+                                  },
+                                  {
+                                    title: t('admin.state'),
+                                    dataIndex: 'state',
+                                    key: 'state',
+                                    width: 120,
+                                    render: (state: string) => (
+                                      <Tag color={containerStateColor(state)}>
+                                        {containerStateIcon(state)} {state}
+                                      </Tag>
+                                    ),
+                                  },
+                                  { title: t('admin.message'), dataIndex: 'status', key: 'status', ellipsis: true },
+                                ]}
+                              />
+                            </div>
                           ),
                         }}
                       />
