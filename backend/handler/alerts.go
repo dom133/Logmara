@@ -103,6 +103,21 @@ func DeleteAlert(engine *alertengine.Engine) gin.HandlerFunc {
 			return
 		}
 
+		alert, err := db.GetAlert(database, id)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				middleware.HandleError(c, model.NewNotFoundKey("alerts.notFound", "Alert rule not found", nil))
+				return
+			}
+			middleware.HandleError(c, model.NewInternalKey("alerts.deleteFailed", "Failed to delete alert rule", err))
+			return
+		}
+
+		if model.IsAdminOnlyRuleType(alert.RuleType) && !db.IsUserAdmin(database, c.GetInt64("user_id")) {
+			middleware.HandleError(c, model.NewForbiddenKey("alerts.adminOnlyDelete", "Only admins can delete this alert rule", nil))
+			return
+		}
+
 		if err := db.DeleteAlert(database, id); err != nil {
 			middleware.HandleError(c, model.NewInternalKey("alerts.deleteFailed", "Failed to delete alert rule", err))
 			return

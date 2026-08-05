@@ -17,7 +17,7 @@ import { getErrorMessage } from '../utils/error'
 import AlertFormModal from '../components/AlertFormModal'
 import ChannelFormModal from '../components/ChannelFormModal'
 import NotificationDetailModal from '../components/NotificationDetailModal'
-import { getRuleTypeLabels, getChannelTypeLabels, historyStatusColor } from '../constants/alertConstants'
+import { getRuleTypeLabels, getChannelTypeLabels, historyStatusColor, adminOnlyRuleTypes } from '../constants/alertConstants'
 import { HistoryGroup, groupHistoryEntries } from '../components/historyTypes'
 
 const { Title, Text } = Typography
@@ -149,14 +149,17 @@ function RulesTab({ canEdit, isAdmin, active }: { canEdit: boolean; isAdmin: boo
     { title: t('alerts.lastFired'), dataIndex: 'last_fired_at', key: 'last_fired_at', render: (v?: string) => v ? new Date(v).toLocaleString() : '-' },
     {
       title: t('common.actions'), key: 'actions',
-      render: (_v: unknown, r: Alert) => (
-        <Space>
-          {canEdit && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />}
-          {canEdit && <Popconfirm title={t('alerts.deleteConfirm')} onConfirm={() => handleDelete(r.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>}
-        </Space>
-      ),
+      render: (_v: unknown, r: Alert) => {
+        const canManage = canEdit && (isAdmin || !adminOnlyRuleTypes.includes(r.rule_type))
+        return (
+          <Space>
+            {canManage && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />}
+            {canManage && <Popconfirm title={t('alerts.deleteConfirm')} onConfirm={() => handleDelete(r.id)}>
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Popconfirm>}
+          </Space>
+        )
+      },
     },
   ]
 
