@@ -21,7 +21,7 @@
 set -euo pipefail
 
 EVENT="${2:-}"
-MARKER="${4:-/data/.vip_master}"
+MARKER="${3:-/data/.vip_master}"
 LOCAL_STATE="/var/run/keepalived-vip-master"
 
 case "$EVENT" in
