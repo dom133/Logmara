@@ -714,6 +714,8 @@ export interface ServiceHealth {
 	image: string
 	replicas_desired: number
 	replicas_running: number
+	overall_state: string
+	node_names: string[]
 	tasks: ContainerHealth[]
 }
 
