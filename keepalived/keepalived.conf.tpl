@@ -20,13 +20,6 @@
 # L3 routed networks and most cloud VPCs where multicast is blocked.
 
 global_defs {
-    # Required since keepalived 2.x: without this, keepalived refuses to
-    # actually run vrrp_script below (it logs "SECURITY VIOLATION - scripts
-    # are being executed but script_security not enabled" and synthesizes a
-    # failing exit code instead) - which silently traps this node in FAULT
-    # state forever, so it can never take over the VIP even when the peer
-    # genuinely goes down.
-    enable_script_security
 }
 
 vrrp_script check_rsyslog {
