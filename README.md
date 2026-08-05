@@ -531,12 +531,14 @@ export STATE=MASTER PRIORITY=150 \
        MY_IP=10.0.0.21 \
        PEER_IPS="        10.0.0.22" \
        VIP=10.0.0.100 VIP_CIDR=24 INTERFACE=eth0 \
-       VRRP_AUTH_PASS=<the-8-char-pass-from-above>
+       VRRP_AUTH_PASS=<the-8-char-pass-from-above> \
+       VIP_MARKER_PATH=/srv/syslog-ha/nfs/log_data
 
 envsubst < keepalived/keepalived.conf.tpl | sudo tee /etc/keepalived/keepalived.conf > /dev/null
 sudo cp keepalived/check_rsyslog.sh /etc/keepalived/check_rsyslog.sh
 sudo cp keepalived/check_haproxy_app.sh /etc/keepalived/check_haproxy_app.sh
-sudo chmod +x /etc/keepalived/check_rsyslog.sh /etc/keepalived/check_haproxy_app.sh
+sudo cp keepalived/notify_vip.sh /etc/keepalived/notify_vip.sh
+sudo chmod +x /etc/keepalived/check_rsyslog.sh /etc/keepalived/check_haproxy_app.sh /etc/keepalived/notify_vip.sh
 sudo systemctl enable --now keepalived
 ```
 
@@ -552,12 +554,14 @@ export STATE=BACKUP PRIORITY=100 \
        MY_IP=10.0.0.22 \
        PEER_IPS="        10.0.0.21" \
        VIP=10.0.0.100 VIP_CIDR=24 INTERFACE=eth0 \
-       VRRP_AUTH_PASS=<the-same-8-char-pass>
+       VRRP_AUTH_PASS=<the-same-8-char-pass> \
+       VIP_MARKER_PATH=/srv/syslog-ha/nfs/log_data
 
 envsubst < keepalived/keepalived.conf.tpl | sudo tee /etc/keepalived/keepalived.conf > /dev/null
 sudo cp keepalived/check_rsyslog.sh /etc/keepalived/check_rsyslog.sh
 sudo cp keepalived/check_haproxy_app.sh /etc/keepalived/check_haproxy_app.sh
-sudo chmod +x /etc/keepalived/check_rsyslog.sh /etc/keepalived/check_haproxy_app.sh
+sudo cp keepalived/notify_vip.sh /etc/keepalived/notify_vip.sh
+sudo chmod +x /etc/keepalived/check_rsyslog.sh /etc/keepalived/check_haproxy_app.sh /etc/keepalived/notify_vip.sh
 sudo systemctl enable --now keepalived
 ```
 
@@ -578,7 +582,7 @@ Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizar
 ### Testing failover
 
 - Kill the Patroni leader's node → `docker service logs logmara-pg_haproxy` and the Patroni REST API (`curl http://<any-pg-node>:8008/`) should show a new leader within a few seconds, with no manual steps.
-- Kill the Redis node currently acting as Sentinel's master → the other two Sentinels should promote a replica within a few seconds (`docker service logs logmara-redis_sentinel1` shows the failover); `api` replicas using `go-redis`'s Sentinel-aware client should reconnect to the new master automatically, and exactly one of them should log `"tailer: acquired leader lock"` shortly after.
+- Kill the Redis node currently acting as Sentinel's master → the other two Sentinels should promote a replica within a few seconds (`docker service logs logmara-redis_sentinel1` shows the failover); `api` replicas using `go-redis`'s Sentinel-aware client should reconnect to the new master automatically.
 - Kill the node running one `api`/`frontend` replica → the other replica(s) keep serving without interruption; `docker service ps logmara-app_api` should show the lost one rescheduled onto the other `app=true` node.
 - Kill the edge node currently holding the VIP → keepalived should fail over in 1-3s; confirm with `ip addr` on the new holder and by sending a test syslog message during the cutover.
 - Confirm `haproxy-app` is actually load-balancing, not just failing over: hit `http://<any-app-node-ip>:7001/` (the stats page) and check every `frontend-*`/`api-*` server-template slot shows `UP` with a non-zero request count after a few page loads/API calls; `docker service logs logmara-app_haproxy-app` also shows each backend server going up as its task starts.
