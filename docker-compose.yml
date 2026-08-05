@@ -51,7 +51,7 @@ services:
         max-file: "3"
 
   rsyslog:
-    image: dom133/logmara-rsyslog:${IMAGE_TAG:-v0.0.1}
+    image: dom133/logmara-rsyslog:${IMAGE_TAG:-v0.0.2}
     environment:
       - TZ=UTC
     volumes:
@@ -118,7 +118,7 @@ services:
         max-file: "3"
 
   api:
-    image: dom133/logmara-api:${IMAGE_TAG:-v0.0.1}
+    image: dom133/logmara-api:${IMAGE_TAG:-v0.0.2}
     environment:
       TZ: UTC
       # Built from components (not a raw DATABASE_URL) so a password containing
@@ -188,7 +188,7 @@ services:
         max-file: "3"
 
   frontend:
-    image: dom133/logmara-frontend:${IMAGE_TAG:-v0.0.1}
+    image: dom133/logmara-frontend:${IMAGE_TAG:-v0.0.2}
     volumes:
       - log_data:/data
     ports:

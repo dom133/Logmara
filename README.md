@@ -159,17 +159,17 @@ docker compose -f docker-compose.build.yml up -d --build
 
 ## Pre-built Images
 
-Pre-built images are published on Docker Hub under [`dom133`](https://hub.docker.com/u/dom133), tagged `v0.0.1`:
+Pre-built images are published on Docker Hub under [`dom133`](https://hub.docker.com/u/dom133), tagged `v0.0.2`:
 
-- [`dom133/logmara-api:v0.0.1`](https://hub.docker.com/r/dom133/logmara-api) (built from `Dockerfile.backend`)
-- [`dom133/logmara-frontend:v0.0.1`](https://hub.docker.com/r/dom133/logmara-frontend)
-- [`dom133/logmara-rsyslog:v0.0.1`](https://hub.docker.com/r/dom133/logmara-rsyslog)
-- [`dom133/logmara-rsyslog-relay:v0.0.1`](https://hub.docker.com/r/dom133/logmara-rsyslog-relay)
-- [`dom133/logmara-patroni:v0.0.1`](https://hub.docker.com/r/dom133/logmara-patroni)
+- [`dom133/logmara-api:v0.0.2`](https://hub.docker.com/r/dom133/logmara-api) (built from `Dockerfile.backend`)
+- [`dom133/logmara-frontend:v0.0.2`](https://hub.docker.com/r/dom133/logmara-frontend)
+- [`dom133/logmara-rsyslog:v0.0.2`](https://hub.docker.com/r/dom133/logmara-rsyslog)
+- [`dom133/logmara-rsyslog-relay:v0.0.2`](https://hub.docker.com/r/dom133/logmara-rsyslog-relay)
+- [`dom133/logmara-patroni:v0.0.2`](https://hub.docker.com/r/dom133/logmara-patroni)
 
-`docker-compose.yml` pulls these by default (`image:`, pinned via `${IMAGE_TAG:-v0.0.1}` in `.env`) — this is what the [Quick Start](#quick-start-single-server) above uses, no clone or build needed. Need to build from source instead (local changes, or something not yet published)? Use `docker-compose.build.yml` — see [Deploying local changes / building from source](#deploying-local-changes--building-from-source).
+`docker-compose.yml` pulls these by default (`image:`, pinned via `${IMAGE_TAG:-v0.0.2}` in `.env`) — this is what the [Quick Start](#quick-start-single-server) above uses, no clone or build needed. Need to build from source instead (local changes, or something not yet published)? Use `docker-compose.build.yml` — see [Deploying local changes / building from source](#deploying-local-changes--building-from-source).
 
-These are also a drop-in `REGISTRY`/`TAG` pair for the [High Availability](#high-availability-deployment-multi-node-optional) deployment below (`REGISTRY=dom133 TAG=v0.0.1`), since the image names match what `docker-stack.app.yml`/`docker-stack.postgres.yml` expect — see [step 4](#4-clone-the-repo-then-buildpush-or-use-pre-built-images).
+These are also a drop-in `REGISTRY`/`TAG` pair for the [High Availability](#high-availability-deployment-multi-node-optional) deployment below (`REGISTRY=dom133 TAG=v0.0.2`), since the image names match what `docker-stack.app.yml`/`docker-stack.postgres.yml` expect — see [step 4](#4-clone-the-repo-then-buildpush-or-use-pre-built-images).
 
 ## Configuration
 
@@ -363,7 +363,7 @@ Unlike the single-server [Quick Start](#quick-start-single-server) above, this p
 Pick one manager (`pg1` here) as your "control" node — everywhere below that says "run on a manager", run it there, over SSH, against `pg1`'s local Docker socket. You'll also need a container image registry every node can pull from.
 
 > [!TIP]
-> If you haven't modified the code, you can skip *building* (not cloning) and pull the [pre-built `v0.0.1` images](#pre-built-images) from Docker Hub instead — `docker login` on every node (or add `--with-registry-auth` to the `docker stack deploy` commands later), then just use `REGISTRY=dom133 TAG=v0.0.1` in steps 4 and 10 instead of building/pushing your own.
+> If you haven't modified the code, you can skip *building* (not cloning) and pull the [pre-built `v0.0.2` images](#pre-built-images) from Docker Hub instead — `docker login` on every node (or add `--with-registry-auth` to the `docker stack deploy` commands later), then just use `REGISTRY=dom133 TAG=v0.0.2` in steps 4 and 10 instead of building/pushing your own.
 
 **Registry options:**
 - A managed registry (GHCR, ECR, Docker Hub, ...) — simplest if your nodes have internet access. `docker login` on every node, add `--with-registry-auth` to the `docker stack deploy` commands later.
@@ -595,7 +595,7 @@ When you change code, config, or dependencies, rebuild your images, push them un
 #### 1. Build and push new images
 
 > [!TIP]
-> Upgrading to a newer official release without local code changes? Skip building and just bump `TAG` to the new [pre-built](#pre-built-images) version instead, e.g. `REGISTRY=dom133 TAG=v0.0.2`, then jump straight to step 2 below.
+> Upgrading to a newer official release without local code changes? Skip building and just bump `TAG` to the new [pre-built](#pre-built-images) version instead, e.g. `REGISTRY=dom133 TAG=v0.0.3`, then jump straight to step 2 below.
 
 ```bash
 ssh pg1
