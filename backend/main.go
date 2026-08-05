@@ -505,26 +505,16 @@ func main() {
 
 	// With Redis configured, cache invalidation and the slow-query log get
 	// shared across replicas instead of staying local to whichever replica
-	// handled the triggering request; the tailer gets a leader elector so
-	// exactly one replica actively ingests at a time. All of this is a
-	// no-op when sharedClient is nil.
-	var elector *sharedstate.LeaderElector
+	// handled the triggering request. The tailer is gated on the keepalived
+	// VIP marker file (see tailer.go vipMarkerPath) instead of a Redis
+	// leader elector - only the API on the VIP-holding node tails the log
+	// file, guaranteeing co-location with rsyslog and eliminating NFS
+	// read-cache delay. All of this is a no-op when sharedClient is nil.
 	if sharedClient != nil {
 		broadcaster := sharedstate.NewBroadcaster(sharedClient)
 		handler.SetCacheBroadcaster(broadcaster)
 		go handler.StartCacheInvalidationSubscriber(ctx, broadcaster)
 		handler.SetSlowQueryStore(sharedClient)
-		// TTL must leave real margin over tailer.go's own failure-detection
-		// deadline (leaderRenewInterval * leaderMaxRenewFails = 5s * 3 = 15s):
-		// if the lock's Redis-side TTL lapses at the same moment the current
-		// leader notices it can't renew, a waiting replica can acquire the
-		// lock and start ingesting before the old leader's goroutine has
-		// actually stopped - two tailers briefly active on the same file and
-		// position checkpoint, corrupting it exactly like running without
-		// Redis at all. 45s (3x that 15s deadline) gives a comfortable
-		// margin through a slow Sentinel failover while still recovering
-		// well within a minute if the leader outright crashes.
-		elector = sharedstate.NewLeaderElector(sharedClient, "tailer", 45*time.Second)
 	}
 
 	logFilePath := os.Getenv("LOG_FILE_PATH")
@@ -800,7 +790,7 @@ r := gin.New()
 			}
 		}
 		sharedstate.WaitForReplicas(ctx, sharedClient, identity, apiReplicas, 10*time.Minute)
-		tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient)
+		tailer.Run(ctx, database, logFilePath, engine, ic, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient)
 	}()
 
 	srv := &http.Server{

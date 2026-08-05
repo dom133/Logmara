@@ -82,6 +82,7 @@ ${PEER_IPS}
         check_haproxy_app
     }
 
-    # Optional: notify_master/notify_backup scripts can be added here to log
-    # failover events or push a metric/alert.
+    notify_master "/etc/keepalived/notify_vip.sh notify_vip MASTER"
+    notify_backup "/etc/keepalived/notify_vip.sh notify_vip BACKUP"
+    notify_fault  "/etc/keepalived/notify_vip.sh notify_vip FAULT"
 }

@@ -101,13 +101,36 @@ func (s *lineSplitter) split(data []byte, atEOF bool) (advance int, token []byte
 	return 0, nil, nil
 }
 
-// Run starts the log tailer. When elector is nil (single-server/single-
-// replica deployments, i.e. Redis not configured), it runs the ingestion
-// loop directly and unconditionally - exactly like the original Start did.
-// When elector is set (multiple api replicas sharing the same log file over
-// NFS), only the replica that currently holds the elected lock actually
-// tails/flushes/compacts; the others wait, ready to take over the moment
-// the lock becomes available (leader crash, node loss, etc.).
+// vipMarkerPath is the file created by keepalived's notify_master script on
+// the shared NFS volume. Only the API replica running on the node that
+// currently holds the VIP will see this file, so only that replica tails
+// the log file. This guarantees rsyslog (writer) and the tailer (reader)
+// are co-located on the same node, eliminating NFS read-cache delay and
+// malformed JSON from mid-line splits during leader handoff.
+const vipMarkerPath = "/data/.vip_master"
+
+// vipCheckInterval is how often each API replica polls for the VIP marker
+// file. 5s is fast enough to resume tailing after a failover without
+// burning CPU on stat calls.
+const vipCheckInterval = 5 * time.Second
+
+// vipStartupDelay staggers each replica's first VIP check so they don't
+// all stat the marker at the same instant on cold start.
+const vipStartupDelay = 3 * time.Second
+
+// vipStartupJitterMax is the max jitter added to vipStartupDelay.
+const vipStartupJitterMax = 2 * time.Second
+
+// Run starts the log tailer. When sharedClient is nil (single-server/
+// single-replica deployments, i.e. Redis not configured), it runs the
+// ingestion loop directly and unconditionally. When sharedClient is set
+// (multiple api replicas sharing the same log file over NFS), only the
+// replica running on the node that currently holds the keepalived VIP
+// actually tails/flushes/compacts. The VIP is detected by polling for the
+// existence of vipMarkerPath on the shared NFS volume - keepalived's
+// notify_master/notify_backup scripts create/remove this file on state
+// transition. The other replicas wait, ready to take over the moment the
+// marker appears (VIP failover to their node).
 // reopenLogFile is called after compactFile atomically replaces filePath via
 // rename, so rsyslog (a separate, uncoordinated process/container that's
 // always the one actually appending to that shared file, in both
@@ -116,31 +139,17 @@ func (s *lineSplitter) split(data []byte, atEOF bool) (advance int, token []byte
 // now-unlinked one forever. Callers are expected to pass a real function
 // (main.go wires in handler.ReopenRsyslogLogFile); nil is only tolerated
 // here for tests that don't exercise the compaction path.
-func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
-	if elector == nil {
-		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
+func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+	if sharedClient == nil {
+		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, nil)
 		return
 	}
-	runWithLeaderElection(ctx, db, filePath, engine, ic, elector, alerts, rate, reopenLogFile, sharedClient)
+	runWithVIPElection(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
 }
 
-const (
-	leaderRetryInterval = 5 * time.Second
-	leaderRetryJitter   = 1 * time.Second
-	leaderRenewInterval = 5 * time.Second
-	leaderMaxRenewFails = 3
-	// startupJitterMax staggers each replica's very first Acquire attempt.
-	// Not needed for correctness - Acquire's SetNX is atomic regardless of
-	// how many replicas race it - but every replica typically starts within
-	// the same second or two of a `docker stack deploy`/rescale, so without
-	// this every one of them logs a failed acquire attempt at once. Purely
-	// cosmetic log-noise reduction.
-	startupJitterMax = 3 * time.Second
-)
-
-func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
-	startupJitter := time.Duration(rand.Int63n(int64(startupJitterMax)))
-	if !sleepOrDone(ctx, startupJitter) {
+func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+	startupJitter := time.Duration(rand.Int63n(int64(vipStartupJitterMax)))
+	if !sleepOrDone(ctx, vipStartupDelay+startupJitter) {
 		return
 	}
 
@@ -149,15 +158,18 @@ func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, eng
 			return
 		}
 
-		if !elector.Acquire(ctx) {
-			jitter := time.Duration(rand.Int63n(int64(leaderRetryJitter)))
-			if !sleepOrDone(ctx, leaderRetryInterval+jitter) {
+		// Wait for the VIP marker file to appear on this node's NFS mount.
+		// It's created by keepalived's notify_master when this node becomes
+		// the VRRP master. stat() is cheap and the interval is long enough
+		// to not spin.
+		if _, err := os.Stat(vipMarkerPath); err != nil {
+			if !sleepOrDone(ctx, vipCheckInterval) {
 				return
 			}
 			continue
 		}
 
-		slog.Info("tailer: acquired leader lock, starting ingestion")
+		slog.Info("tailer: VIP marker detected, starting ingestion")
 		leaderCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
 		go func() {
@@ -165,41 +177,22 @@ func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, eng
 			runIngestionLoop(leaderCtx, db, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
 		}()
 
-		consecutiveFails := 0
-
-	renewLoop:
+		// While tailing, periodically check that the VIP marker still exists.
+		// If it disappears (this node lost the VIP), stop the tailer and loop
+		// back to wait for it to reappear.
+	vipLoop:
 		for {
 			select {
 			case <-ctx.Done():
 				cancel()
 				<-done
-				elector.Release(context.Background())
 				return
-			case <-time.After(leaderRenewInterval):
-				ok, lost := elector.Renew(ctx)
-				if lost {
-					// Definitive: Redis confirmed another instance already
-					// owns the lock, meaning it may already be ingesting.
-					// Unlike a transient renew error below, this can never
-					// be tolerated for extra cycles - every extra second
-					// here is a window where two replicas tail the same
-					// file concurrently.
-					slog.Warn("tailer: lost leader lock to another instance, stepping down immediately")
+			case <-time.After(vipCheckInterval):
+				if _, err := os.Stat(vipMarkerPath); err != nil {
+					slog.Warn("tailer: VIP marker disappeared, stepping down")
 					cancel()
 					<-done
-					break renewLoop
-				}
-				if !ok {
-					consecutiveFails++
-					slog.Warn("tailer: renew failed (transient), retrying", "consecutive", consecutiveFails, "threshold", leaderMaxRenewFails)
-					if consecutiveFails >= leaderMaxRenewFails {
-						slog.Warn("tailer: renew failing repeatedly, stepping down")
-						cancel()
-						<-done
-						break renewLoop
-					}
-				} else {
-					consecutiveFails = 0
+					break vipLoop
 				}
 			}
 		}
