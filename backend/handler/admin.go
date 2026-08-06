@@ -777,6 +777,10 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 		InvalidateAllCaches()
 		slog.Info("database truncated", "count", count)
 
+		// Purge RabbitMQ ingestion queue to drop in-flight messages
+		queuePurged := tailer.PurgeTailerQueue()
+		slog.Info("purge: tailer queue purged", "messages_removed", queuePurged)
+
 		logFilePath := os.Getenv("LOG_FILE_PATH")
 		if logFilePath == "" {
 			logFilePath = "/data/logs.jsonl"

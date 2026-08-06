@@ -80,6 +80,10 @@ const vipStartupJitterMax = 2 * time.Second
 // is running (single-server mode or RabbitMQ unavailable).
 var currentMetrics *TailerMetricsCollector
 
+// currentPipeline holds a reference to the active pipeline so the admin API
+// can purge the RabbitMQ queue on demand.
+var currentPipeline *pipeline
+
 // GetTailerMetrics returns the latest snapshot of tailer pipeline metrics,
 // or nil if no pipeline is currently active.
 func GetTailerMetrics() *TailerMetrics {
@@ -88,6 +92,26 @@ func GetTailerMetrics() *TailerMetrics {
 	}
 	m := currentMetrics.Get()
 	return &m
+}
+
+// PurgeTailerQueue purges the RabbitMQ ingestion queue and resets the
+// flush tracker. Returns the number of messages removed from the queue.
+func PurgeTailerQueue() uint32 {
+	if currentPipeline == nil || currentPipeline.queue == nil {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	msgs, err := currentPipeline.queue.Purge(ctx)
+	if err != nil {
+		slog.Error("tailer: failed to purge queue", "error", err)
+		return 0
+	}
+	if currentPipeline.flushTrk != nil {
+		currentPipeline.flushTrk.Reset(ctx)
+		slog.Info("tailer: flush tracker reset")
+	}
+	return msgs
 }
 
 // pipeline holds the components of the distributed tailer pipeline.
@@ -226,12 +250,14 @@ func startPipeline(ctx context.Context, db *sql.DB, engine *parser.Engine, ic co
 	currentMetrics = metricsColl
 
 	slog.Info("tailer: pipeline started", "rabbitmq", rabbitmqURL)
-	return &pipeline{
+	p := &pipeline{
 		queue:       queue,
 		flushTrk:    flushTrk,
 		workerPool:  workerPool,
 		metricsColl: metricsColl,
 	}
+	currentPipeline = p
+	return p
 }
 
 func stopPipeline(p *pipeline) {
@@ -243,6 +269,7 @@ func stopPipeline(p *pipeline) {
 		p.metricsColl.Stop()
 		currentMetrics = nil
 	}
+	currentPipeline = nil
 	if p.workerPool != nil {
 		p.workerPool.Cancel()
 		p.workerPool.Wait()
