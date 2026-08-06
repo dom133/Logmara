@@ -33,6 +33,11 @@ type WorkerPool struct {
 	cancel  context.CancelFunc
 }
 
+// NumWorkers returns the number of workers in the pool.
+func (wp *WorkerPool) NumWorkers() int {
+	return len(wp.workers)
+}
+
 type worker struct {
 	id        int
 	parser    *parser.Engine
@@ -52,6 +57,15 @@ type WorkerMetrics struct {
 	ParseErrors   int64
 	DbInserts     int64
 	LastFlushAt   time.Time
+}
+
+// WorkerMetricsPublic is a JSON-serializable snapshot of WorkerMetrics.
+type WorkerMetricsPublic struct {
+	ID            int       `json:"id"`
+	MsgsProcessed int64     `json:"msgs_processed"`
+	ParseErrors   int64     `json:"parse_errors"`
+	DbInserts     int64     `json:"db_inserts"`
+	LastFlushAt   time.Time `json:"last_flush_at"`
 }
 
 func NewWorkerPool(numWorkers int, db *sql.DB, alerts *alertengine.Engine,
@@ -115,6 +129,23 @@ func (wp *WorkerPool) GetMetrics() []WorkerMetrics {
 	for i, w := range wp.workers {
 		w.metrics.Mutex.RLock()
 		metrics[i] = *w.metrics
+		w.metrics.Mutex.RUnlock()
+	}
+	return metrics
+}
+
+// GetPublicMetrics returns a JSON-serializable snapshot of per-worker metrics.
+func (wp *WorkerPool) GetPublicMetrics() []WorkerMetricsPublic {
+	metrics := make([]WorkerMetricsPublic, len(wp.workers))
+	for i, w := range wp.workers {
+		w.metrics.Mutex.RLock()
+		metrics[i] = WorkerMetricsPublic{
+			ID:            w.metrics.ID,
+			MsgsProcessed: w.metrics.MsgsProcessed,
+			ParseErrors:   w.metrics.ParseErrors,
+			DbInserts:     w.metrics.DbInserts,
+			LastFlushAt:   w.metrics.LastFlushAt,
+		}
 		w.metrics.Mutex.RUnlock()
 	}
 	return metrics

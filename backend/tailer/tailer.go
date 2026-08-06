@@ -84,14 +84,60 @@ var currentMetrics *TailerMetricsCollector
 // can purge the RabbitMQ queue on demand.
 var currentPipeline *pipeline
 
-// GetTailerMetrics returns the latest snapshot of tailer pipeline metrics,
-// or nil if no pipeline is currently active.
+// currentSharedClient is the shared Redis client (nil in single-server mode).
+// Used by GetTailerMetrics to read pipeline metrics from Redis so that
+// non-leader replicas can still serve the admin endpoint.
+var currentSharedClient *sharedstate.Client
+
+// GetTailerMetrics returns the latest snapshot of tailer pipeline metrics.
+// On the VIP leader it reads from the local metrics collector. On a
+// non-leader replica it reads the snapshot from Redis (written by the
+// leader every 2 s). Returns nil when no pipeline is active.
 func GetTailerMetrics() *TailerMetrics {
-	if currentMetrics == nil {
+	if currentMetrics != nil {
+		m := currentMetrics.Get()
+		return &m
+	}
+	if currentSharedClient != nil {
+		return readMetricsFromRedis()
+	}
+	return nil
+}
+
+func readMetricsFromRedis() *TailerMetrics {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	data, err := currentSharedClient.Raw().Get(ctx, tailerMetricsRedisKey).Bytes()
+	if err != nil || len(data) == 0 {
 		return nil
 	}
-	m := currentMetrics.Get()
-	return &m
+	var m tailerMetricsPublic
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil
+	}
+	return &TailerMetrics{
+		NumWorkers:    m.NumWorkers,
+		QueueDepth:    m.QueueDepth,
+		FlushedPos:    m.FlushedPos,
+		FlushedSeq:    m.FlushedSeq,
+		LogsPerSec:    m.LogsPerSec,
+		WorkerMetrics: metricsPublicToWorkerMetrics(m.WorkerMetrics),
+		UpdatedAt:     m.UpdatedAt,
+	}
+}
+
+func metricsPublicToWorkerMetrics(pub []WorkerMetricsPublic) []WorkerMetrics {
+	metrics := make([]WorkerMetrics, len(pub))
+	for i, p := range pub {
+		metrics[i] = WorkerMetrics{
+			ID:            p.ID,
+			MsgsProcessed: p.MsgsProcessed,
+			ParseErrors:   p.ParseErrors,
+			DbInserts:     p.DbInserts,
+			LastFlushAt:   p.LastFlushAt,
+		}
+	}
+	return metrics
 }
 
 // PurgeTailerQueue purges the RabbitMQ ingestion queue and resets the
@@ -131,6 +177,7 @@ func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine
 		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, nil)
 		return
 	}
+	currentSharedClient = sharedClient
 	runWithVIPElection(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
 }
 
@@ -243,7 +290,7 @@ func startPipeline(ctx context.Context, db *sql.DB, engine *parser.Engine, ic co
 
 	flushTrk := sharedstate.NewFlushTracker(sharedClient)
 	workerPool := NewWorkerPool(0, db, alerts, rate, flushTrk, queue)
-	metricsColl := NewTailerMetricsCollector(queue, flushTrk, rate, workerPool)
+	metricsColl := NewTailerMetricsCollector(queue, flushTrk, rate, workerPool, sharedClient)
 
 	workerPool.Start(ctx)
 	metricsColl.Start(ctx)
