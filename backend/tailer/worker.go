@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	workerBatchSize     = 500
-	workerBatchInterval = 2 * time.Second
+	workerBatchSize     = 5000
+	workerBatchInterval = 500 * time.Millisecond
 	defaultWorkerCount  = 0 // 0 = auto (NumCPU/2)
 )
 
@@ -59,7 +59,7 @@ func NewWorkerPool(numWorkers int, db *sql.DB, alerts *alertengine.Engine,
 	queue *sharedstate.Queue) *WorkerPool {
 
 	if numWorkers <= 0 {
-		numWorkers = runtime.NumCPU() / 2
+		numWorkers = runtime.NumCPU()
 		if numWorkers < 2 {
 			numWorkers = 2
 		}

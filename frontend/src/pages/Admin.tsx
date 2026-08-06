@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Checkbox, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip, Statistic, Row, Col } from 'antd'
 import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PlusOutlined, CopyOutlined, KeyOutlined, CloudOutlined, ContainerOutlined, CheckCircleOutlined, WarningOutlined, DashOutlined, NodeIndexOutlined, ClusterOutlined, GlobalOutlined } from '@ant-design/icons'
-import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey } from '../services/api'
+import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, TailerMetrics } from '../services/api'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
 import { useAuth } from '../services/auth'
@@ -82,6 +82,9 @@ export default function Admin() {
   const [apiKeys, setApiKeys] = useState<APIKey[]>([])
   const [apiKeysLoading, setApiKeysLoading] = useState(false)
   const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false)
+  const [tailerMetrics, setTailerMetrics] = useState<TailerMetrics | null>(null)
+  const [tailerPipelineActive, setTailerPipelineActive] = useState(false)
+  const [tailerLoading, setTailerLoading] = useState(false)
   const [apiKeyEditing, setApiKeyEditing] = useState<APIKey | null>(null)
   const [apiKeyForm] = Form.useForm()
   const [newKeyDisplay, setNewKeyDisplay] = useState<string | null>(null)
@@ -261,6 +264,19 @@ await testLDAPConnection({
     }
   }
 
+  const loadTailerMetrics = async () => {
+    setTailerLoading(true)
+    try {
+      const data = await getTailerMetrics()
+      setTailerPipelineActive(data.pipeline_active)
+      setTailerMetrics(data.metrics)
+    } catch {
+      message.error(t('admin.tailerMetricsLoadFailed'))
+    } finally {
+      setTailerLoading(false)
+    }
+  }
+
   const handleCreateAPIKey = async () => {
     const values = apiKeyForm.getFieldsValue()
     try {
@@ -390,6 +406,9 @@ await testLDAPConnection({
         break
       case 'api_keys':
         await Promise.all([loadAPIKeys(), devices.length === 0 ? loadDevices() : Promise.resolve()])
+        break
+      case 'tailer':
+        await loadTailerMetrics()
         break
     }
     tabCacheRef.current.set(tab, { loadedAt: Date.now() })
@@ -1536,6 +1555,96 @@ const handleCleanup = async () => {
                     },
                   ]}
                 />
+              </Card>
+            ),
+          },
+          {
+            key: 'tailer',
+            label: t('admin.tailerPipeline'),
+            children: (
+              <Card
+                title={t('admin.tailerPipeline')}
+                extra={
+                  <Button icon={<ReloadOutlined />} onClick={loadTailerMetrics} loading={tailerLoading}>
+                    {t('common.refresh')}
+                  </Button>
+                }
+              >
+                {!tailerPipelineActive ? (
+                  <Result
+                    status="info"
+                    title={t('admin.pipelineInactive')}
+                    subTitle={t('admin.pipelineInactiveDesc')}
+                  />
+                ) : tailerMetrics ? (
+                  <div>
+                    <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+                      <Col xs={24} sm={6}>
+                        <Card>
+                          <Statistic title={t('admin.numWorkers')} value={tailerMetrics.NumWorkers} />
+                        </Card>
+                      </Col>
+                      <Col xs={24} sm={6}>
+                        <Card>
+                          <Statistic title={t('admin.queueDepth')} value={tailerMetrics.QueueDepth} />
+                        </Card>
+                      </Col>
+                      <Col xs={24} sm={6}>
+                        <Card>
+                          <Statistic title={t('admin.logsPerSecond')} value={tailerMetrics.LogsPerSec} precision={1} />
+                        </Card>
+                      </Col>
+                      <Col xs={24} sm={6}>
+                        <Card>
+                          <Statistic title={t('admin.flushedPosition')} value={tailerMetrics.FlushedPos} />
+                        </Card>
+                      </Col>
+                    </Row>
+                    <Table
+                      rowKey="ID"
+                      dataSource={tailerMetrics.WorkerMetrics}
+                      pagination={false}
+                      size="small"
+                      title={() => t('admin.workerStats')}
+                      columns={[
+                        {
+                          title: t('admin.workerId'),
+                          dataIndex: 'ID',
+                          key: 'ID',
+                          width: 80,
+                        },
+                        {
+                          title: t('admin.msgsProcessed'),
+                          dataIndex: 'MsgsProcessed',
+                          key: 'MsgsProcessed',
+                          width: 120,
+                          render: (v: number) => v.toLocaleString(),
+                        },
+                        {
+                          title: t('admin.parseErrors'),
+                          dataIndex: 'ParseErrors',
+                          key: 'ParseErrors',
+                          width: 120,
+                          render: (v: number) => v ? <Tag color="red">{v.toLocaleString()}</Tag> : <Tag color="green">0</Tag>,
+                        },
+                        {
+                          title: t('admin.dbInserts'),
+                          dataIndex: 'DbInserts',
+                          key: 'DbInserts',
+                          width: 120,
+                          render: (v: number) => v.toLocaleString(),
+                        },
+                        {
+                          title: t('admin.lastFlush'),
+                          dataIndex: 'LastFlushAt',
+                          key: 'LastFlushAt',
+                          width: 200,
+                          render: (v: string) => v ? new Date(v).toLocaleTimeString() : '-',
+                        },
+                      ]}
+                    />
+                  </div>
+                ) : null}
               </Card>
             ),
           },

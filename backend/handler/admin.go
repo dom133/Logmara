@@ -19,6 +19,7 @@ import (
 	"logmara/ldap"
 	"logmara/middleware"
 	"logmara/model"
+	"logmara/tailer"
 
 	"github.com/gin-gonic/gin"
 )
@@ -934,6 +935,23 @@ func ResumeIngestion(ic control.IngestionController) gin.HandlerFunc {
 func GetIngestionStatus(ic control.IngestionController) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"paused": ic.IsPaused()})
+	}
+}
+
+func GetTailerMetrics() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		metrics := tailer.GetTailerMetrics()
+		if metrics == nil {
+			c.JSON(http.StatusOK, gin.H{
+				"pipeline_active": false,
+				"metrics":         nil,
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"pipeline_active": true,
+			"metrics":         metrics,
+		})
 	}
 }
 
