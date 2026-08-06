@@ -75,6 +75,21 @@ const vipCheckInterval = 5 * time.Second
 const vipStartupDelay = 3 * time.Second
 const vipStartupJitterMax = 2 * time.Second
 
+// currentMetrics holds a reference to the active TailerMetricsCollector so
+// the admin API can expose live pipeline stats. It's nil when no pipeline
+// is running (single-server mode or RabbitMQ unavailable).
+var currentMetrics *TailerMetricsCollector
+
+// GetTailerMetrics returns the latest snapshot of tailer pipeline metrics,
+// or nil if no pipeline is currently active.
+func GetTailerMetrics() *TailerMetrics {
+	if currentMetrics == nil {
+		return nil
+	}
+	m := currentMetrics.Get()
+	return &m
+}
+
 // pipeline holds the components of the distributed tailer pipeline.
 type pipeline struct {
 	queue       *sharedstate.Queue
@@ -127,11 +142,21 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 		// Start the distributed pipeline
 		pipeline := startPipeline(leaderCtx, db, engine, ic, alerts, rate, filePath, sharedClient)
 
-		go func() {
-			defer close(done)
-			// Run the file reader on the VIP leader
-			FileReader(leaderCtx, filePath, pipeline.queue, pipeline.flushTrk, ic, reopenLogFile, sharedClient)
-		}()
+		if pipeline.queue != nil && pipeline.flushTrk != nil {
+			go func() {
+				defer close(done)
+				// Run the file reader on the VIP leader
+				FileReader(leaderCtx, filePath, pipeline.queue, pipeline.flushTrk, ic, reopenLogFile, sharedClient)
+			}()
+		} else {
+			// RabbitMQ unavailable — runIngestionLoop was started inside
+			// startPipeline as a fallback.  Keep this goroutine alive so
+			// the VIP watchdog below can trigger graceful shutdown.
+			go func() {
+				defer close(done)
+				<-leaderCtx.Done()
+			}()
+		}
 
 		// Periodic save position from flushed progress
 		go func() {
@@ -198,6 +223,7 @@ func startPipeline(ctx context.Context, db *sql.DB, engine *parser.Engine, ic co
 
 	workerPool.Start(ctx)
 	metricsColl.Start(ctx)
+	currentMetrics = metricsColl
 
 	slog.Info("tailer: pipeline started", "rabbitmq", rabbitmqURL)
 	return &pipeline{
@@ -215,6 +241,7 @@ func stopPipeline(p *pipeline) {
 	slog.Info("tailer: stopping pipeline")
 	if p.metricsColl != nil {
 		p.metricsColl.Stop()
+		currentMetrics = nil
 	}
 	if p.workerPool != nil {
 		p.workerPool.Cancel()
@@ -247,8 +274,8 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 
 func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
 	slog.Info("file tailer started", "path", filePath)
-	batchSize := 500
-	batchInterval := 2 * time.Second
+	batchSize := 5000
+	batchInterval := 500 * time.Millisecond
 
 	posFile := filepath.Join(filepath.Dir(filePath), positionFileName)
 	filePos, flushedPos := loadStartPosition(db, filePath, posFile, sharedClient)
@@ -478,7 +505,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 
 const insertColumns = 13
 const insertQueryColumns = `timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, via_relay`
-const maxInsertRows = 500
+const maxInsertRows = 5000
 
 func rowArgs(entry model.IngestEntry) []interface{} {
 	ts, err := parseTimestamp(entry.Timestamp)

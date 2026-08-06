@@ -12,7 +12,7 @@ import (
 const (
 	rabbitmqExchange = "" // default direct exchange
 	rabbitmqQueue    = "tailer-ingestion"
-	rabbitmqPrefetch = 100
+	rabbitmqPrefetch = 1000
 	rabbitmqMaxLen   = 50000
 	rabbitmqReconnectInterval = 5 * time.Second
 )
