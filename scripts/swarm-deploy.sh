@@ -9,11 +9,12 @@
 # Usage:
 #   ./scripts/swarm-deploy.sh <stack> [stack-name]
 #
-#   <stack>       One of: postgres, redis, app, all
-#   [stack-name]  Override the stack name (default: logmara-pg / logmara-redis / logmara-app)
+#   <stack>       One of: postgres, redis, rabbitmq, app, all
+#   [stack-name]  Override the stack name (default: logmara-pg / logmara-redis / logmara-rabbitmq / logmara-app)
 #
 # Examples:
 #   ./scripts/swarm-deploy.sh postgres
+#   ./scripts/swarm-deploy.sh rabbitmq
 #   ./scripts/swarm-deploy.sh app
 #   ./scripts/swarm-deploy.sh all
 #
@@ -59,7 +60,7 @@ STACK_NAME_OVERRIDE="${2:-}"
 if [[ -z "$STACK" ]]; then
     echo "Usage: $0 [--env-file <path>] [--resolve-image] [--with-registry-auth] <stack> [stack-name]" >&2
     echo "" >&2
-    echo "Stacks: postgres, redis, app, all" >&2
+     echo "Stacks: postgres, redis, rabbitmq, app, all" >&2
     exit 1
 fi
 
@@ -118,18 +119,23 @@ case "$STACK" in
         name="${STACK_NAME_OVERRIDE:-logmara-redis}"
         deploy_stack "docker-stack.redis.yml" "$name"
         ;;
+    rabbitmq)
+        name="${STACK_NAME_OVERRIDE:-logmara-rabbitmq}"
+        deploy_stack "docker-stack.rabbitmq.yml" "$name"
+        ;;
     app)
         name="${STACK_NAME_OVERRIDE:-logmara-app}"
         deploy_stack "docker-stack.app.yml" "$name"
         ;;
     all)
-        # Deploy in order: postgres -> redis -> app
+        # Deploy in order: postgres -> redis -> rabbitmq -> app
         deploy_stack "docker-stack.postgres.yml" "${STACK_NAME_OVERRIDE:-logmara-pg}"
         deploy_stack "docker-stack.redis.yml"  "${STACK_NAME_OVERRIDE:-logmara-redis}"
+        deploy_stack "docker-stack.rabbitmq.yml" "${STACK_NAME_OVERRIDE:-logmara-rabbitmq}"
         deploy_stack "docker-stack.app.yml"    "${STACK_NAME_OVERRIDE:-logmara-app}"
         ;;
     *)
-        echo "Error: unknown stack '$STACK'. Use: postgres, redis, app, all" >&2
+        echo "Error: unknown stack '$STACK'. Use: postgres, redis, rabbitmq, app, all" >&2
         exit 1
         ;;
 esac
