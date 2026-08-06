@@ -42,15 +42,20 @@ async function detectLanguages(): Promise<string[]> {
 }
 
 async function loadLanguageResources(languages: string[]): Promise<Record<string, any>> {
-  const resources: Record<string, any> = {}
-  for (const lang of languages) {
-    try {
+  const results = await Promise.allSettled(
+    languages.map(async (lang) => {
       const res = await fetch(`${LANGUAGE_PATH}/${lang}/translation.json`)
       if (res.ok) {
-        resources[lang] = { translation: await res.json() }
+        const data = await res.json()
+        return { lang, data }
       }
-    } catch {
-      // skip unavailable languages
+      return null
+    }),
+  )
+  const resources: Record<string, any> = {}
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value) {
+      resources[r.value.lang] = { translation: r.value.data }
     }
   }
   return resources
@@ -68,7 +73,10 @@ async function getDefaultLanguage(): Promise<string | null> {
 }
 
 export async function initI18n(): Promise<typeof i18n> {
-  const languages = await detectLanguages()
+  const [languages, defaultLang] = await Promise.all([
+    detectLanguages(),
+    getDefaultLanguage(),
+  ])
   const resources = await loadLanguageResources(languages)
 
   const savedLang = localStorage.getItem('syslog_lang')
@@ -93,7 +101,6 @@ export async function initI18n(): Promise<typeof i18n> {
     return i18n
   }
 
-  const defaultLang = await getDefaultLanguage()
   const detectedLang = defaultLang && resources[defaultLang] ? defaultLang : languages[0]
 
   await i18n
