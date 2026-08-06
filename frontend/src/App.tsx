@@ -380,9 +380,13 @@ export default function App() {
   const [starting, setStarting] = useState(false)
   const [i18n, setI18n] = useState<I18nInstance | null>(null)
 
+  // Both i18n init and backend readiness check are independent and can
+  // start their async work at the same time - the render below is gated
+  // on both, so running them sequentially would add their latencies.
   useEffect(() => {
     let cancelled = false
-    const init = async () => {
+
+    const initI18nPromise = (async () => {
       try {
         const instance = await initI18n()
         if (cancelled) return
@@ -390,13 +394,8 @@ export default function App() {
       } catch (e) {
         console.error('Failed to initialize i18n', e)
       }
-    }
-    init()
-    return () => { cancelled = true }
-  }, [])
+    })()
 
-  useEffect(() => {
-    let cancelled = false
     const check = async () => {
       try {
         const res = await checkInitialized()
@@ -418,6 +417,7 @@ export default function App() {
       }
     }
     check()
+
     return () => { cancelled = true }
   }, [])
 
