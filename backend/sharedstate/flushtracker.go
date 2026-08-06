@@ -103,8 +103,8 @@ func (ft *FlushTracker) ReportFlushed(ctx context.Context, entries []QueueEntry)
 		return seq, pos, nil
 	}
 
-	flushedSeq, _ = strconv.ParseInt(results[0].(string), 10, 64)
-	flushedPos, _ = strconv.ParseInt(results[1].(string), 10, 64)
+	flushedSeq = redisToInt64(results[0])
+	flushedPos = redisToInt64(results[1])
 	return flushedSeq, flushedPos, nil
 }
 
@@ -114,8 +114,8 @@ func (ft *FlushTracker) GetFlushedPos(ctx context.Context) (int64, int64) {
 	if err != nil || len(res) < 2 {
 		return 0, 0
 	}
-	seq, _ := strconv.ParseInt(res[0].(string), 10, 64)
-	pos, _ := strconv.ParseInt(res[1].(string), 10, 64)
+	seq := redisToInt64(res[0])
+	pos := redisToInt64(res[1])
 	return seq, pos
 }
 
@@ -133,4 +133,20 @@ func (ft *FlushTracker) NextSeq() int64 {
 	defer ft.mu.Unlock()
 	ft.seq++
 	return ft.seq
+}
+
+// redisToInt64 converts a Redis result value to int64. Lua scripts return
+// integers as int64, while HMGet returns strings — handle both.
+func redisToInt64(v interface{}) int64 {
+	switch val := v.(type) {
+	case int64:
+		return val
+	case int:
+		return int64(val)
+	case string:
+		n, _ := strconv.ParseInt(val, 10, 64)
+		return n
+	default:
+		return 0
+	}
 }
