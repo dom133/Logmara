@@ -791,6 +791,15 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 			slog.Info("log file truncated", "path", logFilePath)
 		}
 
+		// Clear tailer position checkpoint so the tailer restarts from 0
+		posFile := filepath.Join(filepath.Dir(logFilePath), ".tailer_pos")
+		if err := os.Remove(posFile); err != nil && !os.IsNotExist(err) {
+			slog.Error("failed to remove position file", "path", posFile, "error", err)
+		} else {
+			slog.Info("position file removed", "path", posFile)
+		}
+		tailer.ResetTailerPosition()
+
 		if req.PauseDuringPurge && !wasPaused {
 			ic.Resume()
 			slog.Info("ingestion resumed")

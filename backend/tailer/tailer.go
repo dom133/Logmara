@@ -160,6 +160,14 @@ func PurgeTailerQueue() uint32 {
 	return msgs
 }
 
+// ResetTailerPosition clears the tailer position checkpoint in Redis.
+func ResetTailerPosition() {
+	if currentSharedClient != nil {
+		currentSharedClient.ResetTailerPosition()
+		slog.Info("tailer: Redis position reset")
+	}
+}
+
 // pipeline holds the components of the distributed tailer pipeline.
 type pipeline struct {
 	queue       *sharedstate.Queue
@@ -403,7 +411,9 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			slog.Info("file rotated, resetting position")
 		}
 
-		if (time.Since(lastCompaction) > compactionInterval || fileSize > maxFileSize) && fileSize > flushedPos*2 {
+		shouldCompact := time.Since(lastCompaction) > compactionInterval || fileSize > maxFileSize
+		enoughFlushed := fileSize > 0 && flushedPos > 0 && (fileSize-flushedPos) < fileSize/4
+		if shouldCompact && enoughFlushed {
 			newF, err := compactFile(f, flushedPos, filePath, reopenLogFile)
 			if err != nil {
 				slog.Error("compaction error", "error", err)
