@@ -53,6 +53,39 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      TZ: UTC
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-logmara}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:?set RABBITMQ_PASS in .env}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - syslog_net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   rsyslog:
     build:
       context: .
@@ -166,6 +199,7 @@ services:
       RELAY_CENTRAL_HOST: ${RELAY_CENTRAL_HOST:-}
       # Backs Admin > Health - see the docker-proxy service above.
       DOCKER_PROXY_URL: http://docker-proxy:2375
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-logmara}:${RABBITMQ_PASS}@rabbitmq:5672
       # Directory the builtin parser JSON definitions (backend/db/parsers)
       # are bootstrapped into and re-read from on every start, so they can
       # be edited/added/removed without rebuilding the image.
@@ -176,6 +210,8 @@ services:
 
     depends_on:
       postgres:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     restart: unless-stopped
     networks:
@@ -227,6 +263,7 @@ volumes:
   log_data:
   log_spool:
   parser_defs:
+  rabbitmq_data:
 
 networks:
   syslog_net:

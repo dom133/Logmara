@@ -38,7 +38,7 @@ A live demo is available at **[demo.logmara.com](https://demo.logmara.com)**:
   <img src="docs/architecture-single-server.svg" alt="Logmara single-server architecture: browser to Nginx to Go API to PostgreSQL, with rsyslog writing logs.jsonl that the API's tailer reads, and a docker-proxy sidecar queried by the API for Admin health" width="900" />
 </p>
 
-`rsyslog` and the Go API don't talk to each other directly - `rsyslog` writes ingested logs as JSON lines to a shared file (`logs.jsonl` on the `log_data` volume), and the API's file tailer (`backend/tailer/`) reads and parses that file, then persists parsed entries to PostgreSQL.
+`rsyslog` and the Go API don't talk to each other directly - `rsyslog` writes ingested logs as JSON lines to a shared file (`logs.jsonl` on the `log_data` volume), and the API's file tailer (`backend/tailer/`) reads and parses that file, pushes parsed entries to RabbitMQ, and a pool of worker goroutines consumes from RabbitMQ and persists to PostgreSQL. RabbitMQ decouples ingestion from database writes, so the tailer can keep up with bursts of 10k+ logs/sec without blocking on Postgres.
 
 | Service | Port(s) | Description |
 |---------|---------|-------------|
@@ -46,6 +46,7 @@ A live demo is available at **[demo.logmara.com](https://demo.logmara.com)**:
 | API | 8080 | Gin REST API with JWT auth; tails rsyslog's JSONL output into PostgreSQL |
 | rsyslog | 514 (TCP/UDP); 6514 (TLS, no client cert - same ingestion as 514, just encrypted); 6515 (mTLS, optional relay ingestion - see [Syslog Relay](#syslog-relay-optional-multi-vlan)) | Syslog ingestion daemon |
 | PostgreSQL | 5432 | Persistent log storage |
+| RabbitMQ | 5672 (AMQP, internal); 15672 (management web UI) | Message broker for the tailer ingestion pipeline |
 | docker-proxy | *(internal only, not published to the host)* | Read-only Docker Engine API sidecar backing [Health Monitoring](#health-monitoring) |
 
 ## Features
@@ -114,6 +115,7 @@ cp .env.example .env
 
 Edit `.env` and set at least these — the app **will not start** until the two security keys are set (they have no defaults, by design; see [Security keys](#security-keys)):
 - `POSTGRES_PASSWORD`
+- `RABBITMQ_PASS` — generate with `openssl rand -base64 24`
 - `JWT_SECRET` — generate with `openssl rand -base64 48`
 - `ENCRYPTION_KEY` — generate with `openssl rand -base64 48` (use a *separate* value from `JWT_SECRET`)
 
@@ -151,7 +153,7 @@ Only needed if you've modified the code, or want something not yet published und
 ```bash
 git clone https://github.com/dom133/Logmara.git
 cd syslog_gui
-cp .env.example .env   # fill in POSTGRES_PASSWORD, JWT_SECRET, ENCRYPTION_KEY as above
+cp .env.example .env   # fill in POSTGRES_PASSWORD, RABBITMQ_PASS, JWT_SECRET, ENCRYPTION_KEY as above
 docker compose -f docker-compose.build.yml up -d --build
 ```
 
@@ -193,6 +195,7 @@ Copy `.env.example` and adjust values:
 | `LDAP_BIND_PASSWORD` | *(none)* | Bind password for LDAP queries |
 | `DOCKER_PROXY_URL` | `http://docker-proxy:2375` | Base URL of the `docker-proxy` sidecar backing Admin > Health — see [Health Monitoring](#health-monitoring) |
 | `PARSER_DEFS_DIR` | *(none — embedded defaults only)* | Directory the builtin parser definitions (`backend/db/parsers`) are bootstrapped into and re-read from on every start. Set this (and mount a persistent volume there) to edit/add/remove builtin parsers without rebuilding the image — see [Built-in Parsers](#built-in-parsers) |
+| `RABBITMQ_PASS` | *(required)* | RabbitMQ password for the `logmara` user. Generate with `openssl rand -base64 24`. Also accepted as `RABBITMQ_PASS_FILE` (Swarm secret). The RabbitMQ host/port/user are derived from `RABBITMQ_HOST`/`RABBITMQ_PORT`/`RABBITMQ_USER` env vars (defaults: `rabbitmq`, `5672`, `logmara`) |
 
 ### Security keys
 
@@ -241,12 +244,12 @@ export ENCRYPTION_KEY=$(openssl rand -base64 48)
 
 An additional, opt-in deployment path for surviving the loss of an entire server, not just a container. It does not replace or modify the single-server `docker-compose.yml` path above — that keeps working exactly as documented whether or not you ever use this section.
 
-**Scope**: this gives *true* horizontal scale-out for `api`/`frontend` (multiple replicas serving traffic concurrently, not just failover) and *true* HA for PostgreSQL (automatic leader election/failover via Patroni) and Redis (automatic leader election/failover via Sentinel). `rsyslog` remains single-active-writer by design (see below), which is a correctness requirement, not a current limitation.
+**Scope**: this gives *true* horizontal scale-out for `api`/`frontend` (multiple replicas serving traffic concurrently, not just failover) and *true* HA for PostgreSQL (automatic leader election/failover via Patroni), Redis (automatic leader election/failover via Sentinel), and RabbitMQ (3-node cluster behind HAProxy). `rsyslog` remains single-active-writer by design (see below), which is a correctness requirement, not a current limitation.
 
 Getting here required backend code changes (not just Docker config) — see "How multi-replica safety works" below for what changed and why.
 
 <p align="center">
-  <img src="docs/architecture-ha-swarm.svg" alt="Multi-node Docker Swarm HA architecture: a floating keepalived VIP fronts an app/edge tier (app1, app2) running haproxy-app, frontend, api, rsyslog and keepalived, backed by a data tier (pg1-pg3) running Patroni-managed Postgres, etcd, Redis and Sentinel behind HAProxy, plus a shared NFS server for log_data, log_spool and parser_defs" width="1000" />
+  <img src="docs/architecture-ha-swarm.svg" alt="Multi-node Docker Swarm HA architecture: a floating keepalived VIP fronts an app/edge tier (app1, app2) running haproxy-app, frontend, api, rsyslog and keepalived, backed by a data tier (pg1-pg3) running Patroni-managed Postgres, etcd, Redis and Sentinel behind HAProxy, RabbitMQ cluster behind HAProxy, plus a shared NFS server for log_data, log_spool and parser_defs" width="1000" />
 </p>
 
 ### Requirements
@@ -265,6 +268,8 @@ Getting here required backend code changes (not just Docker config) — see "How
 | [`haproxy/haproxy.cfg`](haproxy/haproxy.cfg) | Routes `:5000` to whichever Postgres node's Patroni REST API reports itself as primary |
 | [`docker-stack.redis.yml`](docker-stack.redis.yml) | 3-node Redis + 3-node Sentinel, backing `backend/sharedstate` (rate limiting, cache invalidation, tailer leader election, ingestion control, slow-query log) |
 | [`redis/sentinel.conf.tpl`](redis/sentinel.conf.tpl) | Sentinel config template loaded as a Swarm config at deploy time |
+| [`docker-stack.rabbitmq.yml`](docker-stack.rabbitmq.yml) | 3-node RabbitMQ cluster + HAProxy, backing the tailer ingestion pipeline (reader -> RabbitMQ -> workers) |
+| [`haproxy/haproxy-rabbitmq.cfg`](haproxy/haproxy-rabbitmq.cfg) | Routes AMQP traffic (`:5672`) across `rabbitmq1/2/3` and exposes the management web UI (`:15672`) |
 | [`docker-stack.app.yml`](docker-stack.app.yml) | `api`, `rsyslog`, `frontend`, `haproxy-app` as Swarm services with real `deploy:` (placement, restart, update policy, `api`/`frontend` at `${API_REPLICAS:-2}`/`${FRONTEND_REPLICAS:-2}`) |
 | [`haproxy/haproxy-app.cfg`](haproxy/haproxy-app.cfg) | Load-balances `:80`/`:443` across every `frontend` replica cluster-wide (`tasks.frontend`), and internally load-balances every `api` replica (`tasks.api`) on `:8090` for nginx's `/api/` proxy_pass; the API is never published directly to the host. Preserves the real client IP across both hops - `option forwardfor` on `:80`, a PROXY protocol header (`send-proxy`) on `:443` since that one's a raw TLS passthrough (paired with `NGINX_PROXY_PROTOCOL=true` on the `api` service, consumed by `backend/handler/admin.go`'s generated `https.conf`) - so audit log IPs and API key IP allowlists see the actual caller, not an internal overlay address |
 | [`keepalived/`](keepalived/) | VRRP config template + health-check scripts (`rsyslog` and `haproxy-app`) for the floating app/edge VIP |
@@ -275,7 +280,7 @@ Getting here required backend code changes (not just Docker config) — see "How
 
 ### How multi-replica safety works
 
-Running more than one `api`/`frontend` replica used to be unsafe: an in-memory rate limiter and stat caches would silently diverge per replica, the log-file tailer would double-ingest if two instances tailed the same file, and nginx config pushes only ever reached one frontend replica. `backend/sharedstate` (backed by the Redis/Sentinel stack above) fixes all of it:
+Running more than one `api`/`frontend` replica used to be unsafe: an in-memory rate limiter and stat caches would silently diverge per replica, the log-file tailer would double-ingest if two instances tailed the same file, and nginx config pushes only ever reached one frontend replica. `backend/sharedstate` (backed by the Redis/Sentinel stack above) fixes all of it. The RabbitMQ stack above decouples ingestion from database writes: the tailer reader pushes parsed logs to RabbitMQ, and a pool of worker goroutines consumes and persists them to PostgreSQL, so burst throughput scales independently of Postgres write latency.
 
 - **Rate limiting** (`backend/main.go`) — a Lua script does an atomic sliding-window check against Redis instead of an in-process map, so limits are shared across every replica.
 - **Tailer leader election** (`backend/tailer/tailer.go`) — a Redis lock (`SET NX PX` + periodic renew, the standard Redis distributed-lock pattern) ensures exactly one `api` replica is ever actively tailing/flushing/compacting `logs.jsonl` at a time; losing the lock (crash, node loss) lets another replica take over within a few seconds.
@@ -297,9 +302,9 @@ This walks through everything from bare servers to a working cluster, using a co
 
 | Node | Example IP | Swarm role | Labels | Runs |
 |---|---|---|---|---|
-| `pg1` | 10.0.0.11 | manager | `pg_id=1`, `cache_id=1` | Postgres (Patroni), etcd, Redis, Sentinel |
-| `pg2` | 10.0.0.12 | manager | `pg_id=2`, `cache_id=2` | Postgres (Patroni), etcd, Redis, Sentinel |
-| `pg3` | 10.0.0.13 | manager | `pg_id=3`, `cache_id=3` | Postgres (Patroni), etcd, Redis, Sentinel |
+| `pg1` | 10.0.0.11 | manager | `pg_id=1`, `cache_id=1`, `rabbitmq_id=1` | Postgres (Patroni), etcd, Redis, Sentinel, RabbitMQ |
+| `pg2` | 10.0.0.12 | manager | `pg_id=2`, `cache_id=2`, `rabbitmq_id=2` | Postgres (Patroni), etcd, Redis, Sentinel, RabbitMQ |
+| `pg3` | 10.0.0.13 | manager | `pg_id=3`, `cache_id=3`, `rabbitmq_id=3` | Postgres (Patroni), etcd, Redis, Sentinel, RabbitMQ |
 | `app1` | 10.0.0.21 | worker | `app=true`, `edge=true` | api, frontend, haproxy, rsyslog, keepalived |
 | `app2` | 10.0.0.22 | worker | `app=true`, `edge=true` | api, frontend, haproxy, rsyslog, keepalived |
 | `nfs1` | 10.0.0.30 | *(not in the swarm)* | — | NFS server for `/data` |
@@ -326,7 +331,7 @@ Swarm itself needs, between every swarm node (`pg1`-`pg3`, `app1`-`app2`):
 Everything else (Postgres 5432, Patroni's REST API 8008, etcd 2379/2380, Redis 6379, Sentinel 26379) travels over the `syslog_net` overlay network via that same VXLAN tunnel — you do **not** need to open those ports individually between nodes.
 
 What *does* need opening beyond the swarm nodes themselves:
-- `app1`/`app2`: `80/tcp`, `443/tcp` (`haproxy-app`, published with `mode: host` — `frontend` itself is no longer published) and `514/tcp`+`514/udp` (rsyslog, also `mode: host`) to whatever network your users/log senders are on. `8080/tcp` (the API) is never published — all API traffic is routed through nginx on `80`/`443`. `7001/tcp` (`haproxy-app`'s stats page) is also published with `mode: host` for the failover test below — it has no `stats auth`, so only open it to trusted/admin source IPs, never to the same network as `80`/`443`.
+- `app1`/`app2`: `80/tcp`, `443/tcp` (`haproxy-app`, published with `mode: host` — `frontend` itself is no longer published) and `514/tcp`+`514/udp` (rsyslog, also `mode: host`) to whatever network your users/log senders are on. `8080/tcp` (the API) is never published — all API traffic is routed through nginx on `80`/`443`. `7001/tcp` (`haproxy-app`'s stats page) is also published with `mode: host` for the failover test below — it has no `stats auth`, so only open it to trusted/admin source IPs, never to the same network as `80`/`443`. `15672/tcp` (`haproxy-rabbitmq` → RabbitMQ management web UI) is also published with `mode: host` — open it only to admin source IPs.
 - `nfs1`: `2049/tcp` (NFS) and `111/tcp`+`111/udp` (portmapper), open to `app1`/`app2` specifically. If you deploy the optional [DRBD-replicated NFS pair](#optional-nfs-replica-drbd--keepalived) instead, `nfs1`/`nfs2` also need `7789/tcp` (DRBD replication) open to each other.
 
 ```bash
@@ -432,6 +437,9 @@ Back on `pg1`:
 ./scripts/swarm-bootstrap.sh label-app app2
 ./scripts/swarm-bootstrap.sh label-edge app1
 ./scripts/swarm-bootstrap.sh label-edge app2
+./scripts/swarm-bootstrap.sh label-rabbitmq pg1 1
+./scripts/swarm-bootstrap.sh label-rabbitmq pg2 2
+./scripts/swarm-bootstrap.sh label-rabbitmq pg3 3
 ```
 
 #### 7. Create the shared network, secrets, and configs
@@ -444,15 +452,18 @@ PG_SUPERUSER_PASS=$(openssl rand -base64 32)
 PG_REPLICATION_PASS=$(openssl rand -base64 32)
 PG_APP_PASS=$(openssl rand -base64 32)
 REDIS_PASS=$(openssl rand -base64 32)
+RABBITMQ_PASS=$(openssl rand -base64 24)
 JWT_SECRET_VAL=$(openssl rand -base64 48)
 ENCRYPTION_KEY_VAL=$(openssl rand -base64 48)   # separate value; see "Security keys"
 
 ./scripts/swarm-bootstrap.sh secrets "$PG_SUPERUSER_PASS" "$PG_REPLICATION_PASS" "$PG_APP_PASS"
 ./scripts/swarm-bootstrap.sh redis-secret "$REDIS_PASS"
+./scripts/swarm-bootstrap.sh rabbitmq-secret "$RABBITMQ_PASS"
 ./scripts/swarm-bootstrap.sh app-secrets "$JWT_SECRET_VAL" "$ENCRYPTION_KEY_VAL"
 ./scripts/swarm-bootstrap.sh haproxy-config
 ./scripts/swarm-bootstrap.sh haproxy-app-config
 ./scripts/swarm-bootstrap.sh redis-sentinel-config
+./scripts/swarm-bootstrap.sh haproxy-rabbitmq-config
 ```
 All four passwords/keys now live only as Swarm secrets (mounted into the relevant containers at `/run/secrets/*`) - none of them need to be exported as shell env vars again in step 10, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later.
 
@@ -476,6 +487,12 @@ Once that's healthy:
 ```bash
 ./scripts/swarm-deploy.sh redis   # deploys as stack "logmara-redis"
 watch docker service ls   # wait for redis1/2/3 and sentinel1/2/3 at 1/1
+```
+
+Once Redis is healthy:
+```bash
+./scripts/swarm-deploy.sh rabbitmq   # deploys as stack "logmara-rabbitmq"
+watch docker service ls   # wait for rabbitmq1/2/3 at 1/1 and haproxy-rabbitmq at 2/2
 ```
 
 > [!TIP]
@@ -583,6 +600,7 @@ Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizar
 
 - Kill the Patroni leader's node → `docker service logs logmara-pg_haproxy` and the Patroni REST API (`curl http://<any-pg-node>:8008/`) should show a new leader within a few seconds, with no manual steps.
 - Kill the Redis node currently acting as Sentinel's master → the other two Sentinels should promote a replica within a few seconds (`docker service logs logmara-redis_sentinel1` shows the failover); `api` replicas using `go-redis`'s Sentinel-aware client should reconnect to the new master automatically.
+- Kill a RabbitMQ node → the remaining two nodes keep the cluster alive; `haproxy-rabbitmq` health checks remove the dead node from the backend pool; `docker service logs logmara-rabbitmq_haproxy-rabbitmq1` shows the server going down and traffic shifting. The RabbitMQ management web UI at `http://<any-app-node-ip>:15672` (login: `logmara`, password: whatever you set for `rabbitmq_password`) confirms the cluster status.
 - Kill the node running one `api`/`frontend` replica → the other replica(s) keep serving without interruption; `docker service ps logmara-app_api` should show the lost one rescheduled onto the other `app=true` node.
 - Kill the edge node currently holding the VIP → keepalived should fail over in 1-3s; confirm with `ip addr` on the new holder and by sending a test syslog message during the cutover.
 - Confirm `haproxy-app` is actually load-balancing, not just failing over: hit `http://<any-app-node-ip>:7001/` (the stats page) and check every `frontend-*`/`api-*` server-template slot shows `UP` with a non-zero request count after a few page loads/API calls; `docker service logs logmara-app_haproxy-app` also shows each backend server going up as its task starts.
@@ -613,6 +631,7 @@ Deploy in this order so that data-tier services are current before the app tier 
 ```bash
 ./scripts/swarm-deploy.sh --resolve-image --with-registry-auth postgres   # logmara-pg
 ./scripts/swarm-deploy.sh --resolve-image --with-registry-auth redis      # logmara-redis
+./scripts/swarm-deploy.sh --resolve-image --with-registry-auth rabbitmq   # logmara-rabbitmq
 ./scripts/swarm-deploy.sh --resolve-image --with-registry-auth app        # logmara-app
 ```
 
@@ -1061,6 +1080,10 @@ The **Dashboards** tab provides customizable views of your log data.
 ├── docker-compose.build.yml   # Same stack, builds every image from source instead
 ├── docker-compose.relay.yml       # Standalone compose for a remote syslog relay host, pre-built image
 ├── docker-compose.relay.build.yml # Same, builds Dockerfile.rsyslog-relay from source instead
+├── docker-stack.postgres.yml  # HA Postgres (Patroni + etcd + HAProxy) for Docker Swarm
+├── docker-stack.redis.yml     # HA Redis + Sentinel for Docker Swarm
+├── docker-stack.rabbitmq.yml  # HA RabbitMQ cluster + HAProxy for Docker Swarm
+├── docker-stack.app.yml       # api, rsyslog, frontend, haproxy-app for Docker Swarm
 ├── Dockerfile.backend
 ├── Dockerfile.frontend
 ├── Dockerfile.rsyslog
@@ -1077,7 +1100,12 @@ The **Dashboards** tab provides customizable views of your log data.
 │   ├── parser/               # Regex parser engine
 │   ├── relaypki/              # Internal CA + relay certificate issuance (mTLS)
 │   ├── tailer/               # File tailer for rsyslog JSONL
+│   ├── sharedstate/          # Shared state (RabbitMQ queue, Redis-backed rate limiter)
 │   └── util/                 # Key generation, encryption utilities
+├── haproxy/
+│   ├── haproxy.cfg            # HAProxy config for Patroni Postgres
+│   ├── haproxy-app.cfg        # HAProxy config for frontend/api
+│   └── haproxy-rabbitmq.cfg   # HAProxy config for RabbitMQ cluster
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx           # Main layout with pinned sidebar

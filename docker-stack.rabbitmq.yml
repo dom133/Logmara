@@ -1,0 +1,159 @@
+# HA RabbitMQ cluster for Docker Swarm - backs the tailer ingestion pipeline
+# (reader -> RabbitMQ -> workers).
+#
+# OPTIONAL, additive stack for multi-node deployments. Deploy alongside
+# docker-stack.redis.yml before docker-stack.app.yml. Not needed at all for
+# the single-server docker-compose.yml path.
+#
+# Uses three RabbitMQ nodes (rabbitmq1/2/3) clustered with shared Erlang
+# cookie. Messages are non-durable (durable: false) - the tailer reader
+# persists its file position to Redis, so a RabbitMQ restart just means
+# draining the in-memory queue and resuming from the saved position.
+#
+# Prerequisites (see README "High Availability Deployment"):
+#   - Docker Swarm initialized, 3 nodes labeled rabbitmq_id=1 / rabbitmq_id=2 /
+#     rabbitmq_id=3 (can be the same nodes as cache_id=*, pg_id=*, or
+#     app=true/edge=true on small clusters)
+#   - `docker network create -d overlay --attachable syslog_net` (already
+#     done if docker-stack.postgres.yml is deployed)
+#   - Secret created: rabbitmq_password
+#   - Secret created: rabbitmq_erlang_cookie
+#
+# Deploy with: docker stack deploy -c docker-stack.rabbitmq.yml logmara-rabbitmq
+
+version: "3.8"
+
+x-rabbitmq-logging: &rabbitmq-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  rabbitmq1:
+    image: rabbitmq:3.13-management-alpine
+    hostname: rabbitmq1
+    networks: [syslog_net]
+    environment:
+      RABBITMQ_ERLANG_COOKIE_FILE: /run/secrets/rabbitmq_erlang_cookie
+      RABBITMQ_DEFAULT_USER: logmara
+      RABBITMQ_DEFAULT_PASS_FILE: /run/secrets/rabbitmq_password
+    secrets:
+      - rabbitmq_password
+      - rabbitmq_erlang_cookie
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    logging: *rabbitmq-logging
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [node.labels.rabbitmq_id == 1]
+
+  rabbitmq2:
+    image: rabbitmq:3.13-management-alpine
+    hostname: rabbitmq2
+    networks: [syslog_net]
+    environment:
+      RABBITMQ_ERLANG_COOKIE_FILE: /run/secrets/rabbitmq_erlang_cookie
+      RABBITMQ_CLUSTER_WITH: rabbitmq1
+    secrets:
+      - rabbitmq_erlang_cookie
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        rm -rf /var/lib/rabbitmq/mnesia/* && \
+        exec docker-entrypoint.sh rabbitmq-server
+    depends_on: [rabbitmq1]
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    logging: *rabbitmq-logging
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [node.labels.rabbitmq_id == 2]
+
+  rabbitmq3:
+    image: rabbitmq:3.13-management-alpine
+    hostname: rabbitmq3
+    networks: [syslog_net]
+    environment:
+      RABBITMQ_ERLANG_COOKIE_FILE: /run/secrets/rabbitmq_erlang_cookie
+      RABBITMQ_CLUSTER_WITH: rabbitmq1
+    secrets:
+      - rabbitmq_erlang_cookie
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        rm -rf /var/lib/rabbitmq/mnesia/* && \
+        exec docker-entrypoint.sh rabbitmq-server
+    depends_on: [rabbitmq1]
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    logging: *rabbitmq-logging
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [node.labels.rabbitmq_id == 3]
+
+  # Simple TCP load balancer fronting the RabbitMQ cluster. api connects
+  # to this VIP instead of a single node, so it survives node failures.
+  haproxy-rabbitmq:
+    image: haproxy:2.9-alpine
+    networks: [syslog_net]
+    configs:
+      - source: haproxy_rabbitmq_cfg
+        target: /usr/local/etc/haproxy/haproxy.cfg
+    ports:
+      - target: 5672
+        published: 5672
+        protocol: tcp
+        mode: host
+      - target: 15672
+        published: 15672
+        protocol: tcp
+        mode: host
+    depends_on: [rabbitmq1, rabbitmq2, rabbitmq3]
+    healthcheck:
+      test: ["CMD-SHELL", "haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    logging: *rabbitmq-logging
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [node.labels.app == true]
+
+networks:
+  syslog_net:
+    external: true
+
+secrets:
+  rabbitmq_password:
+    external: true
+  rabbitmq_erlang_cookie:
+    external: true
+
+configs:
+  haproxy_rabbitmq_cfg:
+    external: true
