@@ -36,8 +36,13 @@ services:
     networks: [syslog_net]
     environment:
       RABBITMQ_ERLANG_COOKIE_FILE: /run/secrets/rabbitmq_erlang_cookie
-      RABBITMQ_DEFAULT_USER: logmara
-      RABBITMQ_DEFAULT_PASS_FILE: /run/secrets/rabbitmq_password
+    entrypoint: ["/docker-entrypoint-init.d/entrypoint.sh"]
+    configs:
+      - source: rabbitmq_conf_tpl
+        target: /etc/rabbitmq/rabbitmq.conf.tpl
+      - source: rabbitmq_entrypoint
+        target: /docker-entrypoint-init.d/entrypoint.sh
+        mode: 0755
     secrets:
       - rabbitmq_password
       - rabbitmq_erlang_cookie
@@ -157,3 +162,7 @@ secrets:
 configs:
   haproxy_rabbitmq_cfg:
     external: true
+  rabbitmq_conf_tpl:
+    file: rabbitmq/rabbitmq.conf.tpl
+  rabbitmq_entrypoint:
+    file: rabbitmq/entrypoint.sh

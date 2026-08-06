@@ -54,10 +54,12 @@ services:
     image: rabbitmq:3.13-management-alpine
     environment:
       TZ: UTC
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-logmara}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:?set RABBITMQ_PASS in .env}
+      RABBITMQ_PASS: ${RABBITMQ_PASS:?set RABBITMQ_PASS in .env}
+    entrypoint: ["/docker-entrypoint-init.d/entrypoint.sh"]
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+      - ./rabbitmq/rabbitmq.conf.tpl:/etc/rabbitmq/rabbitmq.conf.tpl:ro
+      - ./rabbitmq/entrypoint.sh:/docker-entrypoint-init.d/entrypoint.sh:ro
     ports:
       - "15672:15672"
     healthcheck:
