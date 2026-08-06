@@ -47,6 +47,19 @@ func (c *Client) SaveTailerPosition(pos int64, fp string) {
 	}
 }
 
+// ResetTailerPosition removes the tailer position key from Redis.
+// Call during a full purge so the tailer restarts from 0.
+func (c *Client) ResetTailerPosition() {
+	if c == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := c.rdb.Del(ctx, tailerPosKey).Err(); err != nil {
+		slog.Warn("tailer position: Redis delete error", "error", err)
+	}
+}
+
 // LoadTailerPosition reads the last saved position+fp from Redis. Returns
 // (0, 0, false) when client is nil or the key is missing/stale.
 func (c *Client) LoadTailerPosition() (pos, flushedPos int64, ok bool) {
