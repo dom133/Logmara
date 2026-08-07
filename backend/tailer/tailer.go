@@ -282,6 +282,7 @@ type pipeline struct {
 	flushTrk    *sharedstate.FlushTracker
 	workerPool  *WorkerPool
 	metricsColl *TailerMetricsCollector
+	elector     *sharedstate.LeaderElector
 }
 
 // Run starts the log tailer. When sharedClient is nil (single-server/
@@ -322,12 +323,24 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 			continue
 		}
 
-		slog.Info("tailer: VIP marker matches this node, starting ingestion", "my_node", myNode)
+		slog.Info("tailer: VIP marker matches this node, acquiring leader lock", "my_node", myNode)
+
+		elector := sharedstate.NewLeaderElector(sharedClient, "tailer", 30*time.Second)
+		if !elector.Acquire(ctx) {
+			slog.Warn("tailer: another replica already holds leader lock, waiting", "my_node", myNode)
+			if !sleepOrDone(ctx, vipCheckInterval) {
+				return
+			}
+			continue
+		}
+		slog.Info("tailer: leader lock acquired, starting ingestion", "my_node", myNode)
+
 		leaderCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
 
 		// Start the distributed pipeline
 		pipeline := startPipeline(leaderCtx, db, engine, ic, alerts, rate, filePath, sharedClient)
+		pipeline.elector = elector
 
 		if pipeline.queue != nil && pipeline.flushTrk != nil {
 			go func() {
@@ -363,7 +376,7 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 			}
 		}()
 
-		// While tailing, check that VIP marker still matches
+		// While tailing, check that VIP marker still matches and renew leader lock
 	vipLoop:
 		for {
 			select {
@@ -380,6 +393,17 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 					<-done
 					stopPipeline(pipeline)
 					break vipLoop
+				}
+				ok, lost := elector.Renew(leaderCtx)
+				if !ok && lost {
+					slog.Warn("tailer: lost leader lock, stepping down", "my_node", myNode)
+					cancel()
+					<-done
+					stopPipeline(pipeline)
+					break vipLoop
+				}
+				if !ok && !lost {
+					slog.Warn("tailer: leader lock renew error (transient)", "my_node", myNode)
 				}
 			}
 		}
@@ -483,6 +507,10 @@ func stopPipeline(p *pipeline) {
 		return
 	}
 	slog.Info("tailer: stopping pipeline")
+	if p.elector != nil {
+		p.elector.Release(context.Background())
+		slog.Info("tailer: leader lock released")
+	}
 	if p.metricsColl != nil {
 		p.metricsColl.Stop()
 		currentMetrics = nil
