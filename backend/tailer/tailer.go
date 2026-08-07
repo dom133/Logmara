@@ -186,8 +186,14 @@ func metricsPublicToWorkerMetrics(pub []WorkerMetricsPublic) []WorkerMetrics {
 // HTTP request. Returns (messages_removed, error_string). Empty error means
 // success; returns (0, "") when there's no pipeline to purge (single-server).
 func PurgeTailerQueue() (uint32, string) {
+	myNode := strings.TrimSpace(os.Getenv(myNodeEnvKey))
+	if myNode == "" {
+		myNode, _ = os.Hostname()
+	}
+
 	// Leader path: pipeline is local, purge directly.
 	if currentPipeline != nil && currentPipeline.queue != nil {
+		slog.Info("purge: this replica is leader, purging directly", "node", myNode)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		msgs, err := currentPipeline.queue.Purge(ctx)
@@ -208,6 +214,7 @@ func PurgeTailerQueue() (uint32, string) {
 		return 0, ""
 	}
 
+	slog.Info("purge: this replica is not leader, forwarding to leader via Redis", "node", myNode)
 	reqID := fmt.Sprintf("purge-%d-%d", time.Now().UnixNano(), rand.Intn(10000))
 
 	// Register local channel so that if this replica later becomes leader and
@@ -225,7 +232,7 @@ func PurgeTailerQueue() (uint32, string) {
 		return 0, fmt.Sprintf("failed to coordinate purge across replicas: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	for {
@@ -234,7 +241,7 @@ func PurgeTailerQueue() (uint32, string) {
 			purgeMu.Lock()
 			delete(pendingPurges, reqID)
 			purgeMu.Unlock()
-			slog.Error("tailer: purge coordination timed out waiting for leader")
+			slog.Error("tailer: purge coordination timed out waiting for leader", "node", myNode)
 			return 0, "purge coordination timed out waiting for leader"
 		default:
 			raw, err := currentSharedClient.Raw().Get(ctx, purgeResultKey).Result()
@@ -252,7 +259,7 @@ func PurgeTailerQueue() (uint32, string) {
 						slog.Error("tailer: purge reported error from leader", "error", res.Err)
 						return 0, res.Err
 					}
-					slog.Info("tailer: purge completed via leader coordination", "messages_removed", res.Msgs)
+					slog.Info("tailer: purge completed via leader coordination", "messages_removed", res.Msgs, "node", myNode)
 					return res.Msgs, ""
 				}
 			}
@@ -439,6 +446,7 @@ func handlePurgeRequests(ctx context.Context, queue *sharedstate.Queue) {
 			if !ok {
 				return
 			}
+			slog.Info("purge: leader received purge request from replica", "reqID", msg.Payload)
 			res := purgeCoordinator(msg.Payload, queue)
 
 			resultData, _ := json.Marshal(map[string]interface{}{
