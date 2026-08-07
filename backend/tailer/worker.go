@@ -180,6 +180,11 @@ func (w *worker) run(ctx context.Context) {
 				return
 			}
 
+			if w.ic.IsPaused() {
+				delivery.Nack(false, true)
+				continue
+			}
+
 			var qe sharedstate.QueueEntry
 			if err := json.Unmarshal(delivery.Body, &qe); err != nil {
 				slog.Error("worker: unmarshal queue entry error", "id", w.id, "error", err)

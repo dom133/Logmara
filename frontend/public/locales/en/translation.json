@@ -939,6 +939,7 @@
     "error.invalidCursor": "Invalid cursor",
     "error.invalidRequest": "Invalid request",
     "error.queryFailed": "Query failed",
+    "error.admin.purgeQueueFailed": "Failed to purge RabbitMQ queue",
     "export.failed": "Export failed",
     "init.dbCredentialsRequired": "Database credentials are required",
     "init.dbSettingsInvalid": "Invalid database settings",
