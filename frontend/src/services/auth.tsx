@@ -54,7 +54,7 @@ const SESSION_CHECK_BACKOFF_MAX_MS = 300000
 const STORAGE_KEY_EXPIRY = '__session_expiry_ts__'
 const STORAGE_KEY_LAST_ACTIVE = '__session_last_active__'
 
-export function AuthProvider({ children }: { children: ReactNode }) {
+export function AuthProvider({ children, skipInitialLoad }: { children: ReactNode; skipInitialLoad?: boolean }) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const [sessionTimeout, setSessionTimeoutValue] = useState<number | null>(300)
@@ -298,8 +298,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [setupSessionWarning])
 
   useEffect(() => {
+    if (skipInitialLoad) return
     loadUser()
-  }, [loadUser])
+  }, [loadUser, skipInitialLoad])
 
   const sessionCheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sessionCheckBackoffRef = useRef(SESSION_CHECK_INTERVAL_ACTIVE_MS)
@@ -328,6 +329,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [resetSessionCheckBackoff])
 
   useEffect(() => {
+    if (skipInitialLoad) return
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         checkSessionExpiry()
@@ -336,7 +338,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
-  }, [checkSessionExpiry, resetSessionCheckBackoff])
+  }, [checkSessionExpiry, resetSessionCheckBackoff, skipInitialLoad])
 
   // Poll GET /auth/session-check while logged in, purely to notice a
   // server-side revocation (Admin, another device's "Sign out" in My
@@ -347,7 +349,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // visibility change (tab brought to foreground). A 401 here is already
   // handled by the axios response interceptor (redirects to /login).
   useEffect(() => {
-    if (!user) return
+    if (!user || skipInitialLoad) return
     scheduleSessionCheck()
     return () => {
       if (sessionCheckTimerRef.current) {
@@ -376,14 +378,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user])
 
   useEffect(() => {
-    if (!user) return
+    if (!user || skipInitialLoad) return
     const opts = { capture: true, passive: true }
     const targets = ['mousedown', 'keydown', 'scroll'] as const
     targets.forEach(evt => window.addEventListener(evt, reportUserActivity, opts))
     return () => {
       targets.forEach(evt => window.removeEventListener(evt, reportUserActivity, opts))
     }
-  }, [user, reportUserActivity])
+  }, [user, reportUserActivity, skipInitialLoad])
 
   const isAdmin = user?.is_admin || false
   const canEdit = user?.role === 'admin' || user?.role === 'editor'

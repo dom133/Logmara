@@ -2,7 +2,7 @@ import { useEffect, useState, createContext, useContext } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link as RouterLink } from 'react-router-dom'
 import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Space, Typography, Skeleton } from 'antd'
 import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, BellOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined, LogoutOutlined, UserOutlined, NodeIndexOutlined } from '@ant-design/icons'
-import { initI18n } from './i18n'
+import { initI18n, initI18nFallback } from './i18n'
 import { useTranslation } from 'react-i18next'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
@@ -378,19 +378,22 @@ function NotFoundPage() {
 export default function App() {
   const [initialized, setInitialized] = useState<boolean | null>(null)
   const [starting, setStarting] = useState(false)
-  const [i18n, setI18n] = useState<I18nInstance | null>(null)
+  // Initialize a minimal i18n instance synchronously so the login page can
+  // render immediately. The full init (real locale data + backend settings)
+  // replaces these resources in the background.
+  const fallbackI18n = initI18nFallback()
+  const [i18nInstance] = useState<I18nInstance>(fallbackI18n)
 
-  // Both i18n init and backend readiness check are independent and can
-  // start their async work at the same time - the render below is gated
-  // on both, so running them sequentially would add their latencies.
+  // Full i18n init (real locale data + backend settings) runs in the
+  // background and replaces the fallback resources on the same global
+  // i18n instance. Backend readiness check is independent.
   useEffect(() => {
     let cancelled = false
 
     const initI18nPromise = (async () => {
       try {
-        const instance = await initI18n()
+        await initI18n()
         if (cancelled) return
-        setI18n(instance)
       } catch (e) {
         console.error('Failed to initialize i18n', e)
       }
@@ -421,7 +424,7 @@ export default function App() {
     return () => { cancelled = true }
   }, [])
 
-  if (starting || initialized === null || !i18n) {
+  if (starting || initialized === null) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flexDirection: 'column', gap: 16, height: '100vh' }}>
         <Spin size="large" />
@@ -431,20 +434,22 @@ export default function App() {
   }
 
   return (
-    <I18nextProvider i18n={i18n}>
+    <I18nextProvider i18n={i18nInstance}>
       <ThemeProvider>
         <BrowserRouter>
-          <AuthProvider>
-            <Routes>
-            {!initialized ? (
-              <>
-                <Route path="/setup" element={<SetupWizard />} />
-                <Route path="*" element={<Navigate to="/setup" replace />} />
-              </>
-            ) : (
-              <>
+          <Routes>
+          {!initialized ? (
+            <>
+              <Route path="/setup" element={<SetupWizard />} />
+              <Route path="*" element={<Navigate to="/setup" replace />} />
+            </>
+          ) : (
+            <>
+              <AuthProvider skipInitialLoad>
                 <Route path="/login" element={<Login />} />
+              </AuthProvider>
 
+              <AuthProvider>
                 <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
                 <Route path="/logs" element={<PrivateRoute><LogsViewer /></PrivateRoute>} />
                 <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />
@@ -454,10 +459,10 @@ export default function App() {
                 <Route path="/admin" element={<PrivateRoute requireAdmin><Admin /></PrivateRoute>} />
                 <Route path="/relay" element={<PrivateRoute requireAdmin><SyslogRelay /></PrivateRoute>} />
                 <Route path="*" element={<PrivateRoute><NotFoundPage /></PrivateRoute>} />
-              </>
-            )}
+              </AuthProvider>
+            </>
+          )}
           </Routes>
-          </AuthProvider>
         </BrowserRouter>
       </ThemeProvider>
     </I18nextProvider>
