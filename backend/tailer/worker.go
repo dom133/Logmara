@@ -13,6 +13,7 @@ import (
 	"database/sql"
 
 	"logmara/alertengine"
+	"logmara/control"
 	"logmara/model"
 	"logmara/parser"
 	"logmara/sharedstate"
@@ -39,14 +40,15 @@ func (wp *WorkerPool) NumWorkers() int {
 }
 
 type worker struct {
-	id        int
-	parser    *parser.Engine
-	db        *sql.DB
-	alerts    *alertengine.Engine
-	rate      sharedstate.RateCounter
-	flushTrk  *sharedstate.FlushTracker
-	queue     *sharedstate.Queue
-	metrics   *WorkerMetrics
+	id         int
+	parser     *parser.Engine
+	db         *sql.DB
+	alerts     *alertengine.Engine
+	rate       sharedstate.RateCounter
+	flushTrk   *sharedstate.FlushTracker
+	queue      *sharedstate.Queue
+	ic         control.IngestionController
+	metrics    *WorkerMetrics
 }
 
 // WorkerMetrics tracks per-worker statistics.
@@ -70,7 +72,7 @@ type WorkerMetricsPublic struct {
 
 func NewWorkerPool(numWorkers int, db *sql.DB, alerts *alertengine.Engine,
 	rate sharedstate.RateCounter, flushTrk *sharedstate.FlushTracker,
-	queue *sharedstate.Queue) *WorkerPool {
+	queue *sharedstate.Queue, ic control.IngestionController) *WorkerPool {
 
 	if numWorkers <= 0 {
 		numWorkers = runtime.NumCPU()
@@ -90,6 +92,7 @@ func NewWorkerPool(numWorkers int, db *sql.DB, alerts *alertengine.Engine,
 			rate:     rate,
 			flushTrk: flushTrk,
 			queue:    queue,
+			ic:       ic,
 			metrics: &WorkerMetrics{
 				ID:    i,
 				LastFlushAt: time.Now(),
@@ -254,6 +257,14 @@ func (w *worker) run(ctx context.Context) {
 
 			now := time.Now()
 			if len(entries) >= workerBatchSize || now.Sub(lastFlush) >= workerBatchInterval {
+				if w.ic != nil && w.ic.IsPaused() {
+					// Ingestion paused — NACK with requeue so messages return
+					// to the queue and can be purged by PurgeTailerQueue()
+					delivery.Nack(false, true)
+					entries = entries[:0]
+					queueEntries = queueEntries[:0]
+					continue
+				}
 				if err := flushBatch(w.db, entries, w.rate); err != nil {
 					slog.Error("worker: flush error", "id", w.id, "error", err)
 				} else {

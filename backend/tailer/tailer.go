@@ -297,7 +297,7 @@ func startPipeline(ctx context.Context, db *sql.DB, engine *parser.Engine, ic co
 	}
 
 	flushTrk := sharedstate.NewFlushTracker(sharedClient)
-	workerPool := NewWorkerPool(0, db, alerts, rate, flushTrk, queue)
+	workerPool := NewWorkerPool(0, db, alerts, rate, flushTrk, queue, ic)
 	metricsColl := NewTailerMetricsCollector(queue, flushTrk, rate, workerPool, sharedClient)
 
 	workerPool.Start(ctx)
