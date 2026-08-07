@@ -3,6 +3,7 @@ package tailer
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -10,17 +11,18 @@ import (
 	"time"
 
 	"logmara/control"
+	"logmara/model"
 	"logmara/sharedstate"
 )
 
 // FileReader opens the log file, scans lines, and publishes serialized
 // QueueEntry messages to the RabbitMQ queue. It runs only on the VIP leader.
-func FileReader(ctx context.Context, filePath string, queue *sharedstate.Queue,
+func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *sharedstate.Queue,
 	flushTracker *sharedstate.FlushTracker, ic control.IngestionController,
 	reopenLogFile func() error, sharedClient *sharedstate.Client) {
 
 	posFile := filepath.Join(filepath.Dir(filePath), positionFileName)
-	filePos, _ := loadStartPositionFromReader(filePath, posFile, sharedClient)
+	filePos, _ := loadStartPositionFromReader(db, filePath, posFile, sharedClient)
 
 	defer func() {
 		slog.Info("file reader stopped")
@@ -165,7 +167,52 @@ func FileReader(ctx context.Context, filePath string, queue *sharedstate.Queue,
 	}
 }
 
-func loadStartPositionFromReader(filePath, posFile string, sharedClient *sharedstate.Client) (filePos, flushedPos int64) {
+func dbFallbackPosition(db *sql.DB, filePath string) int64 {
+	var lastTs *time.Time
+	if err := db.QueryRow("SELECT max(timestamp) FROM syslog_logs").Scan(&lastTs); err != nil {
+		slog.Error("db fallback query error", "error", err)
+		return 0
+	}
+	if lastTs == nil {
+		slog.Info("db empty, starting from beginning")
+		return 0
+	}
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		slog.Error("cannot open file for db fallback", "error", err)
+		return 0
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 0, 1024*1024)
+	scanner.Buffer(buf, 1024*1024)
+	pos := int64(0)
+	lineLen := int64(0)
+	for scanner.Scan() {
+		line := scanner.Text()
+		lineLen = int64(len(line))+1
+
+		var entry model.IngestEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			pos += lineLen
+			continue
+		}
+		ts, err := parseTimestamp(entry.Timestamp)
+		if err != nil {
+			pos += lineLen
+			continue
+		}
+		if ts.After(*lastTs) {
+			break
+		}
+		pos += lineLen
+	}
+	return pos
+}
+
+func loadStartPositionFromReader(db *sql.DB, filePath, posFile string, sharedClient *sharedstate.Client) (filePos, flushedPos int64) {
 	if sharedClient != nil {
 		if pos, flushed, ok := sharedClient.LoadTailerPosition(); ok {
 			if f, err := os.Open(filePath); err == nil {
@@ -192,8 +239,16 @@ func loadStartPositionFromReader(filePath, posFile string, sharedClient *shareds
 				slog.Warn("saved position content no longer matches", "pos", pos)
 			}
 		}
-		slog.Info("saved position invalid, starting from 0")
+		slog.Info("saved position invalid, falling back to DB")
 	}
 
+	if db != nil {
+		if pos := dbFallbackPosition(db, filePath); pos > 0 {
+			slog.Info("restored position from DB fallback", "pos", pos)
+			return pos, pos
+		}
+	}
+
+	slog.Info("no valid position found, starting from 0")
 	return 0, 0
 }

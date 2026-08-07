@@ -9,7 +9,7 @@ import (
 
 const (
 	tailerPosKey     = "tailer:position"
-	tailerPosTTL     = 5 * time.Minute
+	tailerPosTTL     = 24 * time.Hour
 	tailerPosVersion = 1
 )
 

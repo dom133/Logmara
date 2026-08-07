@@ -63,6 +63,13 @@ return {flushedSeq, flushedPos}
 `
 
 func NewFlushTracker(client *Client) *FlushTracker {
+	// Clear stale flush tracker state from previous run.
+	// On restart, ft.seq resets to 0, so old HSETNX entries would block
+	// new sequence numbers from being stored.
+	if client != nil {
+		client.rdb.Del(context.Background(), flushTrackerKey)
+	}
+
 	return &FlushTracker{
 		client: client,
 		script: redis.NewScript(reportFlushedLua),
