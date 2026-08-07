@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"logmara/control"
@@ -18,7 +19,7 @@ func FileReader(ctx context.Context, filePath string, queue *sharedstate.Queue,
 	flushTracker *sharedstate.FlushTracker, ic control.IngestionController,
 	reopenLogFile func() error, sharedClient *sharedstate.Client) {
 
-	posFile := positionFileName
+	posFile := filepath.Join(filepath.Dir(filePath), positionFileName)
 	filePos, _ := loadStartPositionFromReader(filePath, posFile, sharedClient)
 
 	defer func() {
