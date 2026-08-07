@@ -12,6 +12,8 @@ import (
 
 	"database/sql"
 
+	amqp "github.com/rabbitmq/amqp091-go"
+
 	"logmara/alertengine"
 	"logmara/control"
 	"logmara/model"
@@ -155,7 +157,7 @@ func (wp *WorkerPool) GetPublicMetrics() []WorkerMetricsPublic {
 }
 
 func (w *worker) run(ctx context.Context) {
-	deliveries, err := w.queue.Consume(ctx)
+	deliveriesChan, err := w.queue.Consume(ctx)
 	if err != nil {
 		slog.Error("worker: failed to start consuming", "id", w.id, "error", err)
 		return
@@ -164,6 +166,7 @@ func (w *worker) run(ctx context.Context) {
 	slog.Info("worker started", "id", w.id)
 	var entries []model.IngestEntry
 	var queueEntries []sharedstate.QueueEntry
+	var batchDelivries []amqp.Delivery
 	lastFlush := time.Now()
 
 	for {
@@ -171,7 +174,7 @@ func (w *worker) run(ctx context.Context) {
 		case <-ctx.Done():
 			slog.Info("worker stopping", "id", w.id)
 			return
-		case delivery, ok := <-deliveries:
+		case delivery, ok := <-deliveriesChan:
 			if !ok {
 				slog.Warn("worker: delivery channel closed", "id", w.id)
 				return
@@ -183,6 +186,7 @@ func (w *worker) run(ctx context.Context) {
 				delivery.Ack(false)
 				w.metrics.Mutex.Lock()
 				w.metrics.ParseErrors++
+				w.metrics.MsgsProcessed++
 				w.metrics.Mutex.Unlock()
 				continue
 			}
@@ -190,6 +194,9 @@ func (w *worker) run(ctx context.Context) {
 			line := qe.Line
 			if line == "" {
 				delivery.Ack(false)
+				w.metrics.Mutex.Lock()
+				w.metrics.MsgsProcessed++
+				w.metrics.Mutex.Unlock()
 				continue
 			}
 
@@ -223,6 +230,9 @@ func (w *worker) run(ctx context.Context) {
 
 			if entry.Hostname == "" {
 				delivery.Ack(false)
+				w.metrics.Mutex.Lock()
+				w.metrics.MsgsProcessed++
+				w.metrics.Mutex.Unlock()
 				continue
 			}
 
@@ -254,36 +264,47 @@ func (w *worker) run(ctx context.Context) {
 
 			entries = append(entries, entry)
 			queueEntries = append(queueEntries, qe)
+			batchDelivries = append(batchDelivries, delivery)
 
 			now := time.Now()
 			if len(entries) >= workerBatchSize || now.Sub(lastFlush) >= workerBatchInterval {
 				if w.ic != nil && w.ic.IsPaused() {
-					// Ingestion paused — NACK with requeue so messages return
-					// to the queue and can be purged by PurgeTailerQueue()
-					delivery.Nack(false, true)
-					entries = entries[:0]
-					queueEntries = queueEntries[:0]
+					// Ingestion paused — NACK all pending deliveries with requeue
+					for _, d := range batchDelivries {
+						d.Nack(false, true)
+					}
+					w.metrics.Mutex.Lock()
+					w.metrics.MsgsProcessed += int64(len(batchDelivries))
+					w.metrics.Mutex.Unlock()
+					entries = nil
+					queueEntries = nil
+					batchDelivries = nil
 					continue
 				}
 				if err := flushBatch(w.db, entries, w.rate); err != nil {
 					slog.Error("worker: flush error", "id", w.id, "error", err)
+					// NACK with requeue on flush failure so messages aren't lost
+					for _, d := range batchDelivries {
+						d.Nack(false, true)
+					}
 				} else {
 					w.alerts.EvaluateBatch(w.db, entries)
 					w.flushTrk.ReportFlushed(ctx, queueEntries)
+					// ACK only after successful flush
+					for _, d := range batchDelivries {
+						d.Ack(false)
+					}
 					w.metrics.Mutex.Lock()
 					w.metrics.DbInserts += int64(len(entries))
+					w.metrics.MsgsProcessed += int64(len(entries))
 					w.metrics.LastFlushAt = now
 					w.metrics.Mutex.Unlock()
 				}
-				entries = entries[:0]
-				queueEntries = queueEntries[:0]
+				entries = nil
+				queueEntries = nil
+				batchDelivries = nil
 				lastFlush = now
 			}
-
-			delivery.Ack(false)
-			w.metrics.Mutex.Lock()
-			w.metrics.MsgsProcessed++
-			w.metrics.Mutex.Unlock()
 		}
 	}
 }
