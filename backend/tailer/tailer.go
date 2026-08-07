@@ -356,7 +356,7 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 		// Only the VIP leader runs the FileReader (publisher).
 		go func() {
 			defer close(done)
-			FileReader(leaderCtx, filePath, pipeline.queue, pipeline.flushTrk, ic, reopenLogFile, sharedClient)
+			FileReader(leaderCtx, db, filePath, pipeline.queue, pipeline.flushTrk, ic, reopenLogFile, sharedClient)
 		}()
 
 		// Periodic save position from flushed progress (leader-only)
@@ -1019,50 +1019,12 @@ func loadStartPosition(db *sql.DB, filePath, posFile string, sharedClient *share
 		slog.Info("saved position invalid, falling back to DB")
 	}
 
-	var lastTs *time.Time
-	if err := db.QueryRow("SELECT max(timestamp) FROM syslog_logs").Scan(&lastTs); err != nil {
-		slog.Error("db fallback query error", "error", err)
-		return 0, 0
-	}
-	if lastTs == nil {
-		slog.Info("db empty, starting from beginning")
-		return 0, 0
+	if pos := dbFallbackPosition(db, filePath); pos > 0 {
+		slog.Info("restored position from DB fallback", "pos", pos)
+		return pos, pos
 	}
 
-	f, err := os.Open(filePath)
-	if err != nil {
-		slog.Error("cannot open file for db fallback", "error", err)
-		return 0, 0
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	buf := make([]byte, 0, 1024*1024)
-	scanner.Buffer(buf, 1024*1024)
-	pos := int64(0)
-	lineLen := int64(0)
-	for scanner.Scan() {
-		line := scanner.Text()
-		lineLen = int64(len(line)) + 1
-
-		var entry model.IngestEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			pos += lineLen
-			continue
-		}
-		ts, err := parseTimestamp(entry.Timestamp)
-		if err != nil {
-			pos += lineLen
-			continue
-		}
-		if ts.After(*lastTs) {
-			break
-		}
-		pos += lineLen
-	}
-
-	slog.Info("restored position from DB", "lastTs", lastTs.Format(time.RFC3339), "pos", pos)
-	return pos, pos
+	return 0, 0
 }
 
 func compactFile(f *os.File, flushedPos int64, filePath string, reopenLogFile func() error) (*os.File, error) {
