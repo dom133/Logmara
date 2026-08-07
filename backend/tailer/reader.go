@@ -113,9 +113,16 @@ func FileReader(ctx context.Context, filePath string, queue *sharedstate.Queue,
 
 			curFilePos += splitter.lastAdvance
 
-			// Backpressure check every 100 lines
-			if seq%100 == 0 && queue.IsFull(ctx) {
-				time.Sleep(100 * time.Millisecond)
+			// Check pause and backpressure every 100 lines so we stop
+			// publishing quickly when purge pauses ingestion.
+			if seq%100 == 0 {
+				if ic.IsPaused() {
+					slog.Info("file reader: ingestion paused during scan, breaking")
+					break
+				}
+				if queue.IsFull(ctx) {
+					time.Sleep(100 * time.Millisecond)
+				}
 			}
 
 			entry := sharedstate.QueueEntry{

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -758,7 +759,9 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 		wasPaused := ic.IsPaused()
 		if req.PauseDuringPurge {
 			ic.Pause()
-			time.Sleep(500 * time.Millisecond)
+			// Give workers time to NACK in-flight deliveries back to the queue.
+			// With per-delivery pause check (worker.go) this propagates quickly.
+			time.Sleep(2 * time.Second)
 		}
 
 		row := database.QueryRow("SELECT COUNT(*) FROM syslog_logs")
@@ -777,11 +780,39 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 		InvalidateAllCaches()
 		slog.Info("database truncated", "count", count)
 
+		// Wait for the RabbitMQ queue depth to stabilise after pause.
+		// Workers NACK/requeue in-flight deliveries; the reader stops
+		// publishing. Poll until the queue stops growing or timeout.
+		if req.PauseDuringPurge {
+			initialDepth := tailer.GetTailerQueueLength()
+			stable := false
+			for i := 0; i < 10; i++ {
+				time.Sleep(200 * time.Millisecond)
+				depth := tailer.GetTailerQueueLength()
+				if depth < initialDepth-50 || depth < 50 {
+					stable = true
+					break
+				}
+			}
+			if !stable {
+				slog.Warn("purge: queue did not fully drain before purge",
+					"initial_depth", initialDepth, "final_depth", tailer.GetTailerQueueLength())
+			} else {
+				slog.Info("purge: queue stabilised before purge",
+					"initial_depth", initialDepth, "final_depth", tailer.GetTailerQueueLength())
+			}
+		}
+
 		// Purge RabbitMQ ingestion queue to drop in-flight messages.
-		// Workers are still paused (ic.IsPaused() == true) so they NACK/requeue
-		// any in-flight deliveries. Give them a moment to NACK before purging.
-		time.Sleep(500 * time.Millisecond)
-		queuePurged := tailer.PurgeTailerQueue()
+		queuePurged, purgeErr := tailer.PurgeTailerQueue()
+		if purgeErr != "" {
+			slog.Error("purge: tailer queue purge failed", "error", purgeErr)
+			if req.PauseDuringPurge && !wasPaused {
+				ic.Resume()
+			}
+			middleware.HandleError(c, model.NewInternalKey("admin.purgeQueueFailed", "Failed to purge RabbitMQ queue", errors.New(purgeErr)))
+			return
+		}
 		slog.Info("purge: tailer queue purged", "messages_removed", queuePurged)
 
 		logFilePath := os.Getenv("LOG_FILE_PATH")
