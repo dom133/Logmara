@@ -20,7 +20,6 @@ func FileReader(ctx context.Context, filePath string, queue *sharedstate.Queue,
 
 	posFile := positionFileName
 	filePos, _ := loadStartPositionFromReader(filePath, posFile, sharedClient)
-	_ = filePos // used below
 
 	defer func() {
 		slog.Info("file reader stopped")

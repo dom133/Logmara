@@ -633,7 +633,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		splitter := &lineSplitter{}
 		scanner.Split(splitter.split)
 
-		batchStartPos := filePos
+		batchStartPos = filePos
 		curFilePos := filePos
 		scanned := false
 
@@ -734,7 +734,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			if err := flushBatch(db, entries, rate); err != nil {
 				slog.Error("flush error", "error", err)
 			} else {
-				flushedPos = batchStartPos
+				flushedPos = curFilePos
 				savePosition(posFile, flushedPos, filePath, sharedClient)
 				alerts.EvaluateBatch(db, entries)
 			}
