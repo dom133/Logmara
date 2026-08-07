@@ -777,7 +777,10 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 		InvalidateAllCaches()
 		slog.Info("database truncated", "count", count)
 
-		// Purge RabbitMQ ingestion queue to drop in-flight messages
+		// Purge RabbitMQ ingestion queue to drop in-flight messages.
+		// Workers are still paused (ic.IsPaused() == true) so they NACK/requeue
+		// any in-flight deliveries. Give them a moment to NACK before purging.
+		time.Sleep(500 * time.Millisecond)
 		queuePurged := tailer.PurgeTailerQueue()
 		slog.Info("purge: tailer queue purged", "messages_removed", queuePurged)
 
@@ -785,10 +788,28 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 		if logFilePath == "" {
 			logFilePath = "/data/logs.jsonl"
 		}
-		if err := os.Truncate(logFilePath, 0); err != nil {
-			slog.Error("failed to truncate log file", "path", logFilePath, "error", err)
+		// Use atomic file swap instead of os.Truncate. Rsyslog holds a long-lived
+		// file descriptor on logs.jsonl — truncating in place while rsyslog
+		// concurrently appends can leave the file with its original size on disk
+		// because the kernel keeps the fd offset past the truncated region.
+		// Creating an empty tmp file, renaming it over logs.jsonl, then sending
+		// SIGHUP to rsyslog (ReopenRsyslogLogFile) forces rsyslog to reopen the
+		// new, empty inode — same pattern as tailer.compactFile.
+		tmpPath := logFilePath + ".purge.tmp"
+		tmpFile, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		if err != nil {
+			slog.Error("failed to create empty log file", "path", tmpPath, "error", err)
 		} else {
-			slog.Info("log file truncated", "path", logFilePath)
+			tmpFile.Close()
+			if err := os.Rename(tmpPath, logFilePath); err != nil {
+				slog.Error("failed to swap log file", "path", logFilePath, "error", err)
+				os.Remove(tmpPath)
+			} else {
+				slog.Info("log file replaced with empty file", "path", logFilePath)
+				if err := ReopenRsyslogLogFile(); err != nil {
+					slog.Error("failed to ask rsyslog to reopen log file after purge", "error", err)
+				}
+			}
 		}
 
 		// Clear tailer position checkpoint so the tailer restarts from 0
