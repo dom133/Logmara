@@ -63,17 +63,19 @@ return {flushedSeq, flushedPos}
 `
 
 func NewFlushTracker(client *Client) *FlushTracker {
-	// Clear stale flush tracker state from previous run.
-	// On restart, ft.seq resets to 0, so old HSETNX entries would block
-	// new sequence numbers from being stored.
-	if client != nil {
-		client.rdb.Del(context.Background(), flushTrackerKey)
-	}
-
-	return &FlushTracker{
+	ft := &FlushTracker{
 		client: client,
 		script: redis.NewScript(reportFlushedLua),
 	}
+	if client != nil {
+		// Sync ft.seq with the last flushed sequence from Redis so that
+		// newly allocated sequence numbers are contiguous with the ones
+		// already stored. This prevents a joining replica from wiping the
+		// shared tracker and breaking flush progress on the leader.
+		seq, _ := ft.GetFlushedPos(context.Background())
+		ft.seq = seq
+	}
+	return ft
 }
 
 // QueueEntry carries the metadata needed to track flush progress.
