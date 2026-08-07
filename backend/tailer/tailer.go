@@ -556,7 +556,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 	var entries []model.IngestEntry
 	lastFlush := time.Now()
 	lastCompaction := time.Now()
-	batchStartPos := int64(0)
+
 
 	defer func() {
 		if len(entries) > 0 {
@@ -564,11 +564,10 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			if err := flushBatch(db, entries, rate); err != nil {
 				slog.Error("final flush error", "error", err)
 			} else {
-				flushedPos = batchStartPos
-				savePosition(posFile, flushedPos, filePath, sharedClient)
 				alerts.EvaluateBatch(db, entries)
 			}
 		}
+		savePosition(posFile, filePos, filePath, sharedClient)
 		slog.Info("file tailer stopped")
 	}()
 
@@ -661,7 +660,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		splitter := &lineSplitter{}
 		scanner.Split(splitter.split)
 
-		batchStartPos = filePos
+
 		curFilePos := filePos
 		scanned := false
 
@@ -738,13 +737,13 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 					if err := flushBatch(db, entries, rate); err != nil {
 						slog.Error("flush error", "error", err)
 					} else {
-						flushedPos = curFilePos
-						savePosition(posFile, flushedPos, filePath, sharedClient)
 						alerts.EvaluateBatch(db, entries)
 					}
 				}
+				flushedPos = curFilePos
+				savePosition(posFile, flushedPos, filePath, sharedClient)
 				entries = entries[:0]
-				batchStartPos = curFilePos
+
 				lastFlush = now
 			}
 		}
@@ -762,10 +761,10 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			if err := flushBatch(db, entries, rate); err != nil {
 				slog.Error("flush error", "error", err)
 			} else {
-				flushedPos = curFilePos
-				savePosition(posFile, flushedPos, filePath, sharedClient)
 				alerts.EvaluateBatch(db, entries)
 			}
+			flushedPos = curFilePos
+			savePosition(posFile, flushedPos, filePath, sharedClient)
 			entries = entries[:0]
 		}
 		if len(entries) > 0 && ic.IsPaused() {
