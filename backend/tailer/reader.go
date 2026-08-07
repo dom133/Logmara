@@ -97,27 +97,26 @@ func FileReader(ctx context.Context, filePath string, queue *sharedstate.Queue,
 		scanner.Split(splitter.split)
 
 		curFilePos := filePos
-		scanned := false
 		seq := flushTracker.NextSeq()
 
 		for scanner.Scan() {
-			curFilePos += splitter.lastAdvance
 			if ic.IsPaused() {
 				slog.Info("file reader: ingestion paused, breaking scan")
 				break
 			}
 
+			line := scanner.Text()
+			if line == "" {
+				curFilePos += splitter.lastAdvance
+				continue
+			}
+
+			curFilePos += splitter.lastAdvance
+
 			// Backpressure check every 100 lines
 			if seq%100 == 0 && queue.IsFull(ctx) {
 				time.Sleep(100 * time.Millisecond)
 			}
-
-			line := scanner.Text()
-			if line == "" {
-				continue
-			}
-
-			scanned = true
 
 			entry := sharedstate.QueueEntry{
 				Seq:     seq,
@@ -140,14 +139,15 @@ func FileReader(ctx context.Context, filePath string, queue *sharedstate.Queue,
 				}
 				goto reconnect
 			}
+
+			// Advance filePos immediately after successful publish so that
+			// a break (pause / backpressure) or reconnect won't re-publish
+			// already-sent lines and create duplicates.
+			filePos = curFilePos
 		}
 
 		if err := scanner.Err(); err != nil {
 			slog.Error("file reader: scan error", "error", err)
-		}
-
-		if scanned {
-			filePos = curFilePos
 		}
 		f.Close()
 
