@@ -66,6 +66,7 @@ type WorkerMetrics struct {
 // WorkerMetricsPublic is a JSON-serializable snapshot of WorkerMetrics.
 type WorkerMetricsPublic struct {
 	ID            int       `json:"id"`
+	NodeID        string    `json:"node_id"`
 	MsgsProcessed int64     `json:"msgs_processed"`
 	ParseErrors   int64     `json:"parse_errors"`
 	DbInserts     int64     `json:"db_inserts"`

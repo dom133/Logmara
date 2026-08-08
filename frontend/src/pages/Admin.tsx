@@ -1609,7 +1609,7 @@ const handleCleanup = async () => {
                       </Col>
                     </Row>
                     <Table
-                      rowKey="ID"
+                      rowKey={(record, i) => `${record.id}-${i}`}
                       dataSource={tailerMetrics.WorkerMetrics}
                       pagination={false}
                       size="small"
@@ -1617,35 +1617,41 @@ const handleCleanup = async () => {
                       columns={[
                         {
                           title: t('admin.workerId'),
-                          dataIndex: 'ID',
-                          key: 'ID',
+                          dataIndex: 'id',
+                          key: 'id',
                           width: 80,
                         },
                         {
+                          title: t('admin.serverNode'),
+                          dataIndex: 'node_id',
+                          key: 'node_id',
+                          width: 160,
+                        },
+                        {
                           title: t('admin.msgsProcessed'),
-                          dataIndex: 'MsgsProcessed',
-                          key: 'MsgsProcessed',
+                          dataIndex: 'msgs_processed',
+                          key: 'msgs_processed',
                           width: 120,
                           render: (v: number) => v.toLocaleString(),
                         },
                         {
                           title: t('admin.parseErrors'),
-                          dataIndex: 'ParseErrors',
-                          key: 'ParseErrors',
+                          dataIndex: 'parse_errors',
+                          key: 'parse_errors',
                           width: 120,
                           render: (v: number) => v ? <Tag color="red">{v.toLocaleString()}</Tag> : <Tag color="green">0</Tag>,
                         },
                         {
                           title: t('admin.dbInserts'),
-                          dataIndex: 'DbInserts',
-                          key: 'DbInserts',
+                          dataIndex: 'db_inserts',
+                          key: 'db_inserts',
                           width: 120,
                           render: (v: number) => v.toLocaleString(),
                         },
                         {
                           title: t('admin.lastFlush'),
-                          dataIndex: 'LastFlushAt',
-                          key: 'LastFlushAt',
+                          dataIndex: 'last_flush_at',
+                          key: 'last_flush_at',
                           width: 200,
                           render: (v: string) => v ? new Date(v).toLocaleTimeString() : '-',
                         },
@@ -1674,42 +1680,42 @@ const handleCleanup = async () => {
                           </Col>
                         </Row>
                         <Table
-                          rowKey="ID"
+                          rowKey="id"
                           dataSource={replica.WorkerMetrics}
                           pagination={false}
                           size="small"
                           columns={[
                             {
                               title: t('admin.workerId'),
-                              dataIndex: 'ID',
-                              key: 'ID',
+                              dataIndex: 'id',
+                              key: 'id',
                               width: 80,
                             },
                             {
                               title: t('admin.msgsProcessed'),
-                              dataIndex: 'MsgsProcessed',
-                              key: 'MsgsProcessed',
+                              dataIndex: 'msgs_processed',
+                              key: 'msgs_processed',
                               width: 120,
                               render: (v: number) => v.toLocaleString(),
                             },
                             {
                               title: t('admin.parseErrors'),
-                              dataIndex: 'ParseErrors',
-                              key: 'ParseErrors',
+                              dataIndex: 'parse_errors',
+                              key: 'parse_errors',
                               width: 120,
                               render: (v: number) => v ? <Tag color="red">{v.toLocaleString()}</Tag> : <Tag color="green">0</Tag>,
                             },
                             {
                               title: t('admin.dbInserts'),
-                              dataIndex: 'DbInserts',
-                              key: 'DbInserts',
+                              dataIndex: 'db_inserts',
+                              key: 'db_inserts',
                               width: 120,
                               render: (v: number) => v.toLocaleString(),
                             },
                             {
                               title: t('admin.lastFlush'),
-                              dataIndex: 'LastFlushAt',
-                              key: 'LastFlushAt',
+                              dataIndex: 'last_flush_at',
+                              key: 'last_flush_at',
                               width: 200,
                               render: (v: string) => v ? new Date(v).toLocaleTimeString() : '-',
                             },

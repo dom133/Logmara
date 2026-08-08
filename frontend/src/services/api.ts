@@ -1200,11 +1200,12 @@ export async function resetAPIKey(id: number): Promise<{ key: string; keyPrefix:
 // Tailer Pipeline Metrics
 
 export interface WorkerMetrics {
-  ID: number
-  MsgsProcessed: number
-  ParseErrors: number
-  DbInserts: number
-  LastFlushAt: string
+  id: number
+  node_id: string
+  msgs_processed: number
+  parse_errors: number
+  db_inserts: number
+  last_flush_at: string
 }
 
 export interface TailerMetrics {

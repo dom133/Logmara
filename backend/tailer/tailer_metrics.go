@@ -23,7 +23,7 @@ type TailerMetrics struct {
 	FlushedPos     int64
 	FlushedSeq     int64
 	LogsPerSec     float64
-	WorkerMetrics  []WorkerMetrics
+	WorkerMetrics  []WorkerMetricsPublic
 	UpdatedAt      time.Time
 }
 
@@ -47,7 +47,7 @@ type AggregatedTailerMetrics struct {
 	FlushedPos     int64
 	FlushedSeq     int64
 	LogsPerSec     float64
-	WorkerMetrics  []WorkerMetrics
+	WorkerMetrics  []WorkerMetricsPublic
 	Replicas       []ReplicaTailerMetrics
 	UpdatedAt      time.Time
 }
@@ -60,7 +60,7 @@ type ReplicaTailerMetrics struct {
 	FlushedPos    int64
 	FlushedSeq    int64
 	LogsPerSec    float64
-	WorkerMetrics []WorkerMetrics
+	WorkerMetrics []WorkerMetricsPublic
 	UpdatedAt     time.Time
 }
 
@@ -140,7 +140,10 @@ func (c *TailerMetricsCollector) update(ctx context.Context) {
 	flushedSeq, flushedPos := c.flushTrk.GetFlushedPos(ctx)
 	logsPerSec := c.rate.Rate(ctx, 60)
 
-	workerMetrics := c.pool.GetMetrics()
+	publicMetrics := c.pool.GetPublicMetrics()
+	for i := range publicMetrics {
+		publicMetrics[i].NodeID = c.nodeID
+	}
 
 	m := tailerMetricsPublic{
 		NumWorkers:    c.pool.NumWorkers(),
@@ -148,7 +151,7 @@ func (c *TailerMetricsCollector) update(ctx context.Context) {
 		FlushedPos:    flushedPos,
 		FlushedSeq:    flushedSeq,
 		LogsPerSec:    logsPerSec,
-		WorkerMetrics: c.pool.GetPublicMetrics(),
+		WorkerMetrics: publicMetrics,
 		UpdatedAt:     time.Now(),
 	}
 
@@ -157,7 +160,7 @@ func (c *TailerMetricsCollector) update(ctx context.Context) {
 	c.metrics.FlushedPos = flushedPos
 	c.metrics.FlushedSeq = flushedSeq
 	c.metrics.LogsPerSec = logsPerSec
-	c.metrics.WorkerMetrics = workerMetrics
+	c.metrics.WorkerMetrics = publicMetrics
 	c.metrics.UpdatedAt = time.Now()
 	c.metrics.mu.Unlock()
 

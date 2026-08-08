@@ -95,6 +95,7 @@
     "logsPerSecond": "Logi/sek",
     "workerStats": "Statystyki Workerów",
     "workerId": "Worker",
+    "serverNode": "Serwer",
     "msgsProcessed": "Wiadomości",
     "parseErrors": "Błędy parsowania",
     "dbInserts": "Wstawienia DB",
