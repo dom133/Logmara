@@ -99,6 +99,7 @@
     "parseErrors": "Parse Errors",
     "dbInserts": "DB Inserts",
     "lastFlush": "Last Flush",
+    "replicaMetrics": "Per-Replica Metrics",
     "appSettings": "Application Settings",
     "logRetention": "Log Retention (days)",
     "sessionTimeout": "Session Timeout (minutes)",

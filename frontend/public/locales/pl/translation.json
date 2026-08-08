@@ -99,6 +99,7 @@
     "parseErrors": "Błędy parsowania",
     "dbInserts": "Wstawienia DB",
     "lastFlush": "Ostatni flush",
+    "replicaMetrics": "Metryki per replika",
     "appSettings": "Ustawienia aplikacji",
     "logRetention": "Czas przechowywania logów (dni)",
     "sessionTimeout": "Limit czasu sesji (minuty)",
