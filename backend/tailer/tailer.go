@@ -182,6 +182,7 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 
 	replicaIDs, err := currentSharedClient.Raw().SMembers(ctx, tailerMetricsReplicaKey).Result()
 	if err != nil || len(replicaIDs) == 0 {
+		slog.Warn("tailer metrics: replica set empty or unreachable, falling back to local metrics", "error", err, "replica_ids", replicaIDs)
 		return localFallback()
 	}
 
@@ -231,6 +232,7 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 	}
 
 	if len(replicas) == 0 {
+		slog.Warn("tailer metrics: no valid replica metrics found, falling back to local", "registered_replicas", len(replicaIDs))
 		return localFallback()
 	}
 
