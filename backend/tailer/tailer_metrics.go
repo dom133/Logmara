@@ -13,7 +13,7 @@ import (
 const tailerMetricsRedisKey = "tailer:metrics"
 const tailerMetricsReplicaKey = "tailer:replicas"
 const tailerMetricsTTL = 10 * time.Second
-const tailerMetricsReplicaTTL = 30 * time.Second
+const tailerMetricsReplicaTTL = 60 * time.Second
 
 // TailerMetrics aggregates global and per-worker tailer metrics.
 type TailerMetrics struct {
@@ -96,8 +96,6 @@ func (c *TailerMetricsCollector) Start(ctx context.Context) {
 		_, err := c.client.Raw().SAdd(ctx, tailerMetricsReplicaKey, c.nodeID).Result()
 		if err != nil {
 			slog.Warn("tailer metrics: failed to register replica", "node", c.nodeID, "error", err)
-		} else {
-			c.client.Raw().Expire(ctx, tailerMetricsReplicaKey, tailerMetricsReplicaTTL)
 		}
 	}
 	go c.updateLoop(ctx)
@@ -169,5 +167,9 @@ func (c *TailerMetricsCollector) update(ctx context.Context) {
 		if err == nil {
 			c.client.Raw().Set(ctx, replicaMetricsKey(c.nodeID), data, tailerMetricsTTL)
 		}
+		// Renew replica set TTL as heartbeat so the set doesn't expire while
+		// replicas are running. The replica set is a shared key, so every
+		// replica renews it on each update cycle.
+		c.client.Raw().Expire(ctx, tailerMetricsReplicaKey, tailerMetricsReplicaTTL)
 	}
 }
