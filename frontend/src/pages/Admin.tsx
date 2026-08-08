@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Checkbox, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip, Statistic, Row, Col } from 'antd'
 import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PlusOutlined, CopyOutlined, KeyOutlined, CloudOutlined, ContainerOutlined, CheckCircleOutlined, WarningOutlined, DashOutlined, NodeIndexOutlined, ClusterOutlined, GlobalOutlined } from '@ant-design/icons'
-import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, TailerMetrics } from '../services/api'
+import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, AggregatedTailerMetrics, ReplicaTailerMetrics } from '../services/api'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
 import { useAuth } from '../services/auth'
@@ -82,7 +82,7 @@ export default function Admin() {
   const [apiKeys, setApiKeys] = useState<APIKey[]>([])
   const [apiKeysLoading, setApiKeysLoading] = useState(false)
   const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false)
-  const [tailerMetrics, setTailerMetrics] = useState<TailerMetrics | null>(null)
+  const [tailerMetrics, setTailerMetrics] = useState<AggregatedTailerMetrics | null>(null)
   const [tailerPipelineActive, setTailerPipelineActive] = useState(false)
   const [tailerLoading, setTailerLoading] = useState(false)
   const [apiKeyEditing, setApiKeyEditing] = useState<APIKey | null>(null)
@@ -1643,6 +1643,72 @@ const handleCleanup = async () => {
                         },
                       ]}
                     />
+                    <Divider orientation="left">{t('admin.replicaMetrics')}</Divider>
+                    {tailerMetrics.Replicas.map((replica) => (
+                      <Card
+                        key={replica.NodeID}
+                        title={<Space><ContainerOutlined />{replica.NodeID}</Space>}
+                        style={{ marginBottom: 16 }}
+                        size="small"
+                      >
+                        <Row gutter={[16, 16]} style={{ marginBottom: 12 }}>
+                          <Col xs={24} sm={6}>
+                            <Statistic title={t('admin.numWorkers')} value={replica.NumWorkers} />
+                          </Col>
+                          <Col xs={24} sm={6}>
+                            <Statistic title={t('admin.logsPerSecond')} value={replica.LogsPerSec} precision={1} />
+                          </Col>
+                          <Col xs={24} sm={6}>
+                            <Statistic title={t('admin.queueDepth')} value={replica.QueueDepth} />
+                          </Col>
+                          <Col xs={24} sm={6}>
+                            <Statistic title={t('admin.flushedPosition')} value={replica.FlushedPos} />
+                          </Col>
+                        </Row>
+                        <Table
+                          rowKey="ID"
+                          dataSource={replica.WorkerMetrics}
+                          pagination={false}
+                          size="small"
+                          columns={[
+                            {
+                              title: t('admin.workerId'),
+                              dataIndex: 'ID',
+                              key: 'ID',
+                              width: 80,
+                            },
+                            {
+                              title: t('admin.msgsProcessed'),
+                              dataIndex: 'MsgsProcessed',
+                              key: 'MsgsProcessed',
+                              width: 120,
+                              render: (v: number) => v.toLocaleString(),
+                            },
+                            {
+                              title: t('admin.parseErrors'),
+                              dataIndex: 'ParseErrors',
+                              key: 'ParseErrors',
+                              width: 120,
+                              render: (v: number) => v ? <Tag color="red">{v.toLocaleString()}</Tag> : <Tag color="green">0</Tag>,
+                            },
+                            {
+                              title: t('admin.dbInserts'),
+                              dataIndex: 'DbInserts',
+                              key: 'DbInserts',
+                              width: 120,
+                              render: (v: number) => v.toLocaleString(),
+                            },
+                            {
+                              title: t('admin.lastFlush'),
+                              dataIndex: 'LastFlushAt',
+                              key: 'LastFlushAt',
+                              width: 200,
+                              render: (v: string) => v ? new Date(v).toLocaleTimeString() : '-',
+                            },
+                          ]}
+                        />
+                      </Card>
+                    ))}
                   </div>
                 ) : null}
               </Card>

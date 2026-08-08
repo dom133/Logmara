@@ -131,9 +131,8 @@ func purgeCoordinator(reqID string, queue *sharedstate.Queue) purgeResult {
 }
 
 // GetTailerMetrics returns the latest snapshot of tailer pipeline metrics.
-// On the VIP leader it reads from the local metrics collector. On a
-// non-leader replica it reads the snapshot from Redis (written by the
-// leader every 2 s). Returns nil when no pipeline is active.
+// In multi-replica mode it aggregates per-replica metrics from Redis.
+// Returns nil when no pipeline is active.
 func GetTailerMetrics() *TailerMetrics {
 	if currentMetrics != nil {
 		m := currentMetrics.Get()
@@ -143,6 +142,107 @@ func GetTailerMetrics() *TailerMetrics {
 		return readMetricsFromRedis()
 	}
 	return nil
+}
+
+// GetTailerMetricsAggregated returns aggregated metrics from all registered
+// replicas. Returns nil when no pipeline is active.
+func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
+	if currentSharedClient == nil {
+		// Single-replica mode: fall back to local metrics
+		if currentMetrics != nil {
+			m := currentMetrics.Get()
+			return &AggregatedTailerMetrics{
+				PipelineActive: true,
+				NumWorkers:     m.NumWorkers,
+				QueueDepth:     m.QueueDepth,
+				FlushedPos:     m.FlushedPos,
+				FlushedSeq:     m.FlushedSeq,
+				LogsPerSec:     m.LogsPerSec,
+				WorkerMetrics:  m.WorkerMetrics,
+				Replicas: []ReplicaTailerMetrics{{
+				NodeID:        "local",
+				NumWorkers:    m.NumWorkers,
+				QueueDepth:    m.QueueDepth,
+				FlushedPos:    m.FlushedPos,
+				FlushedSeq:    m.FlushedSeq,
+				LogsPerSec:    m.LogsPerSec,
+				WorkerMetrics: m.WorkerMetrics,
+				UpdatedAt:     m.UpdatedAt,
+			}},
+			}
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Get registered replica IDs
+	replicaIDs, err := currentSharedClient.Raw().SMembers(ctx, tailerMetricsReplicaKey).Result()
+	if err != nil || len(replicaIDs) == 0 {
+		return nil
+	}
+
+	var replicas []ReplicaTailerMetrics
+	var totalWorkers int
+	var totalLogsPerSec float64
+	var allWorkerMetrics []WorkerMetrics
+	var queueDepth int64
+	var flushedPos int64
+	var flushedSeq int64
+	var latestUpdate time.Time
+
+	for _, nodeID := range replicaIDs {
+		data, err := currentSharedClient.Raw().Get(ctx, replicaMetricsKey(nodeID)).Bytes()
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		var m tailerMetricsPublic
+		if err := json.Unmarshal(data, &m); err != nil {
+			continue
+		}
+
+		workerM := metricsPublicToWorkerMetrics(m.WorkerMetrics)
+		replicas = append(replicas, ReplicaTailerMetrics{
+			NodeID:        nodeID,
+			NumWorkers:    m.NumWorkers,
+			QueueDepth:    m.QueueDepth,
+			FlushedPos:    m.FlushedPos,
+			FlushedSeq:    m.FlushedSeq,
+			LogsPerSec:    m.LogsPerSec,
+			WorkerMetrics: workerM,
+			UpdatedAt:     m.UpdatedAt,
+		})
+
+		totalWorkers += m.NumWorkers
+		totalLogsPerSec += m.LogsPerSec
+		allWorkerMetrics = append(allWorkerMetrics, workerM...)
+		if m.UpdatedAt.After(latestUpdate) {
+			latestUpdate = m.UpdatedAt
+		}
+		// Queue depth, flushed pos/seq are shared state - take from first valid replica
+		if queueDepth == 0 {
+			queueDepth = m.QueueDepth
+			flushedPos = m.FlushedPos
+			flushedSeq = m.FlushedSeq
+		}
+	}
+
+	if len(replicas) == 0 {
+		return nil
+	}
+
+	return &AggregatedTailerMetrics{
+		PipelineActive: true,
+		NumWorkers:     totalWorkers,
+		QueueDepth:     queueDepth,
+		FlushedPos:     flushedPos,
+		FlushedSeq:     flushedSeq,
+		LogsPerSec:     totalLogsPerSec,
+		WorkerMetrics:  allWorkerMetrics,
+		Replicas:       replicas,
+		UpdatedAt:      latestUpdate,
+	}
 }
 
 func readMetricsFromRedis() *TailerMetrics {
@@ -313,7 +413,7 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 
 	// All replicas start the consumer pipeline (RabbitMQ queue + WorkerPool).
 	// This allows every replica to consume and execute tasks from the queue.
-	pipeline := startConsumerPipeline(ctx, db, filePath, engine, ic, alerts, rate, sharedClient)
+	pipeline := startConsumerPipeline(ctx, db, filePath, engine, ic, alerts, rate, sharedClient, myNode)
 
 	// If RabbitMQ is unavailable, the fallback local ingestion loop is running.
 	if pipeline.queue == nil {
@@ -416,7 +516,7 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 }
 
 func startConsumerPipeline(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController,
-	alerts *alertengine.Engine, rate sharedstate.RateCounter, sharedClient *sharedstate.Client) *pipeline {
+	alerts *alertengine.Engine, rate sharedstate.RateCounter, sharedClient *sharedstate.Client, nodeID string) *pipeline {
 
 	rabbitmqURL := util.ResolveRabbitMQURL()
 	if rabbitmqURL == "" {
@@ -434,7 +534,7 @@ func startConsumerPipeline(ctx context.Context, db *sql.DB, filePath string, eng
 
 	flushTrk := sharedstate.NewFlushTracker(sharedClient)
 	workerPool := NewWorkerPool(0, db, alerts, rate, flushTrk, queue, ic)
-	metricsColl := NewTailerMetricsCollector(queue, flushTrk, rate, workerPool, sharedClient)
+	metricsColl := NewTailerMetricsCollector(queue, flushTrk, rate, workerPool, sharedClient, nodeID)
 
 	workerPool.Start(ctx)
 	metricsColl.Start(ctx)
