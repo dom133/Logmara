@@ -147,19 +147,20 @@ func GetTailerMetrics() *TailerMetrics {
 // GetTailerMetricsAggregated returns aggregated metrics from all registered
 // replicas. Returns nil when no pipeline is active.
 func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
-	if currentSharedClient == nil {
-		// Single-replica mode: fall back to local metrics
-		if currentMetrics != nil {
-			m := currentMetrics.Get()
-			return &AggregatedTailerMetrics{
-				PipelineActive: true,
-				NumWorkers:     m.NumWorkers,
-				QueueDepth:     m.QueueDepth,
-				FlushedPos:     m.FlushedPos,
-				FlushedSeq:     m.FlushedSeq,
-				LogsPerSec:     m.LogsPerSec,
-				WorkerMetrics:  m.WorkerMetrics,
-				Replicas: []ReplicaTailerMetrics{{
+	localFallback := func() *AggregatedTailerMetrics {
+		if currentMetrics == nil {
+			return nil
+		}
+		m := currentMetrics.Get()
+		return &AggregatedTailerMetrics{
+			PipelineActive: true,
+			NumWorkers:     m.NumWorkers,
+			QueueDepth:     m.QueueDepth,
+			FlushedPos:     m.FlushedPos,
+			FlushedSeq:     m.FlushedSeq,
+			LogsPerSec:     m.LogsPerSec,
+			WorkerMetrics:  m.WorkerMetrics,
+			Replicas: []ReplicaTailerMetrics{{
 				NodeID:        "local",
 				NumWorkers:    m.NumWorkers,
 				QueueDepth:    m.QueueDepth,
@@ -169,18 +170,19 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 				WorkerMetrics: m.WorkerMetrics,
 				UpdatedAt:     m.UpdatedAt,
 			}},
-			}
 		}
-		return nil
+	}
+
+	if currentSharedClient == nil {
+		return localFallback()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// Get registered replica IDs
 	replicaIDs, err := currentSharedClient.Raw().SMembers(ctx, tailerMetricsReplicaKey).Result()
 	if err != nil || len(replicaIDs) == 0 {
-		return nil
+		return localFallback()
 	}
 
 	var replicas []ReplicaTailerMetrics
@@ -229,7 +231,7 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 	}
 
 	if len(replicas) == 0 {
-		return nil
+		return localFallback()
 	}
 
 	return &AggregatedTailerMetrics{
