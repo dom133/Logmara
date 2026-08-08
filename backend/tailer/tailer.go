@@ -189,7 +189,7 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 	var replicas []ReplicaTailerMetrics
 	var totalWorkers int
 	var totalLogsPerSec float64
-	var allWorkerMetrics []WorkerMetrics
+	var allWorkerMetrics []WorkerMetricsPublic
 	var queueDepth int64
 	var flushedPos int64
 	var flushedSeq int64
@@ -205,7 +205,6 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 			continue
 		}
 
-		workerM := metricsPublicToWorkerMetrics(m.WorkerMetrics)
 		replicas = append(replicas, ReplicaTailerMetrics{
 			NodeID:        nodeID,
 			NumWorkers:    m.NumWorkers,
@@ -213,13 +212,13 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 			FlushedPos:    m.FlushedPos,
 			FlushedSeq:    m.FlushedSeq,
 			LogsPerSec:    m.LogsPerSec,
-			WorkerMetrics: workerM,
+			WorkerMetrics: m.WorkerMetrics,
 			UpdatedAt:     m.UpdatedAt,
 		})
 
 		totalWorkers += m.NumWorkers
 		totalLogsPerSec += m.LogsPerSec
-		allWorkerMetrics = append(allWorkerMetrics, workerM...)
+		allWorkerMetrics = append(allWorkerMetrics, m.WorkerMetrics...)
 		if m.UpdatedAt.After(latestUpdate) {
 			latestUpdate = m.UpdatedAt
 		}
@@ -266,23 +265,9 @@ func readMetricsFromRedis() *TailerMetrics {
 		FlushedPos:    m.FlushedPos,
 		FlushedSeq:    m.FlushedSeq,
 		LogsPerSec:    m.LogsPerSec,
-		WorkerMetrics: metricsPublicToWorkerMetrics(m.WorkerMetrics),
+		WorkerMetrics: m.WorkerMetrics,
 		UpdatedAt:     m.UpdatedAt,
 	}
-}
-
-func metricsPublicToWorkerMetrics(pub []WorkerMetricsPublic) []WorkerMetrics {
-	metrics := make([]WorkerMetrics, len(pub))
-	for i, p := range pub {
-		metrics[i] = WorkerMetrics{
-			ID:            p.ID,
-			MsgsProcessed: p.MsgsProcessed,
-			ParseErrors:   p.ParseErrors,
-			DbInserts:     p.DbInserts,
-			LastFlushAt:   p.LastFlushAt,
-		}
-	}
-	return metrics
 }
 
 // PurgeTailerQueue purges the RabbitMQ ingestion queue and resets the
