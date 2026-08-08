@@ -418,6 +418,14 @@ await testLDAPConnection({
     loadTab(activeTab)
   }, [activeTab])
 
+  useEffect(() => {
+    if (activeTab !== 'tailer') return
+    const interval = setInterval(() => {
+      loadTailerMetrics()
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [activeTab])
+
 const handleSaveSettings = async () => {
     const values = settingsForm.getFieldsValue()
     const strValues: Record<string, string> = {}

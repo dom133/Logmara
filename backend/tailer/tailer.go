@@ -395,7 +395,6 @@ func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine
 		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, nil)
 		return
 	}
-	currentSharedClient = sharedClient
 	runWithVIPElection(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
 }
 
@@ -526,6 +525,7 @@ func startConsumerPipeline(ctx context.Context, db *sql.DB, filePath string, eng
 	queue, err := sharedstate.NewQueue(rabbitmqURL)
 	if err != nil {
 		slog.Error("tailer: failed to connect to RabbitMQ, falling back to local ingestion", "error", err)
+		currentSharedClient = sharedClient
 		go func() {
 			runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate, nil, sharedClient)
 		}()
@@ -539,6 +539,11 @@ func startConsumerPipeline(ctx context.Context, db *sql.DB, filePath string, eng
 	workerPool.Start(ctx)
 	metricsColl.Start(ctx)
 	currentMetrics = metricsColl
+	// Set currentSharedClient only after metricsColl.Start() has registered
+	// this replica in Redis (SAdd tailer:replicas). This eliminates a startup
+	// race where GetTailerMetricsAggregated() would enter the multi-replica
+	// path, find an empty replica set, and report "Pipeline inactive".
+	currentSharedClient = sharedClient
 
 	slog.Info("tailer: consumer pipeline started", "rabbitmq", rabbitmqURL)
 	p := &pipeline{
