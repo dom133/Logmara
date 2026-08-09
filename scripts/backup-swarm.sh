@@ -3,6 +3,16 @@
 # Full backup of Docker Swarm state: etcd snapshot, Postgres dump, configs,
 # secrets metadata, stack YAMLs, and join tokens.
 #
+# Run this on a Postgres node (pg1/pg2/pg3, i.e. wherever you'd normally
+# `docker stack deploy` from) - the etcd snapshot and Postgres dump steps
+# `docker exec` into whichever etcd/postgres container is running locally
+# on that node (those images have etcdctl/pg_dump; the bare host doesn't,
+# and /run/secrets/* only exists inside containers, not on the host). One
+# etcd node's snapshot already has the full replicated cluster state, and
+# pg_dump always targets haproxy:5000 (the current Postgres leader)
+# regardless of which local postgres container runs it - so it doesn't
+# matter which of pg1/pg2/pg3 you run this from, as long as it's one of them.
+#
 # Usage:
 #   ./scripts/backup-swarm.sh [-d DIR] [--no-s3]
 #
@@ -31,17 +41,42 @@ BACKUP_PATH="$BACKUP_DIR/$TIMESTAMP"
 echo "=== Creating backup at $BACKUP_PATH ==="
 mkdir -p "$BACKUP_PATH"
 
-# 1. etcd snapshot (run on a manager node)
+# 1. etcd snapshot - run inside a locally-running etcd container (has
+#    etcdctl; the host doesn't). Any cluster member's snapshot has the full
+#    replicated state, so whichever of etcd1/2/3 happens to be local is fine.
 echo "[1/6] etcd snapshot..."
-ETCDCTL_API=3 etcdctl snapshot save "$BACKUP_PATH/etcd.snapshot" 2>/dev/null || \
-    echo "WARNING: etcd snapshot failed (not a manager node or etcdctl unavailable)" >&2
+ETCD_CONTAINER="$(docker ps -q --filter "name=logmara-pg_etcd" --filter "status=running" | head -1)"
+if [[ -n "$ETCD_CONTAINER" ]]; then
+    if docker exec -e ETCDCTL_API=3 "$ETCD_CONTAINER" \
+        etcdctl --endpoints=http://localhost:2379 snapshot save /tmp/etcd.snapshot 2>/dev/null \
+        && docker cp "$ETCD_CONTAINER:/tmp/etcd.snapshot" "$BACKUP_PATH/etcd.snapshot" 2>/dev/null; then
+        docker exec "$ETCD_CONTAINER" rm -f /tmp/etcd.snapshot 2>/dev/null || true
+    else
+        echo "WARNING: etcd snapshot failed" >&2
+    fi
+else
+    echo "WARNING: no running etcd container found on this node, skipping etcd snapshot" >&2
+fi
 
-# 2. Postgres dump (via haproxy:5000)
+# 2. Postgres dump - run inside a locally-running postgres container (has
+#    pg_dump and /run/secrets/pg_superuser_password; the host has neither).
+#    Connects to haproxy:5000, which always routes to the current Patroni
+#    leader regardless of which local postgres1/2/3 container runs this.
 echo "[2/6] Postgres dump..."
-PGPASSWORD="$(cat /run/secrets/pg_superuser_password 2>/dev/null || echo '')" \
-    pg_dump -h haproxy -p 5000 -U syslog -d syslog_db --format=custom --compress=9 \
-        -f "$BACKUP_PATH/postgres.dump" 2>/dev/null || \
-    echo "WARNING: pg_dump failed (pg_dump unavailable or DB not reachable)" >&2
+PG_CONTAINER="$(docker ps -q --filter "name=logmara-pg_postgres" --filter "status=running" | head -1)"
+if [[ -n "$PG_CONTAINER" ]]; then
+    PG_SU_PASS="$(docker exec "$PG_CONTAINER" cat /run/secrets/pg_superuser_password 2>/dev/null || echo '')"
+    if docker exec -e PGPASSWORD="$PG_SU_PASS" "$PG_CONTAINER" \
+        pg_dump -h haproxy -p 5000 -U postgres -d syslog_db --format=custom --compress=9 \
+            -f /tmp/postgres.dump 2>/dev/null \
+        && docker cp "$PG_CONTAINER:/tmp/postgres.dump" "$BACKUP_PATH/postgres.dump" 2>/dev/null; then
+        docker exec "$PG_CONTAINER" rm -f /tmp/postgres.dump 2>/dev/null || true
+    else
+        echo "WARNING: pg_dump failed" >&2
+    fi
+else
+    echo "WARNING: no running postgres container found on this node, skipping Postgres dump" >&2
+fi
 
 # 3. Docker configs
 echo "[3/6] Docker configs..."
