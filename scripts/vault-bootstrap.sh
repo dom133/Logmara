@@ -21,9 +21,12 @@ ACTION="${1:-}"
 
 VAULT_ADDR="http://vault-1:8200"
 
-# Run vault CLI inside a container
+# Run vault CLI inside a container. -i keeps stdin open and forwards it
+# into the container (needed for `policy write NAME -` reading a heredoc);
+# harmless for the other subcommands this is used for, which don't read
+# stdin at all.
 vault_cli() {
-    docker run --rm \
+    docker run --rm -i \
         --network syslog_net \
         -e VAULT_ADDR="$VAULT_ADDR" \
         -e VAULT_TOKEN="$VAULT_TOKEN" \
@@ -176,7 +179,7 @@ case "$ACTION" in
         # Create policy for agent access. Raw KV v2 data paths need the
         # literal "data/" segment here (ACL policies always use the raw
         # API path, unlike the `vault kv` CLI subcommands).
-        vault_cli policy write logmara <<'EOF'
+        vault_cli policy write logmara - <<'EOF'
 path "secret/data/logmara/*" {
   capabilities = ["read"]
 }
