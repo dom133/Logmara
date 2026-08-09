@@ -44,13 +44,20 @@ mkdir -p "$BACKUP_PATH"
 # 1. etcd snapshot - run inside a locally-running etcd container (has
 #    etcdctl; the host doesn't). Any cluster member's snapshot has the full
 #    replicated state, so whichever of etcd1/2/3 happens to be local is fine.
+#    The official etcd image is distroless (no shell, no coreutils - not
+#    even `rm`), so we can't clean up the in-container temp file after
+#    `docker cp`-ing it out. Using a timestamped name each run avoids
+#    relying on overwriting (etcdctl refuses to snapshot-save over an
+#    existing file) - the small leftover files in the container's /tmp
+#    are cleared whenever the etcd service itself restarts.
 echo "[1/6] etcd snapshot..."
 ETCD_CONTAINER="$(docker ps -q --filter "name=logmara-pg_etcd" --filter "status=running" | head -1)"
 if [[ -n "$ETCD_CONTAINER" ]]; then
+    ETCD_TMP_SNAPSHOT="/tmp/etcd-${TIMESTAMP}.snapshot"
     if docker exec -e ETCDCTL_API=3 "$ETCD_CONTAINER" \
-        etcdctl --endpoints=http://localhost:2379 snapshot save /tmp/etcd.snapshot 2>/dev/null \
-        && docker cp "$ETCD_CONTAINER:/tmp/etcd.snapshot" "$BACKUP_PATH/etcd.snapshot" 2>/dev/null; then
-        docker exec "$ETCD_CONTAINER" rm -f /tmp/etcd.snapshot 2>/dev/null || true
+        etcdctl --endpoints=http://localhost:2379 snapshot save "$ETCD_TMP_SNAPSHOT" 2>/dev/null \
+        && docker cp "$ETCD_CONTAINER:$ETCD_TMP_SNAPSHOT" "$BACKUP_PATH/etcd.snapshot" 2>/dev/null; then
+        :
     else
         echo "WARNING: etcd snapshot failed" >&2
     fi
