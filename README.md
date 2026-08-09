@@ -578,6 +578,11 @@ sudo mkdir -p /srv/syslog-ha/vault/vault<N>/data
 sudo chmod -R 777 /srv/syslog-ha/vault/vault<N>/data
 ```
 
+On **every** node in the swarm (`vault-agent` runs `mode: global`, not just on the vault_id-labeled ones) - Swarm services don't auto-create a bind mount's source directory the way plain `docker run -v` does, they just fail the task with "bind source path does not exist":
+```bash
+sudo mkdir -p /srv/syslog-ha/vault-secrets
+```
+
 Back on `pg1`:
 ```bash
 docker stack deploy -c docker-stack.vault.yml logmara-vault
