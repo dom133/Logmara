@@ -30,7 +30,11 @@ vault_cli() {
         vault:1.15.0 "$@"
 }
 
-# Write a secret to Vault KV v2 using the API (avoids shell escaping issues)
+# Write a secret to Vault KV v2. NOTE: `vault kv put/get` already prepends
+# "data/" internally for a kv-v2 mount, so `path` here must be the display
+# path (e.g. "secret/logmara/foo"), NOT the raw API path - passing the raw
+# "secret/data/logmara/foo" path double-prepends and stores it one level
+# too deep.
 vault_kv_write() {
     local path="$1"
     local key="$2"
@@ -48,6 +52,28 @@ vault_kv_write() {
             vault kv put \"${path}\" \"${key}=\$VAL\"
         " 2>/dev/null || true
     rm -f "$tmpfile"
+}
+
+# Read the plaintext value of an existing Docker (Swarm) secret. `docker
+# run --secret` is not a real flag - secrets are only mountable by Swarm
+# services - so this spins up a one-shot, non-restarting service to read
+# it via `docker service logs` and then removes it.
+read_docker_secret_value() {
+    local name="$1"
+    local svc="vault-bootstrap-read-$$-$RANDOM"
+    docker service create --quiet --name "$svc" \
+        --secret "$name" \
+        --restart-condition none \
+        --network syslog_net \
+        alpine cat "/run/secrets/$name" >/dev/null 2>&1 || true
+    local value=""
+    for _ in $(seq 1 15); do
+        value="$(docker service logs "$svc" 2>/dev/null | tr -d '\r\n')"
+        [[ -n "$value" ]] && break
+        sleep 1
+    done
+    docker service rm "$svc" >/dev/null 2>&1 || true
+    printf '%s' "$value"
 }
 
 case "$ACTION" in
@@ -141,13 +167,11 @@ case "$ACTION" in
             exit 1
         fi
 
-        # Create policy for agent access
+        # Create policy for agent access. Raw KV v2 data paths need the
+        # literal "data/" segment here (ACL policies always use the raw
+        # API path, unlike the `vault kv` CLI subcommands).
         vault_cli policy write logmara <<'EOF'
 path "secret/data/logmara/*" {
-  capabilities = ["read"]
-}
-
-path "secret/data/logmara/agent_token" {
   capabilities = ["read"]
 }
 EOF
@@ -168,23 +192,42 @@ EOF
 
         # Read existing Docker secrets and write to Vault
         for SECRET in jwt_secret encryption_key pg_app_password pg_superuser_password redis_password rabbitmq_password; do
-            VALUE=$(docker run --rm --secret "$SECRET" alpine cat /run/secrets/"$SECRET" 2>/dev/null || echo "")
+            VALUE=$(read_docker_secret_value "$SECRET")
             if [[ -n "$VALUE" ]]; then
                 echo "Migrating $SECRET..."
-                vault_kv_write "secret/data/logmara/$SECRET" "value" "$VALUE"
+                vault_kv_write "secret/logmara/$SECRET" "value" "$VALUE"
             fi
         done
 
-        # Create agent token
+        # Create the Vault agent's bootstrap token and distribute it as a
+        # Docker secret (Swarm hands it to every node's vault-agent task at
+        # /run/secrets/vault_agent_token). It is NOT stored in Vault KV:
+        # the agent needs this token to authenticate to Vault in the first
+        # place, so storing it as a Vault secret would be circular.
+        echo "Creating agent bootstrap token..."
         AGENT_TOKEN=$(vault_cli token create \
             -policy=logmara \
             -ttl=24h \
             -period=24h \
             -format=json 2>/dev/null | jq -r '.auth.client_token')
 
-        vault_kv_write "secret/data/logmara/agent_token" "token" "$AGENT_TOKEN"
+        if [[ -z "$AGENT_TOKEN" || "$AGENT_TOKEN" == "null" ]]; then
+            echo "ERROR: Failed to create agent token" >&2
+            exit 1
+        fi
+
+        if docker secret inspect vault_agent_token &>/dev/null; then
+            echo "Docker secret 'vault_agent_token' already exists - leaving it as-is."
+            echo "(Vault agent tokens can't be rotated in place; to replace it, remove"
+            echo " the secret and the vault-agent service, then re-run this command.)"
+        else
+            printf '%s' "$AGENT_TOKEN" | docker secret create vault_agent_token -
+            echo "Docker secret 'vault_agent_token' created."
+        fi
 
         echo "=== Secrets migrated ==="
+        echo "Now (re-)deploy the vault stack so vault-agent picks up the secret:"
+        echo "  docker stack deploy -c docker-stack.vault.yml logmara-vault"
         ;;
 
     *)

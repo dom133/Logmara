@@ -2,10 +2,12 @@
 #
 # Cron wrapper for backup-swarm.sh with retention policy.
 #
-# Retention:
-#   - 7 daily backups (last 7 days)
-#   - 4 weekly backups (Sundays, last 4 weeks)
-#   - 3 monthly backups (1st of month, last 3 months)
+# Retention (evaluated over all *.tar.gz files in BACKUP_DIR, using the
+# date encoded in each backup's filename, YYYY-MM-DD_HHMMSS.tar.gz):
+#   - 7 daily backups   (newest 7 backups, any day)
+#   - 4 weekly backups  (newest 4 backups made on a Sunday)
+#   - 3 monthly backups (newest 3 backups made on the 1st of the month)
+# A backup is removed only if it falls outside all three windows.
 #
 # Install:
 #   crontab -e
@@ -21,37 +23,50 @@ BACKUP_DIR="${BACKUP_DIR:-/srv/syslog-ha/backups}"
 # Run the actual backup
 "$SCRIPT_DIR/backup-swarm.sh" -d "$BACKUP_DIR" "${@}"
 
-# Apply retention policy
-apply_retention() {
-    local prefix="$1"
-    local keep="$2"
-
-    if [[ ! -d "$BACKUP_DIR" ]]; then
-        return
-    fi
-
-    # List matching files, newest first, skip the first $keep, delete the rest
-    ls -1t "$BACKUP_DIR"/${prefix}_*.tar.gz 2>/dev/null | tail -n +$((keep + 1)) | while read -r file; do
-        echo "Removing old backup: $file"
-        rm -f "$file"
-    done
-}
-
 echo "=== Applying retention policy ==="
 
-# Daily backups: keep last 7
-apply_retention "$(date +%Y-%m-%d)" 7
+if [[ -d "$BACKUP_DIR" ]]; then
+    mapfile -t ALL_BACKUPS < <(ls -1t "$BACKUP_DIR"/*.tar.gz 2>/dev/null)
 
-# Weekly backups (Sundays): keep last 4
-if [[ "$(date +%u)" -eq 7 ]]; then
-    # Mark this as a weekly backup by keeping it beyond daily retention
-    :
-fi
+    if [[ "${#ALL_BACKUPS[@]}" -gt 0 ]]; then
+        declare -A KEEP=()
 
-# Monthly backups (1st of month): keep last 3
-if [[ "$(date +%d)" -eq 1 ]]; then
-    # Mark this as a monthly backup
-    :
+        # Daily: newest 7 backups, regardless of day
+        for f in "${ALL_BACKUPS[@]:0:7}"; do
+            KEEP["$f"]=1
+        done
+
+        # Weekly: newest 4 Sunday backups
+        count=0
+        for f in "${ALL_BACKUPS[@]}"; do
+            [[ "$count" -ge 4 ]] && break
+            date_part="$(basename "$f" | cut -d_ -f1)"
+            dow="$(date -d "$date_part" +%u 2>/dev/null || echo 0)"
+            if [[ "$dow" == "7" ]]; then
+                KEEP["$f"]=1
+                count=$((count + 1))
+            fi
+        done
+
+        # Monthly: newest 3 first-of-month backups
+        count=0
+        for f in "${ALL_BACKUPS[@]}"; do
+            [[ "$count" -ge 3 ]] && break
+            date_part="$(basename "$f" | cut -d_ -f1)"
+            dom="$(date -d "$date_part" +%d 2>/dev/null || echo 00)"
+            if [[ "$dom" == "01" ]]; then
+                KEEP["$f"]=1
+                count=$((count + 1))
+            fi
+        done
+
+        for f in "${ALL_BACKUPS[@]}"; do
+            if [[ -z "${KEEP[$f]:-}" ]]; then
+                echo "Removing old backup: $f"
+                rm -f "$f"
+            fi
+        done
+    fi
 fi
 
 echo "=== Retention policy applied ==="

@@ -4,12 +4,16 @@
 # at /vault-agent/secrets/. The api service mounts this directory
 # read-only and uses the *_FILE env var convention to read secrets.
 #
-# Auto-auth: token-based (bootstrap token set during vault-bootstrap.sh)
+# Auto-auth: token_file, reading a bootstrap token that Docker Swarm
+# distributes to every node as the `vault_agent_token` secret (created by
+# `scripts/vault-bootstrap.sh migrate-secrets`). It can't auto-auth by
+# reading a Vault-stored template instead, since that would require an
+# already-authenticated session to fetch the very token used to authenticate.
 
 auto_auth {
-  method "token" {
+  method "token_file" {
     config {
-      token = "{{ with secret \"secret/data/logmara/agent_token\" }}{{ .Data.data.token }}{{ end }}"
+      token_file_path = "/run/secrets/vault_agent_token"
     }
   }
   sink "file" {
@@ -64,5 +68,8 @@ EOF
 }
 
 vault {
-  address = "http://vault:8200"
+  # No load balancer in front of the 3-node cluster; vault-1 is a fixed
+  # entry point (matches vault-bootstrap.sh / rotate-secrets.sh). Vault
+  # transparently forwards to the current Raft leader if vault-1 isn't it.
+  address = "http://vault-1:8200"
 }

@@ -14,8 +14,14 @@
 #   - `syslog_net` overlay network already exists
 #   - Nodes labeled vault_id=1, vault_id=2, vault_id=3
 #
-# Deploy with: docker stack deploy -c docker-stack.vault.yml logmara-vault
-# Bootstrap with: ./scripts/vault-bootstrap.sh init
+# Bootstrap order (the `vault_agent_token` secret doesn't exist yet on first
+# deploy, so the vault-agent service will fail to start until it does):
+#   1. docker stack deploy -c docker-stack.vault.yml logmara-vault
+#   2. ./scripts/vault-bootstrap.sh init      (unseal keys + root token)
+#   3. ./scripts/vault-bootstrap.sh unseal
+#   4. ./scripts/vault-bootstrap.sh policy
+#   5. ./scripts/vault-bootstrap.sh migrate-secrets   (creates vault_agent_token secret)
+#   6. docker stack deploy -c docker-stack.vault.yml logmara-vault   (re-run so vault-agent picks up the now-existing secret)
 
 version: "3.8"
 
@@ -26,6 +32,7 @@ services:
     hostname: vault-1
     environment:
       VAULT_CLUSTER_ADDR: http://vault-1:8201
+      VAULT_API_ADDR: http://vault-1:8200
       VAULT_ADDR: http://vault-1:8200
     configs:
       - source: vault_cfg
@@ -58,6 +65,7 @@ services:
     hostname: vault-2
     environment:
       VAULT_CLUSTER_ADDR: http://vault-2:8201
+      VAULT_API_ADDR: http://vault-2:8200
       VAULT_ADDR: http://vault-2:8200
     configs:
       - source: vault_cfg
@@ -86,6 +94,7 @@ services:
     hostname: vault-3
     environment:
       VAULT_CLUSTER_ADDR: http://vault-3:8201
+      VAULT_API_ADDR: http://vault-3:8200
       VAULT_ADDR: http://vault-3:8200
     configs:
       - source: vault_cfg
@@ -116,6 +125,9 @@ services:
     configs:
       - source: vault_agent_cfg
         target: /vault-agent/config/vault-agent.hcl
+    secrets:
+      - source: vault_agent_token
+        target: vault_agent_token
     volumes:
       - type: bind
         source: /srv/syslog-ha/vault-secrets
@@ -159,3 +171,10 @@ configs:
     file: vault/vault.hcl
   vault_agent_cfg:
     file: vault/vault-agent.hcl
+
+secrets:
+  # Created by `scripts/vault-bootstrap.sh migrate-secrets` (a one-time
+  # Vault agent bootstrap token, policy "logmara"). Not present on the
+  # very first `docker stack deploy` — see bootstrap order above.
+  vault_agent_token:
+    external: true
