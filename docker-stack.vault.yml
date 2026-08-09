@@ -60,7 +60,7 @@ services:
         mode: host
     deploy:
       placement:
-        constraints: [node.labels.vault_id == "1"]
+        constraints: [node.labels.vault_id == 1]
       restart_policy:
         condition: on-failure
         delay: 10s
@@ -89,7 +89,7 @@ services:
       - syslog_net
     deploy:
       placement:
-        constraints: [node.labels.vault_id == "2"]
+        constraints: [node.labels.vault_id == 2]
       restart_policy:
         condition: on-failure
         delay: 10s
@@ -118,7 +118,7 @@ services:
       - syslog_net
     deploy:
       placement:
-        constraints: [node.labels.vault_id == "3"]
+        constraints: [node.labels.vault_id == 3]
       restart_policy:
         condition: on-failure
         delay: 10s
