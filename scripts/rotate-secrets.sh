@@ -1,11 +1,27 @@
 #!/usr/bin/env bash
 #
-# Rotate secrets with zero-downtime rolling restart.
+# Rotate secrets, either with a zero-downtime rolling restart of the api
+# service (`rotate`), or as a batch across several secrets with logmara-app
+# taken fully offline for the duration (`rotate-batch`).
 #
 # Usage:
 #   ./scripts/rotate-secrets.sh rotate <secret-name> <new-value>
+#   ./scripts/rotate-secrets.sh rotate-batch <secret-name>=<new-value> [<secret-name>=<new-value> ...]
 #   ./scripts/rotate-secrets.sh status
 #   ./scripts/rotate-secrets.sh list
+#
+# `rotate` rolling-restarts just the affected services (including
+# logmara-app_api), so the app stays up throughout - the standard path for
+# rotating one secret.
+#
+# `rotate-batch` is for rotating several secrets together: it scales
+# logmara-app_api and logmara-app_frontend to 0 *before* touching any
+# secret, applies every <secret-name>=<new-value> pair, then scales both
+# back to their previous replica counts. Use this when you want a clean
+# maintenance window instead of several independent rolling restarts (e.g.
+# a full credential rotation touching jwt_secret, encryption_key, and the
+# database passwords at once). If any secret in the batch fails to apply,
+# the batch aborts and logmara-app is scaled back up regardless.
 #
 # Supported secrets:
 #   - redis_password
@@ -25,7 +41,8 @@
 #   3. Decrypts app_settings.value for smtp_password and ldap_bind_password
 #   4. Re-encrypts all with new key
 #   5. Updates secret store
-#   6. Rolling restarts all api services
+#   6. Rolling restarts all api services (or relies on rotate-batch's
+#      scale-down/up if run as part of a batch)
 #   7. Verifies services are healthy
 #
 # WARNING:
@@ -46,9 +63,21 @@ SECRET_NAME="${2:-}"
 NEW_VALUE="${3:-}"
 
 if [[ -z "$ACTION" ]]; then
-    echo "Usage: $0 rotate <secret-name> <new-value> | status | list" >&2
+    echo "Usage: $0 rotate <secret-name> <new-value> | rotate-batch <secret-name>=<new-value> [...] | status | list" >&2
     exit 1
 fi
+
+# Set by scale_app_down; the EXIT trap uses it to guarantee logmara-app
+# gets scaled back up even if a batch rotation fails or is interrupted.
+APP_SCALED_DOWN=false
+
+restore_app_scale_on_exit() {
+    if [[ "$APP_SCALED_DOWN" == "true" ]]; then
+        echo "=== (cleanup) restoring logmara-app scale ===" >&2
+        scale_app_up
+    fi
+}
+trap restore_app_scale_on_exit EXIT
 
 # ---------------------------------------------------------------------------
 # Secret store detection: Vault or Docker secrets
@@ -180,6 +209,56 @@ rolling_restart() {
 }
 
 # ---------------------------------------------------------------------------
+# logmara-app scale down/up, used by rotate-batch to take the app fully
+# offline for the duration of a multi-secret rotation.
+# ---------------------------------------------------------------------------
+
+API_REPLICAS_SAVED=""
+FRONTEND_REPLICAS_SAVED=""
+
+wait_for_scale_zero() {
+    local service="$1"
+    local timeout="${2:-60}"
+    local elapsed=0
+    echo "Waiting for $service to scale down to 0..."
+    while [[ $elapsed -lt $timeout ]]; do
+        local running
+        running=$(docker service ps --filter "desired-state=running" --format '{{.ID}}' "$service" 2>/dev/null | wc -l)
+        if [[ "$running" -eq 0 ]]; then
+            echo "$service is at 0 running tasks"
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    echo "WARNING: $service still has running tasks after ${timeout}s" >&2
+}
+
+scale_app_down() {
+    echo "=== Scaling logmara-app (api, frontend) down to 0 ==="
+    API_REPLICAS_SAVED=$(docker service inspect logmara-app_api --format '{{.Spec.Mode.Replicated.Replicas}}' 2>/dev/null || echo "")
+    FRONTEND_REPLICAS_SAVED=$(docker service inspect logmara-app_frontend --format '{{.Spec.Mode.Replicated.Replicas}}' 2>/dev/null || echo "")
+    if [[ -z "$API_REPLICAS_SAVED" || -z "$FRONTEND_REPLICAS_SAVED" ]]; then
+        echo "ERROR: could not read current replica counts for logmara-app_api/logmara-app_frontend - is logmara-app deployed?" >&2
+        exit 1
+    fi
+    echo "Current replicas: api=$API_REPLICAS_SAVED frontend=$FRONTEND_REPLICAS_SAVED"
+
+    docker service scale "logmara-app_api=0" "logmara-app_frontend=0"
+    APP_SCALED_DOWN=true
+    wait_for_scale_zero logmara-app_api
+    wait_for_scale_zero logmara-app_frontend
+}
+
+scale_app_up() {
+    echo "=== Scaling logmara-app back up (api=$API_REPLICAS_SAVED, frontend=$FRONTEND_REPLICAS_SAVED) ==="
+    docker service scale "logmara-app_api=$API_REPLICAS_SAVED" "logmara-app_frontend=$FRONTEND_REPLICAS_SAVED"
+    APP_SCALED_DOWN=false
+    wait_for_healthy logmara-app_api 120
+    wait_for_healthy logmara-app_frontend 120
+}
+
+# ---------------------------------------------------------------------------
 # Password change logic per service
 # ---------------------------------------------------------------------------
 
@@ -241,6 +320,124 @@ change_postgres_password() {
 }
 
 # ---------------------------------------------------------------------------
+# Rotates a single secret: live password change, optional encryption_key
+# re-encryption, store update, warnings, and (unless skip_app_restart) a
+# rolling restart of logmara-app_api. Returns non-zero if the rotation
+# didn't complete (declined confirmation or a failed step) - callers must
+# check this rather than relying on `set -e`, since rotate-batch needs to
+# abort the whole batch (and still scale logmara-app back up) rather than
+# die mid-loop.
+# ---------------------------------------------------------------------------
+rotate_one() {
+    local name="$1"
+    local value="$2"
+    local skip_app_restart="${3:-false}"
+
+    echo "=== Rotating secret: $name ==="
+
+    # Step 1: apply password change inside the running service (if applicable)
+    case "$name" in
+        rabbitmq_password) change_rabbitmq_password "$value" ;;
+        redis_password) change_redis_password "$value" ;;
+        pg_app_password) change_postgres_password "syslog" "$value" ;;
+        pg_superuser_password) change_postgres_password "postgres" "$value" ;;
+    esac
+
+    # Step 2: special handling for encryption_key (DB re-encryption)
+    if [[ "$name" == "encryption_key" ]]; then
+        echo "WARNING: Rotating encryption_key will re-encrypt sensitive data in the database."
+        echo "This may take a moment depending on the amount of encrypted data."
+        read -p "Continue? (y/N): " confirm
+        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+            echo "Aborted rotating $name."
+            return 1
+        fi
+
+        local old_key old_pg_app_pass
+        old_key=$(read_secret encryption_key)
+        if [[ -z "$old_key" ]]; then
+            echo "ERROR: Could not read old encryption key" >&2
+            return 1
+        fi
+        old_pg_app_pass=$(read_secret pg_app_password)
+
+        echo "Re-encrypting database with new key..."
+        docker run --rm \
+            -e OLD_ENCRYPTION_KEY="$old_key" \
+            -e NEW_ENCRYPTION_KEY="$value" \
+            -e PG_HOST=haproxy \
+            -e PG_PORT=5000 \
+            -e PG_USER=syslog \
+            -e PG_PASSWORD="$old_pg_app_pass" \
+            -e PG_DB=syslog_db \
+            -e PG_SSLMODE=disable \
+            -v "$REPO_ROOT:/app" \
+            golang:1.21-alpine \
+            sh -c 'cd /app && go run backend/cmd/rotatekey/main.go' || {
+                echo "ERROR: Database re-encryption failed" >&2
+                return 1
+            }
+        echo "Database re-encryption complete."
+    fi
+
+    # Step 3: update the secret in the store
+    write_secret "$name" "$value"
+    echo "Secret '$name' updated in store"
+
+    # Step 4: warnings
+    if [[ "$name" == "jwt_secret" ]]; then
+        echo "WARNING: All user sessions will be invalidated!"
+    fi
+
+    # Step 5: rolling restart of affected services. logmara-app_api/frontend
+    # are excluded when skip_app_restart=true - rotate-batch's scale-down/up
+    # already takes care of them once, after every secret in the batch has
+    # been applied, instead of restarting api once per secret.
+    if [[ "$skip_app_restart" == "true" ]]; then
+        case "$name" in
+            redis_password)
+                rolling_restart "logmara-redis_redis1" "logmara-redis_redis2" "logmara-redis_redis3"
+                ;;
+            rabbitmq_password)
+                rolling_restart "logmara-rabbitmq_rabbitmq1" "logmara-rabbitmq_rabbitmq2" "logmara-rabbitmq_rabbitmq3"
+                ;;
+            pg_app_password|pg_superuser_password)
+                rolling_restart "logmara-pg_postgres1" "logmara-pg_postgres2" "logmara-pg_postgres3"
+                ;;
+        esac
+    else
+        case "$name" in
+            redis_password)
+                rolling_restart \
+                    "logmara-redis_redis1" \
+                    "logmara-redis_redis2" \
+                    "logmara-redis_redis3" \
+                    "logmara-app_api"
+                ;;
+            rabbitmq_password)
+                rolling_restart \
+                    "logmara-rabbitmq_rabbitmq1" \
+                    "logmara-rabbitmq_rabbitmq2" \
+                    "logmara-rabbitmq_rabbitmq3" \
+                    "logmara-app_api"
+                ;;
+            pg_app_password|pg_superuser_password)
+                rolling_restart \
+                    "logmara-pg_postgres1" \
+                    "logmara-pg_postgres2" \
+                    "logmara-pg_postgres3" \
+                    "logmara-app_api"
+                ;;
+            *)
+                rolling_restart "logmara-app_api"
+                ;;
+        esac
+    fi
+
+    echo "=== Secret rotation complete: $name ==="
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -275,113 +472,50 @@ case "$ACTION" in
             exit 1
         fi
 
-        echo "=== Rotating secret: $SECRET_NAME ==="
         echo "Secret store: $(if using_vault; then echo 'HashiCorp Vault'; else echo 'Docker Secrets'; fi)"
 
-        # ------------------------------------------------------------------
-        # Step 1: Apply password change inside running service (if applicable)
-        # ------------------------------------------------------------------
-        case "$SECRET_NAME" in
-            rabbitmq_password)
-                change_rabbitmq_password "$NEW_VALUE"
-                ;;
-            redis_password)
-                change_redis_password "$NEW_VALUE"
-                ;;
-            pg_app_password)
-                change_postgres_password "syslog" "$NEW_VALUE"
-                ;;
-            pg_superuser_password)
-                change_postgres_password "postgres" "$NEW_VALUE"
-                ;;
-        esac
+        rotate_one "$SECRET_NAME" "$NEW_VALUE" false
+        ;;
 
-        # ------------------------------------------------------------------
-        # Step 2: Special handling for encryption_key (DB re-encryption)
-        # ------------------------------------------------------------------
-        if [[ "$SECRET_NAME" == "encryption_key" ]]; then
-            echo "WARNING: Rotating encryption_key will re-encrypt sensitive data in the database."
-            echo "This may take a moment depending on the amount of encrypted data."
-            read -p "Continue? (y/N): " confirm
-            if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-                echo "Aborted."
-                exit 0
-            fi
+    rotate-batch)
+        shift || true   # drop "rotate-batch", leaving the <name>=<value> pairs in "$@"
+        if [[ $# -eq 0 ]]; then
+            echo "Usage: $0 rotate-batch <secret-name>=<new-value> [<secret-name>=<new-value> ...]" >&2
+            exit 1
+        fi
 
-            OLD_KEY=$(read_secret encryption_key)
-            if [[ -z "$OLD_KEY" ]]; then
-                echo "ERROR: Could not read old encryption key" >&2
+        declare -A BATCH_VALUES=()
+        BATCH_ORDER=()
+        for pair in "$@"; do
+            if [[ "$pair" != *=* ]]; then
+                echo "ERROR: invalid argument '$pair', expected <secret-name>=<new-value>" >&2
                 exit 1
             fi
+            name="${pair%%=*}"
+            value="${pair#*=}"
+            if [[ -z "$value" ]]; then
+                echo "ERROR: empty value for '$name'" >&2
+                exit 1
+            fi
+            BATCH_VALUES["$name"]="$value"
+            BATCH_ORDER+=("$name")
+        done
 
-            OLD_PG_APP_PASS=$(read_secret pg_app_password)
+        echo "=== Batch rotation: ${BATCH_ORDER[*]} ==="
+        echo "Secret store: $(if using_vault; then echo 'HashiCorp Vault'; else echo 'Docker Secrets'; fi)"
 
-            echo "Re-encrypting database with new key..."
-            docker run --rm \
-                -e OLD_ENCRYPTION_KEY="$OLD_KEY" \
-                -e NEW_ENCRYPTION_KEY="$NEW_VALUE" \
-                -e PG_HOST=haproxy \
-                -e PG_PORT=5000 \
-                -e PG_USER=syslog \
-                -e PG_PASSWORD="$OLD_PG_APP_PASS" \
-                -e PG_DB=syslog_db \
-                -e PG_SSLMODE=disable \
-                -v "$REPO_ROOT:/app" \
-                golang:1.21-alpine \
-                sh -c 'cd /app && go run backend/cmd/rotatekey/main.go' || {
-                    echo "ERROR: Database re-encryption failed" >&2
-                    exit 1
-                }
-            echo "Database re-encryption complete."
-        fi
+        scale_app_down
 
-        # ------------------------------------------------------------------
-        # Step 3: Update the secret in the store
-        # ------------------------------------------------------------------
-        write_secret "$SECRET_NAME" "$NEW_VALUE"
-        echo "Secret '$SECRET_NAME' updated in store"
+        for name in "${BATCH_ORDER[@]}"; do
+            if ! rotate_one "$name" "${BATCH_VALUES[$name]}" true; then
+                echo "ERROR: rotating '$name' failed - aborting batch." >&2
+                exit 1
+            fi
+        done
 
-        # ------------------------------------------------------------------
-        # Step 4: Warnings
-        # ------------------------------------------------------------------
-        if [[ "$SECRET_NAME" == "jwt_secret" ]]; then
-            echo "WARNING: All user sessions will be invalidated!"
-        fi
+        scale_app_up
 
-        # ------------------------------------------------------------------
-        # Step 5: Rolling restart of affected services
-        # ------------------------------------------------------------------
-        case "$SECRET_NAME" in
-            redis_password)
-                rolling_restart \
-                    "logmara-redis_redis1" \
-                    "logmara-redis_redis2" \
-                    "logmara-redis_redis3" \
-                    "logmara-app_api"
-                ;;
-            rabbitmq_password)
-                rolling_restart \
-                    "logmara-rabbitmq_rabbitmq1" \
-                    "logmara-rabbitmq_rabbitmq2" \
-                    "logmara-rabbitmq_rabbitmq3" \
-                    "logmara-app_api"
-                ;;
-            pg_app_password|pg_superuser_password)
-                rolling_restart \
-                    "logmara-pg_postgres1" \
-                    "logmara-pg_postgres2" \
-                    "logmara-pg_postgres3" \
-                    "logmara-app_api"
-                ;;
-            encryption_key|jwt_secret)
-                rolling_restart "logmara-app_api"
-                ;;
-            *)
-                rolling_restart "logmara-app_api"
-                ;;
-        esac
-
-        echo "=== Secret rotation complete: $SECRET_NAME ==="
+        echo "=== Batch rotation complete: ${BATCH_ORDER[*]} ==="
         ;;
 
     *)

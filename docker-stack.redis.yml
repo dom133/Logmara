@@ -20,7 +20,9 @@
 #     clusters, same as pg_id in docker-stack.postgres.yml)
 #   - `docker network create -d overlay --attachable syslog_net` (already
 #     done if docker-stack.postgres.yml is deployed)
-#   - Secret created: redis_password
+#   - docker-stack.vault.yml already deployed and bootstrapped - redis_password
+#     is supplied by vault-agent's bind-mounted output, not a native Swarm
+#     secret (see the redis-password-mount anchor below)
 #   - `docker config create redis_sentinel_cfg redis/sentinel.conf.tpl`
 #
 # Deploy with: docker stack deploy -c docker-stack.redis.yml logmara-redis
@@ -33,6 +35,15 @@ x-redis-logging: &redis-logging
     max-size: "10m"
     max-file: "3"
 
+# Vault cutover: same /run/secrets/redis_password path every command below
+# already reads via `cat`, now a bind-mounted file written by vault-agent
+# (docker-stack.vault.yml) instead of a native Swarm secret.
+x-redis-password-mount: &redis-password-mount
+  - type: bind
+    source: /srv/syslog-ha/vault-secrets/redis_password
+    target: /run/secrets/redis_password
+    read_only: true
+
 services:
   redis1:
     image: redis:7-alpine
@@ -41,7 +52,7 @@ services:
     entrypoint: ["sh", "-c"]
     command:
       - exec redis-server --requirepass "$$(cat /run/secrets/redis_password)" --save "" --appendonly no
-    secrets: [redis_password]
+    volumes: *redis-password-mount
     logging: *redis-logging
     deploy:
       replicas: 1
@@ -57,7 +68,7 @@ services:
     entrypoint: ["sh", "-c"]
     command:
       - exec redis-server --requirepass "$$(cat /run/secrets/redis_password)" --masterauth "$$(cat /run/secrets/redis_password)" --replicaof redis1 6379 --save "" --appendonly no
-    secrets: [redis_password]
+    volumes: *redis-password-mount
     depends_on: [redis1]
     logging: *redis-logging
     deploy:
@@ -74,7 +85,7 @@ services:
     entrypoint: ["sh", "-c"]
     command:
       - exec redis-server --requirepass "$$(cat /run/secrets/redis_password)" --masterauth "$$(cat /run/secrets/redis_password)" --replicaof redis1 6379 --save "" --appendonly no
-    secrets: [redis_password]
+    volumes: *redis-password-mount
     depends_on: [redis1]
     logging: *redis-logging
     deploy:
@@ -96,7 +107,7 @@ services:
     configs:
       - source: redis_sentinel_cfg
         target: /etc/sentinel-template/sentinel.conf
-    secrets: [redis_password]
+    volumes: *redis-password-mount
     depends_on: [redis1, redis2, redis3]
     logging: *redis-logging
     deploy:
@@ -118,7 +129,7 @@ services:
     configs:
       - source: redis_sentinel_cfg
         target: /etc/sentinel-template/sentinel.conf
-    secrets: [redis_password]
+    volumes: *redis-password-mount
     depends_on: [redis1, redis2, redis3]
     logging: *redis-logging
     deploy:
@@ -140,7 +151,7 @@ services:
     configs:
       - source: redis_sentinel_cfg
         target: /etc/sentinel-template/sentinel.conf
-    secrets: [redis_password]
+    volumes: *redis-password-mount
     depends_on: [redis1, redis2, redis3]
     logging: *redis-logging
     deploy:
@@ -152,10 +163,6 @@ services:
 
 networks:
   syslog_net:
-    external: true
-
-secrets:
-  redis_password:
     external: true
 
 configs:
