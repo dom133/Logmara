@@ -26,6 +26,15 @@
 #   - Docker Swarm initialized
 #   - `syslog_net` overlay network already exists
 #   - Nodes labeled vault_id=1, vault_id=2, vault_id=3
+#   - On EACH vault_id-labeled node, create and open up that node's own
+#     raft data directory (the hashicorp/vault image runs as a non-root
+#     user and has no chown-on-start entrypoint logic, unlike this repo's
+#     own Postgres/rsyslog images - a fresh Docker-managed volume would be
+#     root-owned and Vault would fail with "permission denied"):
+#       sudo mkdir -p /srv/syslog-ha/vault/vault<N>/data
+#       sudo chmod -R 777 /srv/syslog-ha/vault/vault<N>/data
+#     (<N> is that node's own vault_id, e.g. only vault2/data on the
+#     vault_id=2 node - each node only needs its own.)
 #
 # Bootstrap order:
 #   1. docker stack deploy -c docker-stack.vault.yml logmara-vault
@@ -50,7 +59,9 @@ services:
       - source: vault_cfg
         target: /vault/config/vault.hcl
     volumes:
-      - vault1_data:/vault/data
+      - type: bind
+        source: /srv/syslog-ha/vault/vault1/data
+        target: /vault/data
       - vault1_tls:/vault/tls
     networks:
       - syslog_net
@@ -83,7 +94,9 @@ services:
       - source: vault_cfg
         target: /vault/config/vault.hcl
     volumes:
-      - vault2_data:/vault/data
+      - type: bind
+        source: /srv/syslog-ha/vault/vault2/data
+        target: /vault/data
       - vault2_tls:/vault/tls
     networks:
       - syslog_net
@@ -112,7 +125,9 @@ services:
       - source: vault_cfg
         target: /vault/config/vault.hcl
     volumes:
-      - vault3_data:/vault/data
+      - type: bind
+        source: /srv/syslog-ha/vault/vault3/data
+        target: /vault/data
       - vault3_tls:/vault/tls
     networks:
       - syslog_net
@@ -134,11 +149,8 @@ networks:
     external: true
 
 volumes:
-  vault1_data:
   vault1_tls:
-  vault2_data:
   vault2_tls:
-  vault3_data:
   vault3_tls:
 
 configs:
