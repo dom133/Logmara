@@ -25,7 +25,15 @@ services:
   # App services bind-mount this directory read-only.
   vault-agent:
     image: hashicorp/vault:1.15.0
-    command: agent -config=/vault-agent/config/vault-agent.hcl
+    # Bypasses the image's docker-entrypoint.sh, which special-cases some
+    # first arguments (e.g. `server`) by rebuilding the arg list rather
+    # than passing it through untouched - see docker-stack.vault.yml's
+    # header for the concrete breakage that caused on the server side.
+    # Invoking the vault binary directly avoids relying on its exact
+    # behavior for `agent` too.
+    entrypoint: ["vault"]
+    command: ["agent", "-config=/vault-agent/config/vault-agent.hcl"]
+    init: true
     configs:
       - source: vault_agent_cfg
         target: /vault-agent/config/vault-agent.hcl
