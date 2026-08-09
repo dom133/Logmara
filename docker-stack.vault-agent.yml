@@ -1,0 +1,73 @@
+# Vault agent sidecar for Docker Swarm - delivers secrets from the Vault
+# cluster (docker-stack.vault.yml) to every node as local files.
+#
+# Kept as its OWN stack, separate from docker-stack.vault.yml: its
+# `vault_agent_token` secret only exists after that stack has been
+# bootstrapped (scripts/vault-bootstrap.sh migrate-secrets), and
+# `docker stack deploy` refuses to create ANY service in a stack if one
+# service references a Swarm secret/config that doesn't exist yet - not
+# just the one missing it. Deploying the agent as a separate stack means
+# vault-1/2/3 still come up cleanly even before this one can be deployed
+# at all.
+#
+# Prerequisites:
+#   - docker-stack.vault.yml already deployed
+#   - `./scripts/vault-bootstrap.sh init/unseal/policy/migrate-secrets`
+#     already run (migrate-secrets is what creates the vault_agent_token
+#     Docker secret this stack requires)
+#
+# Deploy with: docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent
+
+version: "3.8"
+
+services:
+  # Runs on every node, reads secrets from Vault, writes to local files.
+  # App services bind-mount this directory read-only.
+  vault-agent:
+    image: vault:1.15.0
+    command: agent -config=/vault-agent/config/vault-agent.hcl
+    configs:
+      - source: vault_agent_cfg
+        target: /vault-agent/config/vault-agent.hcl
+    secrets:
+      - source: vault_agent_token
+        target: vault_agent_token
+    volumes:
+      - type: bind
+        source: /srv/syslog-ha/vault-secrets
+        target: /vault-agent/secrets
+      - /vault-agent/token:/vault-agent/token
+    networks:
+      - syslog_net
+    deploy:
+      mode: global
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+        reservations:
+          cpus: '0.05'
+          memory: 32M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  syslog_net:
+    external: true
+
+configs:
+  vault_agent_cfg:
+    file: vault/vault-agent.hcl
+
+secrets:
+  # Created by `scripts/vault-bootstrap.sh migrate-secrets` (a one-time
+  # Vault agent bootstrap token, policy "logmara").
+  vault_agent_token:
+    external: true
