@@ -276,7 +276,85 @@ Getting here required backend code changes (not just Docker config) — see "How
 | [`scripts/swarm-bootstrap.sh`](scripts/swarm-bootstrap.sh) | Guided commands for swarm init/join, node labeling, network/secret/config creation |
 | [`scripts/swarm-deploy.sh`](scripts/swarm-deploy.sh) | Wrapper that sources `.env` then runs `docker stack deploy` (Swarm doesn't read `.env` on its own) |
 | [`scripts/build-images.sh`](scripts/build-images.sh) | Builds + pushes all Docker images, reading `REGISTRY`/`TAG` from `.env` |
+| [`docker-stack.vault.yml`](docker-stack.vault.yml) | 3-node Vault cluster (Raft storage) + global Vault agent sidecars for secret injection |
+| [`vault/`](vault/) | Vault server and agent configuration files |
+| [`scripts/vault-bootstrap.sh`](scripts/vault-bootstrap.sh) | Vault init, unseal, policy creation, and Docker→Vault secret migration |
+| [`scripts/rotate-secrets.sh`](scripts/rotate-secrets.sh) | Zero-downtime secret rotation (auto-detects Docker secrets or Vault KV) |
+| [`scripts/backup-swarm.sh`](scripts/backup-swarm.sh) | Full state backup (etcd snapshot, Postgres dump, configs, join tokens) with optional S3 sync |
+| [`docker-stack.monitoring.yml`](docker-stack.monitoring.yml) | Prometheus, Alertmanager, node/cadvisor exporters, optional Grafana |
 | [`nfs-ha/`](nfs-ha/) | *Optional* — DRBD resource template + keepalived VIP + promote/demote hooks for a synchronously-replicated NFS pair, instead of a single NFS box |
+
+### Vault UI
+
+The Vault cluster exposes a web UI on port `8200` (configurable via `VAULT_UI_PORT` env var) on the node labeled `vault_id=1`. The UI allows browsing secrets, managing auth methods, and configuring LDAP authentication.
+
+**⚠ Firewall — mandatory.** The Vault UI exposes all stored secrets. Restrict access to admin IPs only:
+
+```bash
+# On the vault-1 node — allow only your admin workstation(s):
+ufw allow from <admin-ip> to any port 8200
+# Or a subnet:
+ufw allow from 10.0.1.0/24 to any port 8200
+```
+
+Without a firewall rule, port 8200 is reachable from anywhere on the network.
+
+#### Configuring LDAP Authentication (via GUI)
+
+The Vault UI supports configuring LDAP auth natively — no CLI required.
+
+1. **Log in** with the root token from `/srv/syslog-ha/vault-token` (set during `vault-bootstrap.sh init`)
+2. Navigate to **Access → Authentication Methods** → click **Enable New Method**
+3. Select **LDAP**, set path to `ldap`, click **Enable Method**
+4. Click the newly-created `ldap` method, go to **Configuration**:
+   | Field | Value |
+   |-------|-------|
+   | LDAP URL | `ldap://<server>:389` (or `ldaps://` for LDAPS) |
+   | User DN | same as your app's `ldap_base_dn` (e.g. `ou=users,dc=example,dc=com`) |
+   | User Attribute | same as `ldap_username_attr` (default: `uid`) |
+   | Group DN | your groups container (e.g. `ou=groups,dc=example,dc=com`) |
+   | Group Attribute | `cn` |
+   | Bind DN | same as `ldap_bind_dn` (if your LDAP requires service account bind) |
+   | Bind Password | same as `ldap_bind_password` |
+   | TLS Skip Verify | disable if your LDAP server has a valid cert |
+5. Go to **Groups** tab → click **Create Group Mapping**:
+   | Field | Value |
+   |-------|-------|
+   | Group Name | `vault-admins` (or whatever group you want to grant access) |
+   | Policies | `logmara` |
+6. **Test login** — open an incognito window, log in with a user from the `vault-admins` group
+
+#### Locking down Vault after LDAP is working
+
+Once LDAP auth is verified, remove the root token and disable anonymous token auth:
+
+```bash
+# 1. Log in with root token (from file)
+export VAULT_TOKEN=$(cat /srv/syslog-ha/vault-token)
+
+# 2. Create a permanent admin token tied to the logmara policy
+docker run --rm --network syslog_net \
+  -e VAULT_ADDR="http://vault-1:8200" \
+  -e VAULT_TOKEN="$VAULT_TOKEN" \
+  vault:1.15.0 token create -policy=logmara -period=24h -ttl=24h -renewable
+
+# 3. Disable the default token auth method (forces LDAP-only login)
+docker run --rm --network syslog_net \
+  -e VAULT_ADDR="http://vault-1:8200" \
+  -e VAULT_TOKEN="$VAULT_TOKEN" \
+  vault:1.15.0 auth disable token
+
+# 4. Revoke the root token
+docker run --rm --network syslog_net \
+  -e VAULT_ADDR="http://vault-1:8200" \
+  -e VAULT_TOKEN="$VAULT_TOKEN" \
+  vault:1.15.0 auth revoke-self
+
+# 5. Remove the token file from disk
+rm /srv/syslog-ha/vault-token
+```
+
+After step 4, the root token is dead. After step 3, only LDAP users in the `vault-admins` group can log in. If you lock yourself out, you'll need to re-unseal with Shamir keys and re-init — keep those keys safe.
 
 ### How multi-replica safety works
 
