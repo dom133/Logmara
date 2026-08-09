@@ -59,13 +59,14 @@
 #     haproxy-app-config`)
 #   - NFS export mounted at the same path on every app=true / edge=true node,
 #     e.g. /mnt/syslog-nfs, exporting what were log_data/log_spool
-#   - docker-stack.vault.yml already deployed and bootstrapped: jwt_secret,
-#     encryption_key, pg_app_password, redis_password and rabbitmq_password
-#     are all supplied by vault-agent's bind-mounted output (see the
-#     volumes: block below), read via the *_FILE env var convention (see
-#     util.SecretFromEnv) exactly as when they were native Swarm secrets -
-#     never as plain env vars. POSTGRES_USER/POSTGRES_DB below are optional
-#     (default syslog/syslog_db) and are not secret.
+#   - docker-stack.vault.yml and docker-stack.vault-agent.yml already
+#     deployed and bootstrapped: jwt_secret, encryption_key, pg_app_password,
+#     redis_password and rabbitmq_password are all supplied by Vault - api
+#     reads them straight from Vault's API (backend/vaultclient, via
+#     VAULT_ADDR/VAULT_TOKEN_FILE below), falling back to the *_FILE bind
+#     mounts further down (vault-agent's rendered output) if Vault is
+#     unreachable. Never as plain env vars. POSTGRES_USER/POSTGRES_DB below
+#     are optional (default syslog/syslog_db) and are not secret.
 #
 # Deploy with: docker stack deploy -c docker-stack.app.yml logmara-app
 
@@ -195,12 +196,16 @@ services:
       # docker-compose.yml, which doesn't support this templating.
       SWARM_TASK_IDENTITY: "{{.Node.Hostname}}.{{.Task.Slot}}"
       MY_NODE: "{{.Node.Hostname}}"
-      # Every credential below is mounted as a file (see the `volumes:`
-      # block further down - Vault-backed, see prerequisites comment above)
-      # rather than passed as a plain env var - none of them appear in
-      # `docker service inspect`, /proc, or crash dumps this way.
-      # util.SecretFromEnv reads the *_FILE-suffixed path when the plain
-      # var is unset.
+      # Every credential below is available two ways: directly from Vault's
+      # API (backend/vaultclient - preferred, takes effect within ~30s of a
+      # scripts/rotate-secrets.sh rotation, no restart needed) and as a
+      # *_FILE fallback (see the `volumes:` block further down) for when
+      # Vault is unreachable. Neither appears in `docker service inspect`,
+      # /proc, or crash dumps. VAULT_TOKEN_FILE points at the same
+      # bootstrap token vault-agent itself uses (policy "logmara", read-only
+      # on secret/data/logmara/*) - see docker-stack.vault-agent.yml.
+      VAULT_ADDR: http://vault-1:8200
+      VAULT_TOKEN_FILE: /run/secrets/vault_agent_token
       POSTGRES_HOST: haproxy
       POSTGRES_PORT: "5000"
       POSTGRES_USER: ${POSTGRES_USER:-syslog}
@@ -261,6 +266,9 @@ services:
       # be shared storage (NFS, like log_data below) since API_REPLICAS can
       # run on different nodes and all of them need to see the same edits.
       PARSER_DEFS_DIR: /parsers
+    secrets:
+      - source: vault_agent_token
+        target: vault_agent_token
     volumes:
       - log_data:/data
       - parser_defs:/parsers
@@ -433,4 +441,12 @@ volumes:
 configs:
   # Created via `scripts/swarm-bootstrap.sh haproxy-app-config`.
   haproxy_app_cfg:
+    external: true
+
+secrets:
+  # Same bootstrap token vault-agent uses (docker-stack.vault-agent.yml) -
+  # api reads Vault's API directly with it (backend/vaultclient), rather
+  # than only consuming vault-agent's rendered files. Created by
+  # `scripts/vault-bootstrap.sh migrate-secrets`.
+  vault_agent_token:
     external: true
