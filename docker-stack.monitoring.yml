@@ -23,6 +23,8 @@ services:
         target: /etc/prometheus/prometheus.yml
       - source: alertmanager_cfg
         target: /etc/prometheus/alertmanager.yml
+      - source: alert_rules_cfg
+        target: /etc/prometheus/alert_rules.yml
     volumes:
       - monitoring_data:/prometheus
     ports:
@@ -216,6 +218,8 @@ configs:
     file: monitoring/prometheus.yml
   alertmanager_cfg:
     file: monitoring/alertmanager.yml
+  alert_rules_cfg:
+    file: monitoring/alert_rules.yml
   grafana_datasources:
     file: monitoring/grafana-datasources.yml
   grafana_dashboards_cfg:
