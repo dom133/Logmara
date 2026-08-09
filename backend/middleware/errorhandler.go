@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
 
 	"logmara/model"
 
@@ -27,6 +28,13 @@ func logError(c *gin.Context, appErr *model.AppError) {
 	}
 }
 
+// isDevelopment returns true when the server runs in development mode.
+// In production, detailed error messages are suppressed to avoid leaking
+// internal implementation details to the client.
+func isDevelopment() bool {
+	return os.Getenv("GIN_MODE") == "debug" || os.Getenv("ENV") == "development"
+}
+
 func ErrorHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
@@ -42,7 +50,7 @@ func ErrorHandler() gin.HandlerFunc {
 					response["error_key"] = appErr.ErrorKey
 				}
 
-				if appErr.Details != "" {
+				if isDevelopment() && appErr.Details != "" {
 					response["details"] = appErr.Details
 				}
 
@@ -65,7 +73,7 @@ func HandleError(c *gin.Context, err error) {
 			response["error_key"] = appErr.ErrorKey
 		}
 
-		if appErr.Details != "" {
+		if isDevelopment() && appErr.Details != "" {
 			response["details"] = appErr.Details
 		}
 

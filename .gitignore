@@ -1,6 +1,5 @@
 frontend/dist/
 frontend/node_modules/
-frontend/package-lock.json
 backend/*.exe
 *.exe
 *.pem
@@ -8,3 +7,6 @@ Dockerfile.frontend.local
 .opencode/
 __pycache__/
 *.pyc
+.env
+.env.local
+npm-debug.log*
