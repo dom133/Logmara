@@ -83,9 +83,15 @@ case "$ACTION" in
         # Wait for Vault to be ready
         echo "Waiting for Vault to be ready..."
         for i in {1..30}; do
-            if docker run --rm --network syslog_net \
+            # `vault status` intentionally exits non-zero when sealed (2) -
+            # that's the normal, expected state we're checking for here,
+            # not a failure. With `set -o pipefail` (see top of file), that
+            # exit code would otherwise win over grep's success and make
+            # this `if` always false. The `|| true` inside the subshell
+            # keeps only grep's match result significant to the pipe.
+            if (docker run --rm --network syslog_net \
                 -e VAULT_ADDR="$VAULT_ADDR" \
-                hashicorp/vault:1.15.0 status 2>/dev/null | grep -q "sealed\|inactive"; then
+                hashicorp/vault:1.15.0 status 2>/dev/null || true) | grep -qi "sealed\|inactive"; then
                 echo "Vault is ready"
                 break
             fi
