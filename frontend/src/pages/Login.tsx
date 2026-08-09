@@ -5,7 +5,7 @@ import { useAuth } from '../services/auth'
 import { useTheme } from '../App'
 import { useTranslation } from 'react-i18next'
 import i18n from 'i18next'
-import { languageDisplayName, sortLanguagesEnglishFirst } from '../i18n'
+import { languageDisplayName, sortLanguagesEnglishFirst, onLanguagesChanged } from '../i18n'
 import { changePassword } from '../services/api'
 
 const { Title, Text } = Typography
@@ -66,7 +66,15 @@ export default function Login() {
     }
   }
 
-  const languages = sortLanguagesEnglishFirst(Object.keys((i18n as any).store?.data || {}))
+  // Languages load in two waves (see initI18n): the active one up front, the
+  // rest in the background so the login page can render immediately. i18next
+  // doesn't trigger a React re-render when that background load lands, so
+  // this listens for it directly - otherwise, on a cold cache where that
+  // load takes a while, the switcher just never appears.
+  const [languages, setLanguages] = useState(() =>
+    sortLanguagesEnglishFirst(Object.keys((i18n as any).store?.data || {}))
+  )
+  useEffect(() => onLanguagesChanged(langs => setLanguages(sortLanguagesEnglishFirst(langs))), [])
 
   return (
     <Layout style={{ minHeight: '100vh', background: themeMode === 'dark' ? '#141414' : '#f0f2f5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
