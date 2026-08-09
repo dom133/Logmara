@@ -1,15 +1,22 @@
 # HA monitoring stack for Docker Swarm: Prometheus + Alertmanager + node_exporter + cadvisor.
 #
 # OPTIONAL, additive stack for multi-node deployments. Deploy alongside other
-# stacks. Grafana is optional (set MONITORING_EXPOSE_GRAFANA=false to skip) -
-# useful if you already have an existing Grafana instance.
+# stacks. If you already have an existing Grafana instance and don't want
+# this one, delete/comment out the `grafana` service (and the
+# monitoring_grafana_data/grafana_dashboards volumes and grafana_datasources/
+# grafana_dashboards_cfg configs it's the only consumer of) before deploying -
+# there's no env-var toggle for it.
 #
 # Prerequisites:
 #   - Docker Swarm initialized
 #   - `syslog_net` overlay network already exists
 #   - Nodes labeled app=true and edge=true
-#   - Grafana dashboards copied to /srv/syslog-ha/monitoring/grafana-dashboards/
-#     on edge nodes (copy from monitoring/grafana-dashboards/ in repo)
+#   - NFS_SERVER reachable (same export the app tier's log_data/parser_defs
+#     use - see docker-stack.app.yml). Dashboard JSON files go on the NFS
+#     server itself, not any particular Swarm node - see the
+#     grafana_dashboards volume below.
+#   - GRAFANA_ADMIN_PASSWORD set (no default - Grafana refuses to start
+#     without one)
 #
 # Deploy with: docker stack deploy -c docker-stack.monitoring.yml logmara-monitoring
 
@@ -171,8 +178,15 @@ services:
         mode: 0440
     volumes:
       - monitoring_grafana_data:/var/lib/grafana
-      - type: bind
-        source: /srv/syslog-ha/monitoring/grafana-dashboards
+      # NFS-backed, not a bind mount: grafana has replicas: 1 but only a
+      # node.labels.edge == true constraint, so Swarm can (re)schedule it
+      # onto *any* edge node, not always the same one - a bind mount would
+      # need the directory to pre-exist on every one of them (and any
+      # dashboards copied there would need to be copied to all of them
+      # too, kept in sync by hand). Same reasoning as log_data/parser_defs
+      # in docker-stack.app.yml.
+      - type: volume
+        source: grafana_dashboards
         target: /var/lib/grafana/dashboards
         read_only: true
     ports:
@@ -212,6 +226,17 @@ volumes:
   monitoring_data:
   monitoring_alertmanager_data:
   monitoring_grafana_data:
+  # Same NFS export the app tier's log_data/parser_defs already use (see
+  # docker-stack.app.yml) - reuses NFS_SERVER, just a different exported
+  # subdirectory. Drop dashboard JSON files into
+  # ${NFS_GRAFANA_DASHBOARDS_PATH:-/srv/syslog-ha/nfs/grafana-dashboards}
+  # on the NFS server itself; Grafana re-scans every 30s (dashboards.yml).
+  grafana_dashboards:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_SERVER:?set NFS_SERVER to your NFS host},rw,nfsvers=4
+      device: ":${NFS_GRAFANA_DASHBOARDS_PATH:-/srv/syslog-ha/nfs/grafana-dashboards}"
 
 configs:
   prometheus_cfg:
