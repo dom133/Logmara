@@ -16,8 +16,12 @@
 #     app=true/edge=true on small clusters)
 #   - `docker network create -d overlay --attachable syslog_net` (already
 #     done if docker-stack.postgres.yml is deployed)
-#   - Secret created: rabbitmq_password
-#   - Secret created: rabbitmq_erlang_cookie
+#   - docker-stack.vault.yml already deployed and bootstrapped - rabbitmq_password
+#     is supplied by vault-agent's bind-mounted output, not a native Swarm
+#     secret (see the rabbitmq-password-mount anchor below)
+#   - Secret created: rabbitmq_erlang_cookie (stays a native Swarm secret -
+#     rotating it requires a full cluster re-init, so it's excluded from the
+#     Vault cutover, see scripts/rotate-secrets.sh)
 #
 # Deploy with: docker stack deploy -c docker-stack.rabbitmq.yml logmara-rabbitmq
 
@@ -28,6 +32,15 @@ x-rabbitmq-logging: &rabbitmq-logging
   options:
     max-size: "10m"
     max-file: "3"
+
+# Vault cutover: same /run/secrets/rabbitmq_password path entrypoint.sh /
+# join_entrypoint.sh already read, now a bind-mounted file written by
+# vault-agent (docker-stack.vault.yml) instead of a native Swarm secret.
+x-rabbitmq-password-mount: &rabbitmq-password-mount
+  - type: bind
+    source: /srv/syslog-ha/vault-secrets/rabbitmq_password
+    target: /run/secrets/rabbitmq_password
+    read_only: true
 
 services:
   rabbitmq1:
@@ -44,8 +57,8 @@ services:
         target: /docker-entrypoint-init.d/entrypoint.sh
         mode: 0755
     secrets:
-      - rabbitmq_password
       - rabbitmq_erlang_cookie
+    volumes: *rabbitmq-password-mount
     healthcheck:
       test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
       interval: 15s
@@ -74,8 +87,8 @@ services:
         target: /docker-entrypoint-init.d/join_entrypoint.sh
         mode: 0755
     secrets:
-      - rabbitmq_password
       - rabbitmq_erlang_cookie
+    volumes: *rabbitmq-password-mount
     depends_on: [rabbitmq1]
     healthcheck:
       test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
@@ -105,8 +118,8 @@ services:
         target: /docker-entrypoint-init.d/join_entrypoint.sh
         mode: 0755
     secrets:
-      - rabbitmq_password
       - rabbitmq_erlang_cookie
+    volumes: *rabbitmq-password-mount
     depends_on: [rabbitmq1]
     healthcheck:
       test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
@@ -158,8 +171,6 @@ networks:
     external: true
 
 secrets:
-  rabbitmq_password:
-    external: true
   rabbitmq_erlang_cookie:
     external: true
 

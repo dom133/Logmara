@@ -3,6 +3,11 @@
 # Provides a 3-node Vault cluster with Raft storage and Vault agent
 # sidecars for secret injection. Manual Shamir unseal (no cloud KMS).
 #
+# Required by docker-stack.postgres.yml, redis.yml, rabbitmq.yml, and
+# app.yml — they bind-mount vault-agent's local output for pg_app_password,
+# redis_password, rabbitmq_password, jwt_secret, and encryption_key, so
+# this stack must be deployed and bootstrapped (see below) before those.
+#
 # Architecture:
 #   - 3 Vault servers (vault-1, vault-2, vault-3) on dedicated nodes
 #   - Vault agent (mode: global) reads from Vault, writes to local files
