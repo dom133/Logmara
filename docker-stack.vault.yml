@@ -39,7 +39,7 @@ version: "3.8"
 
 services:
   vault-1:
-    image: vault:1.15.0
+    image: hashicorp/vault:1.15.0
     command: server -config=/vault/config/vault.hcl
     hostname: vault-1
     environment:
@@ -72,7 +72,7 @@ services:
         max-file: "3"
 
   vault-2:
-    image: vault:1.15.0
+    image: hashicorp/vault:1.15.0
     command: server -config=/vault/config/vault.hcl
     hostname: vault-2
     environment:
@@ -101,7 +101,7 @@ services:
         max-file: "3"
 
   vault-3:
-    image: vault:1.15.0
+    image: hashicorp/vault:1.15.0
     command: server -config=/vault/config/vault.hcl
     hostname: vault-3
     environment:

@@ -27,7 +27,7 @@ vault_cli() {
         --network syslog_net \
         -e VAULT_ADDR="$VAULT_ADDR" \
         -e VAULT_TOKEN="$VAULT_TOKEN" \
-        vault:1.15.0 "$@"
+        hashicorp/vault:1.15.0 "$@"
 }
 
 # Write a secret to Vault KV v2. NOTE: `vault kv put/get` already prepends
@@ -47,7 +47,7 @@ vault_kv_write() {
         -e VAULT_ADDR="$VAULT_ADDR" \
         -e VAULT_TOKEN="$VAULT_TOKEN" \
         -v "$tmpfile:/tmp/secretval:ro" \
-        vault:1.15.0 sh -c "
+        hashicorp/vault:1.15.0 sh -c "
             VAL=\$(cat /tmp/secretval) && \
             vault kv put \"${path}\" \"${key}=\$VAL\"
         " 2>/dev/null || true
@@ -83,7 +83,7 @@ case "$ACTION" in
         # Wait for Vault to be ready
         echo "Waiting for Vault to be ready..."
         for i in {1..30}; do
-            if docker run --rm --network syslog_net vault:1.15.0 \
+            if docker run --rm --network syslog_net hashicorp/vault:1.15.0 \
                 -e VAULT_ADDR="$VAULT_ADDR" \
                 status 2>/dev/null | grep -q "sealed\|inactive"; then
                 echo "Vault is ready"
@@ -98,7 +98,7 @@ case "$ACTION" in
         INIT_OUTPUT=$(docker run --rm \
             --network syslog_net \
             -e VAULT_ADDR="$VAULT_ADDR" \
-            vault:1.15.0 operator init \
+            hashicorp/vault:1.15.0 operator init \
                 -key-shares=5 \
                 -key-threshold=3 \
                 -format=json 2>/dev/null)
@@ -150,7 +150,7 @@ case "$ACTION" in
                 docker run --rm \
                     --network syslog_net \
                     -e VAULT_ADDR="$VAULT_ADDR" \
-                    vault:1.15.0 operator unseal "${KEYS[$i]}" 2>/dev/null || true
+                    hashicorp/vault:1.15.0 operator unseal "${KEYS[$i]}" 2>/dev/null || true
             done
 
             echo "$NODE unsealed"
