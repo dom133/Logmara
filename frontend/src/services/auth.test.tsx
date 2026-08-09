@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { ReactNode } from 'react'
 import { renderHook, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth'
 import { api, checkSession } from './api'
 
@@ -11,6 +13,17 @@ vi.mock('./api', () => ({
 const mockedApi = api as unknown as { get: ReturnType<typeof vi.fn>; post: ReturnType<typeof vi.fn> }
 const mockedCheckSession = checkSession as unknown as ReturnType<typeof vi.fn>
 
+// AuthProvider calls useLocation() (it needs to know whether it's on /login
+// to skip session polling/activity tracking there), so it must be rendered
+// inside a Router same as it is in the real app.
+function TestWrapper({ children }: { children: ReactNode }) {
+  return (
+    <MemoryRouter initialEntries={['/']}>
+      <AuthProvider>{children}</AuthProvider>
+    </MemoryRouter>
+  )
+}
+
 describe('AuthProvider loadUser', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -20,7 +33,7 @@ describe('AuthProvider loadUser', () => {
   it('sets the user straight away when the access token is still valid', async () => {
     mockedApi.get.mockResolvedValueOnce({ data: { id: 1, username: 'alice', expires_at: Date.now() / 1000 + 900 } })
 
-    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
+    const { result } = renderHook(() => useAuth(), { wrapper: TestWrapper })
 
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.user).toMatchObject({ username: 'alice' })
@@ -33,7 +46,7 @@ describe('AuthProvider loadUser', () => {
       .mockResolvedValueOnce({ data: { id: 1, username: 'alice', expires_at: Date.now() / 1000 + 900 } }) // GET /auth/me (retry)
     mockedApi.post.mockResolvedValueOnce({ data: { success: true, expires_at: Date.now() / 1000 + 900 } }) // POST /auth/refresh
 
-    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
+    const { result } = renderHook(() => useAuth(), { wrapper: TestWrapper })
 
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(mockedApi.post).toHaveBeenCalledWith('/auth/refresh', {}, { headers: { 'X-Silent-Refresh': 'true' } })
@@ -45,7 +58,7 @@ describe('AuthProvider loadUser', () => {
     mockedApi.get.mockRejectedValueOnce({ response: { status: 401 } }) // GET /auth/me
     mockedApi.post.mockRejectedValueOnce({ response: { status: 401 } }) // POST /auth/refresh - no refresh token cookie
 
-    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
+    const { result } = renderHook(() => useAuth(), { wrapper: TestWrapper })
 
     await waitFor(() => expect(result.current.loading).toBe(false), { timeout: 5000 })
     expect(result.current.user).toBeNull()
@@ -59,7 +72,7 @@ describe('AuthProvider loadUser', () => {
     mockedApi.get.mockRejectedValueOnce({ response: { status: 401 } }) // GET /auth/me - expired access token
     mockedApi.post.mockRejectedValueOnce({ response: { status: 401 }, message: 'silent refresh not allowed for this session' })
 
-    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
+    const { result } = renderHook(() => useAuth(), { wrapper: TestWrapper })
 
     await waitFor(() => expect(result.current.loading).toBe(false), { timeout: 5000 })
     expect(mockedApi.post).toHaveBeenCalledWith('/auth/refresh', {}, { headers: { 'X-Silent-Refresh': 'true' } })
@@ -75,7 +88,7 @@ describe('AuthProvider loadUser', () => {
     })
     mockedApi.post.mockResolvedValueOnce({ data: { success: true, expires_at: Date.now() / 1000 + 900, remembered: true } })
 
-    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
+    const { result } = renderHook(() => useAuth(), { wrapper: TestWrapper })
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     await waitFor(() => expect(mockedApi.post).toHaveBeenCalledWith('/auth/refresh', {}))
@@ -87,7 +100,7 @@ describe('AuthProvider loadUser', () => {
       data: { id: 1, username: 'alice', expires_at: Date.now() / 1000 + 25, remembered: false },
     })
 
-    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
+    const { result } = renderHook(() => useAuth(), { wrapper: TestWrapper })
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     await waitFor(() => expect(result.current.showSessionWarning).toBe(true))

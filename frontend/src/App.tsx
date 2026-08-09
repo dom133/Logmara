@@ -455,27 +455,20 @@ export default function App() {
                 <Route path="*" element={<Navigate to="/setup" replace />} />
               </Routes>
             ) : (
-              <>
-                <AuthProvider skipInitialLoad>
-                  <Routes>
-                    <Route path="/login" element={<Login />} />
-                  </Routes>
-                </AuthProvider>
-
-                <AuthProvider>
-                  <Routes>
-                    <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
-                    <Route path="/logs" element={<PrivateRoute><LogsViewer /></PrivateRoute>} />
-                    <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />
-                    <Route path="/dashboards" element={<PrivateRoute><DashboardsPage /></PrivateRoute>} />
-                    <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
-                    <Route path="/alerts" element={<PrivateRoute><AlertsPage /></PrivateRoute>} />
-                    <Route path="/admin" element={<PrivateRoute requireAdmin><Admin /></PrivateRoute>} />
-                    <Route path="/relay" element={<PrivateRoute requireAdmin><SyslogRelay /></PrivateRoute>} />
-                    <Route path="*" element={<PrivateRoute><NotFoundPage /></PrivateRoute>} />
-                  </Routes>
-                </AuthProvider>
-              </>
+              <AuthProvider>
+                <Routes>
+                  <Route path="/login" element={<Login />} />
+                  <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
+                  <Route path="/logs" element={<PrivateRoute><LogsViewer /></PrivateRoute>} />
+                  <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />
+                  <Route path="/dashboards" element={<PrivateRoute><DashboardsPage /></PrivateRoute>} />
+                  <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
+                  <Route path="/alerts" element={<PrivateRoute><AlertsPage /></PrivateRoute>} />
+                  <Route path="/admin" element={<PrivateRoute requireAdmin><Admin /></PrivateRoute>} />
+                  <Route path="/relay" element={<PrivateRoute requireAdmin><SyslogRelay /></PrivateRoute>} />
+                  <Route path="*" element={<PrivateRoute><NotFoundPage /></PrivateRoute>} />
+                </Routes>
+              </AuthProvider>
             )}
           </Suspense>
         </BrowserRouter>
