@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import axios from 'axios'
 import { message } from 'antd'
 import { t } from 'i18next'
 import { api, checkSession, reportActivity } from './api'
@@ -204,7 +205,16 @@ export function AuthProvider({ children, skipInitialLoad }: { children: ReactNod
       return true
     } catch (e) {
       console.error('Silent refresh failed:', e)
-      if (retryCount < SILENT_REFRESH_RETRY_MAX) {
+      // A response means the server definitively said no (400: no refresh
+      // token at all - e.g. a first-time anonymous visitor; 401: token
+      // exists but isn't a "remembered" session). Neither improves on
+      // retry, so retrying just stalls the redirect to /login for ~14s
+      // (2s+4s+8s) on every logged-out page load. Only retry when there's
+      // no response (network hiccup/timeout) or the server itself errored
+      // (5xx) - those are the actually transient cases.
+      const status = axios.isAxiosError(e) ? e.response?.status : undefined
+      const isRetryable = status === undefined || status >= 500
+      if (isRetryable && retryCount < SILENT_REFRESH_RETRY_MAX) {
         const delay = SILENT_REFRESH_RETRY_BASE_MS * Math.pow(2, retryCount)
         await new Promise(r => setTimeout(r, delay))
         return trySilentRefresh(retryCount + 1)
