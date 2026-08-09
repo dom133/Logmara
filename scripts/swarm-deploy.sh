@@ -9,14 +9,20 @@
 # Usage:
 #   ./scripts/swarm-deploy.sh <stack> [stack-name]
 #
-#   <stack>       One of: postgres, redis, rabbitmq, app, all
-#   [stack-name]  Override the stack name (default: logmara-pg / logmara-redis / logmara-rabbitmq / logmara-app)
+#   <stack>       One of: vault, vault-agent, postgres, redis, rabbitmq, app, all
+#   [stack-name]  Override the stack name (default: logmara-vault / logmara-vault-agent /
+#                 logmara-pg / logmara-redis / logmara-rabbitmq / logmara-app)
 #
 # Examples:
+#   ./scripts/swarm-deploy.sh vault-agent
 #   ./scripts/swarm-deploy.sh postgres
 #   ./scripts/swarm-deploy.sh rabbitmq
 #   ./scripts/swarm-deploy.sh app
 #   ./scripts/swarm-deploy.sh all
+#
+# Note: `all` deploys postgres/redis/rabbitmq/app only, not vault/vault-agent -
+# those need the one-time bootstrap in README "Deploying Vault" first and
+# aren't part of the routine redeploy cycle the way the other four are.
 #
 # .env file location (first match wins):
 #   1. .env in the same directory as this script's parent (repo root)
@@ -60,7 +66,7 @@ STACK_NAME_OVERRIDE="${2:-}"
 if [[ -z "$STACK" ]]; then
     echo "Usage: $0 [--env-file <path>] [--resolve-image] [--with-registry-auth] <stack> [stack-name]" >&2
     echo "" >&2
-     echo "Stacks: postgres, redis, rabbitmq, app, all" >&2
+     echo "Stacks: vault, vault-agent, postgres, redis, rabbitmq, app, all" >&2
     exit 1
 fi
 
@@ -111,6 +117,14 @@ deploy_stack() {
 # Deploy
 # ---------------------------------------------------------------------------
 case "$STACK" in
+    vault)
+        name="${STACK_NAME_OVERRIDE:-logmara-vault}"
+        deploy_stack "docker-stack.vault.yml" "$name"
+        ;;
+    vault-agent)
+        name="${STACK_NAME_OVERRIDE:-logmara-vault-agent}"
+        deploy_stack "docker-stack.vault-agent.yml" "$name"
+        ;;
     postgres)
         name="${STACK_NAME_OVERRIDE:-logmara-pg}"
         deploy_stack "docker-stack.postgres.yml" "$name"
@@ -135,7 +149,7 @@ case "$STACK" in
         deploy_stack "docker-stack.app.yml"    "${STACK_NAME_OVERRIDE:-logmara-app}"
         ;;
     *)
-        echo "Error: unknown stack '$STACK'. Use: postgres, redis, rabbitmq, app, all" >&2
+        echo "Error: unknown stack '$STACK'. Use: vault, vault-agent, postgres, redis, rabbitmq, app, all" >&2
         exit 1
         ;;
 esac
