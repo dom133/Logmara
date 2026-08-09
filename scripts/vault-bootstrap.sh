@@ -226,8 +226,8 @@ EOF
         fi
 
         echo "=== Secrets migrated ==="
-        echo "Now (re-)deploy the vault stack so vault-agent picks up the secret:"
-        echo "  docker stack deploy -c docker-stack.vault.yml logmara-vault"
+        echo "Now deploy the vault-agent stack (its secret didn't exist until now):"
+        echo "  docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent"
         ;;
 
     *)

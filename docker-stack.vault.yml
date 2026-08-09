@@ -1,16 +1,24 @@
-# HashiCorp Vault HA stack for Docker Swarm.
+# HashiCorp Vault HA stack for Docker Swarm - the 3-node server cluster.
 #
-# Provides a 3-node Vault cluster with Raft storage and Vault agent
-# sidecars for secret injection. Manual Shamir unseal (no cloud KMS).
+# Vault agent (the sidecar that actually delivers secrets to the app
+# stacks) is a SEPARATE stack: docker-stack.vault-agent.yml. It has to be,
+# because its `vault_agent_token` secret doesn't exist until after this
+# stack is bootstrapped - and `docker stack deploy` refuses to create ANY
+# service in a stack if even one service references a Swarm secret/config
+# that doesn't exist yet, not just the one that's missing it. Splitting
+# them into two stacks is what lets vault-1/2/3 come up on the very first
+# deploy instead of the whole stack deploy failing outright.
 #
 # Required by docker-stack.postgres.yml, redis.yml, rabbitmq.yml, and
 # app.yml — they bind-mount vault-agent's local output for pg_app_password,
 # redis_password, rabbitmq_password, jwt_secret, and encryption_key, so
-# this stack must be deployed and bootstrapped (see below) before those.
+# this stack (and docker-stack.vault-agent.yml) must be deployed and
+# bootstrapped before those.
 #
 # Architecture:
 #   - 3 Vault servers (vault-1, vault-2, vault-3) on dedicated nodes
-#   - Vault agent (mode: global) reads from Vault, writes to local files
+#   - Vault agent (docker-stack.vault-agent.yml, mode: global) reads from
+#     Vault, writes to local files
 #   - App services bind-mount agent output as :ro, *_FILE env vars point there
 #   - Zero Go code changes required - uses existing *_FILE convention
 #
@@ -19,14 +27,13 @@
 #   - `syslog_net` overlay network already exists
 #   - Nodes labeled vault_id=1, vault_id=2, vault_id=3
 #
-# Bootstrap order (the `vault_agent_token` secret doesn't exist yet on first
-# deploy, so the vault-agent service will fail to start until it does):
+# Bootstrap order:
 #   1. docker stack deploy -c docker-stack.vault.yml logmara-vault
 #   2. ./scripts/vault-bootstrap.sh init      (unseal keys + root token)
 #   3. ./scripts/vault-bootstrap.sh unseal
 #   4. ./scripts/vault-bootstrap.sh policy
 #   5. ./scripts/vault-bootstrap.sh migrate-secrets   (creates vault_agent_token secret)
-#   6. docker stack deploy -c docker-stack.vault.yml logmara-vault   (re-run so vault-agent picks up the now-existing secret)
+#   6. docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent
 
 version: "3.8"
 
@@ -122,43 +129,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Vault agent runs on every node, reads secrets from Vault, writes to
-  # local files. App services bind-mount this directory read-only.
-  vault-agent:
-    image: vault:1.15.0
-    command: agent -config=/vault-agent/config/vault-agent.hcl
-    configs:
-      - source: vault_agent_cfg
-        target: /vault-agent/config/vault-agent.hcl
-    secrets:
-      - source: vault_agent_token
-        target: vault_agent_token
-    volumes:
-      - type: bind
-        source: /srv/syslog-ha/vault-secrets
-        target: /vault-agent/secrets
-      - /vault-agent/token:/vault-agent/token
-    networks:
-      - syslog_net
-    deploy:
-      mode: global
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 3
-      resources:
-        limits:
-          cpus: '0.25'
-          memory: 128M
-        reservations:
-          cpus: '0.05'
-          memory: 32M
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
 networks:
   syslog_net:
     external: true
@@ -174,12 +144,3 @@ volumes:
 configs:
   vault_cfg:
     file: vault/vault.hcl
-  vault_agent_cfg:
-    file: vault/vault-agent.hcl
-
-secrets:
-  # Created by `scripts/vault-bootstrap.sh migrate-secrets` (a one-time
-  # Vault agent bootstrap token, policy "logmara"). Not present on the
-  # very first `docker stack deploy` — see bootstrap order above.
-  vault_agent_token:
-    external: true
