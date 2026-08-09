@@ -36,13 +36,15 @@
 #     (<N> is that node's own vault_id, e.g. only vault2/data on the
 #     vault_id=2 node - each node only needs its own.)
 #
-# Bootstrap order:
-#   1. docker stack deploy -c docker-stack.vault.yml logmara-vault
+# Bootstrap order (use `./scripts/swarm-deploy.sh vault`, not a bare
+# `docker stack deploy` - see "Content-hash name" note on the configs:
+# section below for why):
+#   1. ./scripts/swarm-deploy.sh vault
 #   2. ./scripts/vault-bootstrap.sh init      (unseal keys + root token)
 #   3. ./scripts/vault-bootstrap.sh unseal
 #   4. ./scripts/vault-bootstrap.sh policy
 #   5. ./scripts/vault-bootstrap.sh migrate-secrets   (creates vault_agent_token secret)
-#   6. docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent
+#   6. ./scripts/swarm-deploy.sh vault-agent
 #
 # `entrypoint: [vault]` below bypasses the image's docker-entrypoint.sh:
 # given `server` as $1, it rebuilds the args as
@@ -172,6 +174,10 @@ volumes:
   vault2_tls:
   vault3_tls:
 
+# Content-hash name (computed by scripts/swarm-deploy.sh): Swarm configs
+# are immutable even when not `external: true` - see
+# docker-stack.monitoring.yml's configs: header for the full explanation.
 configs:
   vault_cfg:
     file: vault/vault.hcl
+    name: vault_cfg_${VAULT_CFG_HASH:?run via scripts/swarm-deploy.sh, or export VAULT_CFG_HASH yourself}
