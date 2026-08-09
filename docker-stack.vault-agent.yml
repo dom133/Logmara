@@ -50,7 +50,13 @@ services:
       - type: bind
         source: /srv/syslog-ha/vault-secrets
         target: /vault-agent/secrets
-      - /vault-agent/token:/vault-agent/token
+    # No bind mount for /vault-agent/token (the agent's own renewed-token
+    # cache, per the sink "file" block in vault-agent.hcl): it's just a
+    # convenience cache, not required for correctness - on restart the
+    # agent re-authenticates from vault_agent_token (the Docker secret)
+    # again either way - and like any other Swarm bind mount source, a
+    # host path there would have to pre-exist on every node too. Letting
+    # it live in the container's own writable layer avoids that entirely.
     networks:
       - syslog_net
     deploy:
