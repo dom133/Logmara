@@ -278,11 +278,25 @@ Getting here required backend code changes (not just Docker config) — see "How
 | [`scripts/build-images.sh`](scripts/build-images.sh) | Builds + pushes all Docker images, reading `REGISTRY`/`TAG` from `.env` |
 | [`docker-stack.vault.yml`](docker-stack.vault.yml) | 3-node Vault cluster (Raft storage) + global Vault agent sidecars for secret injection |
 | [`vault/`](vault/) | Vault server and agent configuration files |
-| [`scripts/vault-bootstrap.sh`](scripts/vault-bootstrap.sh) | Vault init, unseal, policy creation, and Docker→Vault secret migration |
+| [`scripts/vault-bootstrap.sh`](scripts/vault-bootstrap.sh) | Vault init, unseal, policy creation, Docker→Vault secret migration, and creation of the `vault_agent_token` Docker secret the agent sidecars auto-authenticate with |
 | [`scripts/rotate-secrets.sh`](scripts/rotate-secrets.sh) | Zero-downtime secret rotation (auto-detects Docker secrets or Vault KV) |
 | [`scripts/backup-swarm.sh`](scripts/backup-swarm.sh) | Full state backup (etcd snapshot, Postgres dump, configs, join tokens) with optional S3 sync |
+| [`scripts/backup-cron.sh`](scripts/backup-cron.sh) | Cron entry point — runs `backup-swarm.sh` then prunes old backups (keeps newest 7 daily / 4 Sunday / 3 first-of-month) |
 | [`docker-stack.monitoring.yml`](docker-stack.monitoring.yml) | Prometheus, Alertmanager, node/cadvisor exporters, optional Grafana |
 | [`nfs-ha/`](nfs-ha/) | *Optional* — DRBD resource template + keepalived VIP + promote/demote hooks for a synchronously-replicated NFS pair, instead of a single NFS box |
+
+### Deploying Vault
+
+The `vault-agent` sidecar authenticates to Vault with a bootstrap token that only exists once Vault itself has been initialized and unsealed, so the stack goes out in two passes — on the first pass the `vault-agent` tasks will fail to start (the `vault_agent_token` secret doesn't exist yet); that's expected, they come up once you redeploy after `migrate-secrets`:
+
+```bash
+docker stack deploy -c docker-stack.vault.yml logmara-vault
+./scripts/vault-bootstrap.sh init      # unseal keys + root token -> /srv/syslog-ha/vault-token
+./scripts/vault-bootstrap.sh unseal
+./scripts/vault-bootstrap.sh policy
+./scripts/vault-bootstrap.sh migrate-secrets   # migrates existing Docker secrets into Vault, creates vault_agent_token
+docker stack deploy -c docker-stack.vault.yml logmara-vault   # re-run so vault-agent picks up vault_agent_token
+```
 
 ### Vault UI
 

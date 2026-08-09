@@ -60,7 +60,32 @@ using_vault() {
     docker service ps --filter "desired-state=running" --filter "current-state=Running" logmara-vault_vault-agent 2>/dev/null | grep -q .
 }
 
-# Read a secret value from the active store
+# Read the plaintext value of an existing Docker (Swarm) secret. `docker
+# run --secret` is not a real flag - secrets are only mountable by Swarm
+# services - so this spins up a one-shot, non-restarting service to read
+# it via `docker service logs` and then removes it.
+read_docker_secret_value() {
+    local name="$1"
+    local svc="rotate-secrets-read-$$-$RANDOM"
+    docker service create --quiet --name "$svc" \
+        --secret "$name" \
+        --restart-condition none \
+        --network syslog_net \
+        alpine cat "/run/secrets/$name" >/dev/null 2>&1 || true
+    local value=""
+    for _ in $(seq 1 15); do
+        value="$(docker service logs "$svc" 2>/dev/null | tr -d '\r\n')"
+        [[ -n "$value" ]] && break
+        sleep 1
+    done
+    docker service rm "$svc" >/dev/null 2>&1 || true
+    printf '%s' "$value"
+}
+
+# Read a secret value from the active store. NOTE: `vault kv get/put`
+# already prepends "data/" internally for a kv-v2 mount, so the path here
+# must be the display path (e.g. "secret/logmara/foo"), not the raw API
+# path "secret/data/logmara/foo" - the latter double-prepends and misses.
 read_secret() {
     local name="$1"
     if using_vault; then
@@ -70,13 +95,18 @@ read_secret() {
             --network syslog_net \
             -e VAULT_ADDR="http://vault-1:8200" \
             -e VAULT_TOKEN="$vault_token" \
-            vault:1.15.0 kv get -field=value "secret/data/logmara/$name" 2>/dev/null || echo ""
+            vault:1.15.0 kv get -field=value "secret/logmara/$name" 2>/dev/null || echo ""
     else
-        docker run --rm --secret "$name" alpine cat /run/secrets/"$name" 2>/dev/null || echo ""
+        read_docker_secret_value "$name"
     fi
 }
 
-# Write a new secret value to the active store
+# Write a new secret value to the active store. Docker secrets are
+# immutable - `docker secret create <name>` fails once <name> already
+# exists (which it always will after the first deploy) - so the Docker
+# secrets branch creates a new versioned secret and repoints every service
+# currently referencing the old name at it (rolling update), keeping the
+# same in-container target path so the app's *_FILE env vars don't change.
 write_secret() {
     local name="$1"
     local value="$2"
@@ -93,11 +123,25 @@ write_secret() {
             -v "$tmpfile:/tmp/secretval:ro" \
             vault:1.15.0 sh -c "
                 VAL=\$(cat /tmp/secretval) && \
-                vault kv put \"secret/data/logmara/$name\" \"value=\$VAL\"
+                vault kv put \"secret/logmara/$name\" \"value=\$VAL\"
             " 2>/dev/null || true
         rm -f "$tmpfile"
     else
-        echo "$value" | docker secret create "$name" -
+        local versioned_name="${name}_$(date +%s)"
+        echo "$value" | docker secret create "$versioned_name" -
+
+        local svc
+        for svc in $(docker service ls --format '{{.Name}}'); do
+            if docker service inspect "$svc" \
+                --format '{{range .Spec.TaskTemplate.ContainerSpec.Secrets}}{{.SecretName}} {{end}}' 2>/dev/null \
+                | grep -qw "$name"; then
+                echo "  Repointing $svc: $name -> $versioned_name"
+                docker service update --quiet \
+                    --secret-rm "$name" \
+                    --secret-add "source=$versioned_name,target=$name" \
+                    "$svc"
+            fi
+        done
     fi
 }
 
@@ -133,22 +177,6 @@ rolling_restart() {
             wait_for_healthy "$svc" 120
         fi
     done
-}
-
-# exec a command inside the first running container of a service
-service_exec() {
-    local service="$1"
-    shift
-    local container
-    container=$(docker service ps --format '{{.NodeID}} {{.CurrentState}} {{.Name}}' --filter "desired-state=running" --filter "current-state=Running" "$service" 2>/dev/null | head -1 | awk '{print $1}')
-    if [[ -z "$container" ]]; then
-        echo "ERROR: No running container for service $service" >&2
-        return 1
-    fi
-    # Get the actual container ID
-    local container_id
-    container_id=$(docker ps -q --filter "name=$service" --filter "status=running" | head -1)
-    docker exec "$container_id" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -224,7 +252,7 @@ case "$ACTION" in
                 --network syslog_net \
                 -e VAULT_ADDR="http://vault-1:8200" \
                 -e VAULT_TOKEN="$(cat /srv/syslog-ha/vault-token 2>/dev/null || echo '')" \
-                vault:1.15.0 kv list secret/data/logmara/ 2>/dev/null || echo "(unable to list)"
+                vault:1.15.0 kv list secret/logmara/ 2>/dev/null || echo "(unable to list)"
         else
             echo "=== Docker Secrets ==="
             docker secret ls
@@ -286,7 +314,7 @@ case "$ACTION" in
                 exit 1
             fi
 
-            OLD_PG_ROOT=$(read_secret pg_superuser_password)
+            OLD_PG_APP_PASS=$(read_secret pg_app_password)
 
             echo "Re-encrypting database with new key..."
             docker run --rm \
@@ -295,7 +323,7 @@ case "$ACTION" in
                 -e PG_HOST=haproxy \
                 -e PG_PORT=5000 \
                 -e PG_USER=syslog \
-                -e PG_PASSWORD="$OLD_PG_ROOT" \
+                -e PG_PASSWORD="$OLD_PG_APP_PASS" \
                 -e PG_DB=syslog_db \
                 -e PG_SSLMODE=disable \
                 -v "$REPO_ROOT:/app" \
