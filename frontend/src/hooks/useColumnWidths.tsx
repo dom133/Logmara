@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 
 export interface ColumnDef {
   key: string;
@@ -18,10 +18,13 @@ const MIN_WIDTH = 60;
 export function useColumnWidths(storageKey: string, defaultCols: ColumnDef[]): UseColumnWidthsReturn {
   const [widths, setWidths] = useState<Record<string, number>>({});
 
-  const defaults: Record<string, number> = {};
-  for (const col of defaultCols) {
-    if (col.width) defaults[col.key] = col.width;
-  }
+  const defaults = useMemo(() => {
+    const d: Record<string, number> = {};
+    for (const col of defaultCols) {
+      if (col.width) d[col.key] = col.width;
+    }
+    return d;
+  }, [defaultCols]);
 
   useEffect(() => {
     try {
