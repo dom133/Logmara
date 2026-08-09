@@ -83,9 +83,9 @@ case "$ACTION" in
         # Wait for Vault to be ready
         echo "Waiting for Vault to be ready..."
         for i in {1..30}; do
-            if docker run --rm --network syslog_net hashicorp/vault:1.15.0 \
+            if docker run --rm --network syslog_net \
                 -e VAULT_ADDR="$VAULT_ADDR" \
-                status 2>/dev/null | grep -q "sealed\|inactive"; then
+                hashicorp/vault:1.15.0 status 2>/dev/null | grep -q "sealed\|inactive"; then
                 echo "Vault is ready"
                 break
             fi
