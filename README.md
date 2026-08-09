@@ -379,9 +379,11 @@ After step 4, the root token is dead. After step 3, only LDAP users in the `vaul
 
 ### Deploying Monitoring
 
+Add `GRAFANA_ADMIN_PASSWORD` (required, no default) to `.env`, then deploy with `./scripts/swarm-deploy.sh` like the other stacks — it loads `.env` and exports everything `docker stack deploy` needs, including `NFS_GRAFANA_DASHBOARDS_PATH`/`MONITORING_*_PORT` if you've set them (see `.env.example`):
+
 ```bash
-export GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 24)   # required, no default
-docker stack deploy -c docker-stack.monitoring.yml logmara-monitoring
+echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 24)" >> .env   # save the generated password somewhere safe too
+./scripts/swarm-deploy.sh monitoring
 ```
 
 `grafana` has `replicas: 1` and only a `node.labels.edge == true` placement constraint — with more than one `edge=true` node, Swarm can (re)schedule it onto any of them, not always the same one. Its dashboards volume (`grafana_dashboards`) is therefore NFS-backed (same export as `log_data`/`parser_defs` in `docker-stack.app.yml`), not a bind mount — drop dashboard JSON files on the NFS server itself, under `${NFS_GRAFANA_DASHBOARDS_PATH:-/srv/syslog-ha/nfs/grafana-dashboards}`; Grafana re-scans every 30s.
