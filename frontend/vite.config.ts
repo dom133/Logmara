@@ -6,23 +6,17 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
-    rollupOptions: {
-      output: {
-        // Vendor libs change far less often than app code - splitting them
-        // out means a routine app deploy only invalidates the small app
-        // chunk in browser cache, not these multi-hundred-KB dependencies.
-        // Rolldown (Vite 8's bundler) requires manualChunks as a function,
-        // unlike Rollup which also accepted a static object.
-        manualChunks(id: string) {
-          if (id.includes('node_modules')) {
-            if (/[\\/]echarts(-for-react)?[\\/]/.test(id)) return 'vendor-echarts'
-            if (/[\\/](react|react-dom|react-router|react-router-dom)[\\/]/.test(id)) return 'vendor-react'
-            if (/[\\/](antd|@ant-design)[\\/]/.test(id)) return 'vendor-antd'
-            if (/[\\/](i18next|react-i18next|i18next-browser-languagedetector)[\\/]/.test(id)) return 'vendor-i18n'
-          }
-        },
-      },
-    },
+    // No manualChunks: this app has real circular dependencies between
+    // node_modules code and shared app modules (e.g. src/services/api.ts).
+    // Any hand-rolled chunk grouping - whether split per-package
+    // (vendor-react/vendor-antd/...) or a single lumped vendor bucket -
+    // ends up putting two mutually-importing chunks in an order where one
+    // reads a binding from the other before it's initialized. That shows
+    // up in production builds only (vite dev never applies manualChunks)
+    // as either "Minified React error #130: Element type is invalid ...
+    // got: object" or a raw "<x> is not a function" crash. Rollup's
+    // automatic chunking already accounts for the real dependency graph
+    // and does not have this failure mode, so let it decide.
   },
   server: {
     host: '0.0.0.0',
