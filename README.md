@@ -570,7 +570,16 @@ Postgres/Redis/RabbitMQ/the app tier (steps 10-11 below) all read `pg_app_passwo
 docker node update --label-add vault_id=1 pg1
 docker node update --label-add vault_id=2 pg2
 docker node update --label-add vault_id=3 pg3
+```
 
+On each of `pg1`, `pg2`, `pg3` — its own raft data directory (`hashicorp/vault` runs as a non-root user with no chown-on-start logic, so a fresh Docker-managed volume would be root-owned and Vault would fail with "permission denied"; substitute that node's own vault_id for `<N>`, e.g. just `vault2/data` on `pg2`):
+```bash
+sudo mkdir -p /srv/syslog-ha/vault/vault<N>/data
+sudo chmod -R 777 /srv/syslog-ha/vault/vault<N>/data
+```
+
+Back on `pg1`:
+```bash
 docker stack deploy -c docker-stack.vault.yml logmara-vault
 watch docker service ls   # wait for vault-1/2/3 at Running before continuing
 
