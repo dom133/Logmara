@@ -96,7 +96,11 @@ using_vault() {
 read_docker_secret_value() {
     local name="$1"
     local svc="rotate-secrets-read-$$-$RANDOM"
-    docker service create --quiet --name "$svc" \
+    # --detach: don't wait for the service to converge here - some Docker
+    # versions block on that by default (e.g. if the node scheduled to
+    # pull `alpine` is slow/unreachable), and we already poll for the
+    # result ourselves below.
+    docker service create --quiet --detach --name "$svc" \
         --secret "$name" \
         --restart-condition none \
         --network syslog_net \
