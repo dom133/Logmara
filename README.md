@@ -291,12 +291,12 @@ Getting here required backend code changes (not just Docker config) — see "How
 `vault-agent` authenticates to Vault with a bootstrap token (`vault_agent_token`) that only exists once Vault itself has been initialized, unsealed, and `migrate-secrets` has run — so it's deployed as its **own stack**, [`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml), separate from the 3-node server cluster in `docker-stack.vault.yml`. This isn't just tidiness: `docker stack deploy` refuses to create *any* service in a stack if *any* service in it references a Swarm secret/config that doesn't exist yet, not just the one missing it — so if the agent were still a service inside `docker-stack.vault.yml`, the very first deploy would fail to create `vault-1`/`vault-2`/`vault-3` too, not just the agent.
 
 ```bash
-docker stack deploy -c docker-stack.vault.yml logmara-vault
+./scripts/swarm-deploy.sh vault
 ./scripts/vault-bootstrap.sh init      # unseal keys + root token -> /srv/syslog-ha/vault-token
 ./scripts/vault-bootstrap.sh unseal
 ./scripts/vault-bootstrap.sh policy
 ./scripts/vault-bootstrap.sh migrate-secrets   # migrates existing Docker secrets into Vault, creates vault_agent_token
-docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent   # only now does vault_agent_token exist
+./scripts/swarm-deploy.sh vault-agent   # only now does vault_agent_token exist
 ```
 
 #### How `api` reads secrets from Vault
@@ -624,7 +624,7 @@ sudo mkdir -p /srv/syslog-ha/vault-secrets
 
 Back on `pg1`:
 ```bash
-docker stack deploy -c docker-stack.vault.yml logmara-vault
+./scripts/swarm-deploy.sh vault
 watch docker service ls   # wait for vault-1/2/3 at Running before continuing
 
 ./scripts/vault-bootstrap.sh init      # unseal keys + root token -> /srv/syslog-ha/vault-token
@@ -632,7 +632,7 @@ watch docker service ls   # wait for vault-1/2/3 at Running before continuing
 ./scripts/vault-bootstrap.sh policy
 ./scripts/vault-bootstrap.sh migrate-secrets   # copies the 5 secrets above into Vault, creates vault_agent_token
 
-docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent   # only now does vault_agent_token exist
+./scripts/swarm-deploy.sh vault-agent   # only now does vault_agent_token exist
 watch docker service ls   # wait for vault-agent at Running on every vault_agent-labeled node
 ```
 

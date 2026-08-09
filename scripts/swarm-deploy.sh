@@ -108,6 +108,33 @@ export GRAFANA_ADMIN_USER GRAFANA_ADMIN_PASSWORD NFS_GRAFANA_DASHBOARDS_PATH
 export MONITORING_PROMETHEUS_PORT MONITORING_ALERTMANAGER_PORT MONITORING_GRAFANA_PORT
 
 # ---------------------------------------------------------------------------
+# Content-hash names for Swarm configs that aren't `external: true`
+#
+# `docker stack deploy` tries to update an existing (non-external) config
+# object in place when its file content changes, and Swarm always rejects
+# that ("only updates to Labels are allowed") - configs are immutable at
+# the API level regardless of the external: flag. Each config below is
+# instead named with a hash of its own file's content
+# (docker-stack.*.yml's `name: foo_${FOO_HASH}`), so a changed file gets a
+# brand new object name and the referencing service just does a normal
+# rolling update - not a failed in-place update.
+# ---------------------------------------------------------------------------
+cfg_hash() {
+    sha256sum "$REPO_ROOT/$1" | cut -c1-8
+}
+
+export PROMETHEUS_CFG_HASH="$(cfg_hash monitoring/prometheus.yml)"
+export ALERTMANAGER_CFG_HASH="$(cfg_hash monitoring/alertmanager.yml)"
+export ALERT_RULES_CFG_HASH="$(cfg_hash monitoring/alert_rules.yml)"
+export GRAFANA_DATASOURCES_HASH="$(cfg_hash monitoring/grafana-datasources.yml)"
+export GRAFANA_DASHBOARDS_CFG_HASH="$(cfg_hash monitoring/grafana-dashboards.yml)"
+export RABBITMQ_CONF_TPL_HASH="$(cfg_hash rabbitmq/rabbitmq.conf.tpl)"
+export RABBITMQ_ENTRYPOINT_HASH="$(cfg_hash rabbitmq/entrypoint.sh)"
+export RABBITMQ_JOIN_ENTRYPOINT_HASH="$(cfg_hash rabbitmq/join_entrypoint.sh)"
+export VAULT_CFG_HASH="$(cfg_hash vault/vault.hcl)"
+export VAULT_AGENT_CFG_HASH="$(cfg_hash vault/vault-agent.hcl)"
+
+# ---------------------------------------------------------------------------
 # Deploy helpers
 # ---------------------------------------------------------------------------
 deploy_stack() {
