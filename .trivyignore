@@ -6,3 +6,26 @@ golang.org/x/crypto@*
 
 # github.com/gorilla/websocket: no exploitable CVE in our usage pattern
 github.com/gorilla/websocket@*
+
+# usr/local/bin/gosu (Dockerfile.patroni, via the postgres:16-alpine base
+# image - not something we install ourselves): CVEs below are all in the Go
+# stdlib gosu happens to link (crypto/tls, net/mail, net/http2, crypto/x509 -
+# TLS/HTTP/mail parsing), never in code gosu exercises. gosu's own logic is
+# ~50 lines: parse args, setuid/setgid, exec() the target binary - no
+# networking of its own. Re-check (and prune this list) once
+# postgres:16-alpine bundles a gosu built with a newer Go toolchain.
+CVE-2025-68121
+CVE-2025-61726
+CVE-2025-61729
+CVE-2026-25679
+CVE-2026-27145
+CVE-2026-32280
+CVE-2026-32281
+CVE-2026-32283
+CVE-2026-33811
+CVE-2026-33814
+CVE-2026-39820
+CVE-2026-39822
+CVE-2026-39836
+CVE-2026-42499
+CVE-2026-42504
