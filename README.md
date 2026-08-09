@@ -377,6 +377,25 @@ rm /srv/syslog-ha/vault-token
 
 After step 4, the root token is dead. After step 3, only LDAP users in the `vault-admins` group can log in. If you lock yourself out, you'll need to re-unseal with Shamir keys and re-init — keep those keys safe.
 
+### Deploying Monitoring
+
+```bash
+export GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 24)   # required, no default
+docker stack deploy -c docker-stack.monitoring.yml logmara-monitoring
+```
+
+`grafana` has `replicas: 1` and only a `node.labels.edge == true` placement constraint — with more than one `edge=true` node, Swarm can (re)schedule it onto any of them, not always the same one. Its dashboards volume (`grafana_dashboards`) is therefore NFS-backed (same export as `log_data`/`parser_defs` in `docker-stack.app.yml`), not a bind mount — drop dashboard JSON files on the NFS server itself, under `${NFS_GRAFANA_DASHBOARDS_PATH:-/srv/syslog-ha/nfs/grafana-dashboards}`; Grafana re-scans every 30s.
+
+If you edited `haproxy/*.cfg` to pick up the Prometheus metrics endpoint (`http-request use-service prometheus-exporter`), Swarm configs are immutable — recreate and roll out each one:
+```bash
+./scripts/swarm-bootstrap.sh haproxy-config
+./scripts/swarm-bootstrap.sh haproxy-app-config
+./scripts/swarm-bootstrap.sh haproxy-rabbitmq-config
+```
+Each prints the `docker service update` command to actually roll the new config out — run those too.
+
+Access: Prometheus `:9090`, Alertmanager `:9093`, Grafana `:3000` (`admin` / `$GRAFANA_ADMIN_PASSWORD`) — firewall these the same as the Vault UI.
+
 ### How multi-replica safety works
 
 Running more than one `api`/`frontend` replica used to be unsafe: an in-memory rate limiter and stat caches would silently diverge per replica, the log-file tailer would double-ingest if two instances tailed the same file, and nginx config pushes only ever reached one frontend replica. `backend/sharedstate` (backed by the Redis/Sentinel stack above) fixes all of it. The RabbitMQ stack above decouples ingestion from database writes: the tailer reader pushes parsed logs to RabbitMQ, and a pool of worker goroutines consumes and persists them to PostgreSQL, so burst throughput scales independently of Postgres write latency.
