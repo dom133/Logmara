@@ -99,6 +99,24 @@ async function getDefaultLanguage(): Promise<string | null> {
   }
 }
 
+// Login's language switcher only shows codes that already have a loaded
+// resource bundle (see initI18n below - the non-active ones load in the
+// background after the login page has already rendered). i18next itself
+// doesn't re-render React on addResourceBundle, so listeners here are how
+// the switcher finds out those extra languages became available.
+type LanguagesListener = (languages: string[]) => void
+const languagesListeners = new Set<LanguagesListener>()
+
+export function onLanguagesChanged(listener: LanguagesListener): () => void {
+  languagesListeners.add(listener)
+  return () => { languagesListeners.delete(listener) }
+}
+
+function notifyLanguagesChanged() {
+  const languages = Object.keys((i18n as any).store?.data || {})
+  languagesListeners.forEach(l => l(languages))
+}
+
 export async function initI18n(): Promise<typeof i18n> {
   const [languages, defaultLang] = await Promise.all([
     detectLanguages(),
@@ -132,6 +150,7 @@ export async function initI18n(): Promise<typeof i18n> {
           i18n.addResourceBundle(r.value.lang, 'translation', r.value.data, true, true)
         }
       }
+      notifyLanguagesChanged()
     })
   }
 
@@ -152,6 +171,7 @@ export async function initI18n(): Promise<typeof i18n> {
       },
     })
 
+  notifyLanguagesChanged()
   return i18n
 }
 
