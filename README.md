@@ -299,6 +299,15 @@ docker stack deploy -c docker-stack.vault.yml logmara-vault
 docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent   # only now does vault_agent_token exist
 ```
 
+#### How `api` reads secrets from Vault
+
+Two independent paths, not one dependent on the other:
+
+1. **Direct API reads** (`backend/vaultclient`, preferred) — `api` holds the same `vault_agent_token` bootstrap token as `vault-agent` (mounted via `VAULT_TOKEN_FILE`) and reads `secret/data/logmara/<name>` straight from Vault's HTTP API, with a 30s in-process cache. A `scripts/rotate-secrets.sh` rotation takes effect within that window, no `api` restart needed.
+2. **`*_FILE` bind mounts** (fallback) — the same vault-agent-rendered files every other Vault-backed service (Postgres/Redis/RabbitMQ) uses. `util.SecretFromEnv` falls back to these only if the Vault API read fails (Vault unreachable, token invalid, etc.), so a Vault outage degrades to "last known good" rather than an outright failure.
+
+Nothing to configure beyond what's already in `docker-stack.app.yml` (`VAULT_ADDR`, `VAULT_TOKEN_FILE`) — this applies automatically once Vault is deployed and bootstrapped per above.
+
 ### Vault UI
 
 The Vault cluster exposes a web UI on port `8200` (configurable via `VAULT_UI_PORT` env var) on the node labeled `vault_id=1`. The UI allows browsing secrets, managing auth methods, and configuring LDAP authentication.
