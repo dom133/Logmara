@@ -4,10 +4,11 @@
 # from .env instead of requiring manual -t / -r flags.
 #
 # Usage:
-#   ./scripts/build-images.sh [-p PLATFORMS] [-s] [-r REGISTRY] [-t TAG]
+#   ./scripts/build-images.sh [-p PLATFORMS] [-s] [-S] [-r REGISTRY] [-t TAG]
 #
 #   -p PLATFORMS  Comma-separated buildx platforms (e.g. "linux/amd64,linux/arm64")
 #   -s            Skip push (build locally only)
+#   -S            Skip Trivy vulnerability scan
 #   -r REGISTRY  Override REGISTRY (default: read from .env)
 #   -t TAG       Override TAG (default: read from .env)
 #
@@ -43,14 +44,16 @@ fi
 # ---------------------------------------------------------------------------
 PLATFORMS=""
 SKIP_PUSH=0
+SKIP_SCAN=0
 
-while getopts "p:sr:t:" opt; do
+while getopts "p:sSr:t:" opt; do
     case "$opt" in
         p) PLATFORMS="$OPTARG" ;;
         s) SKIP_PUSH=1 ;;
+        S) SKIP_SCAN=1 ;;
         r) REGISTRY="$OPTARG" ;;
         t) TAG="$OPTARG" ;;
-        *) echo "Usage: $0 [-p PLATFORMS] [-s] [-r REGISTRY] [-t TAG]" >&2; exit 1 ;;
+        *) echo "Usage: $0 [-p PLATFORMS] [-s] [-S] [-r REGISTRY] [-t TAG]" >&2; exit 1 ;;
     esac
 done
 
@@ -97,6 +100,15 @@ for name in "${!IMAGES[@]}"; do
         if [[ "$SKIP_PUSH" -ne 1 ]]; then
             echo "=== Pushing $full_tag ==="
             docker push "$full_tag"
+        fi
+    fi
+
+    # Trivy scan
+    if [[ "$SKIP_SCAN" -eq 0 ]]; then
+        echo "=== Trivy scanning $full_tag ==="
+        if ! bash "$REPO_ROOT/scripts/trivy-scan.sh" -i "$full_tag"; then
+            echo "FAIL: $full_tag has CRITICAL/HIGH vulnerabilities, aborting." >&2
+            exit 1
         fi
     fi
 done

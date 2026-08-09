@@ -2,10 +2,18 @@ package util
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 )
+
+var secretLoadCounter atomic.Int64
+
+func GetSecretLoadCount() int64 {
+	return secretLoadCounter.Load()
+}
 
 // SecretFromEnv reads a secret from the environment variable name, or - if
 // that is unset - from the file whose path is in name+"_FILE" (the Docker /
@@ -18,14 +26,18 @@ import (
 // whereas a file secret can be mounted read-only and kept off the process
 // environment entirely.
 func SecretFromEnv(name string) string {
+	secretLoadCounter.Add(1)
 	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		slog.Info("secret loaded", "name", name, "source", "env")
 		return v
 	}
 	if p := strings.TrimSpace(os.Getenv(name + "_FILE")); p != "" {
 		if b, err := os.ReadFile(p); err == nil {
+			slog.Info("secret loaded", "name", name, "source", "file")
 			return strings.TrimSpace(string(b))
 		}
 	}
+	slog.Warn("secret not loaded", "name", name, "source", "none")
 	return ""
 }
 

@@ -1,0 +1,8 @@
+# Trivy ignore file for known acceptable findings.
+# Add false-positives here only after manual verification.
+
+# golang.org/x/crypto: widely used, tracked upstream, no known exploitable CVE in our usage
+golang.org/x/crypto@*
+
+# github.com/gorilla/websocket: no exploitable CVE in our usage pattern
+github.com/gorilla/websocket@*

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"logmara/util"
 )
 
 var appStartTime = time.Now()
@@ -84,6 +85,10 @@ func PrometheusMetrics(database *sql.DB) gin.HandlerFunc {
 			"# HELP slow_queries_total Total number of slow queries recorded.",
 			"# TYPE slow_queries_total gauge",
 			fmt.Sprintf("slow_queries_total %d", slowQueries),
+			"",
+			"# HELP secrets_loaded_total Total number of secret loads since startup.",
+			"# TYPE secrets_loaded_total counter",
+			fmt.Sprintf("secrets_loaded_total %d", util.GetSecretLoadCount()),
 		}
 
 		c.String(http.StatusOK, strings.Join(lines, "\n")+"\n")
