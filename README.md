@@ -388,6 +388,11 @@ echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 24)" >> .env   # save the ge
 
 `grafana` has `replicas: 1` and only a `node.labels.edge == true` placement constraint — with more than one `edge=true` node, Swarm can (re)schedule it onto any of them, not always the same one. Its dashboards volume (`grafana_dashboards`) is therefore NFS-backed (same export as `log_data`/`parser_defs` in `docker-stack.app.yml`), not a bind mount — drop dashboard JSON files on the NFS server itself, under `${NFS_GRAFANA_DASHBOARDS_PATH:-/srv/syslog-ha/nfs/grafana-dashboards}`; Grafana re-scans every 30s.
 
+Dashboards downloaded straight from grafana.com (e.g. Node Exporter Full, cAdvisor) use a `${DS_PROMETHEUS}` template variable for their datasource, which only gets resolved by Grafana's UI-based *Import* flow — file-based provisioning (what the volume above does) skips that step, so they'll fail to load with "Datasource ${DS_PROMETHEUS} was not found" unless you replace it first. [`monitoring/grafana-datasources.yml`](monitoring/grafana-datasources.yml) gives the Prometheus datasource a stable `uid: prometheus` for exactly this: after downloading a dashboard JSON, before dropping it on the NFS export, run:
+```bash
+sed -i 's/\${DS_PROMETHEUS}/prometheus/g' dashboard.json
+```
+
 If you edited `haproxy/*.cfg` to pick up the Prometheus metrics endpoint (`http-request use-service prometheus-exporter`), Swarm configs are immutable — recreate and roll out each one:
 ```bash
 ./scripts/swarm-bootstrap.sh haproxy-config

@@ -2,6 +2,11 @@ apiVersion: 1
 
 datasources:
   - name: Prometheus
+    # Explicit, stable uid - without one Grafana auto-generates it, which
+    # makes it impossible to reliably reference from provisioned dashboard
+    # JSON (e.g. replacing a downloaded dashboard's ${DS_PROMETHEUS}
+    # template variable - see README "Deploying Monitoring").
+    uid: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
