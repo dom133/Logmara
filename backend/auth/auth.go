@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 
 	"logmara/audit"
@@ -25,6 +26,7 @@ import (
 // Config holds everything the auth package needs at runtime.
 // Pass it to middleware and handlers instead of relying on globals.
 type Config struct {
+	secretMu           sync.RWMutex
 	jwtSecretPrimary   []byte // signing + validation
 	jwtSecretSecondary []byte // validation only (grace period during rotation)
 	db                 *sql.DB
@@ -106,7 +108,10 @@ func (cfg *Config) GenerateToken(userID int64, username string, role string, rem
 		"remember": remember,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenStr, err := token.SignedString(cfg.jwtSecretPrimary)
+	cfg.secretMu.RLock()
+	primary := cfg.jwtSecretPrimary
+	cfg.secretMu.RUnlock()
+	tokenStr, err := token.SignedString(primary)
 	if err != nil {
 		return "", "", time.Time{}, err
 	}
@@ -117,11 +122,16 @@ func (cfg *Config) GenerateToken(userID int64, username string, role string, rem
 // it tries the primary key first, then the secondary key (grace period),
 // so existing tokens remain valid until they naturally expire.
 func (cfg *Config) ValidateToken(tokenString string) (*jwt.MapClaims, error) {
+	cfg.secretMu.RLock()
+	primary := cfg.jwtSecretPrimary
+	secondary := cfg.jwtSecretSecondary
+	cfg.secretMu.RUnlock()
+
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return cfg.jwtSecretPrimary, nil
+		return primary, nil
 	})
 	if err == nil {
 		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
@@ -130,12 +140,12 @@ func (cfg *Config) ValidateToken(tokenString string) (*jwt.MapClaims, error) {
 	}
 
 	// Try secondary key (grace period during rotation)
-	if cfg.jwtSecretSecondary != nil {
+	if secondary != nil {
 		token2, err2 := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
-			return cfg.jwtSecretSecondary, nil
+			return secondary, nil
 		})
 		if err2 == nil {
 			if claims, ok := token2.Claims.(jwt.MapClaims); ok && token2.Valid {
@@ -332,20 +342,26 @@ func (cfg *Config) JWTRequired() gin.HandlerFunc {
 // validation). Existing tokens signed with the old key remain valid until
 // they naturally expire (SESSION_TIMEOUT_MIN).
 func (cfg *Config) RotateSecret(newSecret string) {
+	cfg.secretMu.Lock()
 	cfg.jwtSecretSecondary = cfg.jwtSecretPrimary
 	cfg.jwtSecretPrimary = []byte(newSecret)
+	cfg.secretMu.Unlock()
 	slog.Info("auth: JWT secret rotated, secondary key set for grace period")
 }
 
 // ClearSecondarySecret removes the secondary key after the grace period
 // has elapsed. Tokens signed with the old key will be rejected after this.
 func (cfg *Config) ClearSecondarySecret() {
+	cfg.secretMu.Lock()
 	cfg.jwtSecretSecondary = nil
+	cfg.secretMu.Unlock()
 	slog.Info("auth: JWT secondary key cleared")
 }
 
 // GetPrimarySecret returns the current primary JWT secret as a string.
 func (cfg *Config) GetPrimarySecret() string {
+	cfg.secretMu.RLock()
+	defer cfg.secretMu.RUnlock()
 	return string(cfg.jwtSecretPrimary)
 }
 

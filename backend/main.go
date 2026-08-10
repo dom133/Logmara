@@ -505,11 +505,33 @@ func main() {
 	// Start secret rotation goroutine (24h interval)
 	vc := vaultclient.Get()
 	vc.StartRotation(ctx, vaultclient.RotationCallbacks{
-		RotateJWTSecret:       func(s string) { authCfg.RotateSecret(s) },
-		RotateEncryptionKey:   util.RotateEncryptionKey,
-		RotateRedisPassword:   func(s string) { _ = s },
-		RotateRabbitMQURL:     func(s string) { _ = s },
-		RotatePostgreSQLDSN:   func(s string) { _ = s },
+		RotateJWTSecret:     func(s string) { authCfg.RotateSecret(s) },
+		RotateEncryptionKey: util.RotateEncryptionKey,
+		RotateRedisPassword: func(newPassword string) {
+			if sharedClient == nil {
+				return
+			}
+			if err := sharedClient.RotatePassword(newPassword); err != nil {
+				slog.Error("redis: failed to apply rotated password", "error", err)
+			}
+		},
+		RotateRabbitMQURL: func(newURL string) {
+			if err := tailer.RotateRabbitMQURL(newURL); err != nil {
+				slog.Error("rabbitmq: failed to apply rotated URL", "error", err)
+			}
+		},
+		// PostgreSQL: the live *sql.DB connection is opened once from
+		// util.ResolveDatabaseURL (DATABASE_URL / POSTGRES_* env-or-file) and
+		// handed to every db.* call across the codebase - there is no single
+		// swap point for it today (unlike sharedClient/tailer's Redis and
+		// RabbitMQ connections, which already hide behind an atomically
+		// swappable wrapper). Applying a rotated dynamic DSN here would need
+		// that same swappable-pool treatment threaded through every caller,
+		// so for now just surface that a new lease arrived instead of
+		// silently discarding it.
+		RotatePostgreSQLDSN: func(newDSN string) {
+			slog.Warn("postgres: vault issued rotated dynamic credentials but the live connection pool cannot be swapped yet; ignoring")
+		},
 	})
 
 	engine := parser.NewEngine(database)
