@@ -14,7 +14,8 @@
 #   unseal                   Unseal all 3 Vault nodes using Shamir keys
 #   migrate-secrets          Migrate existing Docker secrets to Vault KV
 #   policy                   Create logmara policy for agent access
-#   setup-dynamic-secrets    Configure dynamic secrets engines (PG, Redis, RabbitMQ)
+#   setup-dynamic-secrets    Configure dynamic secrets engines (PG, RabbitMQ - not Redis,
+#                            see the comment in the setup-dynamic-secrets case below)
 #
 
 set -euo pipefail
@@ -207,9 +208,6 @@ EOF
 path "secret-dynamic/database/*" {
   capabilities = ["read"]
 }
-path "secret-dynamic/redis/*" {
-  capabilities = ["read"]
-}
 path "secret-dynamic/rabbitmq/*" {
   capabilities = ["read"]
 }
@@ -277,6 +275,17 @@ EOF
             echo "ERROR: VAULT_TOKEN not set" >&2
             exit 1
         fi
+        if [[ -z "${PG_SUPERUSER_PASSWORD:-}" ]]; then
+            echo "ERROR: PG_SUPERUSER_PASSWORD not set (password for the Patroni/Postgres 'postgres' superuser role" >&2
+            echo "       Vault uses to create/drop dynamic app roles - not a separate 'vault' account, there isn't" >&2
+            echo "       one. Read it from the pg_superuser_password Swarm secret, e.g.:" >&2
+            echo "         export PG_SUPERUSER_PASSWORD=\$(docker exec \$(docker ps -q --filter name=logmara-pg_postgres --filter status=running | head -1) cat /run/secrets/pg_superuser_password)" >&2
+            exit 1
+        fi
+        if [[ -z "${RABBITMQ_DEFAULT_PASS:-}" ]]; then
+            echo "ERROR: RABBITMQ_DEFAULT_PASS not set (RabbitMQ admin password Vault uses to create/delete dynamic app users)" >&2
+            exit 1
+        fi
 
         # Enable PostgreSQL dynamic secrets engine
         echo "Enabling PostgreSQL dynamic secrets engine..."
@@ -284,8 +293,8 @@ EOF
         vault_cli write secret-dynamic/database/config/db \
             plugin_name=postgresql-database-plugin \
             allowed_roles="logmara-app" \
-            connection_url="postgresql://${PG_SUPERUSER:-vault}:${PG_SUPERUSER_PASSWORD}@postgres:5432/${PG_DB:-syslog_db}?sslmode=disable" \
-            username="${PG_SUPERUSER:-vault}" \
+            connection_url="postgresql://${PG_SUPERUSER:-postgres}:${PG_SUPERUSER_PASSWORD}@haproxy:5000/${PG_DB:-syslog_db}?sslmode=disable" \
+            username="${PG_SUPERUSER:-postgres}" \
             password="${PG_SUPERUSER_PASSWORD}" 2>/dev/null || true
 
         # Create role for application user
@@ -295,27 +304,42 @@ EOF
             default_ttl="24h" \
             max_ttl="48h" 2>/dev/null || true
 
-        # Enable Redis dynamic secrets engine (requires custom plugin)
-        echo "Enabling Redis dynamic secrets engine..."
-        vault_cli secrets enable -path=secret-dynamic/redis plugin 2>/dev/null || true
-        vault_cli write sys/plugins/catalog/secret/redis \
-            command=vault-plugin-secrets-redis \
-            sha256=$(docker run --rm hashicorp/vault:1.16.0 sh -c 'vault plugin list 2>/dev/null | grep redis | awk "{print \$2}"') 2>/dev/null || true
-        vault_cli write secret-dynamic/redis/config/conn \
-            address=redis:6379 \
-            password="${REDIS_PASSWORD:-}" 2>/dev/null || true
-        vault_cli write secret-dynamic/redis/config/allow_role_creation_as_any_user \
-            value=true 2>/dev/null || true
-        vault_cli write secret-dynamic/redis/roles/logmara-app \
-            db_num=0 \
-            default_ttl="24h" \
-            max_ttl="48h" 2>/dev/null || true
+        # Redis dynamic secrets are deliberately NOT set up here. Both the
+        # official redis-database-plugin and the community
+        # vault-plugin-secrets-redis only take a fixed host:port - neither
+        # discovers the current master through Sentinel - so pointing one
+        # at any single redis1/2/3 node silently goes stale on the next
+        # Sentinel failover. It's also the wrong tool for this topology
+        # even ignoring that: Sentinel-managed Redis shares one
+        # requirepass/ACL across the whole replication set, not a
+        # per-instance dynamic user.
+        #
+        # This also means backend/vaultclient.StartRotation's 24h loop
+        # cannot auto-rotate the Redis password the way it does JWT/
+        # encryption_key: those two are generated AND consumed entirely
+        # inside the api process, so it's safe for api to mint a new value
+        # unilaterally. The Redis password is enforced by redis1/2/3
+        # themselves - api changing it unilaterally would just lock itself
+        # (and everyone else) out, since nothing would have told the Redis
+        # servers to accept the new value. Rotating it for real needs a
+        # coordinated CONFIG SET/config-reload across all 3 Sentinel-
+        # monitored nodes, which is out of scope here.
+        #
+        # Redis password rotation therefore stays manual: run
+        # scripts/rotate-secrets.sh (it already coordinates the Redis-side
+        # change with the secret/data/logmara/redis_password KV write),
+        # then `docker service update --force logmara-app_api`.
+        # sharedstate.Client.RotatePassword / the RotateRedisPassword
+        # callback do exist and would hot-swap api's live connection
+        # without that restart, but nothing currently triggers them
+        # automatically - they're just no longer dead code once something
+        # does.
 
         # Enable RabbitMQ dynamic secrets engine (built-in in Vault 1.16)
         echo "Enabling RabbitMQ dynamic secrets engine..."
         vault_cli secrets enable -path=secret-dynamic/rabbitmq rabbitmq 2>/dev/null || true
         vault_cli write secret-dynamic/rabbitmq/config/connection \
-            url="amqp://${RABBITMQ_DEFAULT_USER:-admin}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672" \
+            url="amqp://${RABBITMQ_DEFAULT_USER:-admin}:${RABBITMQ_DEFAULT_PASS}@haproxy-rabbitmq:5672" \
             username="${RABBITMQ_DEFAULT_USER:-admin}" \
             password="${RABBITMQ_DEFAULT_PASS}" 2>/dev/null || true
         vault_cli write secret-dynamic/rabbitmq/roles/logmara-app \
@@ -327,9 +351,6 @@ EOF
         # Update policy to allow dynamic secret reads
         vault_cli policy write logmara-dynamic - <<'EOF'
 path "secret-dynamic/database/*" {
-  capabilities = ["read"]
-}
-path "secret-dynamic/redis/*" {
   capabilities = ["read"]
 }
 path "secret-dynamic/rabbitmq/*" {

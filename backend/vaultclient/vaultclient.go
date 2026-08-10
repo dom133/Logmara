@@ -193,17 +193,18 @@ func generateRandomKey(length int) (string, error) {
 }
 
 // RotationCallbacks holds the functions to call when secrets are rotated.
+// There is no RotateRedisPassword: Redis password rotation can't go through
+// this automatic path - see rotateSecrets.
 type RotationCallbacks struct {
-	RotateJWTSecret       func(newSecret string)
-	RotateEncryptionKey   func(newKey string)
-	RotateRedisPassword   func(newPassword string)
-	RotateRabbitMQURL     func(newURL string)
-	RotatePostgreSQLDSN   func(newDSN string)
+	RotateJWTSecret     func(newSecret string)
+	RotateEncryptionKey func(newKey string)
+	RotateRabbitMQURL   func(newURL string)
+	RotatePostgreSQLDSN func(newDSN string)
 }
 
 // StartRotation starts a background goroutine that rotates application
 // secrets (JWT, encryption key) every rotationInterval. It also requests
-// new dynamic credentials for PostgreSQL, Redis, and RabbitMQ from Vault.
+// new dynamic credentials for PostgreSQL and RabbitMQ from Vault.
 func (c *Client) StartRotation(ctx context.Context, cb RotationCallbacks) {
 	if c == nil || cb.RotateJWTSecret == nil {
 		return
@@ -247,8 +248,12 @@ func (c *Client) rotateSecrets(ctx context.Context, cb RotationCallbacks) {
 	// Rotate dynamic PostgreSQL credentials
 	c.rotateDynamicSecret(ctx, "database", cb.RotatePostgreSQLDSN)
 
-	// Rotate dynamic Redis credentials
-	c.rotateDynamicSecret(ctx, "redis", cb.RotateRedisPassword)
+	// Redis has no dynamic-secret rotation: neither Vault Redis plugin
+	// discovers the current master through Sentinel, and unilaterally
+	// minting a new password wouldn't work anyway since redis1/2/3
+	// themselves enforce it, not api - see the comment in
+	// scripts/vault-bootstrap.sh's setup-dynamic-secrets. Redis password
+	// rotation stays a manual scripts/rotate-secrets.sh operation.
 
 	// Rotate dynamic RabbitMQ credentials
 	c.rotateDynamicSecret(ctx, "rabbitmq", cb.RotateRabbitMQURL)
