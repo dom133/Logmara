@@ -586,6 +586,17 @@ func handlePurgeRequests(ctx context.Context, pubsub *redis.PubSub, p *pipeline)
 	}
 }
 
+// RotateRabbitMQURL reconnects the active pipeline's RabbitMQ queue with a
+// new AMQP URL (e.g. after Vault issues rotated credentials). No-op when no
+// pipeline is running (single-server mode or RabbitMQ unavailable) - the
+// next pipeline start will pick up the new URL via util.ResolveRabbitMQURL.
+func RotateRabbitMQURL(newURL string) error {
+	if currentPipeline == nil || currentPipeline.queue == nil {
+		return nil
+	}
+	return currentPipeline.queue.RotateURL(newURL)
+}
+
 // GetTailerQueueLength returns the current message count in the RabbitMQ
 // ingestion queue. Returns 0 when no pipeline is active.
 func GetTailerQueueLength() int64 {

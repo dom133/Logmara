@@ -13,7 +13,9 @@ func newTestClient(t *testing.T) (*Client, *miniredis.Miniredis) {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	return &Client{rdb: rdb}, mr
+	client := &Client{}
+	client.rdb.Store(redis.UniversalClient(rdb))
+	return client, mr
 }
 
 func TestRedisRateLimiter_AllowsUpToLimitThenDenies(t *testing.T) {
