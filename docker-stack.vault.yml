@@ -180,4 +180,4 @@ volumes:
 configs:
   vault_cfg:
     file: vault/vault.hcl
-    name: vault_cfg_${VAULT_CFG_HASH:?run via scripts/swarm-deploy.sh, or export VAULT_CFG_HASH yourself}
+    name: vault_cfg_${VAULT_CFG_HASH:-unset}
