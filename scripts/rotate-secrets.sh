@@ -333,8 +333,19 @@ change_redis_password() {
     fi
     for cid in $redis_ids; do
         echo "  Updating Redis node $cid..."
-        docker exec "$cid" redis-cli -a "$old_pass" CONFIG SET requirepass "$new_pass" 2>/dev/null || true
-        docker exec "$cid" redis-cli -a "$old_pass" CONFIG SET masterauth "$new_pass" 2>/dev/null || true
+        # Both SETs must run over the SAME connection/session: each
+        # `redis-cli -a` invocation opens a new connection and authenticates
+        # with whatever requirepass is current *at that moment* - running
+        # them as two separate `docker exec` calls means the second one
+        # tries to auth with $old_pass after the first already changed it
+        # to $new_pass, and always fails. Piping both commands into one
+        # redis-cli session keeps the connection (and its original auth)
+        # open across both, since Redis doesn't retroactively deauthenticate
+        # already-authenticated connections when requirepass changes.
+        if ! printf 'CONFIG SET requirepass %s\nCONFIG SET masterauth %s\n' "$new_pass" "$new_pass" \
+            | docker exec -i "$cid" redis-cli -a "$old_pass" >/dev/null 2>&1; then
+            echo "WARNING: failed to update Redis node $cid (auth or connection error)" >&2
+        fi
     done
 
     # Sentinels: update the password each uses to talk to mymaster/its
