@@ -88,8 +88,13 @@ trap restore_app_scale_on_exit EXIT
 # target and docker-stack.vault-agent.yml) separate from the 3-node Vault
 # server stack (logmara-vault) - not a service inside the server stack.
 using_vault() {
-    docker service inspect logmara-vault-agent_vault-agent &>/dev/null 2>&1 && \
-    docker service ps --filter "desired-state=running" --filter "current-state=Running" logmara-vault-agent_vault-agent 2>/dev/null | grep -q .
+    # "current-state" is not a real `docker service ps --filter` key (only
+    # desired-state/id/name/node are) - it silently errors and leaves
+    # stdout empty, which used to make this always report false regardless
+    # of whether vault-agent was actually running. Match "Running" in the
+    # CURRENT STATE column of the (unfiltered-by-that) output instead.
+    docker service inspect logmara-vault-agent_vault-agent >/dev/null 2>&1 && \
+    docker service ps --filter "desired-state=running" logmara-vault-agent_vault-agent 2>/dev/null | grep -q "Running"
 }
 
 # Read the plaintext value of an existing Docker (Swarm) secret. `docker
