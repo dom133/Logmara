@@ -2,6 +2,7 @@ package sharedstate
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -70,6 +71,7 @@ func (q *Queue) ensureConnected() error {
 		q.mu.RUnlock()
 		return nil
 	}
+	slog.Warn("queue: connection lost or closed, initiating reconnect")
 	q.mu.RUnlock()
 
 	q.mu.Lock()
@@ -85,10 +87,10 @@ func (q *Queue) reconnectLocked() error {
 		q.conn.Close()
 	}
 	if err := q.connect(); err != nil {
-		slog.Error("queue: reconnect failed", "error", err)
+		slog.Error("queue: reconnect to RabbitMQ failed", "error", err)
 		return err
 	}
-	slog.Info("queue: reconnected to RabbitMQ")
+	slog.Info("queue: reconnected to RabbitMQ successfully")
 	return nil
 }
 
@@ -116,13 +118,19 @@ func (q *Queue) Publish(ctx context.Context, data []byte) error {
 // delivers messages to the caller. The caller must ACK/NACK each delivery.
 func (q *Queue) Consume(ctx context.Context) (<-chan amqp.Delivery, error) {
 	if err := q.ensureConnected(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("queue consume: ensure connected failed: %w", err)
 	}
 	q.mu.RLock()
 	defer q.mu.RUnlock()
-	if err := q.channel.Qos(rabbitmqPrefetch, 0, false); err != nil {
-		return nil, err
+
+	if q.conn.IsClosed() {
+		return nil, fmt.Errorf("queue consume: connection closed unexpectedly after ensureConnected")
 	}
+
+	if err := q.channel.Qos(rabbitmqPrefetch, 0, false); err != nil {
+		return nil, fmt.Errorf("queue consume: Qos failed: %w", err)
+	}
+	slog.Debug("queue: starting consumer", "queue", rabbitmqQueue)
 	return q.channel.Consume(
 		rabbitmqQueue,
 		"", // consumer tag (auto-generated)
@@ -132,6 +140,13 @@ func (q *Queue) Consume(ctx context.Context) (<-chan amqp.Delivery, error) {
 		false, // no-wait
 		nil,   // args
 	)
+}
+
+// IsClosed returns true if the RabbitMQ connection is closed or unavailable.
+func (q *Queue) IsClosed() bool {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return q.conn == nil || q.conn.IsClosed()
 }
 
 // Len returns the approximate number of messages waiting in the queue.
