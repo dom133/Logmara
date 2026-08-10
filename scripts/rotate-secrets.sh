@@ -415,8 +415,8 @@ rotate_one() {
             -e PG_DB=syslog_db \
             -e PG_SSLMODE=disable \
             -v "$REPO_ROOT:/app" \
-            golang:1.21-alpine \
-            sh -c 'cd /app && go run backend/cmd/rotatekey/main.go' || {
+            golang:1.24-bookworm \
+            sh -c 'cd /app/backend && go run ./cmd/rotatekey' || {
                 echo "ERROR: Database re-encryption failed" >&2
                 return 1
             }
