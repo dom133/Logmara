@@ -186,9 +186,31 @@ case "$ACTION" in
 
         # Create policy for agent access. Raw KV v2 data paths need the
         # literal "data/" segment here (ACL policies always use the raw
-        # API path, unlike the `vault kv` CLI subcommands).
+        # API path, unlike the `vault kv` CLI subcommands). create+update
+        # (on top of read) let the api service's automatic secret rotation
+        # (backend/vaultclient.StartRotation) write its own rotated
+        # jwt_secret/encryption_key back to Vault every 24h.
         vault_cli policy write logmara - <<'EOF'
 path "secret/data/logmara/*" {
+  capabilities = ["read", "create", "update"]
+}
+EOF
+
+        # Grants read access to the dynamic secrets engines that
+        # `setup-dynamic-secrets` provisions. Written unconditionally here
+        # (not only by setup-dynamic-secrets) so it already exists by the
+        # time `migrate-secrets` creates the agent token below and attaches
+        # it - Vault token policies are fixed at creation and can't be
+        # added later, so the policy must exist first regardless of
+        # whether the dynamic engines themselves are set up yet.
+        vault_cli policy write logmara-dynamic - <<'EOF'
+path "secret-dynamic/database/*" {
+  capabilities = ["read"]
+}
+path "secret-dynamic/redis/*" {
+  capabilities = ["read"]
+}
+path "secret-dynamic/rabbitmq/*" {
   capabilities = ["read"]
 }
 EOF
@@ -224,6 +246,7 @@ EOF
         echo "Creating agent bootstrap token..."
         AGENT_TOKEN=$(vault_cli token create \
             -policy=logmara \
+            -policy=logmara-dynamic \
             -ttl=24h \
             -period=24h \
             -format=json 2>/dev/null | jq -r '.auth.client_token')

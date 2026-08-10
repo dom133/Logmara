@@ -256,6 +256,11 @@ func (c *Client) rotateSecrets(ctx context.Context, cb RotationCallbacks) {
 	slog.Info("vault: secrets rotation complete")
 }
 
+// dynamicRoleName is the Vault role name provisioned by
+// scripts/vault-bootstrap.sh setup-dynamic-secrets for all three dynamic
+// secrets engines (secret-dynamic/{database,redis,rabbitmq}/roles/logmara-app).
+const dynamicRoleName = "logmara-app"
+
 func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callback func(string)) {
 	if c == nil || callback == nil {
 		return
@@ -264,7 +269,10 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 	ctx2, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
-	path := "secret-dynamic/" + engine
+	// Dynamic secrets engines issue credentials via <mount>/creds/<role>,
+	// not the mount root - reading "secret-dynamic/<engine>" directly
+	// always 404s.
+	path := "secret-dynamic/" + engine + "/creds/" + dynamicRoleName
 	secret, err := c.api.Logical().ReadWithContext(ctx2, path)
 	if err != nil {
 		slog.Warn("vault: failed to rotate dynamic secret", "engine", engine, "error", err)
