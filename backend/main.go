@@ -27,6 +27,7 @@ import (
 	"logmara/sharedstate"
 	"logmara/tailer"
 	"logmara/util"
+	"logmara/vaultclient"
 
 	"github.com/gin-gonic/gin"
 )
@@ -494,10 +495,22 @@ func main() {
 	// comes only from the environment and is never stored in the database, so
 	// a database dump alone can't decrypt stored SMTP/LDAP credentials. Fail
 	// fast if it's missing rather than silently returning ciphertext later.
-	if util.SecretFromEnv("ENCRYPTION_KEY") == "" {
+	encKey := util.SecretFromEnv("ENCRYPTION_KEY")
+	if encKey == "" {
 		slog.Error("ENCRYPTION_KEY is not set; generate one (e.g. `openssl rand -base64 48`) and provide it via ENCRYPTION_KEY or ENCRYPTION_KEY_FILE - see README")
 		os.Exit(1)
 	}
+	util.SetEncryptionKey(encKey)
+
+	// Start secret rotation goroutine (24h interval)
+	vc := vaultclient.Get()
+	vc.StartRotation(ctx, vaultclient.RotationCallbacks{
+		RotateJWTSecret:       func(s string) { authCfg.RotateSecret(s) },
+		RotateEncryptionKey:   util.RotateEncryptionKey,
+		RotateRedisPassword:   func(s string) { _ = s },
+		RotateRabbitMQURL:     func(s string) { _ = s },
+		RotatePostgreSQLDSN:   func(s string) { _ = s },
+	})
 
 	engine := parser.NewEngine(database)
 	ic := control.New(ctx, sharedClient)

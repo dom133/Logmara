@@ -42,7 +42,7 @@ func (c *Client) SaveTailerPosition(pos int64, fp string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := c.rdb.Set(ctx, tailerPosKey, string(data), tailerPosTTL).Err(); err != nil {
+	if err := c.Raw().Set(ctx, tailerPosKey, string(data), tailerPosTTL).Err(); err != nil {
 		slog.Warn("tailer position: Redis write error", "error", err)
 	}
 }
@@ -55,7 +55,7 @@ func (c *Client) ResetTailerPosition() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := c.rdb.Del(ctx, tailerPosKey).Err(); err != nil {
+	if err := c.Raw().Del(ctx, tailerPosKey).Err(); err != nil {
 		slog.Warn("tailer position: Redis delete error", "error", err)
 	}
 }
@@ -68,7 +68,7 @@ func (c *Client) LoadTailerPosition() (pos, flushedPos int64, ok bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	raw, err := c.rdb.Get(ctx, tailerPosKey).Result()
+	raw, err := c.Raw().Get(ctx, tailerPosKey).Result()
 	if err != nil {
 		return 0, 0, false
 	}

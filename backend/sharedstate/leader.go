@@ -52,7 +52,7 @@ func NewLeaderElector(client *Client, key string, ttl time.Duration) *LeaderElec
 // Acquire attempts to become leader. Returns false if another instance
 // already holds the lock.
 func (le *LeaderElector) Acquire(ctx context.Context) bool {
-	ok, err := le.client.rdb.SetNX(ctx, le.key, le.id, le.ttl).Result()
+	ok, err := le.client.Raw().SetNX(ctx, le.key, le.id, le.ttl).Result()
 	if err != nil {
 		slog.Warn("leader election acquire error", "key", le.key, "error", err)
 		return false
@@ -75,7 +75,7 @@ func (le *LeaderElector) Acquire(ctx context.Context) bool {
 //     for callers to tolerate a handful of consecutive occurrences before
 //     stepping down, since nothing indicates anyone else has taken over.
 func (le *LeaderElector) Renew(ctx context.Context) (ok bool, lost bool) {
-	res, err := renewScript.Run(ctx, le.client.rdb, []string{le.key}, le.id, le.ttl.Milliseconds()).Int()
+	res, err := renewScript.Run(ctx, le.client.Raw(), []string{le.key}, le.id, le.ttl.Milliseconds()).Int()
 	if err != nil {
 		slog.Warn("leader election renew error", "key", le.key, "error", err)
 		return false, false
@@ -89,7 +89,7 @@ func (le *LeaderElector) Renew(ctx context.Context) (ok bool, lost bool) {
 // Release voluntarily gives up leadership (e.g. on clean shutdown) so
 // another instance doesn't have to wait out the full TTL.
 func (le *LeaderElector) Release(ctx context.Context) {
-	if _, err := releaseScript.Run(ctx, le.client.rdb, []string{le.key}, le.id).Result(); err != nil {
+	if _, err := releaseScript.Run(ctx, le.client.Raw(), []string{le.key}, le.id).Result(); err != nil {
 		slog.Warn("leader election release error", "key", le.key, "error", err)
 	}
 }

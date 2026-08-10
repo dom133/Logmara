@@ -357,19 +357,19 @@ export VAULT_TOKEN=$(cat /srv/syslog-ha/vault-token)
 docker run --rm --network syslog_net \
   -e VAULT_ADDR="http://vault-1:8200" \
   -e VAULT_TOKEN="$VAULT_TOKEN" \
-  vault:1.15.0 token create -policy=logmara -period=24h -ttl=24h -renewable
+   vault:1.16.0 token create -policy=logmara -period=24h -ttl=24h -renewable
 
 # 3. Disable the default token auth method (forces LDAP-only login)
 docker run --rm --network syslog_net \
   -e VAULT_ADDR="http://vault-1:8200" \
   -e VAULT_TOKEN="$VAULT_TOKEN" \
-  vault:1.15.0 auth disable token
+   vault:1.16.0 auth disable token
 
 # 4. Revoke the root token
 docker run --rm --network syslog_net \
   -e VAULT_ADDR="http://vault-1:8200" \
   -e VAULT_TOKEN="$VAULT_TOKEN" \
-  vault:1.15.0 auth revoke-self
+   vault:1.16.0 auth revoke-self
 
 # 5. Remove the token file from disk
 rm /srv/syslog-ha/vault-token

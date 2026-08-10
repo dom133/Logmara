@@ -8,6 +8,8 @@ package vaultclient
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"log/slog"
 	"os"
 	"strings"
@@ -23,6 +25,11 @@ import (
 // short enough that scripts/rotate-secrets.sh takes effect without an api
 // restart.
 const cacheTTL = 30 * time.Second
+
+// rotationInterval is how often the application rotates its own secrets
+// (JWT signing key, encryption key). Dynamic secrets (PG, Redis, RabbitMQ)
+// are rotated on the same schedule.
+const rotationInterval = 24 * time.Hour
 
 // mountPrefix is the raw KV v2 API path - unlike the `vault kv` CLI, the
 // HTTP API always needs the literal "data/" segment (see the path-handling
@@ -141,4 +148,162 @@ func (c *Client) fetch(name string) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+// WriteSecret writes a new value to secret/data/logmara/<name> (KV v2).
+// Returns an error if Vault is not configured or the write fails.
+func (c *Client) WriteSecret(name, value string) error {
+	if c == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	_, err := c.api.Logical().WriteWithContext(ctx, mountPrefix+name, map[string]interface{}{
+		"data": map[string]interface{}{
+			"value": value,
+		},
+	})
+	if err != nil {
+		slog.Error("vault: write failed", "name", name, "error", err)
+		return err
+	}
+
+	c.mu.Lock()
+	if entry, exists := c.cache[name]; exists {
+		entry.value = value
+		entry.ok = true
+		entry.fetched = time.Now()
+		c.cache[name] = entry
+	}
+	c.mu.Unlock()
+
+	slog.Info("vault: secret written", "name", name)
+	return nil
+}
+
+// generateRandomKey generates a cryptographically secure random hex key.
+func generateRandomKey(length int) (string, error) {
+	bytes := make([]byte, length)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+// RotationCallbacks holds the functions to call when secrets are rotated.
+type RotationCallbacks struct {
+	RotateJWTSecret       func(newSecret string)
+	RotateEncryptionKey   func(newKey string)
+	RotateRedisPassword   func(newPassword string)
+	RotateRabbitMQURL     func(newURL string)
+	RotatePostgreSQLDSN   func(newDSN string)
+}
+
+// StartRotation starts a background goroutine that rotates application
+// secrets (JWT, encryption key) every rotationInterval. It also requests
+// new dynamic credentials for PostgreSQL, Redis, and RabbitMQ from Vault.
+func (c *Client) StartRotation(ctx context.Context, cb RotationCallbacks) {
+	if c == nil || cb.RotateJWTSecret == nil {
+		return
+	}
+
+	ticker := time.NewTicker(rotationInterval)
+	defer ticker.Stop()
+
+	slog.Info("vault: rotation goroutine started", "interval", rotationInterval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("vault: rotation goroutine stopped")
+			return
+		case <-ticker.C:
+			c.rotateSecrets(ctx, cb)
+		}
+	}
+}
+
+func (c *Client) rotateSecrets(ctx context.Context, cb RotationCallbacks) {
+	slog.Info("vault: rotating secrets")
+
+	// Rotate JWT secret
+	newJWTSecret, err := generateRandomKey(32)
+	if err == nil {
+		if err := c.WriteSecret("jwt_secret", newJWTSecret); err == nil {
+			cb.RotateJWTSecret(newJWTSecret)
+		}
+	}
+
+	// Rotate encryption key
+	newEncKey, err := generateRandomKey(32)
+	if err == nil {
+		if err := c.WriteSecret("encryption_key", newEncKey); err == nil {
+			cb.RotateEncryptionKey(newEncKey)
+		}
+	}
+
+	// Rotate dynamic PostgreSQL credentials
+	c.rotateDynamicSecret(ctx, "database", cb.RotatePostgreSQLDSN)
+
+	// Rotate dynamic Redis credentials
+	c.rotateDynamicSecret(ctx, "redis", cb.RotateRedisPassword)
+
+	// Rotate dynamic RabbitMQ credentials
+	c.rotateDynamicSecret(ctx, "rabbitmq", cb.RotateRabbitMQURL)
+
+	slog.Info("vault: secrets rotation complete")
+}
+
+func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callback func(string)) {
+	if c == nil || callback == nil {
+		return
+	}
+
+	ctx2, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+
+	path := "secret-dynamic/" + engine
+	secret, err := c.api.Logical().ReadWithContext(ctx2, path)
+	if err != nil {
+		slog.Warn("vault: failed to rotate dynamic secret", "engine", engine, "error", err)
+		return
+	}
+	if secret == nil || secret.Data == nil {
+		slog.Warn("vault: no dynamic secret returned", "engine", engine)
+		return
+	}
+
+	var newValue string
+	switch engine {
+	case "database":
+		username, _ := secret.Data["username"].(string)
+		password, _ := secret.Data["password"].(string)
+		if username != "" && password != "" {
+			host := os.Getenv("PG_HOST")
+			port := os.Getenv("PG_PORT")
+			dbname := os.Getenv("PG_DB")
+			sslmode := os.Getenv("PG_SSLMODE")
+			newValue = "postgres://" + username + ":" + password + "@" + host + ":" + port + "/" + dbname + "?sslmode=" + sslmode
+		}
+	case "redis":
+		newValue, _ = secret.Data["password"].(string)
+	case "rabbitmq":
+		newValue, _ = secret.Data["connection_url"].(string)
+		if newValue == "" {
+			username, _ := secret.Data["username"].(string)
+			password, _ := secret.Data["password"].(string)
+			host := os.Getenv("RABBITMQ_HOST")
+			port := os.Getenv("RABBITMQ_PORT")
+			if username != "" && password != "" {
+				newValue = "amqp://" + username + ":" + password + "@" + host + ":" + port
+			}
+		}
+	}
+
+	if newValue != "" {
+		callback(newValue)
+		slog.Info("vault: dynamic secret rotated", "engine", engine)
+	}
 }

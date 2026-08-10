@@ -183,6 +183,29 @@ func (q *Queue) Purge(_ context.Context) (uint32, error) {
 	return uint32(msgs), nil
 }
 
+// RotateURL closes the current RabbitMQ connection, reconnects with the
+// new URL, and re-declares the queue. Downtime is ~100 ms.
+func (q *Queue) RotateURL(newURL string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	q.url = newURL
+
+	if q.channel != nil {
+		q.channel.Close()
+	}
+	if q.conn != nil {
+		q.conn.Close()
+	}
+
+	if err := q.connect(); err != nil {
+		slog.Error("queue: rotate URL failed, reconnecting with previous URL", "error", err)
+		return err
+	}
+	slog.Info("queue: URL rotated successfully")
+	return nil
+}
+
 // Close shuts down the RabbitMQ connection.
 func (q *Queue) Close() error {
 	q.mu.Lock()

@@ -915,10 +915,8 @@ func GetSetting(db *sql.DB, key, defaultValue string) string {
 		// Encryption key comes only from the environment (ENCRYPTION_KEY /
 		// ENCRYPTION_KEY_FILE), never the database - see util.SecretFromEnv and
 		// the "secrets at rest" note in README.
-		if encKey := util.SecretFromEnv("ENCRYPTION_KEY"); encKey != "" {
-			if decrypted, err := util.Decrypt(encKey, val); err == nil {
-				return decrypted
-			}
+		if decrypted, err := util.Decrypt(val); err == nil {
+			return decrypted
 		}
 	}
 	return val
@@ -927,10 +925,8 @@ func GetSetting(db *sql.DB, key, defaultValue string) string {
 // UpdateSetting updates a setting value, encrypting sensitive fields
 func UpdateSetting(db *sql.DB, key, value string) error {
 	if (key == "ldap_bind_password" || key == "smtp_password") && value != "" {
-		if encKey := util.SecretFromEnv("ENCRYPTION_KEY"); encKey != "" {
-			if encrypted, err := util.Encrypt(encKey, value); err == nil {
-				value = encrypted
-			}
+		if encrypted, err := util.Encrypt(value); err == nil {
+			value = encrypted
 		}
 	}
 	_, err := db.Exec(`INSERT INTO app_settings (key, value) VALUES ($1, $2)
