@@ -300,7 +300,10 @@ change_rabbitmq_password() {
         echo "ERROR: No running RabbitMQ container found" >&2
         return 1
     fi
-    docker exec "$container_id" rabbitmqctl change_password logmara "$new_pass"
+    if ! docker exec "$container_id" rabbitmqctl change_password logmara "$new_pass"; then
+        echo "ERROR: RabbitMQ password change failed" >&2
+        return 1
+    fi
     echo "RabbitMQ password changed successfully"
 }
 
@@ -361,17 +364,29 @@ change_postgres_password() {
     echo "Changing Postgres '$username' user password..."
     local old_root_pass
     old_root_pass=$(read_secret pg_superuser_password)
-    # Use the first running Postgres node
+    # Any postgres1/2/3 container works as the psql client - just needs the
+    # binary, not to be the leader itself. Filter on "_postgres" specifically
+    # (not the bare "logmara-pg" stack prefix, which also matches etcd/haproxy
+    # containers that don't have psql installed at all).
     local container_id
-    container_id=$(docker ps -q --filter "name=logmara-pg" --filter "status=running" | head -1)
+    container_id=$(docker ps -q --filter "name=logmara-pg_postgres" --filter "status=running" | head -1)
     if [[ -z "$container_id" ]]; then
         echo "ERROR: No running Postgres container found" >&2
         return 1
     fi
-    # Pass PGPASSWORD for auth, connect via localhost to use md5/scram auth
-    docker exec -e PGPASSWORD="$old_root_pass" "$container_id" \
-        psql -h localhost -U postgres -c \
-        "ALTER USER $username WITH PASSWORD '$(echo "$new_pass" | sed "s/'/''/g")';"
+    # Route the actual connection through haproxy:5000, not localhost -
+    # Patroni only accepts writes (including ALTER ROLE) on the current
+    # leader, and localhost is whichever of postgres1/2/3 this container_id
+    # happened to be (frequently a replica, since docker ps only sees
+    # containers local to whichever node this script runs on). haproxy
+    # already knows how to route to the leader regardless of which node
+    # that is - same endpoint api itself uses (POSTGRES_HOST=haproxy).
+    if ! docker exec -e PGPASSWORD="$old_root_pass" "$container_id" \
+        psql -h haproxy -p 5000 -U postgres -c \
+        "ALTER USER $username WITH PASSWORD '$(echo "$new_pass" | sed "s/'/''/g")';"; then
+        echo "ERROR: Postgres password change for '$username' failed" >&2
+        return 1
+    fi
     echo "Postgres password for '$username' changed successfully"
 }
 
@@ -391,12 +406,30 @@ rotate_one() {
 
     echo "=== Rotating secret: $name ==="
 
-    # Step 1: apply password change inside the running service (if applicable)
+    # Step 1: apply password change inside the running service (if
+    # applicable). redis_password is deliberately not checked here - it
+    # applies to 3 data nodes + 3 sentinels and already tolerates individual
+    # node failures internally (see change_redis_password); the others below
+    # are single global state changes with no such partial-success case, so a
+    # failure here must stop before write_secret below makes the store
+    # disagree with what's actually live.
     case "$name" in
-        rabbitmq_password) change_rabbitmq_password "$value" ;;
+        rabbitmq_password)
+            if ! change_rabbitmq_password "$value"; then
+                return 1
+            fi
+            ;;
         redis_password) change_redis_password "$value" ;;
-        pg_app_password) change_postgres_password "syslog" "$value" ;;
-        pg_superuser_password) change_postgres_password "postgres" "$value" ;;
+        pg_app_password)
+            if ! change_postgres_password "syslog" "$value"; then
+                return 1
+            fi
+            ;;
+        pg_superuser_password)
+            if ! change_postgres_password "postgres" "$value"; then
+                return 1
+            fi
+            ;;
     esac
 
     # Step 2: special handling for encryption_key (DB re-encryption)
