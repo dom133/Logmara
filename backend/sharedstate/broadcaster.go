@@ -16,7 +16,7 @@ func NewBroadcaster(client *Client) *Broadcaster {
 }
 
 func (b *Broadcaster) Publish(ctx context.Context, channel, payload string) error {
-	return b.client.rdb.Publish(ctx, channel, payload).Err()
+	return b.client.Raw().Publish(ctx, channel, payload).Err()
 }
 
 // Subscribe blocks the calling goroutine until ctx is done, invoking
@@ -24,7 +24,7 @@ func (b *Broadcaster) Publish(ctx context.Context, channel, payload string) erro
 // in its own goroutine. go-redis's PubSub transparently reconnects (e.g.
 // across a Sentinel failover), so this does not need its own retry loop.
 func (b *Broadcaster) Subscribe(ctx context.Context, channel string, onMessage func(payload string)) {
-	pubsub := b.client.rdb.Subscribe(ctx, channel)
+	pubsub := b.client.Raw().Subscribe(ctx, channel)
 	defer pubsub.Close()
 
 	ch := pubsub.Channel()

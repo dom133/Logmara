@@ -7,12 +7,14 @@
 #   ./scripts/vault-bootstrap.sh unseal
 #   ./scripts/vault-bootstrap.sh migrate-secrets
 #   ./scripts/vault-bootstrap.sh policy
+#   ./scripts/vault-bootstrap.sh setup-dynamic-secrets
 #
 # Subcommands:
-#   init             Initialize the Vault cluster (Shamir unseal)
-#   unseal           Unseal all 3 Vault nodes using Shamir keys
-#   migrate-secrets  Migrate existing Docker secrets to Vault KV
-#   policy           Create logmara policy for agent access
+#   init                     Initialize the Vault cluster (Shamir unseal)
+#   unseal                   Unseal all 3 Vault nodes using Shamir keys
+#   migrate-secrets          Migrate existing Docker secrets to Vault KV
+#   policy                   Create logmara policy for agent access
+#   setup-dynamic-secrets    Configure dynamic secrets engines (PG, Redis, RabbitMQ)
 #
 
 set -euo pipefail
@@ -30,7 +32,7 @@ vault_cli() {
         --network syslog_net \
         -e VAULT_ADDR="$VAULT_ADDR" \
         -e VAULT_TOKEN="$VAULT_TOKEN" \
-        hashicorp/vault:1.15.0 "$@"
+        hashicorp/vault:1.16.0 "$@"
 }
 
 # Write a secret to Vault KV v2. NOTE: `vault kv put/get` already prepends
@@ -50,7 +52,7 @@ vault_kv_write() {
         -e VAULT_ADDR="$VAULT_ADDR" \
         -e VAULT_TOKEN="$VAULT_TOKEN" \
         -v "$tmpfile:/tmp/secretval:ro" \
-        hashicorp/vault:1.15.0 sh -c "
+        hashicorp/vault:1.16.0 sh -c "
             VAL=\$(cat /tmp/secretval) && \
             vault kv put \"${path}\" \"${key}=\$VAL\"
         " 2>/dev/null || true
@@ -100,7 +102,7 @@ case "$ACTION" in
             # keeps only grep's match result significant to the pipe.
             if (docker run --rm --network syslog_net \
                 -e VAULT_ADDR="$VAULT_ADDR" \
-                hashicorp/vault:1.15.0 status 2>/dev/null || true) | grep -qi "sealed\|inactive"; then
+                hashicorp/vault:1.16.0 status 2>/dev/null || true) | grep -qi "sealed\|inactive"; then
                 echo "Vault is ready"
                 break
             fi
@@ -113,7 +115,7 @@ case "$ACTION" in
         INIT_OUTPUT=$(docker run --rm \
             --network syslog_net \
             -e VAULT_ADDR="$VAULT_ADDR" \
-            hashicorp/vault:1.15.0 operator init \
+            hashicorp/vault:1.16.0 operator init \
                 -key-shares=5 \
                 -key-threshold=3 \
                 -format=json 2>/dev/null)
@@ -165,7 +167,7 @@ case "$ACTION" in
                 docker run --rm \
                     --network syslog_net \
                     -e VAULT_ADDR="$VAULT_ADDR" \
-                    hashicorp/vault:1.15.0 operator unseal "${KEYS[$i]}" 2>/dev/null || true
+                    hashicorp/vault:1.16.0 operator unseal "${KEYS[$i]}" 2>/dev/null || true
             done
 
             echo "$NODE unsealed"
@@ -245,8 +247,78 @@ EOF
         echo "  docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent"
         ;;
 
+    setup-dynamic-secrets)
+        echo "=== Setting up dynamic secrets engines ==="
+
+        if [[ -z "${VAULT_TOKEN:-}" ]]; then
+            echo "ERROR: VAULT_TOKEN not set" >&2
+            exit 1
+        fi
+
+        # Enable PostgreSQL dynamic secrets engine
+        echo "Enabling PostgreSQL dynamic secrets engine..."
+        vault_cli secrets enable -path=secret-dynamic/database database 2>/dev/null || true
+        vault_cli write secret-dynamic/database/config/db \
+            plugin_name=postgresql-database-plugin \
+            allowed_roles="logmara-app" \
+            connection_url="postgresql://${PG_SUPERUSER:-vault}:${PG_SUPERUSER_PASSWORD}@postgres:5432/${PG_DB:-syslog_db}?sslmode=disable" \
+            username="${PG_SUPERUSER:-vault}" \
+            password="${PG_SUPERUSER_PASSWORD}" 2>/dev/null || true
+
+        # Create role for application user
+        vault_cli write secret-dynamic/database/roles/logmara-app \
+            db_name=db \
+            creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO \"{{name}}\";" \
+            default_ttl="24h" \
+            max_ttl="48h" 2>/dev/null || true
+
+        # Enable Redis dynamic secrets engine (requires custom plugin)
+        echo "Enabling Redis dynamic secrets engine..."
+        vault_cli secrets enable -path=secret-dynamic/redis plugin 2>/dev/null || true
+        vault_cli write sys/plugins/catalog/secret/redis \
+            command=vault-plugin-secrets-redis \
+            sha256=$(docker run --rm hashicorp/vault:1.16.0 sh -c 'vault plugin list 2>/dev/null | grep redis | awk "{print \$2}"') 2>/dev/null || true
+        vault_cli write secret-dynamic/redis/config/conn \
+            address=redis:6379 \
+            password="${REDIS_PASSWORD:-}" 2>/dev/null || true
+        vault_cli write secret-dynamic/redis/config/allow_role_creation_as_any_user \
+            value=true 2>/dev/null || true
+        vault_cli write secret-dynamic/redis/roles/logmara-app \
+            db_num=0 \
+            default_ttl="24h" \
+            max_ttl="48h" 2>/dev/null || true
+
+        # Enable RabbitMQ dynamic secrets engine (built-in in Vault 1.16)
+        echo "Enabling RabbitMQ dynamic secrets engine..."
+        vault_cli secrets enable -path=secret-dynamic/rabbitmq rabbitmq 2>/dev/null || true
+        vault_cli write secret-dynamic/rabbitmq/config/connection \
+            url="amqp://${RABBITMQ_DEFAULT_USER:-admin}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672" \
+            username="${RABBITMQ_DEFAULT_USER:-admin}" \
+            password="${RABBITMQ_DEFAULT_PASS}" 2>/dev/null || true
+        vault_cli write secret-dynamic/rabbitmq/roles/logmara-app \
+            vhost="/" \
+            tags="administrator,management" \
+            default_ttl="24h" \
+            max_ttl="48h" 2>/dev/null || true
+
+        # Update policy to allow dynamic secret reads
+        vault_cli policy write logmara-dynamic - <<'EOF'
+path "secret-dynamic/database/*" {
+  capabilities = ["read"]
+}
+path "secret-dynamic/redis/*" {
+  capabilities = ["read"]
+}
+path "secret-dynamic/rabbitmq/*" {
+  capabilities = ["read"]
+}
+EOF
+
+        echo "=== Dynamic secrets engines configured ==="
+        ;;
+
     *)
-        echo "Usage: $0 {init|unseal|policy|migrate-secrets}" >&2
+        echo "Usage: $0 {init|unseal|policy|migrate-secrets|setup-dynamic-secrets}" >&2
         exit 1
         ;;
 esac

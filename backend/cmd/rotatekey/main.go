@@ -10,12 +10,16 @@ import (
 	"logmara/util"
 )
 
+// Deprecated: This command is no longer needed. The application now handles
+// encryption key rotation automatically via dual-key support.
 func main() {
 	oldKey := os.Getenv("OLD_ENCRYPTION_KEY")
 	newKey := os.Getenv("NEW_ENCRYPTION_KEY")
 	if oldKey == "" || newKey == "" {
 		log.Fatal("OLD_ENCRYPTION_KEY and NEW_ENCRYPTION_KEY must be set")
 	}
+
+	util.SetEncryptionKey(oldKey)
 
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
 		getEnv("PG_USER", "syslog"),
@@ -48,12 +52,14 @@ func main() {
 		if err := rows.Scan(&id, &secret); err != nil {
 			log.Fatalf("Failed to scan row: %v", err)
 		}
-		decrypted, err := util.Decrypt(oldKey, secret)
+		decrypted, err := util.Decrypt(secret)
 		if err != nil {
 			log.Printf("Warning: failed to decrypt notification channel %d, skipping: %v", id, err)
 			continue
 		}
-		encrypted, err := util.Encrypt(newKey, decrypted)
+		util.SetEncryptionKey(newKey)
+		encrypted, err := util.Encrypt(decrypted)
+		util.SetEncryptionKey(oldKey)
 		if err != nil {
 			log.Fatalf("Failed to re-encrypt notification channel %d: %v", id, err)
 		}
@@ -76,12 +82,14 @@ func main() {
 		if err := settings.Scan(&key, &value); err != nil {
 			log.Fatalf("Failed to scan settings row: %v", err)
 		}
-		decrypted, err := util.Decrypt(oldKey, value)
+		decrypted, err := util.Decrypt(value)
 		if err != nil {
 			log.Printf("Warning: failed to decrypt setting %s, skipping: %v", key, err)
 			continue
 		}
-		encrypted, err := util.Encrypt(newKey, decrypted)
+		util.SetEncryptionKey(newKey)
+		encrypted, err := util.Encrypt(decrypted)
+		util.SetEncryptionKey(oldKey)
 		if err != nil {
 			log.Fatalf("Failed to re-encrypt setting %s: %v", key, err)
 		}

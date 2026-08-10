@@ -60,7 +60,7 @@ version: "3.8"
 
 services:
   vault-1:
-    image: hashicorp/vault:1.15.0
+    image: ${VAULT_IMAGE:-hashicorp/vault:1.16.0}
     # See "entrypoint: [vault]" note near the top of this file.
     entrypoint: ["vault"]
     command: ["server", "-config=/vault/config/vault.hcl"]
@@ -98,7 +98,7 @@ services:
         max-file: "3"
 
   vault-2:
-    image: hashicorp/vault:1.15.0
+    image: ${VAULT_IMAGE:-hashicorp/vault:1.16.0}
     # See "entrypoint: [vault]" note near the top of this file.
     entrypoint: ["vault"]
     command: ["server", "-config=/vault/config/vault.hcl"]
@@ -132,7 +132,7 @@ services:
         max-file: "3"
 
   vault-3:
-    image: hashicorp/vault:1.15.0
+    image: ${VAULT_IMAGE:-hashicorp/vault:1.16.0}
     # See "entrypoint: [vault]" note near the top of this file.
     entrypoint: ["vault"]
     command: ["server", "-config=/vault/config/vault.hcl"]

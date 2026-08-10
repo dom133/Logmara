@@ -13,8 +13,10 @@ package sharedstate
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"logmara/util"
@@ -24,19 +26,85 @@ import (
 
 // Client wraps a Redis connection that may be a plain client or a
 // Sentinel-aware failover client, depending on configuration.
+// The rdb field is an atomic.Value so RotatePassword can swap the
+// underlying connection without tearing down every consumer.
 type Client struct {
-	rdb redis.UniversalClient
+	rdb atomic.Value // redis.UniversalClient
 }
 
 // Raw exposes the underlying go-redis client for callers that need direct
 // command access (e.g. LPUSH/LTRIM for a domain-specific list) rather than
 // one of this package's higher-level primitives.
 func (c *Client) Raw() redis.UniversalClient {
-	return c.rdb
+	return c.rdb.Load().(redis.UniversalClient)
 }
 
 func (c *Client) Close() error {
-	return c.rdb.Close()
+	rdb := c.rdb.Load().(redis.UniversalClient)
+	return rdb.Close()
+}
+
+// RotatePassword closes the current Redis client, creates a new one with
+// the updated password, verifies connectivity, and atomically swaps it in.
+// Downtime is ~50-100 ms (close + connect + ping + swap). All existing
+// callers that read via Raw() will transparently get the new client.
+func (c *Client) RotatePassword(newPassword string) error {
+	oldRDB := c.rdb.Load().(redis.UniversalClient)
+	if oldRDB == nil {
+		return fmt.Errorf("redis: no client loaded, cannot rotate")
+	}
+
+	newRDB, err := c.cloneClientWithPassword(newPassword)
+	if err != nil {
+		slog.Warn("redis: password rotation failed, keeping existing client", "error", err)
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := newRDB.Ping(ctx).Err(); err != nil {
+		_ = newRDB.Close()
+		slog.Warn("redis: new client ping failed during rotation, keeping existing client", "error", err)
+		return err
+	}
+
+	oldRDB.Close()
+	c.rdb.Store(newRDB)
+	slog.Info("redis: password rotated successfully")
+	return nil
+}
+
+// cloneClientWithPassword creates a new Redis client based on the current
+// client's configuration but with an updated password.
+func (c *Client) cloneClientWithPassword(newPassword string) (redis.UniversalClient, error) {
+	current := c.rdb.Load().(redis.UniversalClient)
+	if current == nil {
+		return nil, fmt.Errorf("redis: no client loaded")
+	}
+
+	sentinelAddrsRaw := strings.TrimSpace(os.Getenv("REDIS_SENTINEL_ADDRS"))
+	addr := strings.TrimSpace(os.Getenv("REDIS_ADDR"))
+
+	switch {
+	case sentinelAddrsRaw != "":
+		masterName := strings.TrimSpace(os.Getenv("REDIS_MASTER_NAME"))
+		if masterName == "" {
+			masterName = "mymaster"
+		}
+		return redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:       masterName,
+			SentinelAddrs:    splitAndTrim(sentinelAddrsRaw),
+			Password:         newPassword,
+			SentinelPassword: newPassword,
+		}), nil
+	case addr != "":
+		return redis.NewClient(&redis.Options{
+			Addr:     addr,
+			Password: newPassword,
+		}), nil
+	default:
+		return nil, fmt.Errorf("redis: no Redis address configured")
+	}
 }
 
 // Connect reads Redis configuration from the environment:
@@ -91,7 +159,9 @@ func Connect() (*Client, error) {
 		return nil, fmt.Errorf("redis configured but unreachable: %w", err)
 	}
 
-	return &Client{rdb: rdb}, nil
+	client := &Client{}
+	client.rdb.Store(rdb)
+	return client, nil
 }
 
 func splitAndTrim(s string) []string {

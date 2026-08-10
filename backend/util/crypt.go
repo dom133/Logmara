@@ -8,11 +8,52 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
+	"sync"
 )
 
 var ErrInvalidKey = errors.New("invalid encryption key")
 
-func Encrypt(key, plaintext string) (string, error) {
+var (
+	encryptKeyPrimary   string
+	encryptKeySecondary string
+	encryptMu           sync.RWMutex
+)
+
+// SetEncryptionKey sets the primary encryption key. Call once at startup.
+func SetEncryptionKey(key string) {
+	encryptMu.Lock()
+	defer encryptMu.Unlock()
+	encryptKeyPrimary = key
+}
+
+// RotateEncryptionKey atomically rotates the encryption key. The old primary
+// becomes the secondary key (used for decryption during the grace period),
+// and the new key becomes the primary key (used for encryption).
+func RotateEncryptionKey(newKey string) {
+	encryptMu.Lock()
+	defer encryptMu.Unlock()
+	encryptKeySecondary = encryptKeyPrimary
+	encryptKeyPrimary = newKey
+	slog.Info("util: encryption key rotated, secondary key set for grace period")
+}
+
+// ClearSecondaryEncryptionKey removes the secondary key after the grace
+// period has elapsed. Data encrypted with the old key can no longer be
+// decrypted.
+func ClearSecondaryEncryptionKey() {
+	encryptMu.Lock()
+	defer encryptMu.Unlock()
+	encryptKeySecondary = ""
+	slog.Info("util: encryption secondary key cleared")
+}
+
+// Encrypt encrypts plaintext using the primary key.
+func Encrypt(plaintext string) (string, error) {
+	encryptMu.RLock()
+	key := encryptKeyPrimary
+	encryptMu.RUnlock()
+
 	derivedKey := deriveKey(key)
 	block, err := aes.NewCipher(derivedKey)
 	if err != nil {
@@ -33,7 +74,31 @@ func Encrypt(key, plaintext string) (string, error) {
 	return hex.EncodeToString(ciphertext), nil
 }
 
-func Decrypt(key, ciphertext string) (string, error) {
+// Decrypt decrypts ciphertext. It tries the primary key first, then the
+// secondary key (grace period), so data encrypted with the old key remains
+// readable until it is re-encrypted with the new key.
+func Decrypt(ciphertext string) (string, error) {
+	encryptMu.RLock()
+	primary := encryptKeyPrimary
+	secondary := encryptKeySecondary
+	encryptMu.RUnlock()
+
+	result, err := decryptWithKey(primary, ciphertext)
+	if err == nil {
+		return result, nil
+	}
+
+	if secondary != "" {
+		result2, err2 := decryptWithKey(secondary, ciphertext)
+		if err2 == nil {
+			return result2, nil
+		}
+	}
+
+	return "", errors.New("decryption failed with all available keys")
+}
+
+func decryptWithKey(key, ciphertext string) (string, error) {
 	derivedKey := deriveKey(key)
 	block, err := aes.NewCipher(derivedKey)
 	if err != nil {
