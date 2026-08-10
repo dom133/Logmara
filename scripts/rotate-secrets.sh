@@ -256,6 +256,19 @@ scale_app_down() {
         echo "ERROR: could not read current replica counts for logmara-app_api/logmara-app_frontend - is logmara-app deployed?" >&2
         exit 1
     fi
+    # A previous run of this script left them at 0 (e.g. interrupted, or
+    # aborted mid-batch) - restoring "back" to 0 at the end would just
+    # leave the app parked down, silently turning a resumed rotation into
+    # a permanent outage. There's no reliable way to recover the real
+    # intended count from here, so refuse rather than guess.
+    if [[ "$API_REPLICAS_SAVED" == "0" || "$FRONTEND_REPLICAS_SAVED" == "0" ]]; then
+        echo "ERROR: logmara-app_api/logmara-app_frontend are already at 0 replicas." >&2
+        echo "This looks like leftover state from an earlier interrupted run, not something" >&2
+        echo "safe to treat as the count to restore to. Fix the replica count manually first," >&2
+        echo "e.g.: docker service scale logmara-app_api=4 logmara-app_frontend=4" >&2
+        echo "then re-run this command." >&2
+        exit 1
+    fi
     echo "Current replicas: api=$API_REPLICAS_SAVED frontend=$FRONTEND_REPLICAS_SAVED"
 
     docker service scale "logmara-app_api=0" "logmara-app_frontend=0"
@@ -406,6 +419,7 @@ rotate_one() {
 
         echo "Re-encrypting database with new key..."
         docker run --rm \
+            --network syslog_net \
             -e OLD_ENCRYPTION_KEY="$old_key" \
             -e NEW_ENCRYPTION_KEY="$value" \
             -e PG_HOST=haproxy \
