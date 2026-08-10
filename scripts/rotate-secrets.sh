@@ -83,10 +83,13 @@ trap restore_app_scale_on_exit EXIT
 # Secret store detection: Vault or Docker secrets
 # ---------------------------------------------------------------------------
 
-# Returns 0 if Vault agent is deployed and serving
+# Returns 0 if Vault agent is deployed and serving. vault-agent is its own
+# stack (logmara-vault-agent, see scripts/swarm-deploy.sh's "vault-agent"
+# target and docker-stack.vault-agent.yml) separate from the 3-node Vault
+# server stack (logmara-vault) - not a service inside the server stack.
 using_vault() {
-    docker service inspect logmara-vault_vault-agent &>/dev/null 2>&1 && \
-    docker service ps --filter "desired-state=running" --filter "current-state=Running" logmara-vault_vault-agent 2>/dev/null | grep -q .
+    docker service inspect logmara-vault-agent_vault-agent &>/dev/null 2>&1 && \
+    docker service ps --filter "desired-state=running" --filter "current-state=Running" logmara-vault-agent_vault-agent 2>/dev/null | grep -q .
 }
 
 # Read the plaintext value of an existing Docker (Swarm) secret. `docker
