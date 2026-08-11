@@ -109,11 +109,6 @@ const (
 
 var purgeMu sync.Mutex
 
-type purgeRequest struct {
-	id string
-	ch chan purgeResult
-}
-
 type purgeResult struct {
 	msgs uint32
 	err  string

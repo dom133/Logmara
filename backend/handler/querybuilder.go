@@ -13,7 +13,6 @@ import (
 
 	"logmara/model"
 
-	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
 )
 
@@ -346,15 +345,6 @@ func parseDashboardConfig(raw json.RawMessage) (*model.DashboardConfig, error) {
 		return nil, err
 	}
 	return &cfg, nil
-}
-
-func parsePagination(c *gin.Context, defaultLimit, maxLimit int) (int, int) {
-	limitInt, _ := strconv.Atoi(c.DefaultQuery("limit", strconv.Itoa(defaultLimit)))
-	offsetInt, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	if limitInt <= 0 || limitInt > maxLimit {
-		limitInt = defaultLimit
-	}
-	return limitInt, offsetInt
 }
 
 func parsePaginationFromStrings(limitStr, offsetStr string, defaultLimit, maxLimit int) (int, int) {

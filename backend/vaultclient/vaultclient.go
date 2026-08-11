@@ -181,7 +181,7 @@ func (c *Client) WaitUntilReady() error {
 		}
 
 		elapsed := time.Since(deadline.Add(-waitReadyTimeout))
-		slog.Info("vault: sealed, waiting", "elapsed", elapsed, "remaining", deadline.Sub(time.Now()))
+		slog.Info("vault: sealed, waiting", "elapsed", elapsed, "remaining", time.Until(deadline))
 		time.Sleep(waitReadyInterval)
 	}
 

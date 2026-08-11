@@ -114,6 +114,7 @@ func (c *instrumentedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (
 	if b, ok := c.Conn.(driver.ConnBeginTx); ok {
 		return b.BeginTx(ctx, opts)
 	}
+	//lint:ignore SA1019 fallback for wrapped drivers that don't implement ConnBeginTx
 	return c.Conn.Begin()
 }
 
@@ -168,8 +169,13 @@ func (s *instrumentedStmt) QueryContext(ctx context.Context, args []driver.Named
 	return rows, err
 }
 
+// Exec and Query implement the base driver.Stmt interface, which
+// database/sql falls back to when ExecContext/QueryContext above return
+// driver.ErrSkip (i.e. the wrapped driver doesn't support the context-aware
+// variants).
 func (s *instrumentedStmt) Exec(args []driver.Value) (driver.Result, error) {
 	start := time.Now()
+	//lint:ignore SA1019 required fallback for the base driver.Stmt interface
 	res, err := s.Stmt.Exec(args)
 	reportSlowQuery(s.query, time.Since(start))
 	return res, err
@@ -177,6 +183,7 @@ func (s *instrumentedStmt) Exec(args []driver.Value) (driver.Result, error) {
 
 func (s *instrumentedStmt) Query(args []driver.Value) (driver.Rows, error) {
 	start := time.Now()
+	//lint:ignore SA1019 required fallback for the base driver.Stmt interface
 	rows, err := s.Stmt.Query(args)
 	reportSlowQuery(s.query, time.Since(start))
 	return rows, err
