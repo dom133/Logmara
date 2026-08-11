@@ -239,7 +239,7 @@ EOF
         vault_cli secrets enable -path=secret kv-v2 2>/dev/null || true
 
         # Read existing Docker secrets and write to Vault
-        for SECRET in jwt_secret encryption_key pg_app_password pg_superuser_password redis_password rabbitmq_password; do
+        for SECRET in jwt_secret encryption_key pg_app_password pg_superuser_password pg_replication_password redis_password rabbitmq_password; do
             VALUE=$(read_docker_secret_value "$SECRET")
             if [[ -n "$VALUE" ]]; then
                 echo "Migrating $SECRET..."

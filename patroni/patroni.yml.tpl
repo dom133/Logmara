@@ -39,6 +39,7 @@ bootstrap:
         tcp_keepalives_interval: 10
         tcp_keepalives_count: 3
         wal_sender_timeout: 30000
+        wal_keep_size: 1GB
   initdb:
     - encoding: UTF8
     - data-checksums
