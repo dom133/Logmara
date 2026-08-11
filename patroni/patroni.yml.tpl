@@ -13,7 +13,7 @@ bootstrap:
   dcs:
     ttl: 30
     loop_wait: 10
-    retry_timeout: 10
+    retry_timeout: 900
     maximum_lag_on_failover: 1048576
     postgresql:
       use_pg_rewind: true
