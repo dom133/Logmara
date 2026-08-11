@@ -133,6 +133,10 @@ export RABBITMQ_ENTRYPOINT_HASH="$(cfg_hash rabbitmq/entrypoint.sh)"
 export RABBITMQ_JOIN_ENTRYPOINT_HASH="$(cfg_hash rabbitmq/join_entrypoint.sh)"
 export VAULT_CFG_HASH="$(cfg_hash vault/vault.hcl)"
 export VAULT_AGENT_CFG_HASH="$(cfg_hash vault/vault-agent.hcl)"
+export HAPROXY_PG_CFG_HASH="$(cfg_hash haproxy/haproxy.cfg)"
+export HAPROXY_APP_CFG_HASH="$(cfg_hash haproxy/haproxy-app.cfg)"
+export HAPROXY_RABBITMQ_CFG_HASH="$(cfg_hash haproxy/haproxy-rabbitmq.cfg)"
+export REDIS_SENTINEL_CFG_HASH="$(cfg_hash redis/sentinel.conf.tpl)"
 
 # ---------------------------------------------------------------------------
 # Deploy helpers

@@ -176,13 +176,13 @@ secrets:
   rabbitmq_erlang_cookie:
     external: true
 
-# The three file:-based configs below get a content-hash name (computed by
-# scripts/swarm-deploy.sh) because Swarm configs are immutable even when
-# not `external: true` - see docker-stack.monitoring.yml's configs: header
-# for the full explanation.
+# Content-hash names (computed by scripts/swarm-deploy.sh) because Swarm
+# configs are immutable even when not `external: true` - see
+# docker-stack.monitoring.yml's configs: header for the full explanation.
 configs:
   haproxy_rabbitmq_cfg:
-    external: true
+    file: haproxy/haproxy-rabbitmq.cfg
+    name: haproxy_rabbitmq_cfg_${HAPROXY_RABBITMQ_CFG_HASH:-unset}
   rabbitmq_conf_tpl:
     file: rabbitmq/rabbitmq.conf.tpl
     name: rabbitmq_conf_tpl_${RABBITMQ_CONF_TPL_HASH:-unset}

@@ -23,9 +23,10 @@
 #   - docker-stack.vault.yml already deployed and bootstrapped - redis_password
 #     is supplied by vault-agent's bind-mounted output, not a native Swarm
 #     secret (see the redis-password-mount anchor below)
-#   - `docker config create redis_sentinel_cfg redis/sentinel.conf.tpl`
 #
-# Deploy with: docker stack deploy -c docker-stack.redis.yml logmara-redis
+# Deploy with: ./scripts/swarm-deploy.sh redis (not a bare
+# `docker stack deploy` - see "content-hash name" note on the configs:
+# section below for why)
 
 version: "3.8"
 
@@ -167,4 +168,5 @@ networks:
 
 configs:
   redis_sentinel_cfg:
-    external: true
+    file: redis/sentinel.conf.tpl
+    name: redis_sentinel_cfg_${REDIS_SENTINEL_CFG_HASH:-unset}
