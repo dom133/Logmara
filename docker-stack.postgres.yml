@@ -38,6 +38,7 @@ x-patroni-healthcheck: &patroni-healthcheck
   interval: 5s
   timeout: 3s
   retries: 10
+  start_period: 900s
 
 x-patroni-logging: &patroni-logging
   driver: json-file
