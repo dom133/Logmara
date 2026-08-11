@@ -55,8 +55,7 @@
 #     single "role" value), so a small cluster can freely put both on the
 #     same nodes - haproxy-app needs edge=true specifically, since it must
 #     colocate with whichever node currently holds the keepalived VIP.
-#   - haproxy_app_cfg Swarm config created (`scripts/swarm-bootstrap.sh
-#     haproxy-app-config`)
+#   - haproxy_app_cfg Swarm config (auto-created by `./scripts/swarm-deploy.sh app`)
 #   - NFS export mounted at the same path on every app=true / edge=true node,
 #     e.g. /mnt/syslog-nfs, exporting what were log_data/log_spool
 #   - docker-stack.vault.yml already deployed and bootstrapped: jwt_secret,
@@ -410,9 +409,9 @@ volumes:
       device: ":${NFS_PARSER_DEFS_PATH:-/srv/syslog-ha/nfs/parser_defs}"
 
 configs:
-  # Created via `scripts/swarm-bootstrap.sh haproxy-app-config`.
   haproxy_app_cfg:
-    external: true
+    file: haproxy/haproxy-app.cfg
+    name: haproxy_app_cfg_${HAPROXY_APP_CFG_HASH:-unset}
 
 secrets:
   # Same bootstrap token vault-agent uses (docker-stack.vault-agent.yml) -
