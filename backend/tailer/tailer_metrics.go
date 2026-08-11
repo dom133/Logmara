@@ -112,7 +112,15 @@ func (c *TailerMetricsCollector) Stop() {
 func (c *TailerMetricsCollector) Get() TailerMetrics {
 	c.metrics.mu.RLock()
 	defer c.metrics.mu.RUnlock()
-	return *c.metrics
+	return TailerMetrics{
+		NumWorkers:    c.metrics.NumWorkers,
+		QueueDepth:    c.metrics.QueueDepth,
+		FlushedPos:    c.metrics.FlushedPos,
+		FlushedSeq:    c.metrics.FlushedSeq,
+		LogsPerSec:    c.metrics.LogsPerSec,
+		WorkerMetrics: c.metrics.WorkerMetrics,
+		UpdatedAt:     c.metrics.UpdatedAt,
+	}
 }
 
 func (c *TailerMetricsCollector) updateLoop(ctx context.Context) {
