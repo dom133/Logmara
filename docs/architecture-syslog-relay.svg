@@ -21,9 +21,10 @@
   <!-- VLAN B: relay -->
   <rect x="256" y="16" width="220" height="200" rx="12" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.5" stroke-dasharray="6,4"/>
   <text x="270" y="38" font-size="12.5" font-weight="600" fill="#3730a3">VLAN B (DMZ / relay)</text>
-  <rect x="286" y="92" width="160" height="60" rx="10" fill="#e0e7ff" stroke="#4338ca" stroke-width="2"/>
-  <text x="366" y="116" text-anchor="middle" font-size="13.5" font-weight="600" fill="#312e81">syslog-relay</text>
-  <text x="366" y="133" text-anchor="middle" font-size="10.5" fill="#4338ca">small server, forward-only</text>
+  <rect x="286" y="92" width="160" height="74" rx="10" fill="#e0e7ff" stroke="#4338ca" stroke-width="2"/>
+  <text x="366" y="112" text-anchor="middle" font-size="13.5" font-weight="600" fill="#312e81">syslog-relay</text>
+  <text x="366" y="129" text-anchor="middle" font-size="10.5" fill="#4338ca">514/tcp+udp in, forwards on</text>
+  <text x="366" y="144" text-anchor="middle" font-size="10.5" fill="#4338ca">+ local TLS :6514 (optional)</text>
 
   <!-- device1-3 -> relay -->
   <path d="M190 73 L 286 111" stroke="#475569" stroke-width="1.8" fill="none" marker-end="url(#arrow)"/>
@@ -35,9 +36,10 @@
   <text x="30" y="262" font-size="12.5" font-weight="600" fill="#6b21a8">VLAN D (DMZ / relay 2)</text>
   <rect x="40" y="284" width="150" height="38" rx="8" fill="#f3e8ff" stroke="#7e22ce" stroke-width="1.5"/>
   <text x="115" y="308" text-anchor="middle" font-size="12.5" fill="#581c87">device4</text>
-  <rect x="286" y="278" width="170" height="50" rx="10" fill="#f3e8ff" stroke="#7e22ce" stroke-width="2"/>
-  <text x="371" y="298" text-anchor="middle" font-size="13.5" font-weight="600" fill="#581c87">syslog-relay-2</text>
-  <text x="371" y="314" text-anchor="middle" font-size="10.5" fill="#6b21a8">forward-only</text>
+  <rect x="286" y="278" width="170" height="64" rx="10" fill="#f3e8ff" stroke="#7e22ce" stroke-width="2"/>
+  <text x="371" y="296" text-anchor="middle" font-size="13.5" font-weight="600" fill="#581c87">syslog-relay-2</text>
+  <text x="371" y="311" text-anchor="middle" font-size="10.5" fill="#6b21a8">forward-only</text>
+  <text x="371" y="325" text-anchor="middle" font-size="10.5" fill="#6b21a8">+ local TLS :6514 (optional)</text>
   <path d="M190 303 L 286 303" stroke="#475569" stroke-width="1.8" fill="none" marker-end="url(#arrow)"/>
 
   <!-- VLAN C: central -->
