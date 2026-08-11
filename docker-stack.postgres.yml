@@ -15,10 +15,9 @@
 #   - Local per-node data directories created on each pg node, e.g.
 #     /srv/syslog-ha/pg and /srv/syslog-ha/etcd
 #   - `docker network create -d overlay --attachable syslog_net` run once
-#   - Secrets created: pg_superuser_password, pg_replication_password (see
-#     README). Not pg_app_password - that one is supplied by Vault (see
-#     "Vault cutover" note below), and requires docker-stack.vault.yml to
-#     already be deployed and bootstrapped.
+#   - Vault stack deployed and bootstrapped (docker-stack.vault.yml +
+#     docker-stack.vault-agent.yml) — Patroni fetches pg_superuser_password,
+#     pg_replication_password and pg_app_password from Vault API at startup.
 #   - `docker config create haproxy_pg_cfg haproxy/haproxy.cfg`
 #
 # Deploy with: docker stack deploy -c docker-stack.postgres.yml logmara-pg
@@ -32,8 +31,7 @@ x-patroni-image: &patroni-image ${REGISTRY:?set REGISTRY to your image registry}
 # path is now a bind-mounted file from Vault (see the per-node volumes:
 # block below), not a native Swarm secret.
 x-patroni-secrets: &patroni-secrets
-  - pg_superuser_password
-  - pg_replication_password
+  - vault_agent_token
 
 x-patroni-healthcheck: &patroni-healthcheck
   test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
@@ -53,6 +51,7 @@ x-patroni-logging: &patroni-logging
 x-patroni-env-common: &patroni-env-common
   POSTGRES_USER: ${POSTGRES_USER:-syslog}
   POSTGRES_DB: ${POSTGRES_DB:-syslog_db}
+  VAULT_ADDR: http://vault-1:8200
 
 services:
   etcd1:
@@ -142,13 +141,6 @@ services:
       - type: bind
         source: /srv/syslog-ha/pg
         target: /home/postgres
-      # Vault cutover: same path patroni/entrypoint.sh would read from a
-      # native Swarm secret, now a bind-mounted file written by vault-agent
-      # (docker-stack.vault.yml) instead.
-      - type: bind
-        source: /srv/syslog-ha/vault-secrets/pg_app_password
-        target: /run/secrets/pg_app_password
-        read_only: true
     healthcheck: *patroni-healthcheck
     logging: *patroni-logging
     depends_on: [etcd1, etcd2, etcd3]
@@ -175,13 +167,6 @@ services:
       - type: bind
         source: /srv/syslog-ha/pg
         target: /home/postgres
-      # Vault cutover: same path patroni/entrypoint.sh would read from a
-      # native Swarm secret, now a bind-mounted file written by vault-agent
-      # (docker-stack.vault.yml) instead.
-      - type: bind
-        source: /srv/syslog-ha/vault-secrets/pg_app_password
-        target: /run/secrets/pg_app_password
-        read_only: true
     healthcheck: *patroni-healthcheck
     logging: *patroni-logging
     depends_on: [etcd1, etcd2, etcd3]
@@ -208,13 +193,6 @@ services:
       - type: bind
         source: /srv/syslog-ha/pg
         target: /home/postgres
-      # Vault cutover: same path patroni/entrypoint.sh would read from a
-      # native Swarm secret, now a bind-mounted file written by vault-agent
-      # (docker-stack.vault.yml) instead.
-      - type: bind
-        source: /srv/syslog-ha/vault-secrets/pg_app_password
-        target: /run/secrets/pg_app_password
-        read_only: true
     healthcheck: *patroni-healthcheck
     logging: *patroni-logging
     depends_on: [etcd1, etcd2, etcd3]
@@ -256,9 +234,7 @@ networks:
     external: true
 
 secrets:
-  pg_superuser_password:
-    external: true
-  pg_replication_password:
+  vault_agent_token:
     external: true
 
 configs:
