@@ -70,24 +70,27 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 		if filePos > 0 {
 			var checkByte [1]byte
 			if _, err := f.ReadAt(checkByte[:], filePos-1); err == nil && checkByte[0] != '\n' {
-				var seekPos int64 = filePos - 1
-				for seekPos > 0 {
-					if _, err := f.ReadAt(checkByte[:], seekPos-1); err != nil {
-						break
+				seekPos, hitLimit := safeBackseek(filePath, filePos-1)
+				if hitLimit {
+					slog.Warn("file reader: backseek hit limit, resetting to 0", "was", filePos, "limit", backseekLimit)
+					filePos = 0
+					if _, err := f.Seek(0, 0); err != nil {
+						f.Close()
+						if !sleepOrDone(ctx, 1*time.Second) {
+							return
+						}
+						continue
 					}
-					if checkByte[0] == '\n' {
-						break
+				} else {
+					slog.Warn("file reader: position was mid-line, backseeking", "was", filePos, "now", seekPos)
+					filePos = seekPos
+					if _, err := f.Seek(seekPos, 0); err != nil {
+						f.Close()
+						if !sleepOrDone(ctx, 1*time.Second) {
+							return
+						}
+						continue
 					}
-					seekPos--
-				}
-				slog.Warn("file reader: position was mid-line, backseeking", "was", filePos, "now", seekPos)
-				filePos = seekPos
-				if _, err := f.Seek(seekPos, 0); err != nil {
-					f.Close()
-					if !sleepOrDone(ctx, 1*time.Second) {
-						return
-					}
-					continue
 				}
 			}
 		}

@@ -69,6 +69,76 @@ func TestLineSplitterIncompleteTailAtEOFWaits(t *testing.T) {
 // same building blocks runIngestionLoop uses (reopen the file, seek to the
 // last known-good position, scan with lineSplitter) without pulling in the
 // rest of the ingestion pipeline (db/parser/alerts).
+func TestDropTrailingIncompleteLine(t *testing.T) {
+	// Complete lines only - nothing should be dropped.
+	{
+		data := []byte(`{"a":1}` + "\n" + `{"b":2}` + "\n")
+		res := dropTrailingIncompleteLine(data)
+		if len(res) != len(data) {
+			t.Fatalf("complete lines: len = %d, want %d", len(res), len(data))
+		}
+	}
+
+	// Trailing incomplete line - should be stripped.
+	{
+		data := []byte(`{"a":1}` + "\n" + `{"b":2`)
+		res := dropTrailingIncompleteLine(data)
+		if len(res) != 8 {
+			t.Fatalf("trailing incomplete: len = %d, want 8", len(res))
+		}
+	}
+
+	// Single incomplete line - should return empty.
+	{
+		data := []byte(`{"incomplete`)
+		res := dropTrailingIncompleteLine(data)
+		if len(res) != 0 {
+			t.Fatalf("single incomplete: len = %d, want 0", len(res))
+		}
+	}
+
+	// Empty input.
+	{
+		data := []byte{}
+		res := dropTrailingIncompleteLine(data)
+		if len(res) != 0 {
+			t.Fatalf("empty: len = %d, want 0", len(res))
+		}
+	}
+
+	// Only newlines - nothing to drop.
+	{
+		data := []byte("\n\n\n")
+		res := dropTrailingIncompleteLine(data)
+		if len(res) != len(data) {
+			t.Fatalf("only newlines: len = %d, want %d", len(res), len(data))
+		}
+	}
+}
+
+func TestBackseekLimit(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "backseek-*.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	content := `{"a":1}` + "\n" + `{"b":2}` + "\n" + `{"c":3}`
+	_, err = f.WriteString(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Sync()
+
+	result, hitLimit := safeBackseek(f.Name(), int64(len(content)))
+	if hitLimit {
+		t.Fatal("should not hit limit for short file")
+	}
+	if result == 0 {
+		t.Fatal("should find newline position")
+	}
+}
+
 func TestTailingSurvivesSplitWrite(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "tailer-race-*.jsonl")
 	if err != nil {

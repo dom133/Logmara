@@ -240,7 +240,11 @@ func (w *worker) run(ctx context.Context) {
 
 				var entry model.IngestEntry
 				if err := json.Unmarshal([]byte(line), &entry); err != nil {
-					slog.Error("worker: invalid JSON", "id", w.id, "error", err)
+					debug := line
+					if len(debug) > 200 {
+						debug = debug[:200]
+					}
+					slog.Error("worker: invalid JSON", "id", w.id, "error", err, "debug", debug, "lineLen", len(line))
 					sanitizedLine := sanitizeForPostgres(line)
 					entry = model.IngestEntry{
 						Timestamp: time.Now().Format(time.RFC3339),
