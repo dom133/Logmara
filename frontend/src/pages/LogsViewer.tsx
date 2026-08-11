@@ -115,7 +115,11 @@ export default function LogsViewer() {
     const useCursor = sortSupportsCursor(filters.sort)
     const from = filters.from ? dayjs(filters.from).format() : ''
     const to = filters.to ? dayjs(filters.to).format() : ''
-    reset ? setLoading(true) : setLoadingMore(true)
+    if (reset) {
+      setLoading(true)
+    } else {
+      setLoadingMore(true)
+    }
     try {
       const data = await getLogs({
         ...filters,

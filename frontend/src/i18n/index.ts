@@ -27,9 +27,12 @@ const FALLBACK_EN: Record<string, string> = {
   'login.passwordChangeFailed': 'Password change failed',
 }
 
+type I18nWithFallbackFlag = typeof i18n & { _fallbackInitialized?: boolean }
+
 export function initI18nFallback(): typeof i18n {
-  if ((i18n as any)._fallbackInitialized) return i18n
-  ;(i18n as any)._fallbackInitialized = true
+  const i18nExt = i18n as I18nWithFallbackFlag
+  if (i18nExt._fallbackInitialized) return i18n
+  i18nExt._fallbackInitialized = true
   i18n.use(initReactI18next).init({
     lng: 'en',
     fallbackLng: 'en',
@@ -77,7 +80,7 @@ async function detectLanguages(): Promise<string[]> {
   }
 }
 
-async function loadLanguage(lang: string): Promise<{ lang: string; data: any } | null> {
+async function loadLanguage(lang: string): Promise<{ lang: string; data: Record<string, unknown> } | null> {
   try {
     const res = await fetch(`${LANGUAGE_PATH}/${lang}/translation.json`)
     if (res.ok) {
@@ -112,8 +115,14 @@ export function onLanguagesChanged(listener: LanguagesListener): () => void {
   return () => { languagesListeners.delete(listener) }
 }
 
+type I18nWithStore = typeof i18n & { store?: { data?: Record<string, unknown> } }
+
+export function getLoadedLanguages(): string[] {
+  return Object.keys((i18n as I18nWithStore).store?.data || {})
+}
+
 function notifyLanguagesChanged() {
-  const languages = Object.keys((i18n as any).store?.data || {})
+  const languages = getLoadedLanguages()
   languagesListeners.forEach(l => l(languages))
 }
 
@@ -134,7 +143,7 @@ export async function initI18n(): Promise<typeof i18n> {
   // immediately. The remaining languages are loaded in the background
   // (non-blocking) so they're ready when the user switches language.
   const activeResource = await loadLanguage(activeLang)
-  const resources: Record<string, any> = {}
+  const resources: Record<string, { translation: Record<string, unknown> }> = {}
   if (activeResource) {
     resources[activeLang] = { translation: activeResource.data }
   }
@@ -145,7 +154,7 @@ export async function initI18n(): Promise<typeof i18n> {
   const remaining = languages.filter(l => l !== activeLang)
   if (remaining.length) {
     Promise.allSettled(remaining.map(loadLanguage)).then((results) => {
-      for (const r of results as PromiseSettledResult<{ lang: string; data: any } | null>[]) {
+      for (const r of results) {
         if (r.status === 'fulfilled' && r.value) {
           i18n.addResourceBundle(r.value.lang, 'translation', r.value.data, true, true)
         }

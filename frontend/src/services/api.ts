@@ -403,7 +403,7 @@ export async function deleteDashboard(id: number) {
 }
 
 export async function getDashboardData(id: number, limit = 100, cursor = '', search = '', severity = '', from = '', to = '', sort = 'timestamp_desc', offset = 0, fromHostIp = '', fieldFilters?: FieldFilter[]) {
-	const body: Record<string, any> = { limit, cursor: cursor || undefined, search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined, sort: sort || undefined, offset: (!sortSupportsCursor(sort) && offset) || undefined, fromhost_ip: fromHostIp || undefined }
+	const body: Record<string, string | number | boolean | undefined> = { limit, cursor: cursor || undefined, search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined, sort: sort || undefined, offset: (!sortSupportsCursor(sort) && offset) || undefined, fromhost_ip: fromHostIp || undefined }
 	if (fieldFilters && fieldFilters.length > 0) {
 		body.field_filters = JSON.stringify(fieldFilters)
 	}
@@ -413,7 +413,7 @@ export async function getDashboardData(id: number, limit = 100, cursor = '', sea
 }
 
 export async function getDashboardDataCount(id: number, search = '', severity = '', from = '', to = '', fromHostIp = '', fieldFilters?: FieldFilter[]): Promise<number> {
-	const body: Record<string, any> = { search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined, fromhost_ip: fromHostIp || undefined }
+	const body: Record<string, string | undefined> = { search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined, fromhost_ip: fromHostIp || undefined }
 	if (fieldFilters && fieldFilters.length > 0) {
 		body.field_filters = JSON.stringify(fieldFilters)
 	}
@@ -555,7 +555,7 @@ export async function getAuditLogs(params: {
 	from?: string
 	to?: string
 }) {
-	const body: Record<string, any> = {}
+	const body: Record<string, string | number> = {}
 	if (params.limit !== undefined) body.limit = params.limit
 	if (params.offset !== undefined) body.offset = params.offset
 	if (params.username) body.username = params.username
@@ -749,7 +749,21 @@ export async function getContainersHealth() {
 	return res.data as ContainersHealthResponse
 }
 
-export async function uploadSSLCerts(certFile: File, keyFile: File) {
+export interface SSLCertInfo {
+	subject?: string
+	issuer?: string
+	valid_from?: string
+	valid_to?: string
+	dns_names?: string[]
+	error?: string
+}
+
+export interface SSLUploadResult {
+	message?: string
+	cert_info?: SSLCertInfo
+}
+
+export async function uploadSSLCerts(certFile: File, keyFile: File): Promise<SSLUploadResult> {
 	const formData = new FormData()
 	formData.append('cert', certFile)
 	formData.append('key', keyFile)

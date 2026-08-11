@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Checkbox, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip, Statistic, Row, Col } from 'antd'
 import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PlusOutlined, CopyOutlined, KeyOutlined, CloudOutlined, ContainerOutlined, CheckCircleOutlined, WarningOutlined, DashOutlined, NodeIndexOutlined, ClusterOutlined, GlobalOutlined } from '@ant-design/icons'
-import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, AggregatedTailerMetrics, ReplicaTailerMetrics } from '../services/api'
+import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, AggregatedTailerMetrics, ReplicaTailerMetrics, SSLCertInfo } from '../services/api'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
 import { useAuth } from '../services/auth'
@@ -9,7 +9,7 @@ import AdminUsers from '../components/AdminUsers'
 import { containerStateColor, containerStateIcon, serviceStateColor, serviceStateIcon, serviceStateLabel } from '../utils/adminUtils'
 import { SEVERITY_ORDER, SEVERITY_COLORS, getSeverityLabels } from '../constants'
 import { useTranslation } from 'react-i18next'
-import i18nInstance, { languageDisplayName, sortLanguagesEnglishFirst } from '../i18n'
+import i18nInstance, { languageDisplayName, sortLanguagesEnglishFirst, getLoadedLanguages } from '../i18n'
 
 const { Option } = Select
 
@@ -38,7 +38,7 @@ function parseScopeFilters(sf?: { hostnames?: string[]; severities?: string[]; m
 
 export default function Admin() {
   const { refreshUser } = useAuth()
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const [settings, setSettings] = useState<Record<string, string>>({})
   const [settingsForm] = Form.useForm()
   const [devices, setDevices] = useState<DeviceStats[]>([])
@@ -64,7 +64,7 @@ export default function Admin() {
   const [sslUploading, setSslUploading] = useState(false)
   const [certFile, setCertFile] = useState<File | null>(null)
   const [keyFile, setKeyFile] = useState<File | null>(null)
-  const [certInfo, setCertInfo] = useState<any>(null)
+  const [certInfo, setCertInfo] = useState<SSLCertInfo | null>(null)
   const [health, setHealth] = useState<ContainersHealthResponse | null>(null)
   const [healthLoading, setHealthLoading] = useState(false)
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
@@ -555,7 +555,7 @@ const handleCleanup = async () => {
                     <Divider orientation="left">{t('admin.languageSettings')}</Divider>
                     <Form.Item label={t('admin.defaultLanguage')} name="default_language" tooltip={t('admin.defaultLanguageTooltip')}>
                       <Select
-                        options={sortLanguagesEnglishFirst(Object.keys((i18n as any).store?.data || {})).map((l: string) => ({ value: l, label: languageDisplayName(l) }))}
+                        options={sortLanguagesEnglishFirst(getLoadedLanguages()).map((l: string) => ({ value: l, label: languageDisplayName(l) }))}
                       />
                     </Form.Item>
                     <Divider orientation="left">{t('admin.https')}</Divider>

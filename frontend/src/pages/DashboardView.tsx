@@ -92,7 +92,11 @@ export default function DashboardViewPage() {
   const [appendMode, setAppendMode] = useState(true)
 
   const loadLogs = useCallback(async (reset: boolean) => {
-    reset ? setTableLoading(true) : setLoadingMore(true)
+    if (reset) {
+      setTableLoading(true)
+    } else {
+      setLoadingMore(true)
+    }
     try {
       const from = filters.from ? dayjs(filters.from).format() : ''
       const to = filters.to ? dayjs(filters.to).format() : ''
