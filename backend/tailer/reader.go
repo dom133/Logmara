@@ -217,15 +217,19 @@ func dbFallbackPosition(db *sql.DB, filePath string) int64 {
 
 func loadStartPositionFromReader(db *sql.DB, filePath, posFile string, sharedClient *sharedstate.Client) (filePos, flushedPos int64) {
 	if sharedClient != nil {
-		if pos, flushed, ok := sharedClient.LoadTailerPosition(); ok {
+		if pos, fp, ok := sharedClient.LoadTailerPosition(); ok {
 			if f, err := os.Open(filePath); err == nil {
 				stat, _ := f.Stat()
 				f.Close()
 				if pos <= stat.Size() {
-					slog.Info("restored position from Redis", "pos", pos)
-					return pos, flushed
+					if curFp, fpOK := positionFingerprint(filePath, pos); fpOK && curFp == fp {
+						slog.Info("restored position from Redis", "pos", pos)
+						return pos, pos
+					}
+					slog.Warn("Redis position fingerprint no longer matches", "pos", pos)
+				} else {
+					slog.Warn("Redis position exceeds file size", "pos", pos, "fileSize", stat.Size())
 				}
-				slog.Warn("Redis position exceeds file size", "pos", pos, "fileSize", stat.Size())
 			}
 		}
 	}
