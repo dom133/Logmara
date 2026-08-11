@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Checkbox, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip, Statistic, Row, Col } from 'antd'
 import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PlusOutlined, CopyOutlined, KeyOutlined, CloudOutlined, ContainerOutlined, CheckCircleOutlined, WarningOutlined, DashOutlined, NodeIndexOutlined, ClusterOutlined, GlobalOutlined } from '@ant-design/icons'
-import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, AggregatedTailerMetrics, ReplicaTailerMetrics, SSLCertInfo } from '../services/api'
+import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, AggregatedTailerMetrics, ReplicaTailerMetrics, WorkerMetrics, SSLCertInfo } from '../services/api'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
 import { useAuth } from '../services/auth'
@@ -27,6 +27,24 @@ function formatDurationAgo(ms: number): string {
 // Loose client-side check (full IPv4/IPv6/CIDR validation happens server-side) -
 // this just catches obvious typos before a round trip.
 const ipOrCidrPattern = /^[0-9a-fA-F:.]+(\/\d{1,3})?$/
+
+// Backend returns WorkerMetrics grouped by node_id already (see
+// GetTailerMetricsAggregated's sort.Slice). This turns that grouping into
+// per-row rowSpans so the node_id cell is only shown once per group instead
+// of repeating on every row - worker IDs restart at 0 on each replica, so
+// without this the combined table reads like duplicate rows.
+function computeNodeRowSpans(rows: WorkerMetrics[]): number[] {
+  const spans: number[] = new Array(rows.length).fill(1)
+  let groupStart = 0
+  for (let i = 1; i <= rows.length; i++) {
+    if (i === rows.length || rows[i].node_id !== rows[groupStart].node_id) {
+      spans[groupStart] = i - groupStart
+      for (let j = groupStart + 1; j < i; j++) spans[j] = 0
+      groupStart = i
+    }
+  }
+  return spans
+}
 
 function parseScopeFilters(sf?: { hostnames?: string[]; severities?: string[]; match_mode?: 'and' | 'or' } | null): { hostnames: string[]; severities: string[]; match_mode: 'and' | 'or' } | null {
   if (!sf) return null
@@ -85,6 +103,10 @@ export default function Admin() {
   const [tailerMetrics, setTailerMetrics] = useState<AggregatedTailerMetrics | null>(null)
   const [tailerPipelineActive, setTailerPipelineActive] = useState(false)
   const [tailerLoading, setTailerLoading] = useState(false)
+  const workerNodeRowSpans = useMemo(
+    () => computeNodeRowSpans(tailerMetrics?.WorkerMetrics ?? []),
+    [tailerMetrics]
+  )
   const [apiKeyEditing, setApiKeyEditing] = useState<APIKey | null>(null)
   const [apiKeyForm] = Form.useForm()
   const [newKeyDisplay, setNewKeyDisplay] = useState<string | null>(null)
@@ -1626,6 +1648,10 @@ const handleCleanup = async () => {
                           dataIndex: 'node_id',
                           key: 'node_id',
                           width: 160,
+                          render: (v: string, _record, index: number) => ({
+                            children: <Tag icon={<ContainerOutlined />}>{v}</Tag>,
+                            props: { rowSpan: workerNodeRowSpans[index] },
+                          }),
                         },
                         {
                           title: t('admin.msgsProcessed'),
