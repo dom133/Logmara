@@ -252,11 +252,15 @@ func (w *worker) run(ctx context.Context) {
 					}
 					slog.Error("worker: invalid JSON", "id", w.id, "error", err, "debug", debug, "lineLen", len(line))
 					sanitizedLine := sanitizeForPostgres(line)
+					tag := "[MALFORMED JSON]"
+					if looksTruncatedAtSource(line, err) {
+						tag = "[TRUNCATED AT SOURCE]"
+					}
 					entry = model.IngestEntry{
 						Timestamp: time.Now().Format(time.RFC3339),
 						Hostname:  "unknown",
 						Severity:  "error",
-						Message:   fmt.Sprintf("[MALFORMED JSON] %s", sanitizedLine),
+						Message:   fmt.Sprintf("%s %s", tag, sanitizedLine),
 					}
 					w.alerts.EvaluateMalformedJSON(w.db, sanitizedLine)
 					w.metrics.Mutex.Lock()

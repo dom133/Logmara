@@ -46,6 +46,20 @@ func sanitizeForPostgres(s string) string {
 
 var truncatedISORe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}$`)
 
+// looksTruncatedAtSource reports whether line has the shape of a JsonLines
+// record (rsyslog/syslog.conf's template, always opening with
+// {"timestamp":") that got cut short before its closing brace, rather than
+// being genuinely unparseable garbage. Seen in practice when a single
+// property value (typically "message") is unusually long and heavily
+// escaped: rsyslog's own JSON-escaping truncates it and drops the closing
+// "}" - a source-side/rsyslog-side data loss no retry or bigger
+// $MaxMessageSize on our end can recover, worth labeling distinctly from
+// actual malformed input.
+func looksTruncatedAtSource(line string, unmarshalErr error) bool {
+	return strings.HasPrefix(line, `{"timestamp":"`) &&
+		strings.Contains(unmarshalErr.Error(), "unexpected end of JSON input")
+}
+
 const (
 	compactionInterval = 30 * time.Minute
 	maxFileSize        = 100 * 1024 * 1024
@@ -835,11 +849,15 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 				}
 				slog.Error("invalid JSON", "error", err, "debug", debug, "lineLen", len(line))
 				sanitizedLine := sanitizeForPostgres(line)
+				tag := "[MALFORMED JSON]"
+				if looksTruncatedAtSource(line, err) {
+					tag = "[TRUNCATED AT SOURCE]"
+				}
 				entry = model.IngestEntry{
 					Timestamp: time.Now().Format(time.RFC3339),
 					Hostname:  "unknown",
 					Severity:  "error",
-					Message:   fmt.Sprintf("[MALFORMED JSON] %s", sanitizedLine),
+					Message:   fmt.Sprintf("%s %s", tag, sanitizedLine),
 				}
 				alerts.EvaluateMalformedJSON(db, sanitizedLine)
 			}
