@@ -23,6 +23,7 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 
 	posFile := filepath.Join(filepath.Dir(filePath), positionFileName)
 	filePos, _ := loadStartPositionFromReader(db, filePath, posFile, sharedClient)
+	lastCompaction := time.Now()
 
 	defer func() {
 		slog.Info("file reader stopped")
@@ -56,6 +57,30 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 		if filePos > fileSize {
 			filePos = 0
 			slog.Info("file rotated, resetting position")
+		}
+
+		// Compact once most of the file has been durably flushed to the DB
+		// (flushTracker's contiguous prefix), same threshold/interval as
+		// runIngestionLoop's single-server compaction. Without this, this
+		// distributed (VIP leader) path never truncates logs.jsonl and the
+		// file grows without bound - see tailer.go's compactFile.
+		_, flushedPos := flushTracker.GetFlushedPos(ctx)
+		shouldCompact := time.Since(lastCompaction) > compactionInterval || fileSize > maxFileSize
+		enoughFlushed := fileSize > 0 && flushedPos > 0 && (fileSize-flushedPos) < fileSize/4
+		if shouldCompact && enoughFlushed {
+			newF, err := compactFile(f, flushedPos, filePath, reopenLogFile)
+			if err != nil {
+				slog.Error("file reader: compaction error", "error", err)
+				f.Close()
+				if !sleepOrDone(ctx, 1*time.Second) {
+					return
+				}
+				continue
+			}
+			f = newF
+			filePos = 0
+			savePosition(posFile, 0, filePath, sharedClient)
+			lastCompaction = time.Now()
 		}
 
 		if _, err := f.Seek(filePos, 0); err != nil {
@@ -102,7 +127,7 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 		scanner.Split(splitter.split)
 
 		curFilePos := filePos
-		seq := flushTracker.NextSeq()
+		published := 0
 
 		for scanner.Scan() {
 			if ic.IsPaused() {
@@ -120,7 +145,7 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 
 			// Check pause and backpressure every 100 lines so we stop
 			// publishing quickly when purge pauses ingestion.
-			if seq%100 == 0 {
+			if published%100 == 0 {
 				if ic.IsPaused() {
 					slog.Info("file reader: ingestion paused during scan, breaking")
 					break
@@ -130,12 +155,16 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 				}
 			}
 
+			// NextSeq() is called per published line (not per loop
+			// iteration) so the flush tracker's sequence never has gaps
+			// from numbers minted but never published - a gap freezes
+			// the contiguous flushedSeq/flushedPos advance forever.
 			entry := sharedstate.QueueEntry{
-				Seq:     seq,
+				Seq:     flushTracker.NextSeq(),
 				NextPos: curFilePos,
 				Line:    line,
 			}
-			seq++
+			published++
 
 			data, err := json.Marshal(entry)
 			if err != nil {
