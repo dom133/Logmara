@@ -565,7 +565,16 @@ func reloadNginx(httpsEnabled, redirectEnabled bool, corsOrigins string) error {
 
 	redirectConf := ""
 	if httpsEnabled && redirectEnabled {
-		redirectConf = "return 301 https://$host$request_uri;\n"
+		// /healthz is exempted: this fires in nginx's server-rewrite phase,
+		// before location matching, so an unconditional return here would
+		// 301 haproxy-app's health probe (GET / on :80, "option httpchk" in
+		// haproxy/haproxy-app.cfg's frontend_http listener) right along with
+		// real traffic. That check requires a plain 200, so a 301 marks
+		// every frontend replica DOWN and haproxy starts answering :80 with
+		// 503 instead of ever reaching nginx to redirect it. See the
+		// `location = /healthz` block in frontend/nginx.conf, which this
+		// exemption leaves reachable to satisfy the health check.
+		redirectConf = "if ($request_uri != \"/healthz\") {\n    return 301 https://$host$request_uri;\n}\n"
 	}
 	if err := os.WriteFile(filepath.Join(confDir, "redirect.conf"), []byte(redirectConf), 0644); err != nil {
 		return fmt.Errorf("write redirect.conf: %w", err)
