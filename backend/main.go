@@ -252,6 +252,10 @@ func main() {
 	migrateOnly := flag.Bool("migrate-only", false, "run pending DB migration and builtin parser/settings seeding, then exit")
 	flag.Parse()
 	if *migrateOnly {
+		if err := vaultclient.Get().WaitUntilReady(); err != nil {
+			slog.Error("vault not ready", "error", err)
+			os.Exit(1)
+		}
 		dsn := util.ResolveDatabaseURL()
 		if dsn == "" {
 			slog.Error("DATABASE_URL not set; cannot run --migrate-only")
@@ -322,6 +326,14 @@ func main() {
 	// as well as the plain DATABASE_URL env var, so a Swarm deployment can
 	// keep the DB password out of the deploy-time environment - see
 	// util.ResolveDatabaseURL.
+	// If Vault is configured, wait for it to become unsealed first.
+	// ResolveDatabaseURL pulls the DB password from Vault, so attempting
+	// connection before Vault is ready always fails with an empty password.
+	if err := vaultclient.Get().WaitUntilReady(); err != nil {
+		slog.Error("vault not ready", "error", err)
+		os.Exit(1)
+	}
+
 	dsn := util.ResolveDatabaseURL()
 
 	var database *sql.DB
