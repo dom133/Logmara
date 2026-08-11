@@ -12,7 +12,7 @@ require (
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/lib/pq v1.10.9
 	github.com/rabbitmq/amqp091-go v1.13.0
-	github.com/redis/go-redis/v9 v9.21.0
+	github.com/redis/go-redis/v9 v9.22.0
 	golang.org/x/crypto v0.48.0
 )
 
