@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -237,6 +238,19 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 		slog.Warn("tailer metrics: no valid replica metrics found, falling back to local", "registered_replicas", len(replicaIDs))
 		return localFallback()
 	}
+
+	// SMembers returns replica IDs in no particular (and not necessarily
+	// stable) order, which would otherwise make both tables reshuffle on
+	// every poll and scatter same-node workers apart. Sort by node then
+	// worker ID so IDs that repeat across nodes (each replica numbers its
+	// own workers from 0) are grouped and the UI stays stable.
+	sort.Slice(replicas, func(i, j int) bool { return replicas[i].NodeID < replicas[j].NodeID })
+	sort.Slice(allWorkerMetrics, func(i, j int) bool {
+		if allWorkerMetrics[i].NodeID != allWorkerMetrics[j].NodeID {
+			return allWorkerMetrics[i].NodeID < allWorkerMetrics[j].NodeID
+		}
+		return allWorkerMetrics[i].ID < allWorkerMetrics[j].ID
+	})
 
 	return &AggregatedTailerMetrics{
 		PipelineActive: true,
