@@ -460,9 +460,7 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 					return
 				case <-ticker.C:
 					_, flushedPos := pipeline.flushTrk.GetFlushedPos(leaderCtx)
-					if flushedPos > 0 {
-						savePosition(posFile, flushedPos, filePath, sharedClient)
-					}
+					savePosition(posFile, flushedPos, filePath, sharedClient)
 				}
 			}
 		}()
@@ -1105,41 +1103,7 @@ func loadPosition(path string) (pos int64, fingerprint string, ok bool) {
 }
 
 func loadStartPosition(db *sql.DB, filePath, posFile string, sharedClient *sharedstate.Client) (filePos, flushedPos int64) {
-	if sharedClient != nil {
-		if pos, flushed, ok := sharedClient.LoadTailerPosition(); ok {
-			if f, err := os.Open(filePath); err == nil {
-				stat, _ := f.Stat()
-				f.Close()
-				if pos <= stat.Size() {
-					slog.Info("restored position from Redis", "pos", pos)
-					return pos, flushed
-				}
-				slog.Warn("Redis position exceeds file size", "pos", pos, "fileSize", stat.Size())
-			}
-		}
-	}
-
-	if pos, fp, ok := loadPosition(posFile); ok {
-		if f, err := os.Open(filePath); err == nil {
-			stat, _ := f.Stat()
-			f.Close()
-			if pos <= stat.Size() {
-				if curFp, fpOK := positionFingerprint(filePath, pos); fpOK && curFp == fp {
-					slog.Info("restored position from file", "pos", pos)
-					return pos, pos
-				}
-				slog.Warn("saved position content no longer matches", "pos", pos)
-			}
-		}
-		slog.Info("saved position invalid, falling back to DB")
-	}
-
-	if pos := dbFallbackPosition(db, filePath); pos > 0 {
-		slog.Info("restored position from DB fallback", "pos", pos)
-		return pos, pos
-	}
-
-	return 0, 0
+	return loadStartPositionFromReader(db, filePath, posFile, sharedClient)
 }
 
 func compactFile(f *os.File, flushedPos int64, filePath string, reopenLogFile func() error) (*os.File, error) {
