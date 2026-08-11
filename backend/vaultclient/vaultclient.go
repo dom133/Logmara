@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -39,6 +40,12 @@ const mountPrefix = "secret/data/logmara/"
 // requestTimeout bounds a single Vault read so a network hiccup can't hang
 // whatever request path triggered it.
 const requestTimeout = 5 * time.Second
+
+// waitReadyInterval is how long to sleep between seal-status checks.
+const waitReadyInterval = 5 * time.Second
+
+// waitReadyTimeout is the maximum time to wait for Vault to become unsealed.
+const waitReadyTimeout = 5 * time.Minute
 
 type Client struct {
 	api *vaultapi.Client
@@ -148,6 +155,37 @@ func (c *Client) fetch(name string) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+// WaitUntilReady polls Vault's seal-status endpoint until Vault reports
+// sealed=false or the timeout is reached. It is a no-op if Vault isn't
+// configured (c is nil). Returns an error only on timeout so callers can
+// fail-fast instead of proceeding with empty secrets.
+func (c *Client) WaitUntilReady() error {
+	if c == nil {
+		return nil
+	}
+
+	deadline := time.Now().Add(waitReadyTimeout)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		secret, err := c.api.Logical().ReadWithContext(ctx, "sys/seal-status")
+		cancel()
+
+		if err == nil && secret != nil {
+			sealed, _ := secret.Data["sealed"].(bool)
+			if !sealed {
+				slog.Info("vault: ready (unsealed)")
+				return nil
+			}
+		}
+
+		elapsed := time.Since(deadline.Add(-waitReadyTimeout))
+		slog.Info("vault: sealed, waiting", "elapsed", elapsed, "remaining", deadline.Sub(time.Now()))
+		time.Sleep(waitReadyInterval)
+	}
+
+	return fmt.Errorf("vault did not become unsealed within %v", waitReadyTimeout)
 }
 
 // WriteSecret writes a new value to secret/data/logmara/<name> (KV v2).
