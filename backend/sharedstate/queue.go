@@ -65,18 +65,22 @@ func (q *Queue) connect() error {
 	return nil
 }
 
+func (q *Queue) healthyLocked() bool {
+	return q.conn != nil && !q.conn.IsClosed() && q.channel != nil && !q.channel.IsClosed()
+}
+
 func (q *Queue) ensureConnected() error {
 	q.mu.RLock()
-	if q.conn != nil && !q.conn.IsClosed() {
+	if q.healthyLocked() {
 		q.mu.RUnlock()
 		return nil
 	}
-	slog.Warn("queue: connection lost or closed, initiating reconnect")
+	slog.Warn("queue: connection or channel lost or closed, initiating reconnect")
 	q.mu.RUnlock()
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.conn != nil && !q.conn.IsClosed() {
+	if q.healthyLocked() {
 		return nil
 	}
 	return q.reconnectLocked()
@@ -123,8 +127,8 @@ func (q *Queue) Consume(ctx context.Context) (<-chan amqp.Delivery, error) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
-	if q.conn.IsClosed() {
-		return nil, fmt.Errorf("queue consume: connection closed unexpectedly after ensureConnected")
+	if !q.healthyLocked() {
+		return nil, fmt.Errorf("queue consume: connection or channel closed unexpectedly after ensureConnected")
 	}
 
 	if err := q.channel.Qos(rabbitmqPrefetch, 0, false); err != nil {
