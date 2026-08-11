@@ -136,7 +136,13 @@ func (wp *WorkerPool) GetMetrics() []WorkerMetrics {
 	metrics := make([]WorkerMetrics, len(wp.workers))
 	for i, w := range wp.workers {
 		w.metrics.Mutex.RLock()
-		metrics[i] = *w.metrics
+		metrics[i] = WorkerMetrics{
+			ID:            w.metrics.ID,
+			MsgsProcessed: w.metrics.MsgsProcessed,
+			ParseErrors:   w.metrics.ParseErrors,
+			DbInserts:     w.metrics.DbInserts,
+			LastFlushAt:   w.metrics.LastFlushAt,
+		}
 		w.metrics.Mutex.RUnlock()
 	}
 	return metrics
@@ -314,9 +320,6 @@ func (w *worker) run(ctx context.Context) {
 						for _, d := range batchDelivries {
 							d.Nack(false, true)
 						}
-						w.metrics.Mutex.Lock()
-						w.metrics.MsgsProcessed += int64(len(batchDelivries))
-						w.metrics.Mutex.Unlock()
 						entries = nil
 						queueEntries = nil
 						batchDelivries = nil

@@ -75,6 +75,7 @@ func (s *lineSplitter) split(data []byte, atEOF bool) (advance int, token []byte
 
 const vipMarkerPath = "/data/.vip_master"
 const myNodeEnvKey = "MY_NODE"
+const swarmTaskIdentityEnvKey = "SWARM_TASK_IDENTITY"
 const vipCheckInterval = 5 * time.Second
 const vipStartupDelay = 3 * time.Second
 const vipStartupJitterMax = 2 * time.Second
@@ -390,10 +391,25 @@ func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine
 }
 
 func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+	// myNode identifies the physical Swarm node this task runs on. It's used
+	// below ONLY to compare against the VIP marker file, which keepalived
+	// (notify_vip.sh) stamps with `hostname` - i.e. also the node, not the
+	// task. It must stay node-scoped or VIP leader matching breaks.
 	myNode := strings.TrimSpace(os.Getenv(myNodeEnvKey))
 	if myNode == "" {
 		slog.Warn("tailer: MY_NODE not set, falling back to os.Hostname()")
 		myNode, _ = os.Hostname()
+	}
+
+	// taskID uniquely identifies this replica (node+slot), unlike myNode
+	// above which is shared by every replica colocated on the same Swarm
+	// node. It's used as the Redis key/registration identity for tailer
+	// metrics, so replicas colocated on one node don't clobber each other's
+	// worker stats under the same key - see SWARM_TASK_IDENTITY in
+	// docker-stack.app.yml and middleware.ServerIdentity.
+	taskID := strings.TrimSpace(os.Getenv(swarmTaskIdentityEnvKey))
+	if taskID == "" {
+		taskID, _ = os.Hostname()
 	}
 
 	startupJitter := time.Duration(rand.Int63n(int64(vipStartupJitterMax)))
@@ -403,7 +419,7 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 
 	// All replicas start the consumer pipeline (RabbitMQ queue + WorkerPool).
 	// This allows every replica to consume and execute tasks from the queue.
-	pipeline := startConsumerPipeline(ctx, db, filePath, engine, ic, alerts, rate, sharedClient, myNode)
+	pipeline := startConsumerPipeline(ctx, db, filePath, engine, ic, alerts, rate, sharedClient, taskID)
 
 	// If RabbitMQ is unavailable, the fallback local ingestion loop is running.
 	if pipeline.queue == nil {
