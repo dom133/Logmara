@@ -96,11 +96,17 @@ func (c *Client) cloneClientWithPassword(newPassword string) (redis.UniversalCli
 			SentinelAddrs:    splitAndTrim(sentinelAddrsRaw),
 			Password:         newPassword,
 			SentinelPassword: newPassword,
+			DialTimeout:      5 * time.Second,
+			ReadTimeout:      5 * time.Second,
+			WriteTimeout:     5 * time.Second,
 		}), nil
 	case addr != "":
 		return redis.NewClient(&redis.Options{
-			Addr:     addr,
-			Password: newPassword,
+			Addr:         addr,
+			Password:     newPassword,
+			DialTimeout:  5 * time.Second,
+			ReadTimeout:  5 * time.Second,
+			WriteTimeout: 5 * time.Second,
 		}), nil
 	default:
 		return nil, fmt.Errorf("redis: no Redis address configured")
@@ -142,11 +148,17 @@ func Connect() (*Client, error) {
 			SentinelAddrs:    splitAndTrim(sentinelAddrsRaw),
 			Password:         password,
 			SentinelPassword: password,
+			DialTimeout:      5 * time.Second,
+			ReadTimeout:      5 * time.Second,
+			WriteTimeout:     5 * time.Second,
 		})
 	case addr != "":
 		rdb = redis.NewClient(&redis.Options{
-			Addr:     addr,
-			Password: password,
+			Addr:         addr,
+			Password:     password,
+			DialTimeout:  5 * time.Second,
+			ReadTimeout:  5 * time.Second,
+			WriteTimeout: 5 * time.Second,
 		})
 	default:
 		return nil, nil
