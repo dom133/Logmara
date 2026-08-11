@@ -15,9 +15,9 @@
 #   - Local per-node data directories created on each pg node, e.g.
 #     /srv/syslog-ha/pg and /srv/syslog-ha/etcd
 #   - `docker network create -d overlay --attachable syslog_net` run once
-#   - Vault stack deployed and bootstrapped (docker-stack.vault.yml +
-#     docker-stack.vault-agent.yml) — Patroni fetches pg_superuser_password,
-#     pg_replication_password and pg_app_password from Vault API at startup.
+#   - Vault stack deployed and bootstrapped (docker-stack.vault.yml) —
+#     Patroni fetches pg_superuser_password, pg_replication_password and
+#     pg_app_password from Vault's HTTP API directly at startup.
 #
 # Deploy with: ./scripts/swarm-deploy.sh postgres (not a bare
 # `docker stack deploy` - see "content-hash name" note on the configs:
@@ -27,10 +27,11 @@ version: "3.8"
 
 x-patroni-image: &patroni-image ${REGISTRY:?set REGISTRY to your image registry}/logmara-patroni:${TAG:-latest}
 
-# pg_app_password is deliberately not here - Patroni's entrypoint.sh reads
-# it from the same /run/secrets/pg_app_password path either way, but that
-# path is now a bind-mounted file from Vault (see the per-node volumes:
-# block below), not a native Swarm secret.
+# pg_superuser_password/pg_replication_password/pg_app_password are
+# deliberately not here - Patroni's entrypoint.sh fetches all three straight
+# from Vault's HTTP API at startup (using vault_agent_token below only to
+# authenticate that call), the same direct-API mechanism api/Redis/RabbitMQ
+# use. See "Deploying Vault" in the README.
 x-patroni-secrets: &patroni-secrets
   - vault_agent_token
 

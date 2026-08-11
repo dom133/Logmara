@@ -16,9 +16,14 @@
 #     app=true/edge=true on small clusters)
 #   - `docker network create -d overlay --attachable syslog_net` (already
 #     done if docker-stack.postgres.yml is deployed)
-#   - docker-stack.vault.yml already deployed and bootstrapped - rabbitmq_password
-#     is supplied by vault-agent's bind-mounted output, not a native Swarm
-#     secret (see the rabbitmq-password-mount anchor below)
+#   - docker-stack.vault.yml already deployed and bootstrapped, with
+#     `./scripts/vault-bootstrap.sh migrate-secrets` run (creates the
+#     vault_agent_token Docker secret below). rabbitmq/entrypoint.sh and
+#     rabbitmq/join_entrypoint.sh fetch rabbitmq_password straight from
+#     Vault's HTTP API at container start - same direct-API mechanism
+#     Patroni/api use (patroni/entrypoint.sh, backend/vaultclient) - using
+#     vault_agent_token only to authenticate that call, not a
+#     locally-rendered file.
 #   - Secret created: rabbitmq_erlang_cookie (stays a native Swarm secret -
 #     rotating it requires a full cluster re-init, so it's excluded from the
 #     Vault cutover, see scripts/rotate-secrets.sh)
@@ -35,14 +40,8 @@ x-rabbitmq-logging: &rabbitmq-logging
     max-size: "10m"
     max-file: "3"
 
-# Vault cutover: same /run/secrets/rabbitmq_password path entrypoint.sh /
-# join_entrypoint.sh already read, now a bind-mounted file written by
-# vault-agent (docker-stack.vault.yml) instead of a native Swarm secret.
-x-rabbitmq-password-mount: &rabbitmq-password-mount
-  - type: bind
-    source: /srv/syslog-ha/vault-secrets/rabbitmq_password
-    target: /run/secrets/rabbitmq_password
-    read_only: true
+x-rabbitmq-vault-env: &rabbitmq-vault-env
+  VAULT_ADDR: http://vault-1:8200
 
 services:
   rabbitmq1:
@@ -50,6 +49,7 @@ services:
     hostname: rabbitmq1
     networks: [syslog_net]
     environment:
+      <<: *rabbitmq-vault-env
       RABBITMQ_ERLANG_COOKIE_FILE: /run/secrets/rabbitmq_erlang_cookie
     entrypoint: ["/docker-entrypoint-init.d/entrypoint.sh"]
     configs:
@@ -60,7 +60,7 @@ services:
         mode: 0755
     secrets:
       - rabbitmq_erlang_cookie
-    volumes: *rabbitmq-password-mount
+      - vault_agent_token
     healthcheck:
       test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
       interval: 15s
@@ -80,6 +80,7 @@ services:
     hostname: rabbitmq2
     networks: [syslog_net]
     environment:
+      <<: *rabbitmq-vault-env
       RABBITMQ_ERLANG_COOKIE_FILE: /run/secrets/rabbitmq_erlang_cookie
     entrypoint: ["/docker-entrypoint-init.d/join_entrypoint.sh"]
     configs:
@@ -90,7 +91,7 @@ services:
         mode: 0755
     secrets:
       - rabbitmq_erlang_cookie
-    volumes: *rabbitmq-password-mount
+      - vault_agent_token
     depends_on: [rabbitmq1]
     healthcheck:
       test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
@@ -111,6 +112,7 @@ services:
     hostname: rabbitmq3
     networks: [syslog_net]
     environment:
+      <<: *rabbitmq-vault-env
       RABBITMQ_ERLANG_COOKIE_FILE: /run/secrets/rabbitmq_erlang_cookie
     entrypoint: ["/docker-entrypoint-init.d/join_entrypoint.sh"]
     configs:
@@ -121,7 +123,7 @@ services:
         mode: 0755
     secrets:
       - rabbitmq_erlang_cookie
-    volumes: *rabbitmq-password-mount
+      - vault_agent_token
     depends_on: [rabbitmq1]
     healthcheck:
       test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
@@ -174,6 +176,12 @@ networks:
 
 secrets:
   rabbitmq_erlang_cookie:
+    external: true
+  # Same bootstrap token Patroni/api/Redis use (created by
+  # `scripts/vault-bootstrap.sh migrate-secrets`) - only used to authenticate
+  # rabbitmq/entrypoint.sh's and rabbitmq/join_entrypoint.sh's direct Vault
+  # API calls, never written to disk as the actual password.
+  vault_agent_token:
     external: true
 
 # Content-hash names (computed by scripts/swarm-deploy.sh) because Swarm

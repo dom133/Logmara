@@ -83,18 +83,21 @@ trap restore_app_scale_on_exit EXIT
 # Secret store detection: Vault or Docker secrets
 # ---------------------------------------------------------------------------
 
-# Returns 0 if Vault agent is deployed and serving. vault-agent is its own
-# stack (logmara-vault-agent, see scripts/swarm-deploy.sh's "vault-agent"
-# target and docker-stack.vault-agent.yml) separate from the 3-node Vault
-# server stack (logmara-vault) - not a service inside the server stack.
+# Returns 0 if the Vault server stack (logmara-vault, docker-stack.vault.yml)
+# is deployed and serving. This used to check for the vault-agent sidecar
+# stack instead, but that stack has been removed entirely - api/Patroni/
+# redis/rabbitmq all fetch secrets straight from Vault's HTTP API (see
+# backend/vaultclient, patroni/entrypoint.sh, redis/entrypoint.sh,
+# rabbitmq/entrypoint.sh), so checking for a vault-agent service would
+# always report false even when Vault is very much the active secret store.
 using_vault() {
     # "current-state" is not a real `docker service ps --filter` key (only
     # desired-state/id/name/node are) - it silently errors and leaves
     # stdout empty, which used to make this always report false regardless
-    # of whether vault-agent was actually running. Match "Running" in the
+    # of whether vault-1 was actually running. Match "Running" in the
     # CURRENT STATE column of the (unfiltered-by-that) output instead.
-    docker service inspect logmara-vault-agent_vault-agent >/dev/null 2>&1 && \
-    docker service ps --filter "desired-state=running" logmara-vault-agent_vault-agent 2>/dev/null | grep -q "Running"
+    docker service inspect logmara-vault_vault-1 >/dev/null 2>&1 && \
+    docker service ps --filter "desired-state=running" logmara-vault_vault-1 2>/dev/null | grep -q "Running"
 }
 
 # Read the plaintext value of an existing Docker (Swarm) secret. `docker

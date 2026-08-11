@@ -15,6 +15,6 @@ sentinel resolve-hostnames yes
 sentinel announce-hostnames yes
 
 # sentinel auth-pass mymaster <password> is appended at container start
-# (see docker-stack.redis.yml's sentinel entrypoint) - it is not stored in
-# this file since it comes from the redis_password Swarm secret, not from a
-# read-only Swarm config.
+# (see redis/sentinel_entrypoint.sh) - it is not stored in this file since
+# it comes from Vault's HTTP API at container start, not from a read-only
+# Swarm config.

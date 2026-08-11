@@ -9,23 +9,23 @@
 # Usage:
 #   ./scripts/swarm-deploy.sh <stack> [stack-name]
 #
-#   <stack>       One of: vault, vault-agent, postgres, redis, rabbitmq, app, monitoring, all
-#   [stack-name]  Override the stack name (default: logmara-vault / logmara-vault-agent /
+#   <stack>       One of: vault, postgres, redis, rabbitmq, app, monitoring, all
+#   [stack-name]  Override the stack name (default: logmara-vault /
 #                 logmara-pg / logmara-redis / logmara-rabbitmq / logmara-app / logmara-monitoring)
 #
 # Examples:
-#   ./scripts/swarm-deploy.sh vault-agent
+#   ./scripts/swarm-deploy.sh vault
 #   ./scripts/swarm-deploy.sh postgres
 #   ./scripts/swarm-deploy.sh rabbitmq
 #   ./scripts/swarm-deploy.sh app
 #   ./scripts/swarm-deploy.sh monitoring
 #   ./scripts/swarm-deploy.sh all
 #
-# Note: `all` deploys postgres/redis/rabbitmq/app only, not vault/vault-agent/
-# monitoring - those need one-time setup first (Vault's bootstrap in README
-# "Deploying Vault"; monitoring's GRAFANA_ADMIN_PASSWORD and NFS dashboards
-# path in README "Deploying Monitoring") and aren't part of the routine
-# redeploy cycle the way the other four are.
+# Note: `all` deploys postgres/redis/rabbitmq/app only, not vault/monitoring -
+# those need one-time setup first (Vault's bootstrap in README "Deploying
+# Vault"; monitoring's GRAFANA_ADMIN_PASSWORD and NFS dashboards path in
+# README "Deploying Monitoring") and aren't part of the routine redeploy
+# cycle the way the other four are.
 #
 # .env file location (first match wins):
 #   1. .env in the same directory as this script's parent (repo root)
@@ -69,7 +69,7 @@ STACK_NAME_OVERRIDE="${2:-}"
 if [[ -z "$STACK" ]]; then
     echo "Usage: $0 [--env-file <path>] [--resolve-image] [--with-registry-auth] <stack> [stack-name]" >&2
     echo "" >&2
-     echo "Stacks: vault, vault-agent, postgres, redis, rabbitmq, app, monitoring, all" >&2
+     echo "Stacks: vault, postgres, redis, rabbitmq, app, monitoring, all" >&2
     exit 1
 fi
 
@@ -132,11 +132,12 @@ export RABBITMQ_CONF_TPL_HASH="$(cfg_hash rabbitmq/rabbitmq.conf.tpl)"
 export RABBITMQ_ENTRYPOINT_HASH="$(cfg_hash rabbitmq/entrypoint.sh)"
 export RABBITMQ_JOIN_ENTRYPOINT_HASH="$(cfg_hash rabbitmq/join_entrypoint.sh)"
 export VAULT_CFG_HASH="$(cfg_hash vault/vault.hcl)"
-export VAULT_AGENT_CFG_HASH="$(cfg_hash vault/vault-agent.hcl)"
 export HAPROXY_PG_CFG_HASH="$(cfg_hash haproxy/haproxy.cfg)"
 export HAPROXY_APP_CFG_HASH="$(cfg_hash haproxy/haproxy-app.cfg)"
 export HAPROXY_RABBITMQ_CFG_HASH="$(cfg_hash haproxy/haproxy-rabbitmq.cfg)"
 export REDIS_SENTINEL_CFG_HASH="$(cfg_hash redis/sentinel.conf.tpl)"
+export REDIS_ENTRYPOINT_HASH="$(cfg_hash redis/entrypoint.sh)"
+export REDIS_SENTINEL_ENTRYPOINT_HASH="$(cfg_hash redis/sentinel_entrypoint.sh)"
 
 # ---------------------------------------------------------------------------
 # Deploy helpers
@@ -156,10 +157,6 @@ case "$STACK" in
     vault)
         name="${STACK_NAME_OVERRIDE:-logmara-vault}"
         deploy_stack "docker-stack.vault.yml" "$name"
-        ;;
-    vault-agent)
-        name="${STACK_NAME_OVERRIDE:-logmara-vault-agent}"
-        deploy_stack "docker-stack.vault-agent.yml" "$name"
         ;;
     postgres)
         name="${STACK_NAME_OVERRIDE:-logmara-pg}"
@@ -189,7 +186,7 @@ case "$STACK" in
         deploy_stack "docker-stack.app.yml"    "${STACK_NAME_OVERRIDE:-logmara-app}"
         ;;
     *)
-        echo "Error: unknown stack '$STACK'. Use: vault, vault-agent, postgres, redis, rabbitmq, app, monitoring, all" >&2
+        echo "Error: unknown stack '$STACK'. Use: vault, postgres, redis, rabbitmq, app, monitoring, all" >&2
         exit 1
         ;;
 esac

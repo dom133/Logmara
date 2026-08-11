@@ -51,14 +51,22 @@ Commands (run on the indicated node):
       `openssl rand -base64 32`, do not reuse these examples.
 
   redis-secret <redis-password>
-       Run on a manager, once: creates the redis_password secret consumed by
-       docker-stack.redis.yml. Its value must match REDIS_PASSWORD passed to
-       docker-stack.app.yml.
+       Run on a manager, once: creates the redis_password Docker secret.
+       Not read directly by docker-stack.redis.yml - it's the seed value
+       `./scripts/vault-bootstrap.sh migrate-secrets` copies into Vault,
+       from where redis/entrypoint.sh and redis/sentinel_entrypoint.sh
+       fetch it at container start. Its value must match REDIS_PASSWORD
+       passed to docker-stack.app.yml.
 
   rabbitmq-secret <rabbitmq-password>
        Run on a manager, once: creates the rabbitmq_password and
-       rabbitmq_erlang_cookie secrets consumed by docker-stack.rabbitmq.yml.
-       Its password value must match RABBITMQ_PASS passed to docker-stack.app.yml.
+       rabbitmq_erlang_cookie Docker secrets. rabbitmq_password is not read
+       directly by docker-stack.rabbitmq.yml - it's the seed value
+       `./scripts/vault-bootstrap.sh migrate-secrets` copies into Vault,
+       from where rabbitmq/entrypoint.sh and rabbitmq/join_entrypoint.sh
+       fetch it at container start (rabbitmq_erlang_cookie stays a native
+       Swarm secret, mounted directly). Its password value must match
+       RABBITMQ_PASS passed to docker-stack.app.yml.
 
   app-secrets <jwt-secret> <encryption-key>
       Run on a manager, once: creates the jwt_secret and encryption_key
