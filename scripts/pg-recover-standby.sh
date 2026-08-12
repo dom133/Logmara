@@ -61,6 +61,10 @@ SERVICE="logmara-pg_postgres$NODE"
 # postgresN itself, the same trick vault-recover-node.sh uses (there, to
 # reach a bind-mounted host dir; here, to make the DNS lookup local).
 # ---------------------------------------------------------------------------
+# Output is always "<body>\n<http_code>|<curl_errormsg>" so callers can
+# tell a real HTTP response (2xx/4xx/5xx) apart from a connection that
+# never happened at all (000, with a reason: DNS failure, connection
+# refused, timeout, ...) instead of just seeing an opaque empty response.
 patroni_curl() {
     local n="$1"; shift
     local svc="pg-api-$n-$$-$RANDOM"
@@ -68,18 +72,25 @@ patroni_curl() {
         --network syslog_net \
         --constraint "node.labels.pg_id==$n" \
         --restart-condition none \
-        "$CURL_IMAGE" "$@" \
+        "$CURL_IMAGE" "$@" -w '\n%{http_code}|%{errormsg}' \
         >/dev/null 2>&1; then
-        echo ""
+        echo "|000|docker service create failed (see: docker service create --constraint node.labels.pg_id==$n ...)"
         return
     fi
 
-    local svc_state
+    local svc_state=""
     for _ in $(seq 1 30); do
         svc_state="$(docker service ps "$svc" --filter "desired-state=shutdown" --format '{{.CurrentState}}' 2>/dev/null | head -1)"
         [[ "$svc_state" == Complete* || "$svc_state" == Failed* ]] && break
         sleep 1
     done
+
+    if [[ "$svc_state" != Complete* && "$svc_state" != Failed* ]]; then
+        docker service rm "$svc" >/dev/null 2>&1 || true
+        echo "|000|helper task never finished (last state: ${svc_state:-pending - no node matched node.labels.pg_id==$n?})"
+        return
+    fi
+
     local out
     out="$(docker service logs --raw "$svc" 2>&1 || true)"
     docker service rm "$svc" >/dev/null 2>&1 || true
@@ -93,9 +104,18 @@ patroni_get() {
 
 patroni_post() {
     local n="$1" path="$2" body="$3"
-    patroni_curl "$n" -s --max-time 10 -w '\n%{http_code}' \
+    patroni_curl "$n" -s --max-time 10 \
         -XPOST -H 'Content-Type: application/json' -d "$body" \
         "http://postgres$n:8008/$path"
+}
+
+# Splits patroni_curl's output into body / http_code / errormsg.
+parse_patroni_response() {
+    local raw="$1"
+    RESP_LAST_LINE="$(echo "$raw" | tail -1)"
+    RESP_BODY="$(echo "$raw" | sed '$d')"
+    RESP_CODE="${RESP_LAST_LINE%%|*}"
+    RESP_ERR="${RESP_LAST_LINE#*|}"
 }
 
 # ---------------------------------------------------------------------------
@@ -107,10 +127,13 @@ LEADER=""
 TARGET_ROLE=""
 for n in 1 2 3; do
     member="postgres$n"
-    resp="$(patroni_get "$n")"
-    [[ -z "$resp" ]] && { echo "  $member: unreachable"; continue; }
-    role="$(echo "$resp" | jq -r '.role // "unknown"' 2>/dev/null || echo unknown)"
-    state="$(echo "$resp" | jq -r '.state // "unknown"' 2>/dev/null || echo unknown)"
+    parse_patroni_response "$(patroni_get "$n")"
+    if [[ "$RESP_CODE" != "200" ]]; then
+        echo "  $member: unreachable (HTTP ${RESP_CODE:-000}${RESP_ERR:+: $RESP_ERR})"
+        continue
+    fi
+    role="$(echo "$RESP_BODY" | jq -r '.role // "unknown"' 2>/dev/null || echo unknown)"
+    state="$(echo "$RESP_BODY" | jq -r '.state // "unknown"' 2>/dev/null || echo unknown)"
     echo "  $member: role=$role state=$state"
     [[ "$member" == "$TARGET" ]] && TARGET_ROLE="$role"
     if [[ "$role" == "master" || "$role" == "primary" || "$role" == "leader" ]]; then
@@ -152,13 +175,19 @@ fi
 #    stuck crash-looping on FATAL errors rather than actually down.
 # ---------------------------------------------------------------------------
 echo "=== Triggering reinitialize on $TARGET ==="
-result="$(patroni_post "$NODE" reinitialize '{"force": true}')"
-http_code="$(echo "$result" | tail -1)"
-body="$(echo "$result" | sed '$d')"
-echo "  HTTP $http_code: ${body:-<empty>}"
+parse_patroni_response "$(patroni_post "$NODE" reinitialize '{"force": true}')"
+echo "  HTTP ${RESP_CODE:-000}${RESP_ERR:+ ($RESP_ERR)}: ${RESP_BODY:-<empty>}"
 
-if [[ "$http_code" != "200" ]]; then
+if [[ "$RESP_CODE" != "200" ]]; then
     echo "ERROR: reinitialize request was not accepted - see response above." >&2
+    if [[ "$RESP_CODE" == "000" ]]; then
+        echo "       This node's Patroni REST API (postgres$NODE:8008) could not be reached" >&2
+        echo "       even from a helper pinned to node.labels.pg_id==$NODE. Check directly:" >&2
+        echo "         docker node ls --format '{{.Hostname}} {{.Status}} {{.ManagerStatus}}'" >&2
+        echo "         docker node inspect --format '{{.Spec.Labels}}' <node>   # confirm pg_id=$NODE exists on exactly one node" >&2
+        echo "         docker service ps $SERVICE --no-trunc                    # which node actually runs $TARGET" >&2
+        echo "         docker exec \$(docker ps -qf name=$SERVICE) curl -sv http://localhost:8008/   # run ON that node" >&2
+    fi
     exit 1
 fi
 
@@ -168,9 +197,14 @@ fi
 echo "=== Waiting for $TARGET to come back as a streaming replica ==="
 RECOVERED=""
 for i in $(seq 1 "$TIMEOUT_ITERS"); do
-    resp="$(patroni_get "$NODE")"
-    role="$(echo "$resp" | jq -r '.role // "unknown"' 2>/dev/null || echo unknown)"
-    state="$(echo "$resp" | jq -r '.state // "unknown"' 2>/dev/null || echo unknown)"
+    parse_patroni_response "$(patroni_get "$NODE")"
+    if [[ "$RESP_CODE" != "200" ]]; then
+        echo "  ($i/$TIMEOUT_ITERS) unreachable (HTTP ${RESP_CODE:-000}${RESP_ERR:+: $RESP_ERR})"
+        sleep 8
+        continue
+    fi
+    role="$(echo "$RESP_BODY" | jq -r '.role // "unknown"' 2>/dev/null || echo unknown)"
+    state="$(echo "$RESP_BODY" | jq -r '.state // "unknown"' 2>/dev/null || echo unknown)"
     echo "  ($i/$TIMEOUT_ITERS) role=$role state=$state"
     if [[ "$state" == "running" && ( "$role" == "replica" || "$role" == "sync_standby" ) ]]; then
         RECOVERED=1
