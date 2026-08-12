@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"logmara/db"
 	"logmara/middleware"
 	"logmara/model"
 	"logmara/sharedstate"
@@ -194,7 +195,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 // GetLogs. Deliberately a separate endpoint - the paginated /logs endpoint
 // avoids COUNT(*) for cost reasons (see the comment there), but the sidebar
 // total only needs one COUNT(*) per filter change, not per page.
-func GetLogsCount(db *sql.DB) gin.HandlerFunc {
+func GetLogsCount(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req LogQueryRequest
 		_ = c.ShouldBindJSON(&req)
@@ -214,9 +215,21 @@ func GetLogsCount(db *sql.DB) gin.HandlerFunc {
 		var total int64
 		ctx, cancel := context.WithTimeout(c.Request.Context(), filteredQueryTimeout)
 		defer cancel()
-		_ = timedQuery("logs_count", func() error {
-			return db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL), args...).Scan(&total)
-		})
+		if whereSQL == "" {
+			// No filters applied: an exact COUNT(*) would scan every
+			// partition just to report a sidebar number, so use the
+			// reltuples-based estimate instead. Any actual filter still
+			// gets an exact count below.
+			_ = timedQuery("logs_count_estimate", func() error {
+				var err error
+				total, err = db.EstimateSyslogLogsCount(ctx, database)
+				return err
+			})
+		} else {
+			_ = timedQuery("logs_count", func() error {
+				return database.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL), args...).Scan(&total)
+			})
+		}
 
 		c.JSON(http.StatusOK, gin.H{"total": total})
 	}

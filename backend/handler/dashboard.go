@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"logmara/db"
 	"logmara/middleware"
 	"logmara/model"
 
@@ -577,11 +578,11 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 // GetDashboardDataCount returns the exact number of rows matching the same
 // filters as GetDashboardData, without paginating - a single COUNT(*) per
 // filter change instead of one per page (see GetLogsCount).
-func GetDashboardDataCount(db *sql.DB) gin.HandlerFunc {
+func GetDashboardDataCount(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req DashboardFilterRequest
 		_ = c.ShouldBindJSON(&req)
-		_, opts, err := resolveDashboardFilters(db, c, req)
+		_, opts, err := resolveDashboardFilters(database, c, req)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
@@ -594,9 +595,20 @@ func GetDashboardDataCount(db *sql.DB) gin.HandlerFunc {
 		defer cancel()
 
 		var total int64
-		_ = timedQuery("dashboard_data_count", func() error {
-			return db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL), args...).Scan(&total)
-		})
+		if whereSQL == "" {
+			// Dashboard scoped to "all devices"/no filters: an exact
+			// COUNT(*) would scan every partition, so use the
+			// reltuples-based estimate instead (see GetLogsCount).
+			_ = timedQuery("dashboard_data_count_estimate", func() error {
+				var err error
+				total, err = db.EstimateSyslogLogsCount(ctx, database)
+				return err
+			})
+		} else {
+			_ = timedQuery("dashboard_data_count", func() error {
+				return database.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL), args...).Scan(&total)
+			})
+		}
 
 		c.JSON(http.StatusOK, gin.H{"total": total})
 	}
