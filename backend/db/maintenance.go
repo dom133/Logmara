@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -396,7 +397,20 @@ func createPartitions(db *sql.DB) {
 			),
 		)
 		if err != nil {
-			slog.Error("partition creation failed", "partition", partName, "err", err)
+			// A database that switched PARTITION_INTERVAL (e.g. month -> day)
+			// still has its old, coarser partition covering "now" until that
+			// partition's own end date - a day/week/etc. within it isn't
+			// missing a partition, it's already covered by the wider one, and
+			// Postgres reports that as an overlap rather than IF NOT EXISTS
+			// treating it as a no-op (the names differ, so IF NOT EXISTS
+			// doesn't apply). Not an actual problem: inserts land in the
+			// existing partition fine, and this stops erroring on its own
+			// once "now" advances past the old partition's end.
+			if strings.Contains(err.Error(), "would overlap partition") {
+				slog.Info("partition range already covered by an existing partition, skipping", "partition", partName, "err", err)
+			} else {
+				slog.Error("partition creation failed", "partition", partName, "err", err)
+			}
 		} else {
 			slog.Info("partition ensured", "partition", partName)
 		}
