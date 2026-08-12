@@ -392,13 +392,18 @@ func main() {
 			os.Exit(1)
 		}
 		close(schemaReady)
+	}()
 
-		// RefreshMaterializedViews scans the full syslog_logs table and its
-		// runtime grows with log volume, unlike MigrateWithLock above (a fast
-		// no-op once the schema exists). It must not gate the HTTP listener
-		// (and therefore /api/health) from coming up, or every restart's
-		// health-check window scales with how much data has accumulated -
-		// auth/routes/tailer below only need the schema, not fresh views.
+	// RefreshMaterializedViews scans the full syslog_logs table and its
+	// runtime grows with log volume - mv_device_stats alone has been
+	// observed taking 10+ minutes on a large table. It must not gate
+	// anything downstream of the schema itself: not the HTTP listener, not
+	// migrationDone (and therefore not nginx/relay sync or the tailer's
+	// leader-election wait below), none of which need fresh views or the
+	// settings overrides applied to do their job. Runs untracked by wg, off
+	// every one of those critical paths, once the schema alone is ready.
+	go func() {
+		<-schemaReady
 		db.RefreshMaterializedViews(database)
 		db.ApplyEnvSettingOverrides(database)
 		slog.Info("database migration and initialization complete")
