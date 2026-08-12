@@ -789,6 +789,44 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 		InvalidateAllCaches()
 		slog.Info("database truncated", "count", count)
 
+		// A full purge is the one point a PARTITION_INTERVAL change is safe
+		// to actually take effect: db.activePartitionGranularity otherwise
+		// keeps a running database on whatever granularity its existing
+		// partitions already show (to avoid overlap errors from switching
+		// mid-flight - see db/maintenance.go), so those old, now-empty date
+		// partitions need dropping here or that inference would just find
+		// them again and stay locked to the old granularity forever.
+		// syslog_logs_default (not matched by this pattern) is left as the
+		// catch-all until EnsurePartitions below recreates real ones.
+		partRows, partErr := database.Query(`
+			SELECT c.relname
+			FROM pg_inherits i
+			JOIN pg_class c ON c.oid = i.inhrelid
+			JOIN pg_class p ON p.oid = i.inhparent
+			WHERE p.relname = 'syslog_logs' AND c.relname ~ '^syslog_logs_\d{4}_\d{2}(_\d{2})?$'
+		`)
+		if partErr != nil {
+			slog.Error("purge: failed to list date partitions", "error", partErr)
+		} else {
+			var partitionNames []string
+			for partRows.Next() {
+				var name string
+				if partRows.Scan(&name) == nil {
+					partitionNames = append(partitionNames, name)
+				}
+			}
+			partRows.Close()
+			for _, name := range partitionNames {
+				if _, err := database.Exec("DROP TABLE IF EXISTS " + name); err != nil {
+					slog.Error("purge: failed to drop date partition", "partition", name, "error", err)
+				}
+			}
+			if len(partitionNames) > 0 {
+				slog.Info("purge: dropped date partitions so any PARTITION_INTERVAL change takes effect", "count", len(partitionNames))
+				go db.EnsurePartitions(database)
+			}
+		}
+
 		// Wait for the RabbitMQ queue depth to stabilise after pause.
 		// Workers NACK/requeue in-flight deliveries; the reader stops
 		// publishing. Poll until the queue stops growing or timeout.

@@ -230,6 +230,57 @@ func configuredPartitionGranularity() partitionGranularity {
 	return dayPartitionGranularity
 }
 
+// activePartitionGranularity reports the granularity actually in use for
+// syslog_logs right now, inferred from whichever existing partition's range
+// currently covers "now" - not simply PARTITION_INTERVAL. A database that's
+// been running on one granularity keeps creating same-granularity
+// partitions even if PARTITION_INTERVAL changes later, avoiding the
+// overlap-with-the-old-partition errors that come from switching mid-flight
+// (see createPartitions in maintenance.go). Falls back to the
+// configured/env value only when no partition covers "now" - a fresh,
+// not-yet-partitioned database, or right after a purge has dropped the old
+// date partitions specifically so a granularity change can take effect
+// (see handler.PurgeAllLogs).
+func activePartitionGranularity(db *sql.DB) partitionGranularity {
+	rows, err := db.Query(`
+		SELECT c.relname
+		FROM pg_inherits i
+		JOIN pg_class c ON c.oid = i.inhrelid
+		JOIN pg_class p ON p.oid = i.inhparent
+		WHERE p.relname = 'syslog_logs' AND c.relname ~ '^syslog_logs_\d{4}_\d{2}(_\d{2})?$'
+	`)
+	if err != nil {
+		return configuredPartitionGranularity()
+	}
+	defer rows.Close()
+
+	now := time.Now().UTC()
+	for rows.Next() {
+		var name string
+		if rows.Scan(&name) != nil {
+			continue
+		}
+		start, end, ok := parsePartitionBounds(name)
+		if !ok || now.Before(start) || !now.Before(end) {
+			continue
+		}
+		if len(strings.TrimPrefix(name, "syslog_logs_")) == len("2006_01_02") {
+			return dayPartitionGranularity
+		}
+		return monthPartitionGranularity
+	}
+	return configuredPartitionGranularity()
+}
+
+// EnsurePartitions creates any missing ahead-of-time syslog_logs partitions
+// under the currently active granularity (see activePartitionGranularity).
+// Exported so handler.PurgeAllLogs can trigger it immediately after
+// dropping the old date partitions, rather than waiting for the next
+// scheduled run in maintenance.go.
+func EnsurePartitions(db *sql.DB) {
+	createPartitions(db)
+}
+
 func (g partitionGranularity) truncate(t time.Time) time.Time {
 	t = t.UTC()
 	if g.name == "month" {

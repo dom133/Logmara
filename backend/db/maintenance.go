@@ -302,7 +302,7 @@ func activePartitionNames(db *sql.DB) []string {
 		return nil
 	}
 
-	g := configuredPartitionGranularity()
+	g := activePartitionGranularity(db)
 	current := g.truncate(time.Now().UTC())
 	names := make([]string, 0, 2)
 	for _, t := range []time.Time{g.previous(current), current} {
@@ -381,13 +381,16 @@ func getIntervalMinutes(envKey, settingKey string, defaultMinutes int) time.Dura
 // concurrent copies of themselves.
 const partitionLockKey = 8743012
 
-// createPartitions pre-creates syslog_logs partitions from the current
-// period through granularity.aheadCount periods ahead, so inserts never fall
-// back to the unpartitioned default partition just because nobody's created
-// tomorrow's (or next month's) table yet. Called once at startup on every
-// replica and then on a recurring schedule (see startPartitionScheduler) -
-// the ahead window is a buffer against a long-running process, not something
-// startup alone can keep filled at daily granularity.
+// createPartitions pre-creates syslog_logs partitions, under whichever
+// granularity is already active (see activePartitionGranularity - not
+// necessarily PARTITION_INTERVAL's current value), from the current period
+// through granularity.aheadCount periods ahead. That keeps inserts from
+// falling back to the unpartitioned default partition just because nobody's
+// created tomorrow's (or next month's) table yet. Called once at startup on
+// every replica and then on a recurring schedule (see
+// startPartitionScheduler) - the ahead window is a buffer against a
+// long-running process, not something startup alone can keep filled at
+// daily granularity.
 //
 // pg_try_advisory_lock serializes this against the same call on other
 // replicas: CREATE TABLE ... PARTITION OF takes a lock on the syslog_logs
@@ -428,7 +431,7 @@ func createPartitions(db *sql.DB) {
 		}
 	}()
 
-	g := configuredPartitionGranularity()
+	g := activePartitionGranularity(db)
 	partStart := g.truncate(time.Now().UTC())
 
 	for i := 0; i <= g.aheadCount; i++ {
