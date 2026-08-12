@@ -16,7 +16,15 @@ func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func(), 
 	mvInterval := getIntervalMinutes("MV_REFRESH_INTERVAL_MIN", "mv_refresh_interval_min", 30)
 	partitionInterval := getIntervalHours("PARTITION_CREATE_INTERVAL_HOURS", "partition_create_interval_hours", 24)
 
-	createPartitions(db)
+	// StartMaintenance itself runs synchronously on main's startup path,
+	// before the real HTTP listener binds (see main.go's <-schemaReady wait)
+	// - createPartitions can take anywhere from milliseconds to minutes
+	// depending on lock contention on syslog_logs (autovacuum, MV refresh,
+	// insert traffic), so calling it inline here would make replica startup
+	// (and therefore /api/health) hostage to that. Fire the initial run the
+	// same way the recurring scheduler does: in the background, off this
+	// call's critical path.
+	go createPartitions(db)
 	stopPartitions := startPartitionScheduler(ctx, db, partitionInterval)
 	stopVacuum := startVacuumScheduler(ctx, db, vacuumInterval)
 	stopMV := startMVScheduler(ctx, db, mvInterval)
