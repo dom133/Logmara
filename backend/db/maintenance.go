@@ -367,19 +367,58 @@ func getIntervalMinutes(envKey, settingKey string, defaultMinutes int) time.Dura
 	return time.Duration(defaultMinutes) * time.Minute
 }
 
+// partitionLockKey is a separate advisory lock key from migrationLockKey (see
+// db.go) - createPartitions and the schema migration are independent
+// operations that shouldn't block on each other, just serialize against
+// concurrent copies of themselves.
+const partitionLockKey = 8743012
+
 // createPartitions pre-creates syslog_logs partitions from the current
 // period through granularity.aheadCount periods ahead, so inserts never fall
 // back to the unpartitioned default partition just because nobody's created
-// tomorrow's (or next month's) table yet. Called once at startup and then on
-// a recurring schedule (see startPartitionScheduler) - the ahead window is a
-// buffer against a long-running process, not something startup alone can
-// keep filled at daily granularity.
+// tomorrow's (or next month's) table yet. Called once at startup on every
+// replica and then on a recurring schedule (see startPartitionScheduler) -
+// the ahead window is a buffer against a long-running process, not something
+// startup alone can keep filled at daily granularity.
+//
+// pg_try_advisory_lock serializes this against the same call on other
+// replicas: CREATE TABLE ... PARTITION OF takes a lock on the syslog_logs
+// parent, so replicas racing to create (or, more often once ahead-of-time
+// partitions already exist, to redundantly no-op against) the same
+// partitions were observed queuing behind each other for 60-140s+ per
+// attempt. Only one replica doing the work at a time, with the rest
+// skipping the cycle outright, avoids that pile-up; anything a skipped
+// replica would have created is already covered by the winner within the
+// same cycle, and the next scheduled run picks up regardless.
 func createPartitions(db *sql.DB) {
 	isPartitioned := false
 	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p')`).Scan(&isPartitioned)
 	if err != nil || !isPartitioned {
 		return
 	}
+
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		slog.Error("partition creation: acquire connection failed", "err", err)
+		return
+	}
+	defer conn.Close()
+
+	var acquired bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", partitionLockKey).Scan(&acquired); err != nil {
+		slog.Error("partition creation: advisory lock check failed", "err", err)
+		return
+	}
+	if !acquired {
+		slog.Info("partition maintenance already running on another replica, skipping this cycle")
+		return
+	}
+	defer func() {
+		if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", partitionLockKey); err != nil {
+			slog.Warn("failed to release partition advisory lock", "err", err)
+		}
+	}()
 
 	g := configuredPartitionGranularity()
 	partStart := g.truncate(time.Now().UTC())
@@ -388,7 +427,7 @@ func createPartitions(db *sql.DB) {
 		partEnd := g.next(partStart)
 		partName := g.partitionName(partStart)
 
-		_, err := db.Exec(
+		_, err := conn.ExecContext(ctx,
 			fmt.Sprintf(
 				"CREATE TABLE IF NOT EXISTS %s PARTITION OF syslog_logs FOR VALUES FROM (%s) TO (%s)",
 				partName,
