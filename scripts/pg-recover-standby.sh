@@ -128,13 +128,18 @@ TARGET_ROLE=""
 for n in 1 2 3; do
     member="postgres$n"
     parse_patroni_response "$(patroni_get "$n")"
-    if [[ "$RESP_CODE" != "200" ]]; then
-        echo "  $member: unreachable (HTTP ${RESP_CODE:-000}${RESP_ERR:+: $RESP_ERR})"
+    # HTTP 000 = curl never got a response at all (DNS/connect/timeout) -
+    # that's the only case with no body to parse. Any other code (200,
+    # 503, ...) means Patroni itself answered - Patroni's GET / returns
+    # 503 whenever state != running (regardless of role), so the body is
+    # still there and worth showing, not just "unreachable".
+    if [[ "$RESP_CODE" == "000" ]]; then
+        echo "  $member: unreachable (${RESP_ERR:-connection failed})"
         continue
     fi
     role="$(echo "$RESP_BODY" | jq -r '.role // "unknown"' 2>/dev/null || echo unknown)"
     state="$(echo "$RESP_BODY" | jq -r '.state // "unknown"' 2>/dev/null || echo unknown)"
-    echo "  $member: role=$role state=$state"
+    echo "  $member: HTTP $RESP_CODE role=$role state=$state"
     [[ "$member" == "$TARGET" ]] && TARGET_ROLE="$role"
     if [[ "$role" == "master" || "$role" == "primary" || "$role" == "leader" ]]; then
         LEADER="$member"
@@ -198,14 +203,14 @@ echo "=== Waiting for $TARGET to come back as a streaming replica ==="
 RECOVERED=""
 for i in $(seq 1 "$TIMEOUT_ITERS"); do
     parse_patroni_response "$(patroni_get "$NODE")"
-    if [[ "$RESP_CODE" != "200" ]]; then
-        echo "  ($i/$TIMEOUT_ITERS) unreachable (HTTP ${RESP_CODE:-000}${RESP_ERR:+: $RESP_ERR})"
+    if [[ "$RESP_CODE" == "000" ]]; then
+        echo "  ($i/$TIMEOUT_ITERS) unreachable (${RESP_ERR:-connection failed})"
         sleep 8
         continue
     fi
     role="$(echo "$RESP_BODY" | jq -r '.role // "unknown"' 2>/dev/null || echo unknown)"
     state="$(echo "$RESP_BODY" | jq -r '.state // "unknown"' 2>/dev/null || echo unknown)"
-    echo "  ($i/$TIMEOUT_ITERS) role=$role state=$state"
+    echo "  ($i/$TIMEOUT_ITERS) HTTP $RESP_CODE role=$role state=$state"
     if [[ "$state" == "running" && ( "$role" == "replica" || "$role" == "sync_standby" ) ]]; then
         RECOVERED=1
         break
