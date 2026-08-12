@@ -820,23 +820,16 @@ r := gin.New()
 		publicAPI.GET("/stats", handler.ExportStats(database))
 	}
 
-	// Wait for all startup tasks (migration + MV refresh, nginx sync, relay
-	// sync) to finish before registering this replica and starting the
-	// tailer - this ensures every replica reaches the same point in its
-	// startup sequence before the leader-election race begins.
-	wg.Wait()
-
-	go func() {
-		identity := os.Getenv("SWARM_TASK_IDENTITY")
-		if identity == "" {
-			if h, err := os.Hostname(); err == nil {
-				identity = h
-			}
-		}
-		sharedstate.WaitForReplicas(ctx, sharedClient, identity, apiReplicas, 10*time.Minute)
-		tailer.Run(ctx, database, logFilePath, engine, ic, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient)
-	}()
-
+	// The real listener only needs the schema (ready since <-schemaReady
+	// above) and routes/auth (registered just above) - it does not need to
+	// wait on wg below, which exists to synchronize the tailer's
+	// leader-election race across replicas (see its comment) and gates the
+	// nginx/relay config sync goroutines, none of which the HTTP API itself
+	// depends on. Binding here rather than after wg.Wait() is what actually
+	// delivers on RefreshMaterializedViews's own comment above ("must not
+	// gate the HTTP listener") - mv_device_stats alone has been observed
+	// taking 10+ minutes on a large syslog_logs, and wg.Wait() was blocking
+	// exactly this ListenAndServe call on it.
 	srv := &http.Server{
 		Addr:         ":" + port,
 		Handler:      r,
@@ -860,6 +853,25 @@ r := gin.New()
 			slog.Error("server failed", "error", err)
 			os.Exit(1)
 		}
+	}()
+
+	// Wait for all startup tasks (migration + MV refresh, nginx sync, relay
+	// sync) to finish before registering this replica and starting the
+	// tailer - this ensures every replica reaches the same point in its
+	// startup sequence before the leader-election race begins. Deliberately
+	// after the real listener is already up (see above); the tailer's own
+	// leader election, not the API, is what needs this synchronization.
+	wg.Wait()
+
+	go func() {
+		identity := os.Getenv("SWARM_TASK_IDENTITY")
+		if identity == "" {
+			if h, err := os.Hostname(); err == nil {
+				identity = h
+			}
+		}
+		sharedstate.WaitForReplicas(ctx, sharedClient, identity, apiReplicas, 10*time.Minute)
+		tailer.Run(ctx, database, logFilePath, engine, ic, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient)
 	}()
 
 	quit := make(chan os.Signal, 1)
