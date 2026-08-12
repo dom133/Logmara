@@ -111,10 +111,20 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Stop the node
+# 4. Stop the node. --detach: `docker service scale` otherwise blocks
+#    client-side waiting for convergence with no timeout - if the task
+#    never reaches the target state (node down, crash loop) the script
+#    hangs here with no indication why. Detach and let our own bounded
+#    polling loops below report status instead.
 # ---------------------------------------------------------------------------
 echo "=== Stopping $SERVICE ==="
-docker service scale "$SERVICE=0" >/dev/null
+docker service scale --detach "$SERVICE=0" >/dev/null
+for i in $(seq 1 30); do
+    running=$(docker service ps "$SERVICE" --filter "desired-state=running" -q 2>/dev/null | wc -l)
+    [[ "$running" == "0" ]] && break
+    echo "Waiting for $SERVICE to stop... ($i/30)"
+    sleep 2
+done
 
 # ---------------------------------------------------------------------------
 # 5. Back up + wipe its raft data. The data dir is a host bind mount that
@@ -145,21 +155,38 @@ echo "Data wiped (previous data backed up as $DATA_HOST_DIR/data.bak-* alongside
 
 # ---------------------------------------------------------------------------
 # 6. Restart - retry_join in vault.hcl makes it rejoin and pull a fresh
-#    snapshot from the leader instead of patching a diverged log
+#    snapshot from the leader instead of patching a diverged log.
+#    `service update --force` rather than `scale ...=1`: if the service's
+#    desired replica count was already 1 (e.g. it's been stuck failing
+#    since before this script ran), `scale` to the same value is a no-op -
+#    Swarm won't attempt to schedule a new task at all, and the polling
+#    loop below would wait forever for a task that was never retried.
+#    --force always tears down and reschedules, regardless of whether the
+#    spec changed.
 # ---------------------------------------------------------------------------
 echo "=== Restarting $SERVICE ==="
-docker service scale "$SERVICE=1" >/dev/null
+docker service update --force --detach "$SERVICE"
 
 echo "Waiting for $TARGET to respond..."
+RESPONDED=""
 for i in $(seq 1 30); do
     if (docker run --rm --network syslog_net -e VAULT_ADDR="http://$TARGET:8200" \
         hashicorp/vault:1.16.0 status 2>/dev/null || true) | grep -qi "sealed"; then
         echo "$TARGET is responding."
+        RESPONDED=1
         break
     fi
-    echo "Waiting... ($i/30)"
+    echo "Waiting... ($i/30) - task state: $(docker service ps "$SERVICE" --no-trunc --format '{{.CurrentState}}' 2>/dev/null | head -1)"
     sleep 2
 done
+
+if [[ -z "$RESPONDED" ]]; then
+    echo "ERROR: $TARGET never came up after 60s. Check placement and container logs:" >&2
+    echo "  docker node ls   # is the vault_id=$NODE node Ready/Active?" >&2
+    echo "  docker service ps $SERVICE --no-trunc" >&2
+    echo "  docker service logs $SERVICE --tail 50" >&2
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # 7. Unseal
