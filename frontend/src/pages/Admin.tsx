@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { Card, Table, Button, Modal, Form, Input, Select, Switch, Checkbox, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip, Statistic, Row, Col } from 'antd'
+import { Card, Table, Button, Modal, Form, Input, Select, Switch, Checkbox, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip, Statistic, Row, Col, Progress } from 'antd'
 import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PlusOutlined, CopyOutlined, KeyOutlined, CloudOutlined, ContainerOutlined, CheckCircleOutlined, WarningOutlined, DashOutlined, NodeIndexOutlined, ClusterOutlined, GlobalOutlined } from '@ant-design/icons'
+import ReactECharts from 'echarts-for-react/esm/core'
+import echarts from '../utils/echarts-core'
 import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, AggregatedTailerMetrics, ReplicaTailerMetrics, WorkerMetrics, SSLCertInfo } from '../services/api'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
@@ -103,9 +105,34 @@ export default function Admin() {
   const [tailerMetrics, setTailerMetrics] = useState<AggregatedTailerMetrics | null>(null)
   const [tailerPipelineActive, setTailerPipelineActive] = useState(false)
   const [tailerLoading, setTailerLoading] = useState(false)
+  const [tailerHistory, setTailerHistory] = useState<Array<{ t: number; logsPerSec: number; queueDepth: number }>>([])
   const workerNodeRowSpans = useMemo(
     () => computeNodeRowSpans(tailerMetrics?.WorkerMetrics ?? []),
     [tailerMetrics]
+  )
+
+  const tailerSparklineOption = (data: number[], color: string) => ({
+    tooltip: { trigger: 'axis' as const },
+    xAxis: { type: 'category' as const, show: false, data: data.map((_, i) => i) },
+    yAxis: { type: 'value' as const, show: false, min: 0 },
+    series: [{
+      data,
+      type: 'line' as const,
+      smooth: true,
+      showSymbol: false,
+      areaStyle: { opacity: 0.15 },
+      lineStyle: { width: 2 },
+      itemStyle: { color },
+    }],
+    grid: { left: 4, right: 4, top: 8, bottom: 4 },
+  })
+  const tailerLogsRateOption = useMemo(
+    () => tailerSparklineOption(tailerHistory.map(p => p.logsPerSec), '#1890ff'),
+    [tailerHistory]
+  )
+  const tailerQueueDepthOption = useMemo(
+    () => tailerSparklineOption(tailerHistory.map(p => p.queueDepth), '#fa8c16'),
+    [tailerHistory]
   )
   const [apiKeyEditing, setApiKeyEditing] = useState<APIKey | null>(null)
   const [apiKeyForm] = Form.useForm()
@@ -286,12 +313,18 @@ await testLDAPConnection({
     }
   }
 
+  const tailerHistoryMaxPoints = 60 // 5 min of history at the 5s poll interval below
+
   const loadTailerMetrics = async () => {
     setTailerLoading(true)
     try {
       const data = await getTailerMetrics()
       setTailerPipelineActive(data.pipeline_active)
       setTailerMetrics(data.metrics)
+      if (data.metrics) {
+        const point = { t: Date.now(), logsPerSec: data.metrics.LogsPerSec, queueDepth: data.metrics.QueueDepth }
+        setTailerHistory(prev => [...prev, point].slice(-tailerHistoryMaxPoints))
+      }
     } catch {
       message.error(t('admin.tailerMetricsLoadFailed'))
     } finally {
@@ -1591,168 +1624,272 @@ const handleCleanup = async () => {
           {
             key: 'tailer',
             label: t('admin.tailerPipeline'),
-            children: (
-              <Card
-                title={t('admin.tailerPipeline')}
-                extra={
-                  <Button icon={<ReloadOutlined />} onClick={loadTailerMetrics} loading={tailerLoading}>
-                    {t('common.refresh')}
-                  </Button>
-                }
-              >
-                {!tailerPipelineActive ? (
-                  <Result
-                    status="info"
-                    title={t('admin.pipelineInactive')}
-                    subTitle={t('admin.pipelineInactiveDesc')}
-                  />
-                ) : tailerMetrics ? (
-                  <div>
-                    <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-                      <Col xs={24} sm={6}>
-                        <Card>
-                          <Statistic title={t('admin.numWorkers')} value={tailerMetrics.NumWorkers} />
-                        </Card>
-                      </Col>
-                      <Col xs={24} sm={6}>
-                        <Card>
-                          <Statistic title={t('admin.queueDepth')} value={tailerMetrics.QueueDepth} />
-                        </Card>
-                      </Col>
-                      <Col xs={24} sm={6}>
-                        <Card>
-                          <Statistic title={t('admin.logsPerSecond')} value={tailerMetrics.LogsPerSec} precision={1} />
-                        </Card>
-                      </Col>
-                      <Col xs={24} sm={6}>
-                        <Card>
-                          <Statistic title={t('admin.flushedPosition')} value={tailerMetrics.FlushedPos} />
-                        </Card>
-                      </Col>
-                    </Row>
-                    <Table
-                      rowKey={(record, i) => `${record.id}-${i}`}
-                      dataSource={tailerMetrics.WorkerMetrics}
-                      pagination={false}
-                      size="small"
-                      title={() => t('admin.workerStats')}
-                      columns={[
-                        {
-                          title: t('admin.workerId'),
-                          dataIndex: 'id',
-                          key: 'id',
-                          width: 80,
-                        },
-                        {
-                          title: t('admin.serverNode'),
-                          dataIndex: 'node_id',
-                          key: 'node_id',
-                          width: 160,
-                          render: (v: string, _record, index: number) => ({
-                            children: <Tag icon={<ContainerOutlined />}>{v}</Tag>,
-                            props: { rowSpan: workerNodeRowSpans[index] },
-                          }),
-                        },
-                        {
-                          title: t('admin.msgsProcessed'),
-                          dataIndex: 'msgs_processed',
-                          key: 'msgs_processed',
-                          width: 120,
-                          render: (v: number) => v.toLocaleString(),
-                        },
-                        {
-                          title: t('admin.parseErrors'),
-                          dataIndex: 'parse_errors',
-                          key: 'parse_errors',
-                          width: 120,
-                          render: (v: number) => v ? <Tag color="red">{v.toLocaleString()}</Tag> : <Tag color="green">0</Tag>,
-                        },
-                        {
-                          title: t('admin.dbInserts'),
-                          dataIndex: 'db_inserts',
-                          key: 'db_inserts',
-                          width: 120,
-                          render: (v: number) => v.toLocaleString(),
-                        },
-                        {
-                          title: t('admin.lastFlush'),
-                          dataIndex: 'last_flush_at',
-                          key: 'last_flush_at',
-                          width: 200,
-                          render: (v: string) => v ? new Date(v).toLocaleTimeString() : '-',
-                        },
-                      ]}
+            children: (() => {
+              const updatedAgoMs = tailerMetrics ? Date.now() - new Date(tailerMetrics.UpdatedAt).getTime() : 0
+              const isStale = tailerPipelineActive && !!tailerMetrics && updatedAgoMs > 15000
+              const totalReconnects = tailerMetrics ? tailerMetrics.WorkerMetrics.reduce((sum, w) => sum + w.reconnect_count, 0) : 0
+              const totalParseErrors = tailerMetrics ? tailerMetrics.WorkerMetrics.reduce((sum, w) => sum + w.parse_errors, 0) : 0
+              const queuePercent = tailerMetrics && tailerMetrics.QueueMaxLen > 0
+                ? Math.min(100, (tailerMetrics.QueueDepth / tailerMetrics.QueueMaxLen) * 100)
+                : 0
+              const reconnectColumn = {
+                title: t('admin.reconnects'),
+                dataIndex: 'reconnect_count',
+                key: 'reconnect_count',
+                width: 110,
+                render: (v: number) => v ? <Tag color="volcano">{v.toLocaleString()}</Tag> : <Tag color="green">0</Tag>,
+              }
+              return (
+                <Card
+                  title={
+                    <Space>
+                      {t('admin.tailerPipeline')}
+                      {isStale && <Tag icon={<WarningOutlined />} color="warning">{t('admin.staleData')}</Tag>}
+                    </Space>
+                  }
+                  extra={
+                    <Space>
+                      {tailerMetrics && (
+                        <Tooltip title={new Date(tailerMetrics.UpdatedAt).toLocaleString()}>
+                          <Tag>{t('admin.lastUpdated')}: {formatDurationAgo(updatedAgoMs)}</Tag>
+                        </Tooltip>
+                      )}
+                      <Button icon={<ReloadOutlined />} onClick={loadTailerMetrics} loading={tailerLoading}>
+                        {t('common.refresh')}
+                      </Button>
+                    </Space>
+                  }
+                >
+                  {!tailerPipelineActive ? (
+                    <Result
+                      status="info"
+                      title={t('admin.pipelineInactive')}
+                      subTitle={t('admin.pipelineInactiveDesc')}
                     />
-                    <Divider orientation="left">{t('admin.replicaMetrics')}</Divider>
-                    {tailerMetrics.Replicas.map((replica) => (
-                      <Card
-                        key={replica.NodeID}
-                        title={<Space><ContainerOutlined />{replica.NodeID}</Space>}
-                        style={{ marginBottom: 16 }}
+                  ) : tailerMetrics ? (
+                    <div>
+                      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+                        <Col xs={24} sm={12} md={4}>
+                          <Card>
+                            <Statistic title={t('admin.numWorkers')} value={tailerMetrics.NumWorkers} />
+                          </Card>
+                        </Col>
+                        <Col xs={24} sm={12} md={4}>
+                          <Card>
+                            <Statistic
+                              title={t('admin.queueDepth')}
+                              value={tailerMetrics.QueueDepth}
+                              suffix={tailerMetrics.QueueMaxLen ? `/ ${tailerMetrics.QueueMaxLen.toLocaleString()}` : undefined}
+                              valueStyle={tailerMetrics.QueueFull ? { color: '#cf1322' } : undefined}
+                            />
+                            <Progress
+                              percent={queuePercent}
+                              size="small"
+                              showInfo={false}
+                              status={tailerMetrics.QueueFull ? 'exception' : 'active'}
+                              style={{ marginTop: 4 }}
+                            />
+                            {tailerMetrics.QueueFull && <Tag color="red" style={{ marginTop: 4 }}>{t('admin.queueFull')}</Tag>}
+                          </Card>
+                        </Col>
+                        <Col xs={24} sm={12} md={4}>
+                          <Card>
+                            <Tooltip title={t('admin.logsPerSecondClusterTooltip')}>
+                              <Statistic title={t('admin.logsPerSecond')} value={tailerMetrics.LogsPerSec} precision={1} />
+                            </Tooltip>
+                          </Card>
+                        </Col>
+                        <Col xs={24} sm={12} md={4}>
+                          <Card>
+                            <Statistic title={t('admin.flushedPosition')} value={tailerMetrics.FlushedPos} />
+                          </Card>
+                        </Col>
+                        <Col xs={24} sm={12} md={4}>
+                          <Card>
+                            <Statistic
+                              title={t('admin.reconnects')}
+                              value={totalReconnects}
+                              valueStyle={totalReconnects ? { color: '#cf1322' } : undefined}
+                            />
+                          </Card>
+                        </Col>
+                        <Col xs={24} sm={12} md={4}>
+                          <Card>
+                            <Statistic
+                              title={t('admin.parseErrors')}
+                              value={totalParseErrors}
+                              valueStyle={totalParseErrors ? { color: '#cf1322' } : undefined}
+                            />
+                          </Card>
+                        </Col>
+                      </Row>
+                      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+                        <Col xs={24} md={12}>
+                          <Card size="small" title={t('admin.logsPerSecTrend')}>
+                            {tailerHistory.length > 1 ? (
+                              <ReactECharts echarts={echarts} option={tailerLogsRateOption} style={{ height: 120 }} />
+                            ) : (
+                              <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,0,0,0.45)' }}>
+                                {t('admin.gatheringHistory')}
+                              </div>
+                            )}
+                          </Card>
+                        </Col>
+                        <Col xs={24} md={12}>
+                          <Card size="small" title={t('admin.queueDepthTrend')}>
+                            {tailerHistory.length > 1 ? (
+                              <ReactECharts echarts={echarts} option={tailerQueueDepthOption} style={{ height: 120 }} />
+                            ) : (
+                              <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,0,0,0.45)' }}>
+                                {t('admin.gatheringHistory')}
+                              </div>
+                            )}
+                          </Card>
+                        </Col>
+                      </Row>
+                      <Table
+                        rowKey={(record, i) => `${record.id}-${i}`}
+                        dataSource={tailerMetrics.WorkerMetrics}
+                        pagination={false}
                         size="small"
-                      >
-                        <Row gutter={[16, 16]} style={{ marginBottom: 12 }}>
-                          <Col xs={24} sm={6}>
-                            <Statistic title={t('admin.numWorkers')} value={replica.NumWorkers} />
-                          </Col>
-                          <Col xs={24} sm={6}>
-                            <Statistic title={t('admin.logsPerSecond')} value={replica.LogsPerSec} precision={1} />
-                          </Col>
-                          <Col xs={24} sm={6}>
-                            <Statistic title={t('admin.queueDepth')} value={replica.QueueDepth} />
-                          </Col>
-                          <Col xs={24} sm={6}>
-                            <Statistic title={t('admin.flushedPosition')} value={replica.FlushedPos} />
-                          </Col>
-                        </Row>
-                        <Table
-                          rowKey="id"
-                          dataSource={replica.WorkerMetrics}
-                          pagination={false}
-                          size="small"
-                          columns={[
-                            {
-                              title: t('admin.workerId'),
-                              dataIndex: 'id',
-                              key: 'id',
-                              width: 80,
-                            },
-                            {
-                              title: t('admin.msgsProcessed'),
-                              dataIndex: 'msgs_processed',
-                              key: 'msgs_processed',
-                              width: 120,
-                              render: (v: number) => v.toLocaleString(),
-                            },
-                            {
-                              title: t('admin.parseErrors'),
-                              dataIndex: 'parse_errors',
-                              key: 'parse_errors',
-                              width: 120,
-                              render: (v: number) => v ? <Tag color="red">{v.toLocaleString()}</Tag> : <Tag color="green">0</Tag>,
-                            },
-                            {
-                              title: t('admin.dbInserts'),
-                              dataIndex: 'db_inserts',
-                              key: 'db_inserts',
-                              width: 120,
-                              render: (v: number) => v.toLocaleString(),
-                            },
-                            {
-                              title: t('admin.lastFlush'),
-                              dataIndex: 'last_flush_at',
-                              key: 'last_flush_at',
-                              width: 200,
-                              render: (v: string) => v ? new Date(v).toLocaleTimeString() : '-',
-                            },
-                          ]}
-                        />
-                      </Card>
-                    ))}
-                  </div>
-                ) : null}
-              </Card>
-            ),
+                        title={() => t('admin.workerStats')}
+                        columns={[
+                          {
+                            title: t('admin.workerId'),
+                            dataIndex: 'id',
+                            key: 'id',
+                            width: 80,
+                          },
+                          {
+                            title: t('admin.serverNode'),
+                            dataIndex: 'node_id',
+                            key: 'node_id',
+                            width: 160,
+                            render: (v: string, _record, index: number) => ({
+                              children: <Tag icon={<ContainerOutlined />}>{v}</Tag>,
+                              props: { rowSpan: workerNodeRowSpans[index] },
+                            }),
+                          },
+                          {
+                            title: t('admin.msgsProcessed'),
+                            dataIndex: 'msgs_processed',
+                            key: 'msgs_processed',
+                            width: 120,
+                            render: (v: number) => v.toLocaleString(),
+                          },
+                          {
+                            title: t('admin.parseErrors'),
+                            dataIndex: 'parse_errors',
+                            key: 'parse_errors',
+                            width: 120,
+                            render: (v: number) => v ? <Tag color="red">{v.toLocaleString()}</Tag> : <Tag color="green">0</Tag>,
+                          },
+                          reconnectColumn,
+                          {
+                            title: t('admin.dbInserts'),
+                            dataIndex: 'db_inserts',
+                            key: 'db_inserts',
+                            width: 120,
+                            render: (v: number) => v.toLocaleString(),
+                          },
+                          {
+                            title: t('admin.lastFlush'),
+                            dataIndex: 'last_flush_at',
+                            key: 'last_flush_at',
+                            width: 200,
+                            render: (v: string) => v ? new Date(v).toLocaleTimeString() : '-',
+                          },
+                        ]}
+                      />
+                      <Divider orientation="left">{t('admin.replicaMetrics')}</Divider>
+                      {tailerMetrics.Replicas.map((replica) => {
+                        const replicaUpdatedAgoMs = Date.now() - new Date(replica.UpdatedAt).getTime()
+                        const replicaStale = replicaUpdatedAgoMs > 15000
+                        const replicaMsgsProcessed = replica.WorkerMetrics.reduce((sum, w) => sum + w.msgs_processed, 0)
+                        const replicaReconnects = replica.WorkerMetrics.reduce((sum, w) => sum + w.reconnect_count, 0)
+                        return (
+                          <Card
+                            key={replica.NodeID}
+                            title={
+                              <Space>
+                                <ContainerOutlined />{replica.NodeID}
+                                {replicaStale && <Tag icon={<WarningOutlined />} color="warning">{t('admin.staleData')}</Tag>}
+                              </Space>
+                            }
+                            style={{ marginBottom: 16 }}
+                            size="small"
+                          >
+                            <Row gutter={[16, 16]} style={{ marginBottom: 12 }}>
+                              <Col xs={24} sm={6}>
+                                <Statistic title={t('admin.numWorkers')} value={replica.NumWorkers} />
+                              </Col>
+                              <Col xs={24} sm={6}>
+                                <Statistic title={t('admin.msgsProcessed')} value={replicaMsgsProcessed} />
+                              </Col>
+                              <Col xs={24} sm={6}>
+                                <Statistic
+                                  title={t('admin.reconnects')}
+                                  value={replicaReconnects}
+                                  valueStyle={replicaReconnects ? { color: '#cf1322' } : undefined}
+                                />
+                              </Col>
+                              <Col xs={24} sm={6}>
+                                <Tooltip title={new Date(replica.UpdatedAt).toLocaleString()}>
+                                  <Statistic title={t('admin.lastUpdated')} value={formatDurationAgo(replicaUpdatedAgoMs)} />
+                                </Tooltip>
+                              </Col>
+                            </Row>
+                            <Table
+                              rowKey="id"
+                              dataSource={replica.WorkerMetrics}
+                              pagination={false}
+                              size="small"
+                              columns={[
+                                {
+                                  title: t('admin.workerId'),
+                                  dataIndex: 'id',
+                                  key: 'id',
+                                  width: 80,
+                                },
+                                {
+                                  title: t('admin.msgsProcessed'),
+                                  dataIndex: 'msgs_processed',
+                                  key: 'msgs_processed',
+                                  width: 120,
+                                  render: (v: number) => v.toLocaleString(),
+                                },
+                                {
+                                  title: t('admin.parseErrors'),
+                                  dataIndex: 'parse_errors',
+                                  key: 'parse_errors',
+                                  width: 120,
+                                  render: (v: number) => v ? <Tag color="red">{v.toLocaleString()}</Tag> : <Tag color="green">0</Tag>,
+                                },
+                                reconnectColumn,
+                                {
+                                  title: t('admin.dbInserts'),
+                                  dataIndex: 'db_inserts',
+                                  key: 'db_inserts',
+                                  width: 120,
+                                  render: (v: number) => v.toLocaleString(),
+                                },
+                                {
+                                  title: t('admin.lastFlush'),
+                                  dataIndex: 'last_flush_at',
+                                  key: 'last_flush_at',
+                                  width: 200,
+                                  render: (v: string) => v ? new Date(v).toLocaleTimeString() : '-',
+                                },
+                              ]}
+                            />
+                          </Card>
+                        )
+                      })}
+                    </div>
+                  ) : null}
+                </Card>
+              )
+            })(),
           },
         ]}
       />

@@ -1220,11 +1220,14 @@ export interface WorkerMetrics {
   parse_errors: number
   db_inserts: number
   last_flush_at: string
+  reconnect_count: number
 }
 
 export interface TailerMetrics {
   NumWorkers: number
   QueueDepth: number
+  QueueMaxLen: number
+  QueueFull: boolean
   FlushedPos: number
   FlushedSeq: number
   LogsPerSec: number
@@ -1236,6 +1239,8 @@ export interface ReplicaTailerMetrics {
   NodeID: string
   NumWorkers: number
   QueueDepth: number
+  QueueMaxLen: number
+  QueueFull: boolean
   FlushedPos: number
   FlushedSeq: number
   LogsPerSec: number
@@ -1247,6 +1252,8 @@ export interface AggregatedTailerMetrics {
   PipelineActive: boolean
   NumWorkers: number
   QueueDepth: number
+  QueueMaxLen: number
+  QueueFull: boolean
   FlushedPos: number
   FlushedSeq: number
   LogsPerSec: number

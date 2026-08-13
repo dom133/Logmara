@@ -46,7 +46,7 @@ func (wp *WorkerPool) NumWorkers() int {
 type worker struct {
 	id         int
 	parser     *parser.Engine
-	db         *sql.DB
+	pool     *db.DynamicPool
 	alerts     *alertengine.Engine
 	rate       sharedstate.RateCounter
 	flushTrk   *sharedstate.FlushTracker
@@ -57,25 +57,27 @@ type worker struct {
 
 // WorkerMetrics tracks per-worker statistics.
 type WorkerMetrics struct {
-	ID            int
-	Mutex         sync.RWMutex
-	MsgsProcessed int64
-	ParseErrors   int64
-	DbInserts     int64
-	LastFlushAt   time.Time
+	ID             int
+	Mutex          sync.RWMutex
+	MsgsProcessed  int64
+	ParseErrors    int64
+	DbInserts      int64
+	LastFlushAt    time.Time
+	ReconnectCount int64 // lifetime count of RabbitMQ reconnect attempts, for spotting flaky brokers
 }
 
 // WorkerMetricsPublic is a JSON-serializable snapshot of WorkerMetrics.
 type WorkerMetricsPublic struct {
-	ID            int       `json:"id"`
-	NodeID        string    `json:"node_id"`
-	MsgsProcessed int64     `json:"msgs_processed"`
-	ParseErrors   int64     `json:"parse_errors"`
-	DbInserts     int64     `json:"db_inserts"`
-	LastFlushAt   time.Time `json:"last_flush_at"`
+	ID             int       `json:"id"`
+	NodeID         string    `json:"node_id"`
+	MsgsProcessed  int64     `json:"msgs_processed"`
+	ParseErrors    int64     `json:"parse_errors"`
+	DbInserts      int64     `json:"db_inserts"`
+	LastFlushAt    time.Time `json:"last_flush_at"`
+	ReconnectCount int64     `json:"reconnect_count"`
 }
 
-func NewWorkerPool(numWorkers int, db *sql.DB, alerts *alertengine.Engine,
+func NewWorkerPool(numWorkers int, pool *db.DynamicPool, alerts *alertengine.Engine,
 	rate sharedstate.RateCounter, flushTrk *sharedstate.FlushTracker,
 	queue *sharedstate.Queue, ic control.IngestionController) *WorkerPool {
 
@@ -137,11 +139,12 @@ func (wp *WorkerPool) GetMetrics() []WorkerMetrics {
 	for i, w := range wp.workers {
 		w.metrics.Mutex.RLock()
 		metrics[i] = WorkerMetrics{
-			ID:            w.metrics.ID,
-			MsgsProcessed: w.metrics.MsgsProcessed,
-			ParseErrors:   w.metrics.ParseErrors,
-			DbInserts:     w.metrics.DbInserts,
-			LastFlushAt:   w.metrics.LastFlushAt,
+			ID:             w.metrics.ID,
+			MsgsProcessed:  w.metrics.MsgsProcessed,
+			ParseErrors:    w.metrics.ParseErrors,
+			DbInserts:      w.metrics.DbInserts,
+			LastFlushAt:    w.metrics.LastFlushAt,
+			ReconnectCount: w.metrics.ReconnectCount,
 		}
 		w.metrics.Mutex.RUnlock()
 	}
@@ -154,11 +157,12 @@ func (wp *WorkerPool) GetPublicMetrics() []WorkerMetricsPublic {
 	for i, w := range wp.workers {
 		w.metrics.Mutex.RLock()
 		metrics[i] = WorkerMetricsPublic{
-			ID:            w.metrics.ID,
-			MsgsProcessed: w.metrics.MsgsProcessed,
-			ParseErrors:   w.metrics.ParseErrors,
-			DbInserts:     w.metrics.DbInserts,
-			LastFlushAt:   w.metrics.LastFlushAt,
+			ID:             w.metrics.ID,
+			MsgsProcessed:  w.metrics.MsgsProcessed,
+			ParseErrors:    w.metrics.ParseErrors,
+			DbInserts:      w.metrics.DbInserts,
+			LastFlushAt:    w.metrics.LastFlushAt,
+			ReconnectCount: w.metrics.ReconnectCount,
 		}
 		w.metrics.Mutex.RUnlock()
 	}
@@ -189,6 +193,9 @@ func (w *worker) run(ctx context.Context) {
 		if err != nil {
 			slog.Error("worker: failed to start consuming, will retry", "id", w.id, "error", err)
 			reconnectAttempts++
+			w.metrics.Mutex.Lock()
+			w.metrics.ReconnectCount++
+			w.metrics.Mutex.Unlock()
 			if !sleepOrDone(ctx, workerReconnectDelay) {
 				return
 			}
@@ -375,6 +382,9 @@ func (w *worker) run(ctx context.Context) {
 
 		slog.Warn("worker: consume loop exited, reconnecting", "id", w.id)
 		reconnectAttempts++
+		w.metrics.Mutex.Lock()
+		w.metrics.ReconnectCount++
+		w.metrics.Mutex.Unlock()
 		if !sleepOrDone(ctx, workerReconnectDelay) {
 			return
 		}

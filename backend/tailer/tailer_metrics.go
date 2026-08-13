@@ -17,14 +17,16 @@ const tailerMetricsReplicaTTL = 60 * time.Second
 
 // TailerMetrics aggregates global and per-worker tailer metrics.
 type TailerMetrics struct {
-	mu             sync.RWMutex
-	NumWorkers     int
-	QueueDepth     int64
-	FlushedPos     int64
-	FlushedSeq     int64
-	LogsPerSec     float64
-	WorkerMetrics  []WorkerMetricsPublic
-	UpdatedAt      time.Time
+	mu            sync.RWMutex
+	NumWorkers    int
+	QueueDepth    int64
+	QueueMaxLen   int64
+	QueueFull     bool
+	FlushedPos    int64
+	FlushedSeq    int64
+	LogsPerSec    float64
+	WorkerMetrics []WorkerMetricsPublic
+	UpdatedAt     time.Time
 }
 
 // tailerMetricsPublic is a JSON-serializable snapshot of TailerMetrics
@@ -32,6 +34,8 @@ type TailerMetrics struct {
 type tailerMetricsPublic struct {
 	NumWorkers    int                   `json:"num_workers"`
 	QueueDepth    int64                 `json:"queue_depth"`
+	QueueMaxLen   int64                 `json:"queue_max_len"`
+	QueueFull     bool                  `json:"queue_full"`
 	FlushedPos    int64                 `json:"flushed_pos"`
 	FlushedSeq    int64                 `json:"flushed_seq"`
 	LogsPerSec    float64               `json:"logs_per_sec"`
@@ -44,6 +48,8 @@ type AggregatedTailerMetrics struct {
 	PipelineActive bool
 	NumWorkers     int
 	QueueDepth     int64
+	QueueMaxLen    int64
+	QueueFull      bool
 	FlushedPos     int64
 	FlushedSeq     int64
 	LogsPerSec     float64
@@ -57,6 +63,8 @@ type ReplicaTailerMetrics struct {
 	NodeID        string
 	NumWorkers    int
 	QueueDepth    int64
+	QueueMaxLen   int64
+	QueueFull     bool
 	FlushedPos    int64
 	FlushedSeq    int64
 	LogsPerSec    float64
@@ -115,6 +123,8 @@ func (c *TailerMetricsCollector) Get() TailerMetrics {
 	return TailerMetrics{
 		NumWorkers:    c.metrics.NumWorkers,
 		QueueDepth:    c.metrics.QueueDepth,
+		QueueMaxLen:   c.metrics.QueueMaxLen,
+		QueueFull:     c.metrics.QueueFull,
 		FlushedPos:    c.metrics.FlushedPos,
 		FlushedSeq:    c.metrics.FlushedSeq,
 		LogsPerSec:    c.metrics.LogsPerSec,
@@ -145,7 +155,13 @@ func replicaMetricsKey(nodeID string) string {
 
 func (c *TailerMetricsCollector) update(ctx context.Context) {
 	queueDepth := c.queue.Len(ctx)
+	queueMaxLen := c.queue.MaxLen()
 	flushedSeq, flushedPos := c.flushTrk.GetFlushedPos(ctx)
+	// 60s window smooths pipeline-health readings for this admin tab. The
+	// dashboard's live logs/sec stat (handler/stats.go) reads the same
+	// underlying counter with a 10s window instead - intentionally less
+	// smoothed since it's meant to look "live" - so the two figures can
+	// legitimately disagree slightly.
 	logsPerSec := c.rate.Rate(ctx, 60)
 
 	publicMetrics := c.pool.GetPublicMetrics()
@@ -156,6 +172,8 @@ func (c *TailerMetricsCollector) update(ctx context.Context) {
 	m := tailerMetricsPublic{
 		NumWorkers:    c.pool.NumWorkers(),
 		QueueDepth:    queueDepth,
+		QueueMaxLen:   queueMaxLen,
+		QueueFull:     queueDepth >= queueMaxLen,
 		FlushedPos:    flushedPos,
 		FlushedSeq:    flushedSeq,
 		LogsPerSec:    logsPerSec,
@@ -165,6 +183,8 @@ func (c *TailerMetricsCollector) update(ctx context.Context) {
 
 	c.metrics.mu.Lock()
 	c.metrics.QueueDepth = queueDepth
+	c.metrics.QueueMaxLen = queueMaxLen
+	c.metrics.QueueFull = m.QueueFull
 	c.metrics.FlushedPos = flushedPos
 	c.metrics.FlushedSeq = flushedSeq
 	c.metrics.LogsPerSec = logsPerSec

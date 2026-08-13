@@ -168,6 +168,13 @@ func (q *Queue) IsFull(ctx context.Context) bool {
 	return q.Len(ctx) >= rabbitmqMaxLen
 }
 
+// MaxLen returns the queue's configured backpressure threshold, so callers
+// that already have a Len() reading (e.g. the metrics collector) can derive
+// fullness without a second round trip.
+func (q *Queue) MaxLen() int64 {
+	return rabbitmqMaxLen
+}
+
 // Purge removes all messages from the RabbitMQ queue. Returns the number
 // of messages that were removed.
 func (q *Queue) Purge(_ context.Context) (uint32, error) {

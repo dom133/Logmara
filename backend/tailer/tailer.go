@@ -26,6 +26,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"logmara/alertengine"
 	"logmara/control"
+	"logmara/db"
 	"logmara/model"
 	"logmara/parser"
 	"logmara/sharedstate"
@@ -169,6 +170,8 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 			PipelineActive: true,
 			NumWorkers:     m.NumWorkers,
 			QueueDepth:     m.QueueDepth,
+			QueueMaxLen:    m.QueueMaxLen,
+			QueueFull:      m.QueueFull,
 			FlushedPos:     m.FlushedPos,
 			FlushedSeq:     m.FlushedSeq,
 			LogsPerSec:     m.LogsPerSec,
@@ -177,6 +180,8 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 				NodeID:        "local",
 				NumWorkers:    m.NumWorkers,
 				QueueDepth:    m.QueueDepth,
+				QueueMaxLen:   m.QueueMaxLen,
+				QueueFull:     m.QueueFull,
 				FlushedPos:    m.FlushedPos,
 				FlushedSeq:    m.FlushedSeq,
 				LogsPerSec:    m.LogsPerSec,
@@ -201,12 +206,15 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 
 	var replicas []ReplicaTailerMetrics
 	var totalWorkers int
-	var totalLogsPerSec float64
+	var logsPerSec float64
 	var allWorkerMetrics []WorkerMetricsPublic
 	var queueDepth int64
+	var queueMaxLen int64
+	var queueFull bool
 	var flushedPos int64
 	var flushedSeq int64
 	var latestUpdate time.Time
+	var haveSharedState bool
 
 	for _, nodeID := range replicaIDs {
 		data, err := currentSharedClient.Raw().Get(ctx, replicaMetricsKey(nodeID)).Bytes()
@@ -222,6 +230,8 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 			NodeID:        nodeID,
 			NumWorkers:    m.NumWorkers,
 			QueueDepth:    m.QueueDepth,
+			QueueMaxLen:   m.QueueMaxLen,
+			QueueFull:     m.QueueFull,
 			FlushedPos:    m.FlushedPos,
 			FlushedSeq:    m.FlushedSeq,
 			LogsPerSec:    m.LogsPerSec,
@@ -230,16 +240,23 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 		})
 
 		totalWorkers += m.NumWorkers
-		totalLogsPerSec += m.LogsPerSec
 		allWorkerMetrics = append(allWorkerMetrics, m.WorkerMetrics...)
 		if m.UpdatedAt.After(latestUpdate) {
 			latestUpdate = m.UpdatedAt
 		}
-		// Queue depth, flushed pos/seq are shared state - take from first valid replica
-		if queueDepth == 0 {
+		// Queue depth, flushed pos/seq and logs/sec are all shared/global
+		// state (one RabbitMQ queue, one flush tracker, one Redis rate
+		// counter - see sharedstate.NewRateCounter) that every replica
+		// reports identically, so take it once from the first valid replica
+		// instead of summing it Nx across replicas.
+		if !haveSharedState {
 			queueDepth = m.QueueDepth
+			queueMaxLen = m.QueueMaxLen
+			queueFull = m.QueueFull
 			flushedPos = m.FlushedPos
 			flushedSeq = m.FlushedSeq
+			logsPerSec = m.LogsPerSec
+			haveSharedState = true
 		}
 	}
 
@@ -265,9 +282,11 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 		PipelineActive: true,
 		NumWorkers:     totalWorkers,
 		QueueDepth:     queueDepth,
+		QueueMaxLen:    queueMaxLen,
+		QueueFull:      queueFull,
 		FlushedPos:     flushedPos,
 		FlushedSeq:     flushedSeq,
-		LogsPerSec:     totalLogsPerSec,
+		LogsPerSec:     logsPerSec,
 		WorkerMetrics:  allWorkerMetrics,
 		Replicas:       replicas,
 		UpdatedAt:      latestUpdate,
@@ -405,7 +424,7 @@ type pipeline struct {
 // single-replica deployments), it runs the ingestion loop directly.
 // When sharedClient is set (multiple api replicas over NFS), it uses
 // the distributed pipeline with RabbitMQ.
-func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+func Run(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
 	if sharedClient == nil {
 		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, nil)
 		return
@@ -413,7 +432,7 @@ func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine
 	runWithVIPElection(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
 }
 
-func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+func runWithVIPElection(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
 	// myNode identifies the physical Swarm node this task runs on. It's used
 	// below ONLY to compare against the VIP marker file, which keepalived
 	// (notify_vip.sh) stamps with `hostname` - i.e. also the node, not the
@@ -542,7 +561,7 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 	}
 }
 
-func startConsumerPipeline(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController,
+func startConsumerPipeline(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController,
 	alerts *alertengine.Engine, rate sharedstate.RateCounter, sharedClient *sharedstate.Client, nodeID string) *pipeline {
 
 	rabbitmqURL := util.ResolveRabbitMQURL()
@@ -705,7 +724,7 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+func runIngestionLoop(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
 	slog.Info("file tailer started", "path", filePath)
 	batchSize := 5000
 	batchInterval := 500 * time.Millisecond
@@ -971,7 +990,7 @@ func rowArgs(entry model.IngestEntry) []interface{} {
 	}
 }
 
-func flushBatch(db *sql.DB, entries []model.IngestEntry, rate sharedstate.RateCounter) error {
+func flushBatch(pool *db.DynamicPool, entries []model.IngestEntry, rate sharedstate.RateCounter) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -1000,7 +1019,7 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry, rate sharedstate.RateCo
 	return nil
 }
 
-func insertChunk(db *sql.DB, entries []model.IngestEntry) (int, error) {
+func insertChunk(pool *db.DynamicPool, entries []model.IngestEntry) (int, error) {
 	var sb strings.Builder
 	sb.WriteString("INSERT INTO syslog_logs (")
 	sb.WriteString(insertQueryColumns)
@@ -1032,7 +1051,7 @@ func insertChunk(db *sql.DB, entries []model.IngestEntry) (int, error) {
 	return int(n), nil
 }
 
-func insertRowsIndividually(db *sql.DB, entries []model.IngestEntry) int {
+func insertRowsIndividually(pool *db.DynamicPool, entries []model.IngestEntry) int {
 	query := `INSERT INTO syslog_logs (` + insertQueryColumns + `)
 		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
 	stmt, err := db.Prepare(query)
@@ -1145,7 +1164,7 @@ func loadPosition(path string) (pos int64, fingerprint string, ok bool) {
 	return pos, raw[sep+1:], true
 }
 
-func loadStartPosition(db *sql.DB, filePath, posFile string, sharedClient *sharedstate.Client) (filePos, flushedPos int64) {
+func loadStartPosition(pool *db.DynamicPool, filePath, posFile string, sharedClient *sharedstate.Client) (filePos, flushedPos int64) {
 	return loadStartPositionFromReader(db, filePath, posFile, sharedClient)
 }
 
