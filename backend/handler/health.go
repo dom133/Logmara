@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"database/sql"
 	"net/http"
 	"runtime"
 	"time"
@@ -22,8 +21,9 @@ var startTime = time.Now()
 // see main.go) can take as long as the accumulated log volume does, and
 // this must not turn into an "unhealthy" container / block dependents on
 // every restart just because that background pass hasn't finished yet.
-func HealthCheck(database *sql.DB) gin.HandlerFunc {
+func HealthCheck(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		if db.IsAppStarting() {
 			c.JSON(http.StatusOK, gin.H{
 				"status": "starting",

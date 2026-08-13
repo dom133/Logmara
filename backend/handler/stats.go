@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"logmara/db"
 	"logmara/model"
 	"logmara/sharedstate"
 
@@ -80,7 +81,7 @@ type DashboardStatsRequest struct {
 	To   string `json:"to"`
 }
 
-func GetDashboardStats(db *sql.DB) gin.HandlerFunc {
+func GetDashboardStats(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req DashboardStatsRequest
 		_ = c.ShouldBindJSON(&req)
@@ -96,7 +97,7 @@ func GetDashboardStats(db *sql.DB) gin.HandlerFunc {
 		}
 		dashboardCacheMu.RUnlock()
 
-		stats := buildDashboardStats(db, from, to)
+		stats := buildDashboardStats(pool, from, to)
 
 		if from == "" && to == "" {
 			dashboardCacheMu.Lock()
@@ -130,7 +131,8 @@ type filteredAggregates struct {
 // (see buildDashboardStats). The "filtered" CTE is marked MATERIALIZED so
 // Postgres scans syslog_logs exactly once and reuses that result for every
 // branch below, instead of re-running whereBase once per aggregate.
-func queryFilteredAggregates(db *sql.DB, whereBase string, args []interface{}) filteredAggregates {
+func queryFilteredAggregates(pool *db.DynamicPool, whereBase string, args []interface{}) filteredAggregates {
+	database := pool.Get()
 	result := filteredAggregates{Severity: make(map[string]int64)}
 
 	branches := []string{
@@ -148,7 +150,7 @@ func queryFilteredAggregates(db *sql.DB, whereBase string, args []interface{}) f
 		whereBase, strings.Join(branches, " UNION ALL "),
 	)
 
-	rows, err := db.QueryContext(context.Background(), query, args...)
+	rows, err := database.QueryContext(context.Background(), query, args...)
 	if err != nil {
 		slog.Error("filtered aggregates query failed", "err", err)
 		return result
@@ -185,7 +187,8 @@ func queryFilteredAggregates(db *sql.DB, whereBase string, args []interface{}) f
 	return result
 }
 
-func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
+func buildDashboardStats(pool *db.DynamicPool, from, to string) model.DashboardStats {
+	database := pool.Get()
 	var stats model.DashboardStats
 	stats.SeverityCounts = make(map[string]int64)
 
@@ -221,17 +224,17 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 			// so it agrees with mv_device_stats (grouped by fromhost_ip) - the
 			// Admin Devices tab and Top Devices both key on fromhost_ip, not
 			// hostname, which isn't guaranteed unique per device.
-			row := db.QueryRow("SELECT total_logs, logs_last_hour, logs_last_day, unique_ips, refreshed_at FROM mv_dashboard_summary LIMIT 1")
+			row := database.QueryRow("SELECT total_logs, logs_last_hour, logs_last_day, unique_ips, refreshed_at FROM mv_dashboard_summary LIMIT 1")
 			return row.Scan(&stats.TotalLogs, &stats.LogsLastHour, &stats.LogsLastDay, &stats.UniqueDevices, &refreshedAt)
 		})
 		if err != nil {
 			_ = timedQuery("dashboard_stats_scalar_fallback", func() error {
-				row := db.QueryRow("SELECT COUNT(*), COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour'), COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 day'), COUNT(DISTINCT fromhost_ip) FROM syslog_logs")
+				row := database.QueryRow("SELECT COUNT(*), COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour'), COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 day'), COUNT(DISTINCT fromhost_ip) FROM syslog_logs")
 				return row.Scan(&stats.TotalLogs, &stats.LogsLastHour, &stats.LogsLastDay, &stats.UniqueDevices)
 			})
 		}
 		_ = timedQuery("dashboard_stats_severity", func() error {
-			sevRows, err := db.Query("SELECT severity, cnt FROM mv_dashboard_severity ORDER BY cnt DESC")
+			sevRows, err := database.Query("SELECT severity, cnt FROM mv_dashboard_severity ORDER BY cnt DESC")
 			if err != nil {
 				return err
 			}
@@ -247,7 +250,7 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 		})
 		stats.TopDevices = []model.DeviceCount{}
 		_ = timedQuery("dashboard_stats_top_devices_mv", func() error {
-			rows, err := db.Query(
+			rows, err := database.Query(
 				`SELECT fromhost_ip, hostname, total_logs FROM mv_device_stats ORDER BY total_logs DESC LIMIT 10`,
 			)
 			if err != nil {
@@ -266,7 +269,7 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 		})
 		stats.TopErrors = []model.ErrorMessage{}
 		_ = timedQuery("dashboard_stats_top_errors_mv", func() error {
-			rows, err := db.Query(
+			rows, err := database.Query(
 				`SELECT message, fromhost_ip, hostname, cnt FROM mv_dashboard_top_errors ORDER BY cnt DESC LIMIT 10`,
 			)
 			if err != nil {
@@ -286,7 +289,7 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 	} else {
 		var agg filteredAggregates
 		_ = timedQuery("dashboard_stats_filtered_aggregates", func() error {
-			agg = queryFilteredAggregates(db, whereBase, args)
+			agg = queryFilteredAggregates(pool, whereBase, args)
 			return nil
 		})
 		stats.TotalLogs = agg.TotalLogs
@@ -312,7 +315,7 @@ type DeviceStatsRequest struct {
 	Limit int `json:"limit"`
 }
 
-func GetDeviceStats(db *sql.DB) gin.HandlerFunc {
+func GetDeviceStats(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req DeviceStatsRequest
 		_ = c.ShouldBindJSON(&req)
@@ -335,7 +338,7 @@ func GetDeviceStats(db *sql.DB) gin.HandlerFunc {
 			deviceStatsCacheMu.RUnlock()
 		}
 
-		devices := fetchDeviceStats(db, limit)
+		devices := fetchDeviceStats(pool, limit)
 
 		if limit == 100 {
 			deviceStatsCacheMu.Lock()
@@ -348,12 +351,13 @@ func GetDeviceStats(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func fetchDeviceStats(db *sql.DB, limit int) []model.DeviceStats {
+func fetchDeviceStats(pool *db.DynamicPool, limit int) []model.DeviceStats {
+	database := pool.Get()
 	var devices []model.DeviceStats
 	_ = timedQuery("device_stats_all", func() error {
 		// Reads from the mv_device_stats rollup instead of aggregating
 		// syslog_logs live - see fetchDevices in logs.go for the same fix.
-		rows, err := db.Query(
+		rows, err := database.Query(
 			`SELECT fromhost_ip, hostname, total_logs, last_seen,
 				emergency, alert, critical, err_count, warning, notice, info, debug, via_relay
 				FROM mv_device_stats ORDER BY total_logs DESC LIMIT $1`, limit,
@@ -392,7 +396,7 @@ type SeverityRequest struct {
 	To   string `json:"to"`
 }
 
-func GetSeverityStats(db *sql.DB) gin.HandlerFunc {
+func GetSeverityStats(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req SeverityRequest
 		_ = c.ShouldBindJSON(&req)
@@ -412,9 +416,9 @@ func GetSeverityStats(db *sql.DB) gin.HandlerFunc {
 
 		var stats []model.SeverityStats
 		if from == "" && to == "" {
-			stats = fetchSeverityStatsAll(db)
+			stats = fetchSeverityStatsAll(pool)
 		} else {
-			stats = fetchSeverityStatsRange(db, from, to)
+			stats = fetchSeverityStatsRange(pool, from, to)
 		}
 
 		if from == "" && to == "" {
@@ -428,10 +432,11 @@ func GetSeverityStats(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func fetchSeverityStatsAll(db *sql.DB) []model.SeverityStats {
+func fetchSeverityStatsAll(pool *db.DynamicPool) []model.SeverityStats {
+	database := pool.Get()
 	var stats []model.SeverityStats
 	_ = timedQuery("severity_stats_all", func() error {
-		rows, err := db.Query(`
+		rows, err := database.Query(`
 			SELECT severity, COUNT(*) FROM syslog_logs
 			GROUP BY severity ORDER BY COUNT(*) DESC
 		`)
@@ -455,7 +460,8 @@ func fetchSeverityStatsAll(db *sql.DB) []model.SeverityStats {
 	return stats
 }
 
-func fetchSeverityStatsRange(db *sql.DB, from, to string) []model.SeverityStats {
+func fetchSeverityStatsRange(pool *db.DynamicPool, from, to string) []model.SeverityStats {
+	database := pool.Get()
 	where := ""
 	args := []interface{}{}
 	argIdx := 1
@@ -477,7 +483,7 @@ func fetchSeverityStatsRange(db *sql.DB, from, to string) []model.SeverityStats 
 
 	var stats []model.SeverityStats
 	_ = timedQuery("severity_stats_range", func() error {
-		rows, err := db.Query(
+		rows, err := database.Query(
 			"SELECT severity, COUNT(*) FROM syslog_logs"+where+" GROUP BY severity ORDER BY COUNT(*) DESC",
 			args...,
 		)
@@ -508,7 +514,7 @@ type TimelineRequest struct {
 	TZ       string `json:"tz"`
 }
 
-func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
+func GetTimelineStats(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req TimelineRequest
 		_ = c.ShouldBindJSON(&req)
@@ -549,7 +555,7 @@ func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
 					"SELECT date_trunc('%s', hour AT TIME ZONE $1) AT TIME ZONE $1 as ts, SUM(cnt) as cnt FROM mv_timeline_hourly WHERE hour >= now() - interval '%s' GROUP BY ts ORDER BY ts",
 					field, lookback,
 				)
-				rows, err := queryWithTZFallback(db, query, tz, nil)
+				rows, err := queryWithTZFallback(pool, query, tz, nil)
 				if err != nil {
 					return err
 				}
@@ -584,7 +590,7 @@ func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
 			query += " GROUP BY ts ORDER BY ts"
 
 			_ = timedQuery("timeline_stats", func() error {
-				rows, err := queryWithTZFallback(db, query, tz, args)
+				rows, err := queryWithTZFallback(pool, query, tz, args)
 				if err != nil {
 					return err
 				}
@@ -609,7 +615,8 @@ func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
 // carries the rest in order) and retries once with "UTC" if Postgres rejects
 // the timezone name (unknown zones raise an error at AT TIME ZONE evaluation
 // time, not at parse time, so this can't be validated up front).
-func queryWithTZFallback(db *sql.DB, query, tz string, extraArgs []interface{}) (*sql.Rows, error) {
+func queryWithTZFallback(pool *db.DynamicPool, query, tz string, extraArgs []interface{}) (*sql.Rows, error) {
+	database := pool.Get()
 	buildArgs := func(tzArg string) []interface{} {
 		if len(extraArgs) == 0 {
 			return []interface{}{tzArg}
@@ -620,9 +627,9 @@ func queryWithTZFallback(db *sql.DB, query, tz string, extraArgs []interface{}) 
 		return args
 	}
 
-	rows, err := db.Query(query, buildArgs(tz)...)
+	rows, err := database.Query(query, buildArgs(tz)...)
 	if err != nil && tz != "UTC" {
-		rows, err = db.Query(query, buildArgs("UTC")...)
+		rows, err = database.Query(query, buildArgs("UTC")...)
 	}
 	return rows, err
 }

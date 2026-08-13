@@ -1,7 +1,6 @@
 package notify
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -103,8 +102,8 @@ const maxPushErrorsKept = 3
 // subscription was attempted (no subscriptions registered, VAPID key
 // generation failed, etc.) - per-subscription failures are reported via the
 // returned pushResult instead.
-func dispatchPush(database *sql.DB, payload Payload, targetUserIds []int64) (pushResult, error) {
-	subs, err := db.GetAllPushSubscriptions(database)
+func dispatchPush(pool *db.DynamicPool, payload Payload, targetUserIds []int64) (pushResult, error) {
+	subs, err := db.GetAllPushSubscriptions(pool.Get())
 	if err != nil {
 		return pushResult{}, fmt.Errorf("load push subscriptions: %w", err)
 	}
@@ -137,7 +136,7 @@ func dispatchPush(database *sql.DB, payload Payload, targetUserIds []int64) (pus
 	}
 	subs = filtered
 
-	publicKey, privateKey, err := db.GetOrCreateVAPIDKeys(database)
+	publicKey, privateKey, err := db.GetOrCreateVAPIDKeys(pool.Get())
 	if err != nil {
 		return pushResult{}, err
 	}
@@ -147,7 +146,7 @@ func dispatchPush(database *sql.DB, payload Payload, targetUserIds []int64) (pus
 	for _, s := range subs {
 		gone, sendErr := sendWebPush(s.Endpoint, s.P256dh, s.Auth, publicKey, privateKey, payload)
 		if gone {
-			_ = db.DeletePushSubscription(database, s.Endpoint)
+			_ = db.DeletePushSubscription(pool.Get(), s.Endpoint)
 		}
 		if sendErr != nil {
 			res.Failed++

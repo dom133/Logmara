@@ -5,7 +5,6 @@ package alertengine
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -97,7 +96,7 @@ func globToRegex(pattern string) (*regexp.Regexp, error) {
 // called from the single tailer goroutine that currently holds ingestion
 // leadership.
 type Engine struct {
-	db          *sql.DB
+	pool        *db.DynamicPool
 	store       counterStore
 	dispatcher  *notify.Dispatcher
 	broadcaster *sharedstate.Broadcaster // nil when Redis isn't configured
@@ -123,7 +122,7 @@ type Engine struct {
 // instant another replica's Reload publishes to alertRulesReloadChannel, so
 // a rule change made through replica A takes effect on replica B without
 // waiting for B's own next tick.
-func NewEngine(ctx context.Context, database *sql.DB, redisClient *sharedstate.Client) *Engine {
+func NewEngine(ctx context.Context, pool *db.DynamicPool, redisClient *sharedstate.Client) *Engine {
 	var store counterStore
 	var broadcaster *sharedstate.Broadcaster
 	if redisClient != nil {
@@ -133,9 +132,9 @@ func NewEngine(ctx context.Context, database *sql.DB, redisClient *sharedstate.C
 		store = newLocalCounterStore()
 	}
 	e := &Engine{
-		db:          database,
+		pool:        pool,
 		store:       store,
-		dispatcher:  notify.NewDispatcher(database),
+		dispatcher:  notify.NewDispatcher(pool),
 		broadcaster: broadcaster,
 		reloadCh:    make(chan struct{}, 1),
 	}
@@ -152,7 +151,7 @@ func NewEngine(ctx context.Context, database *sql.DB, redisClient *sharedstate.C
 // loadRules refreshes the in-memory active-rules cache from the database in
 // a single query, grouped by rule_type.
 func (e *Engine) loadRules() {
-	alerts, err := db.GetAllActiveAlerts(e.db)
+	alerts, err := db.GetAllActiveAlerts(e.pool.Get())
 	if err != nil {
 		slog.Error("failed to load alert rules", "error", err)
 		return
@@ -210,10 +209,10 @@ func (e *Engine) reloadLocal() {
 	}
 }
 
-// GetDB returns the database handle the engine was built with, for handlers
+// GetPool returns the pool the engine was built with, for handlers
 // that need to run an alert CRUD query and then call Reload.
-func (e *Engine) GetDB() *sql.DB {
-	return e.db
+func (e *Engine) GetPool() *db.DynamicPool {
+	return e.pool
 }
 
 // rulesOfType returns the cached active rules for ruleType (nil if none).
@@ -234,11 +233,11 @@ func (e *Engine) SetOnInApp(fn func(model.InAppNotification)) {
 // entries just flushed to the database, firing (and logging) a notification
 // for any rule whose threshold is met within its window and whose cooldown
 // has elapsed.
-func (e *Engine) EvaluateBatch(database *sql.DB, entries []model.IngestEntry) {
+func (e *Engine) EvaluateBatch(entries []model.IngestEntry) {
 	if len(entries) == 0 {
 		return
 	}
-	if db.GetSetting(database, "notifications_enabled", "true") != "true" {
+	if db.GetSetting(e.pool.Get(), "notifications_enabled", "true") != "true" {
 		return
 	}
 
@@ -275,7 +274,7 @@ func (e *Engine) EvaluateBatch(database *sql.DB, entries []model.IngestEntry) {
 			// Every matching entry notifies on its own, bypassing the
 			// threshold/window/cooldown gate entirely.
 			for _, entry := range matchedEntries {
-				_ = db.MarkAlertFired(database, rule.ID)
+				_ = db.MarkAlertFired(e.pool.Get(), rule.ID)
 				conditions := describeMatchedConditions(rule, entry)
 				e.dispatcher.DispatchAlert(rule, notify.Payload{
 					Title:             fmt.Sprintf("Alert: %s", rule.Name),
@@ -303,7 +302,7 @@ func (e *Engine) EvaluateBatch(database *sql.DB, entries []model.IngestEntry) {
 			continue
 		}
 
-		_ = db.MarkAlertFired(database, rule.ID)
+		_ = db.MarkAlertFired(e.pool.Get(), rule.ID)
 		conditions := describeMatchedConditions(rule, lastEntry)
 		conditions = append(conditions, fmt.Sprintf("Threshold reached: %d matching log(s) within %d minute(s) (required: %d)", matched, rule.WindowMinutes, threshold))
 		e.dispatcher.DispatchAlert(rule, notify.Payload{
@@ -371,8 +370,8 @@ func describeMatchedConditions(rule model.Alert, entry model.IngestEntry) []stri
 // AuditActionFilter matches (or is empty, meaning "any action"). Unlike
 // log_threshold rules, audit log events have no count/window - each
 // matching action fires immediately, subject only to the rule's cooldown.
-func (e *Engine) EvaluateAuditLog(database *sql.DB, action string, userID int64, username, ip, details string) {
-	if db.GetSetting(database, "notifications_enabled", "true") != "true" {
+func (e *Engine) EvaluateAuditLog(action string, userID int64, username, ip, details string) {
+	if db.GetSetting(e.pool.Get(), "notifications_enabled", "true") != "true" {
 		return
 	}
 
@@ -392,7 +391,7 @@ func (e *Engine) EvaluateAuditLog(database *sql.DB, action string, userID int64,
 			continue
 		}
 
-		_ = db.MarkAlertFired(database, rule.ID)
+		_ = db.MarkAlertFired(e.pool.Get(), rule.ID)
 		conditionDesc := "Any audit action (no filter set)"
 		if rule.AuditActionFilter != "" {
 			conditionDesc = fmt.Sprintf("Audit action matches: %s", rule.AuditActionFilter)
@@ -420,8 +419,8 @@ const maxMalformedJSONSnippet = 500
 // same as audit_log. With FireOnEveryMatch set, the cooldown is bypassed
 // entirely and the rule notifies once per malformed line, no matter how
 // close together they arrive.
-func (e *Engine) EvaluateMalformedJSON(database *sql.DB, rawLine string) {
-	if db.GetSetting(database, "notifications_enabled", "true") != "true" {
+func (e *Engine) EvaluateMalformedJSON(rawLine string) {
+	if db.GetSetting(e.pool.Get(), "notifications_enabled", "true") != "true" {
 		return
 	}
 
@@ -444,7 +443,7 @@ func (e *Engine) EvaluateMalformedJSON(database *sql.DB, rawLine string) {
 			}
 		}
 
-		_ = db.MarkAlertFired(database, rule.ID)
+		_ = db.MarkAlertFired(e.pool.Get(), rule.ID)
 		e.dispatcher.DispatchAlert(rule, notify.Payload{
 			Title:             fmt.Sprintf("Alert: %s", rule.Name),
 			Message:           fmt.Sprintf("A syslog line failed to parse as JSON during ingestion: %s", snippet),

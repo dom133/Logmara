@@ -1,7 +1,6 @@
 package alertengine
 
 import (
-	"database/sql"
 	"fmt"
 	"time"
 
@@ -23,8 +22,8 @@ type deviceLastSeen struct {
 // This means silence detection lags real time by up to
 // mv_refresh_interval_min (30 minutes by default), same as "last seen"
 // already does everywhere else in the app.
-func loadDeviceLastSeen(database *sql.DB) ([]deviceLastSeen, error) {
-	rows, err := database.Query("SELECT fromhost_ip, hostname, last_seen FROM mv_device_stats WHERE last_seen IS NOT NULL")
+func loadDeviceLastSeen(pool *db.DynamicPool) ([]deviceLastSeen, error) {
+	rows, err := pool.Get().Query("SELECT fromhost_ip, hostname, last_seen FROM mv_device_stats WHERE last_seen IS NOT NULL")
 	if err != nil {
 		return nil, fmt.Errorf("load device last-seen: %w", err)
 	}
@@ -69,8 +68,8 @@ func severityForSilence(silentFor, threshold time.Duration) string {
 // cooldown key dedupes duplicate fires the same way log_threshold rules do,
 // and the device_silence_state table (not per-replica memory) is what
 // tracks whether a device is already known to be silent, so replicas agree.
-func (e *Engine) CheckDeviceSilence(database *sql.DB) {
-	if db.GetSetting(database, "notifications_enabled", "true") != "true" {
+func (e *Engine) CheckDeviceSilence() {
+	if db.GetSetting(e.pool.Get(), "notifications_enabled", "true") != "true" {
 		return
 	}
 
@@ -79,12 +78,12 @@ func (e *Engine) CheckDeviceSilence(database *sql.DB) {
 		return
 	}
 
-	devices, err := loadDeviceLastSeen(database)
+	devices, err := loadDeviceLastSeen(e.pool)
 	if err != nil || len(devices) == 0 {
 		return
 	}
 
-	states, err := db.ListDeviceSilenceStates(database)
+	states, err := db.ListDeviceSilenceStates(e.pool.Get())
 	if err != nil {
 		states = map[string]db.SilenceState{}
 	}
@@ -115,7 +114,7 @@ func (e *Engine) CheckDeviceSilence(database *sql.DB) {
 							dev.Hostname, dev.FromHostIP, state.SilentSince.Format(time.RFC3339)),
 						Severity: "info",
 					})
-					_ = db.DeleteDeviceSilenceState(database, rule.ID, dev.FromHostIP)
+					_ = db.DeleteDeviceSilenceState(e.pool.Get(), rule.ID, dev.FromHostIP)
 				}
 				continue
 			}
@@ -135,8 +134,8 @@ func (e *Engine) CheckDeviceSilence(database *sql.DB) {
 				continue
 			}
 
-			_ = db.MarkAlertFired(database, rule.ID)
-			_ = db.UpsertDeviceSilenceState(database, rule.ID, dev.FromHostIP, since, severity)
+			_ = db.MarkAlertFired(e.pool.Get(), rule.ID)
+			_ = db.UpsertDeviceSilenceState(e.pool.Get(), rule.ID, dev.FromHostIP, since, severity)
 			e.dispatcher.DispatchAlert(rule, notify.Payload{
 				Title: fmt.Sprintf("Device silent: %s", dev.Hostname),
 				Message: fmt.Sprintf("No logs received from %s (%s) in over %d minutes. Last seen: %s",

@@ -100,7 +100,8 @@ func rsyslogStringLiteral(s string) string {
 // 4.5.1+; $HUPisRestart is deprecated upstream and never set here) - see
 // reloadRelayConfig, which asks entrypoint.sh's supervisor loop to
 // actually restart the rsyslogd child process.
-func writeRelayACL(database *sql.DB) error {
+func writeRelayACL(pool *db.DynamicPool) error {
+	database := pool.Get()
 	enabled := db.GetSetting(database, "relay_ingestion_enabled", "false") == "true"
 
 	var comment, rulesetBody string
@@ -276,11 +277,11 @@ func broadcastToRsyslogSidecars(cgiScript string) error {
 // relay settings might have changed, and once at startup (see main.go) so a
 // restart re-applies state that lives only in the non-git-tracked shared
 // volume.
-func SyncRelayConfig(database *sql.DB) error {
+func SyncRelayConfig(pool *db.DynamicPool) error {
 	if err := relaypki.EnsureCA(relayPKIDir()); err != nil {
 		return fmt.Errorf("ensure relay CA: %w", err)
 	}
-	if err := writeRelayACL(database); err != nil {
+	if err := writeRelayACL(pool); err != nil {
 		return err
 	}
 	return reloadRelayConfig()
@@ -289,11 +290,11 @@ func SyncRelayConfig(database *sql.DB) error {
 // SyncRelayConfigWithRetry retries SyncRelayConfig with exponential backoff,
 // smoothing over the window where the rsyslog container's reload sidecar
 // isn't listening yet or Docker DNS hasn't resolved the hostname.
-func SyncRelayConfigWithRetry(database *sql.DB, attempts int, delay time.Duration) error {
+func SyncRelayConfigWithRetry(pool *db.DynamicPool, attempts int, delay time.Duration) error {
 	var err error
 	backoff := delay
 	for i := 0; i < attempts; i++ {
-		if err = SyncRelayConfig(database); err == nil {
+		if err = SyncRelayConfig(pool); err == nil {
 			return nil
 		}
 		if i < attempts-1 {
@@ -307,8 +308,9 @@ func SyncRelayConfigWithRetry(database *sql.DB, attempts int, delay time.Duratio
 	return err
 }
 
-func ListRelayWhitelist(database *sql.DB) gin.HandlerFunc {
+func ListRelayWhitelist(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		entries, err := db.GetRelayWhitelist(database)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("relay.listWhitelistFailed", "Failed to load relay whitelist", err))
@@ -318,8 +320,9 @@ func ListRelayWhitelist(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func CreateRelayWhitelistEntry(database *sql.DB) gin.HandlerFunc {
+func CreateRelayWhitelistEntry(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var req model.RelayWhitelistRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
@@ -335,7 +338,7 @@ func CreateRelayWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 
 		audit.LogAudit(database, actorID, actorName, "relay_whitelist_added", c.ClientIP(), fmt.Sprintf("ip=%s label=%s", req.IPAddress, req.Label))
 
-		if err := SyncRelayConfig(database); err != nil {
+		if err := SyncRelayConfig(pool); err != nil {
 			slog.Warn("relay config sync failed after whitelist add", "error", err)
 			c.JSON(http.StatusCreated, gin.H{"entry": entry, "reload_error": "relay config sync failed"})
 			return
@@ -349,8 +352,9 @@ func CreateRelayWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 // longer allowed in shouldn't leave an "issued" (i.e. still nominally
 // active) certificate lying around. This is the one direction that's
 // automatic; the reverse isn't (see RevokeRelayCertificate).
-func DeleteRelayWhitelistEntry(database *sql.DB) gin.HandlerFunc {
+func DeleteRelayWhitelistEntry(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", "Invalid request", nil))
@@ -381,7 +385,7 @@ func DeleteRelayWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 
 		audit.LogAudit(database, actorID, actorName, "relay_whitelist_removed", c.ClientIP(), fmt.Sprintf("id=%d", id))
 
-		if err := SyncRelayConfig(database); err != nil {
+		if err := SyncRelayConfig(pool); err != nil {
 			slog.Warn("relay config sync failed after whitelist delete", "error", err)
 			c.JSON(http.StatusOK, gin.H{"message": "whitelist entry deleted", "reload_error": "relay config sync failed"})
 			return
@@ -390,8 +394,9 @@ func DeleteRelayWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func ListRelayCertificates(database *sql.DB) gin.HandlerFunc {
+func ListRelayCertificates(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		certs, err := db.GetRelayCertificates(database)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("relay.listCertificatesFailed", "Failed to list relay certificates", err))
@@ -408,7 +413,8 @@ func ListRelayCertificates(database *sql.DB) gin.HandlerFunc {
 // client cert, and record its public metadata. Never touches
 // relay_whitelist - callers do that themselves, since the two differ on
 // insert vs. link.
-func issueRelayCertificate(database *sql.DB, label string, actorID int64) (*relaypki.IssuedCert, int64, error) {
+func issueRelayCertificate(pool *db.DynamicPool, label string, actorID int64) (*relaypki.IssuedCert, int64, error) {
+	database := pool.Get()
 	if err := relaypki.EnsureCA(relayPKIDir()); err != nil {
 		return nil, 0, fmt.Errorf("prepare relay CA: %w", err)
 	}
@@ -432,12 +438,12 @@ func issueRelayCertificate(database *sql.DB, label string, actorID int64) (*rela
 // resyncs rsyslog's relay config - failures there are logged, not
 // returned, since the cert/whitelist state is already committed by this
 // point and the next sync (or the startup retry loop) picks it up anyway.
-func respondWithCertificateBundle(c *gin.Context, database *sql.DB, issued *relaypki.IssuedCert, label string) {
-	if err := SyncRelayConfig(database); err != nil {
+func respondWithCertificateBundle(c *gin.Context, pool *db.DynamicPool, issued *relaypki.IssuedCert, label string) {
+	if err := SyncRelayConfig(pool); err != nil {
 		slog.Warn("relay config sync failed after certificate issue", "error", err)
 	}
 
-	bundle, err := buildRelayBundle(database, issued, label)
+	bundle, err := buildRelayBundle(pool, issued, label)
 	if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("relay.buildCertBundleFailed", "Failed to build certificate bundle", err))
 		return
@@ -455,8 +461,9 @@ func respondWithCertificateBundle(c *gin.Context, database *sql.DB, issued *rela
 // certificate); use GenerateCertificateForWhitelistEntry for that case
 // instead, to link a certificate onto the existing entry rather than
 // trying to insert a second, rejected one.
-func CreateRelayCertificate(database *sql.DB) gin.HandlerFunc {
+func CreateRelayCertificate(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var req model.RelayCertificateRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
@@ -465,7 +472,7 @@ func CreateRelayCertificate(database *sql.DB) gin.HandlerFunc {
 
 		actorID, actorName := actorFromContext(c)
 
-		issued, certID, err := issueRelayCertificate(database, req.Label, actorID)
+		issued, certID, err := issueRelayCertificate(pool, req.Label, actorID)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("relay.issueCertificateFailed", "Failed to issue relay certificate", err))
 			return
@@ -479,7 +486,7 @@ func CreateRelayCertificate(database *sql.DB) gin.HandlerFunc {
 		audit.LogAudit(database, actorID, actorName, "relay_certificate_issued", c.ClientIP(),
 			fmt.Sprintf("label=%s ip=%s serial=%s", req.Label, req.IPAddress, issued.SerialHex))
 
-		respondWithCertificateBundle(c, database, issued, req.Label)
+		respondWithCertificateBundle(c, pool, issued, req.Label)
 	}
 }
 
@@ -490,8 +497,9 @@ func CreateRelayCertificate(database *sql.DB) gin.HandlerFunc {
 // has no certificate yet and when its current one has been revoked (this
 // is how an admin reissues after a revoke without leaving the Whitelist IP
 // tab); blocked only while it still has an active ("issued") one.
-func GenerateCertificateForWhitelistEntry(database *sql.DB) gin.HandlerFunc {
+func GenerateCertificateForWhitelistEntry(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", "Invalid request", nil))
@@ -521,7 +529,7 @@ func GenerateCertificateForWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 
 		actorID, actorName := actorFromContext(c)
 
-		issued, certID, err := issueRelayCertificate(database, entry.Label, actorID)
+		issued, certID, err := issueRelayCertificate(pool, entry.Label, actorID)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("relay.issueCertificateFailed", "Failed to issue relay certificate", err))
 			return
@@ -535,7 +543,7 @@ func GenerateCertificateForWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 		audit.LogAudit(database, actorID, actorName, "relay_certificate_issued", c.ClientIP(),
 			fmt.Sprintf("label=%s ip=%s serial=%s whitelist_id=%d", entry.Label, entry.IPAddress, issued.SerialHex, entry.ID))
 
-		respondWithCertificateBundle(c, database, issued, entry.Label)
+		respondWithCertificateBundle(c, pool, issued, entry.Label)
 	}
 }
 
@@ -551,8 +559,9 @@ func GenerateCertificateForWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 // - the device stays listed, shown as "Blocked" in the UI, until a new
 // certificate is issued for it via GenerateCertificateForWhitelistEntry or
 // RegenerateRelayCertificate.
-func RevokeRelayCertificate(database *sql.DB) gin.HandlerFunc {
+func RevokeRelayCertificate(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", "Invalid request", nil))
@@ -567,7 +576,7 @@ func RevokeRelayCertificate(database *sql.DB) gin.HandlerFunc {
 		actorID, actorName := actorFromContext(c)
 		audit.LogAudit(database, actorID, actorName, "relay_certificate_revoked", c.ClientIP(), fmt.Sprintf("id=%d", id))
 
-		if err := SyncRelayConfig(database); err != nil {
+		if err := SyncRelayConfig(pool); err != nil {
 			slog.Warn("relay config sync failed after certificate revoke", "error", err)
 			c.JSON(http.StatusOK, gin.H{"message": "certificate revoked", "reload_error": "relay config sync failed"})
 			return
@@ -594,8 +603,9 @@ func RevokeRelayCertificate(database *sql.DB) gin.HandlerFunc {
 // Requires the whitelist entry to still exist - if it was removed
 // (DeleteRelayWhitelistEntry revokes but doesn't preserve a reverse link),
 // re-add the IP on Whitelist IP first.
-func RegenerateRelayCertificate(database *sql.DB) gin.HandlerFunc {
+func RegenerateRelayCertificate(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", "Invalid request", nil))
@@ -630,7 +640,7 @@ func RegenerateRelayCertificate(database *sql.DB) gin.HandlerFunc {
 
 		actorID, actorName := actorFromContext(c)
 
-		issued, newCertID, err := issueRelayCertificate(database, entry.Label, actorID)
+		issued, newCertID, err := issueRelayCertificate(pool, entry.Label, actorID)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("relay.issueCertificateFailed", "Failed to issue relay certificate", err))
 			return
@@ -653,11 +663,11 @@ func RegenerateRelayCertificate(database *sql.DB) gin.HandlerFunc {
 		audit.LogAudit(database, actorID, actorName, "relay_certificate_issued", c.ClientIP(),
 			fmt.Sprintf("label=%s ip=%s serial=%s whitelist_id=%d regenerated_from=%d", entry.Label, entry.IPAddress, issued.SerialHex, entry.ID, id))
 
-		respondWithCertificateBundle(c, database, issued, entry.Label)
+		respondWithCertificateBundle(c, pool, issued, entry.Label)
 	}
 }
 
-func buildRelayBundle(database *sql.DB, issued *relaypki.IssuedCert, label string) ([]byte, error) {
+func buildRelayBundle(pool *db.DynamicPool, issued *relaypki.IssuedCert, label string) ([]byte, error) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
@@ -669,7 +679,7 @@ func buildRelayBundle(database *sql.DB, issued *relaypki.IssuedCert, label strin
 		{"ca.crt", issued.CAPEM},
 		{"client.crt", issued.CertPEM},
 		{"client.key", issued.KeyPEM},
-		{"relay.conf", relayConfSnippet(database, label)},
+		{"relay.conf", relayConfSnippet(pool, label)},
 	}
 	for _, f := range files {
 		hdr := &tar.Header{Name: f.name, Mode: 0600, Size: int64(len(f.data))}
@@ -716,7 +726,8 @@ func buildRelayBundle(database *sql.DB, issued *relaypki.IssuedCert, label strin
 // image) so it loads after, and reuses, this file's own
 // `module(load="imtcp")` below rather than risking a second, conflicting
 // load of the same module from a separately-included file.
-func relayConfSnippet(database *sql.DB, label string) []byte {
+func relayConfSnippet(pool *db.DynamicPool, label string) []byte {
+	database := pool.Get()
 	host := db.GetSetting(database, "relay_central_host", "")
 	if host == "" {
 		host = os.Getenv("RELAY_CENTRAL_HOST")

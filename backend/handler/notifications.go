@@ -21,8 +21,9 @@ import (
 // API (not the notification bell's own GET /notifications, which needs to
 // stay reachable so it can report enabled:false and hide itself) whenever
 // the notifications_enabled setting is off.
-func RequireNotificationsEnabled(database *sql.DB) gin.HandlerFunc {
+func RequireNotificationsEnabled(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		if db.GetSetting(database, "notifications_enabled", "true") != "true" {
 			middleware.HandleError(c, model.NewForbiddenKey("notifications.disabled", "Notifications are disabled", nil))
 			return
@@ -31,8 +32,9 @@ func RequireNotificationsEnabled(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func ListNotificationChannels(database *sql.DB) gin.HandlerFunc {
+func ListNotificationChannels(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		channels, err := db.GetAllNotificationChannels(database)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("notifications.channelsListFailed", "Failed to list notification channels", err))
@@ -42,8 +44,9 @@ func ListNotificationChannels(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func CreateNotificationChannel(database *sql.DB) gin.HandlerFunc {
+func CreateNotificationChannel(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var req model.NotificationChannelRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
@@ -73,7 +76,8 @@ func CreateNotificationChannel(database *sql.DB) gin.HandlerFunc {
 // for the role that could already manage every channel before per-channel
 // ownership existed. Returns nil and writes an error response if the check
 // fails.
-func channelOwnedByCaller(c *gin.Context, database *sql.DB, id int64) (*model.NotificationChannel, bool) {
+func channelOwnedByCaller(c *gin.Context, pool *db.DynamicPool, id int64) (*model.NotificationChannel, bool) {
+	database := pool.Get()
 	channel, err := db.GetNotificationChannel(database, id)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -116,15 +120,16 @@ func callerCanModifyChannel(c *gin.Context, channel *model.NotificationChannel) 
 	return role == "admin"
 }
 
-func UpdateNotificationChannel(database *sql.DB) gin.HandlerFunc {
+func UpdateNotificationChannel(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidId", "invalid id", nil))
 			return
 		}
 
-		if _, ok := channelOwnedByCaller(c, database, id); !ok {
+		if _, ok := channelOwnedByCaller(c, pool, id); !ok {
 			return
 		}
 
@@ -147,15 +152,16 @@ func UpdateNotificationChannel(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func DeleteNotificationChannel(database *sql.DB) gin.HandlerFunc {
+func DeleteNotificationChannel(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidId", "invalid id", nil))
 			return
 		}
 
-		if _, ok := channelOwnedByCaller(c, database, id); !ok {
+		if _, ok := channelOwnedByCaller(c, pool, id); !ok {
 			return
 		}
 
@@ -167,8 +173,9 @@ func DeleteNotificationChannel(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func TestNotificationChannel(database *sql.DB, hub *notifyhub.Hub) gin.HandlerFunc {
+func TestNotificationChannel(pool *db.DynamicPool, hub *notifyhub.Hub) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidId", "invalid id", nil))
@@ -185,7 +192,7 @@ func TestNotificationChannel(database *sql.DB, hub *notifyhub.Hub) gin.HandlerFu
 			return
 		}
 
-		if err := notify.TestChannel(database, *channel, hub.Publish); err != nil {
+		if err := notify.TestChannel(pool, *channel, hub.Publish); err != nil {
 			middleware.HandleError(c, model.NewInternalKey("notifications.testFailed", "Test notification failed", err))
 			return
 		}
@@ -197,8 +204,9 @@ type NotificationHistoryRequest struct {
 	Limit int `json:"limit"`
 }
 
-func GetNotificationHistory(database *sql.DB) gin.HandlerFunc {
+func GetNotificationHistory(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var req NotificationHistoryRequest
 		_ = c.ShouldBindJSON(&req)
 		limit := req.Limit
@@ -217,8 +225,9 @@ func GetNotificationHistory(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func ClearNotificationHistory(database *sql.DB) gin.HandlerFunc {
+func ClearNotificationHistory(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		if err := db.ClearNotificationHistory(database); err != nil {
 			middleware.HandleError(c, model.NewInternalKey("notifications.historyClearFailed", "Failed to clear notification history", err))
 			return
@@ -234,8 +243,9 @@ func ClearNotificationHistory(database *sql.DB) gin.HandlerFunc {
 // just by opening the bell - it drops out of this list for good, so a
 // "cleared" bell stays cleared across a page reload instead of the same
 // items reappearing every time.
-func GetNotifications(database *sql.DB) gin.HandlerFunc {
+func GetNotifications(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		userID := c.GetInt64("user_id")
 		isAdmin := db.IsUserAdmin(database, userID)
 
@@ -268,8 +278,9 @@ type MarkNotificationsReadRequest struct {
 	LastReadID int64 `json:"last_read_id" binding:"required"`
 }
 
-func MarkNotificationsRead(database *sql.DB) gin.HandlerFunc {
+func MarkNotificationsRead(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		userID := c.GetInt64("user_id")
 
 		var req MarkNotificationsReadRequest
@@ -290,8 +301,9 @@ func MarkNotificationsRead(database *sql.DB) gin.HandlerFunc {
 // connection open and pushes each new in-app notification as it's
 // published, via notifyhub.Hub (which itself fans out over Redis pub/sub
 // when running with multiple api replicas).
-func StreamNotifications(hub *notifyhub.Hub, database *sql.DB) gin.HandlerFunc {
+func StreamNotifications(hub *notifyhub.Hub, pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		flusher, ok := c.Writer.(http.Flusher)
 		if !ok {
 			middleware.HandleError(c, model.NewInternalKey("notifications.streamingUnsupported", "Streaming unsupported", nil))

@@ -45,8 +45,8 @@ func CreateParser(engine *parser.Engine) gin.HandlerFunc {
 			return
 		}
 
-		db := engine.GetDB()
-		tx, err := db.Begin()
+		database := engine.GetPool().Get()
+		tx, err := database.Begin()
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("db.transactionStartFailed", "Database transaction failed", err))
 			return
@@ -120,10 +120,10 @@ func UpdateParser(engine *parser.Engine) gin.HandlerFunc {
 			return
 		}
 
-		db := engine.GetDB()
+		database := engine.GetPool().Get()
 
 		isBuiltin := false
-		db.QueryRow("SELECT is_builtin FROM parsers WHERE id = $1", id).Scan(&isBuiltin)
+		database.QueryRow("SELECT is_builtin FROM parsers WHERE id = $1", id).Scan(&isBuiltin)
 
 		if isBuiltin {
 			middleware.HandleError(c, model.NewForbiddenKey("parser.builtInImmutable", "Built-in parsers cannot be modified", nil))
@@ -175,7 +175,7 @@ func UpdateParser(engine *parser.Engine) gin.HandlerFunc {
 			return
 		}
 
-		tx, err := db.Begin()
+		tx, err := database.Begin()
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("db.transactionStartFailed", "Database transaction failed", err))
 			return
@@ -234,17 +234,17 @@ func DeleteParser(engine *parser.Engine) gin.HandlerFunc {
 			return
 		}
 
-		db := engine.GetDB()
+		database := engine.GetPool().Get()
 
 		isBuiltin := false
-		db.QueryRow("SELECT is_builtin FROM parsers WHERE id = $1", id).Scan(&isBuiltin)
+		database.QueryRow("SELECT is_builtin FROM parsers WHERE id = $1", id).Scan(&isBuiltin)
 
 		if isBuiltin {
 			middleware.HandleError(c, model.NewForbiddenKey("parser.builtInImmutable", "Built-in parsers cannot be modified", nil))
 			return
 		}
 
-		_, err = db.Exec("DELETE FROM parsers WHERE id = $1", id)
+		_, err = database.Exec("DELETE FROM parsers WHERE id = $1", id)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("parser.deleteFailed", "Failed to delete parser", err))
 			return
@@ -263,12 +263,12 @@ func CloneParser(engine *parser.Engine) gin.HandlerFunc {
 			return
 		}
 
-		db := engine.GetDB()
+		database := engine.GetPool().Get()
 
 		var name, deviceType, matchType, regex string
 		var description, matchValue *string
 		var enabled bool
-		err = db.QueryRow(
+		err = database.QueryRow(
 			"SELECT name, description, device_type, match_type, match_value, regex, enabled FROM parsers WHERE id = $1", id,
 		).Scan(&name, &description, &deviceType, &matchType, &matchValue, &regex, &enabled)
 		if err != nil {
@@ -276,7 +276,7 @@ func CloneParser(engine *parser.Engine) gin.HandlerFunc {
 			return
 		}
 
-		tx, err := db.Begin()
+		tx, err := database.Begin()
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("db.transactionStartFailed", "Database transaction failed", err))
 			return

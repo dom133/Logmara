@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"logmara/db"
 	"logmara/model"
 
 	"github.com/lib/pq"
@@ -331,12 +332,13 @@ func scanLogRows(rows *sql.Rows) []model.SyslogLog {
 	return logs
 }
 
-func getDashboardConfig(db *sql.DB, id, userID int64, isAdmin bool) (json.RawMessage, error) {
+func getDashboardConfig(pool *db.DynamicPool, id, userID int64, isAdmin bool) (json.RawMessage, error) {
+	database := pool.Get()
 	var raw json.RawMessage
 	if isAdmin {
-		return raw, db.QueryRow("SELECT config FROM dashboards WHERE id = $1", id).Scan(&raw)
+		return raw, database.QueryRow("SELECT config FROM dashboards WHERE id = $1", id).Scan(&raw)
 	}
-	return raw, db.QueryRow("SELECT config FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE)", id, userID).Scan(&raw)
+	return raw, database.QueryRow("SELECT config FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE)", id, userID).Scan(&raw)
 }
 
 func parseDashboardConfig(raw json.RawMessage) (*model.DashboardConfig, error) {

@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -42,9 +41,10 @@ type ResetPasswordRequest struct {
 	Password string `json:"password" binding:"required,min=8,max=128"`
 }
 
-func ListUsers(database *sql.DB) gin.HandlerFunc {
+func ListUsers(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
-users, err := db.GetAllUsers(database)
+		database := pool.Get()
+		users, err := db.GetAllUsers(database)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("admin.usersListFailed", "Failed to list users", err))
 			return
@@ -59,8 +59,9 @@ users, err := db.GetAllUsers(database)
 // data (email, role, lockout status, ...) that GET /admin/users carries and
 // which is why that endpoint stays admin-only. Available to admin and
 // editor - anyone who can create a notification channel needs this.
-func ListUserDirectory(database *sql.DB) gin.HandlerFunc {
+func ListUserDirectory(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		users, err := db.GetUserDirectory(database)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("admin.usersListFailed", "Failed to list users", err))
@@ -70,8 +71,9 @@ func ListUserDirectory(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func CreateUser(database *sql.DB) gin.HandlerFunc {
+func CreateUser(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var req CreateUserRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
@@ -132,8 +134,9 @@ func CreateUser(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func UpdateUser(database *sql.DB) gin.HandlerFunc {
+func UpdateUser(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidUserID", "Invalid user ID", nil))
@@ -180,8 +183,9 @@ func UpdateUser(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func DeleteUser(database *sql.DB) gin.HandlerFunc {
+func DeleteUser(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidUserID", "Invalid user ID", nil))
@@ -199,8 +203,9 @@ func DeleteUser(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func ResetPassword(database *sql.DB) gin.HandlerFunc {
+func ResetPassword(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidUserID", "Invalid user ID", nil))
@@ -248,8 +253,9 @@ func ResetPassword(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func UnlockUserHandler(database *sql.DB) gin.HandlerFunc {
+func UnlockUserHandler(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidUserID", "Invalid user ID", nil))
@@ -267,8 +273,9 @@ func UnlockUserHandler(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func GetSettings(database *sql.DB) gin.HandlerFunc {
+func GetSettings(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		settings, err := db.GetAllSettings(database)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("admin.settingsLoadFailed", "Failed to get settings", err))
@@ -289,8 +296,9 @@ func GetSettings(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func UpdateSettings(database *sql.DB) gin.HandlerFunc {
+func UpdateSettings(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var settings map[string]string
 		if err := c.ShouldBindJSON(&settings); err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
@@ -401,7 +409,7 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 		}
 
 		if newRelayEnabled != "" && newRelayEnabled != oldRelayEnabled {
-			if err := SyncRelayConfig(database); err != nil {
+			if err := SyncRelayConfig(pool); err != nil {
 				slog.Warn("relay config sync failed after settings update", "error", err)
 				c.JSON(http.StatusOK, gin.H{
 					"message":            "Settings updated",
@@ -689,9 +697,9 @@ func reloadNginxWithRetry(httpsEnabled, redirectEnabled bool, corsOrigins string
 
 // ReloadNginx re-applies the current HTTPS/redirect/CORS settings and
 // triggers an nginx config reload via the frontend container's sidecar.
-func ReloadNginx(database *sql.DB) gin.HandlerFunc {
+func ReloadNginx(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if err := SyncNginxHTTPS(database); err != nil {
+		if err := SyncNginxHTTPS(pool); err != nil {
 			middleware.HandleError(c, model.NewInternalKey("admin.nginxReloadFailed", "Failed to reload nginx", err))
 			return
 		}
@@ -705,23 +713,25 @@ func ReloadNginx(database *sql.DB) gin.HandlerFunc {
 // migration/env overrides) so a container restart converges nginx to the
 // stored setting instead of leaving whatever was baked into the image or
 // left over from a previous state.
-func SyncNginxHTTPS(database *sql.DB) error {
-	return SyncNginxHTTPSWithRetry(database, 5, 2*time.Second)
+func SyncNginxHTTPS(pool *db.DynamicPool) error {
+	return SyncNginxHTTPSWithRetry(pool, 5, 2*time.Second)
 }
 
 // SyncNginxHTTPSWithRetry is SyncNginxHTTPS with a caller-chosen retry
 // budget - used at startup with a much larger budget than the interactive
 // endpoints, since a cold `docker compose up` can leave the frontend
 // container down for a while and there's no request to keep fast there.
-func SyncNginxHTTPSWithRetry(database *sql.DB, attempts int, delay time.Duration) error {
+func SyncNginxHTTPSWithRetry(pool *db.DynamicPool, attempts int, delay time.Duration) error {
+	database := pool.Get()
 	httpsEnabled := db.GetSetting(database, "https_enabled", "false") == "true"
 	redirectEnabled := db.GetSetting(database, "https_redirect", "false") == "true"
 	corsOrigins := db.GetSetting(database, "cors_origins", "")
 	return reloadNginxWithRetry(httpsEnabled, redirectEnabled, corsOrigins, attempts, delay)
 }
 
-func CleanupLogs(database *sql.DB) gin.HandlerFunc {
+func CleanupLogs(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		// On a large table this can run well past the server's default 15s
 		// WriteTimeout (see main.go) - the batched delete alone can take
 		// minutes. Same fix as StreamNotifications: lift the per-connection
@@ -753,8 +763,9 @@ type PurgeRequest struct {
 	PauseDuringPurge bool `json:"pause_during_purge"`
 }
 
-func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerFunc {
+func PurgeAllLogs(pool *db.DynamicPool, ic control.IngestionController) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		// TRUNCATE needs an ACCESS EXCLUSIVE lock and can sit queued behind
 		// an in-progress VACUUM/MV refresh/long transaction on syslog_logs
 		// well past the server's default 15s WriteTimeout (see main.go).
@@ -778,7 +789,7 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 		row.Scan(&count)
 		slog.Info("purge started", "count", count)
 
-		_, err := database.Exec("TRUNCATE TABLE syslog_logs")
+		_, err := pool.Get().Exec("TRUNCATE TABLE syslog_logs")
 		if err != nil {
 			if !wasPaused {
 				ic.Resume()
@@ -798,7 +809,7 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 		// them again and stay locked to the old granularity forever.
 		// syslog_logs_default (not matched by this pattern) is left as the
 		// catch-all until EnsurePartitions below recreates real ones.
-		partRows, partErr := database.Query(`
+		partRows, partErr := pool.Get().Query(`
 			SELECT c.relname
 			FROM pg_inherits i
 			JOIN pg_class c ON c.oid = i.inhrelid
@@ -817,7 +828,7 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 			}
 			partRows.Close()
 			for _, name := range partitionNames {
-				if _, err := database.Exec("DROP TABLE IF EXISTS " + name); err != nil {
+				if _, err := pool.Get().Exec("DROP TABLE IF EXISTS " + name); err != nil {
 					slog.Error("purge: failed to drop date partition", "partition", name, "error", err)
 				}
 			}
@@ -924,7 +935,7 @@ type TestLDAPRequest struct {
 	BindPassword string `json:"bind_password"`
 }
 
-func TestLDAP(database *sql.DB) gin.HandlerFunc {
+func TestLDAP(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req TestLDAPRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -950,7 +961,7 @@ type AuditLogRequest struct {
 	Limit int `json:"limit"`
 }
 
-func GetAuditLog(database *sql.DB) gin.HandlerFunc {
+func GetAuditLog(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req AuditLogRequest
 		_ = c.ShouldBindJSON(&req)
@@ -959,7 +970,7 @@ func GetAuditLog(database *sql.DB) gin.HandlerFunc {
 			limit = DefaultAdminLimit
 		}
 
-		rows, err := database.Query(
+		rows, err := pool.Get().Query(
 			"SELECT id, user_id, username, action, ip, details, created_at FROM audit_log ORDER BY created_at DESC LIMIT $1",
 			limit,
 		)
@@ -991,8 +1002,9 @@ type AuditLogQueryRequest struct {
 	Offset   int    `json:"offset"`
 }
 
-func GetAuditLogsHandler(database *sql.DB) gin.HandlerFunc {
+func GetAuditLogsHandler(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var req AuditLogQueryRequest
 		_ = c.ShouldBindJSON(&req)
 		limit := req.Limit

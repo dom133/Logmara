@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"flag"
 	"log/slog"
@@ -43,11 +42,11 @@ func versionHandler(c *gin.Context) {
 // anyone has signed in. It intentionally never touches handler.GetSettings
 // (the admin-only endpoint), which returns internal config - SMTP/LDAP
 // hosts, CORS origins, session limits - that must not be public.
-func defaultLanguageHandler(database *sql.DB) gin.HandlerFunc {
+func defaultLanguageHandler(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		lang := "en"
-		if database != nil {
-			lang = db.GetSetting(database, "default_language", "en")
+		if pool != nil {
+			lang = db.GetSetting(pool.Get(), "default_language", "en")
 		}
 		c.JSON(http.StatusOK, gin.H{"default_language": lang})
 	}
@@ -336,19 +335,19 @@ func main() {
 
 	dsn := util.ResolveDatabaseURL()
 
-	var database *sql.DB
+	var dynamicPool *db.DynamicPool
 	if dsn != "" {
-		d, err := db.Connect(dsn)
+		pool, err := db.NewDynamicPool(dsn)
 		if err != nil {
 			slog.Error("failed to connect to database", "error", err)
 			os.Exit(1)
 		}
-		database = d
+		dynamicPool = pool
 	} else {
 		slog.Info("DATABASE_URL not set; serving the setup wizard until database settings are submitted")
-		database = waitForWizardDatabase(port, sharedClient)
+		dynamicPool = waitForWizardDatabase(port, sharedClient)
 	}
-	defer database.Close()
+	defer dynamicPool.Close()
 
 	db.SetAppStarting(true)
 	schemaReady := make(chan struct{})
@@ -370,7 +369,7 @@ func main() {
 	// closes, before the real server binds the same port.
 	startupSrv := &http.Server{
 		Addr:         ":" + port,
-		Handler:      startupHealthHandler(database),
+		Handler:      startupHealthHandler(dynamicPool),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -387,7 +386,7 @@ func main() {
 	go func() {
 		defer wg.Done()
 		defer close(migrationDone)
-		if err := db.MigrateWithLock(database); err != nil {
+		if err := db.MigrateWithLock(dynamicPool.Get()); err != nil {
 			slog.Error("failed to migrate database", "error", err)
 			os.Exit(1)
 		}
@@ -404,8 +403,8 @@ func main() {
 	// every one of those critical paths, once the schema alone is ready.
 	go func() {
 		<-schemaReady
-		db.RefreshMaterializedViews(database)
-		db.ApplyEnvSettingOverrides(database)
+		db.RefreshMaterializedViews(dynamicPool.Get())
+		db.ApplyEnvSettingOverrides(dynamicPool.Get())
 		slog.Info("database migration and initialization complete")
 	}()
 
@@ -423,7 +422,7 @@ func main() {
 		<-migrationDone
 		const attempts = 10
 		const delay = 3 * time.Second
-		if err := handler.SyncNginxHTTPSWithRetry(database, attempts, delay); err != nil {
+		if err := handler.SyncNginxHTTPSWithRetry(dynamicPool, attempts, delay); err != nil {
 			slog.Warn("failed to sync nginx HTTPS config at startup after retries", "attempts", attempts, "error", err)
 		}
 	}()
@@ -439,13 +438,13 @@ func main() {
 		<-migrationDone
 		const attempts = 10
 		const delay = 3 * time.Second
-		if err := handler.SyncRelayConfigWithRetry(database, attempts, delay); err != nil {
+		if err := handler.SyncRelayConfigWithRetry(dynamicPool, attempts, delay); err != nil {
 			slog.Warn("failed to sync relay config at startup after retries", "attempts", attempts, "error", err)
 		}
 	}()
 
 	ctx, maintCancel := context.WithCancel(context.Background())
-	stopVacuum, stopMV, stopTokenCleanup, stopJWTCleanup, stopArchiveCleanup, stopPartitions := db.StartMaintenance(ctx, database)
+	stopVacuum, stopMV, stopTokenCleanup, stopJWTCleanup, stopArchiveCleanup, stopPartitions := db.StartMaintenance(ctx, dynamicPool.Get())
 	_ = stopJWTCleanup
 	_ = stopArchiveCleanup
 
@@ -467,8 +466,8 @@ func main() {
 				slog.Info("fast dashboard MV refresh stopped")
 				return
 			case <-ticker.C:
-				if db.HasActiveSession(database) {
-					db.RefreshMV(ctx, database)
+				if db.HasActiveSession(dynamicPool.Get()) {
+					db.RefreshMV(ctx, dynamicPool.Get())
 				}
 			}
 		}
@@ -485,7 +484,7 @@ func main() {
 	<-schemaReady
 
 	// Validate TLS configuration: warn if HTTPS is enabled but certificates are missing
-	if tlsEnabled := db.GetSetting(database, "https_enabled", "false"); tlsEnabled == "true" {
+	if tlsEnabled := db.GetSetting(dynamicPool.Get(), "https_enabled", "false"); tlsEnabled == "true" {
 		certPath := os.Getenv("TLS_CERT_PATH")
 		if certPath == "" {
 			certPath = "/data/ssl/server.crt"
@@ -502,7 +501,7 @@ func main() {
 		}
 	}
 
-	authCfg, err := auth.Init(database)
+	authCfg, err := auth.Init(dynamicPool)
 	if err != nil {
 		slog.Error("auth initialization failed", "error", err)
 		os.Exit(1)
@@ -533,21 +532,19 @@ func main() {
 				slog.Error("rabbitmq: failed to apply rotated URL", "error", err)
 			}
 		},
-		// PostgreSQL: the live *sql.DB connection is opened once from
-		// util.ResolveDatabaseURL (DATABASE_URL / POSTGRES_* env-or-file) and
-		// handed to every db.* call across the codebase - there is no single
-		// swap point for it today (unlike sharedClient/tailer's Redis and
-		// RabbitMQ connections, which already hide behind an atomically
-		// swappable wrapper). Applying a rotated dynamic DSN here would need
-		// that same swappable-pool treatment threaded through every caller,
-		// so for now just surface that a new lease arrived instead of
-		// silently discarding it.
+		// PostgreSQL: the live connection pool is wrapped behind a DynamicPool
+		// so rotated credentials can be applied atomically by swapping the
+		// underlying *sql.DB.
 		RotatePostgreSQLDSN: func(newDSN string) {
-			slog.Warn("postgres: vault issued rotated dynamic credentials but the live connection pool cannot be swapped yet; ignoring")
+			if err := dynamicPool.Rotate(newDSN); err != nil {
+				slog.Error("postgres: failed to rotate connection pool", "error", err)
+				return
+			}
+			slog.Info("postgres: swapped to rotated connection pool")
 		},
 	})
 
-	engine := parser.NewEngine(database)
+	engine := parser.NewEngine(dynamicPool)
 	ic := control.New(ctx, sharedClient)
 
 	// With Redis configured, cache invalidation and the slow-query log get
@@ -568,7 +565,7 @@ func main() {
 	if logFilePath == "" {
 		logFilePath = "/data/logs.jsonl"
 	}
-	alertEngine := alertengine.NewEngine(ctx, database, sharedClient)
+	alertEngine := alertengine.NewEngine(ctx, dynamicPool, sharedClient)
 	audit.SetAlertEngine(alertEngine)
 	notifHub := notifyhub.NewHub(ctx, sharedClient)
 	alertEngine.SetOnInApp(notifHub.Publish)
@@ -586,7 +583,7 @@ func main() {
 	// dedupes duplicate fires, the same way vacuum/MV refresh above already
 	// run redundantly on every replica without an elector.
 	silenceCheckMin := 5
-	if v, err := strconv.Atoi(db.GetSetting(database, "device_silence_check_minutes", "5")); err == nil && v > 0 {
+	if v, err := strconv.Atoi(db.GetSetting(dynamicPool.Get(), "device_silence_check_minutes", "5")); err == nil && v > 0 {
 		silenceCheckMin = v
 	}
 	go func() {
@@ -597,7 +594,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				alertEngine.CheckDeviceSilence(database)
+				alertEngine.CheckDeviceSilence()
 			}
 		}
 	}()
@@ -616,10 +613,10 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := handler.SyncRelayConfig(database); err != nil {
+				if err := handler.SyncRelayConfig(dynamicPool); err != nil {
 					slog.Warn("relay config sync failed during periodic check", "error", err)
 				}
-				alertEngine.CheckRelayCertExpiring(database)
+				alertEngine.CheckRelayCertExpiring()
 			}
 		}
 	}()
@@ -646,64 +643,64 @@ r := gin.New()
 	initLimiter := newLimiter(sharedClient, "init", 3, time.Hour, "")
 	changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute, "/data/ratelimit-change-password.json")
 
-	r.GET("/api/health", handler.HealthCheck(database))
+	r.GET("/api/health", handler.HealthCheck(dynamicPool))
 	r.GET("/api/version", versionHandler)
-	r.GET("/api/settings/default-language", defaultLanguageHandler(database))
+	r.GET("/api/settings/default-language", defaultLanguageHandler(dynamicPool))
 
 	metricsGroup := r.Group("/api")
 	metricsGroup.Use(authCfg.JWTRequired())
-	metricsGroup.GET("/metrics", handler.PrometheusMetrics(database))
+	metricsGroup.GET("/metrics", handler.PrometheusMetrics(dynamicPool))
 
-	r.POST("/api/auth/login", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(loginLimiter), handler.Login(database, authCfg))
-	r.POST("/api/auth/refresh", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(refreshLimiter), handler.RefreshDeviceID(), handler.Refresh(database, authCfg))
-	r.POST("/api/auth/logout", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.Logout(database))
-	r.GET("/api/status/initialized", handler.CheckInitialized(database))
-	r.POST("/api/init", middleware.RequireJSON(), middleware.MaxRequestBodySize(8*1024), rateLimitMiddleware(initLimiter), handler.Initialize(database))
+	r.POST("/api/auth/login", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(loginLimiter), handler.Login(dynamicPool, authCfg))
+	r.POST("/api/auth/refresh", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(refreshLimiter), handler.RefreshDeviceID(), handler.Refresh(dynamicPool, authCfg))
+	r.POST("/api/auth/logout", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.Logout(dynamicPool))
+	r.GET("/api/status/initialized", handler.CheckInitialized(dynamicPool))
+	r.POST("/api/init", middleware.RequireJSON(), middleware.MaxRequestBodySize(8*1024), rateLimitMiddleware(initLimiter), handler.Initialize(dynamicPool))
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
-	r.GET("/api/init/db-config", handler.GetDbConfig(database))
+	r.GET("/api/init/db-config", handler.GetDbConfig(dynamicPool))
 
 	authGroup := r.Group("/api")
 	authGroup.Use(authCfg.JWTRequired())
 	authGroup.Use(handler.RefreshDeviceID())
 	authGroup.Use(handler.CSRFRequired())
-	authGroup.Use(middleware.UpdateSessionActivity(database))
+	authGroup.Use(middleware.UpdateSessionActivity(dynamicPool))
 	{
-		authGroup.POST("/logs", handler.GetLogs(database))
-		authGroup.POST("/logs/count", handler.GetLogsCount(database))
+		authGroup.POST("/logs", handler.GetLogs(dynamicPool))
+		authGroup.POST("/logs/count", handler.GetLogsCount(dynamicPool))
 
-		authGroup.POST("/stats/dashboard", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDashboardStats(database))
-		authGroup.POST("/stats/devices", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDeviceStats(database))
-		authGroup.POST("/stats/severity", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetSeverityStats(database))
-		authGroup.POST("/stats/timeline", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetTimelineStats(database))
+		authGroup.POST("/stats/dashboard", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDashboardStats(dynamicPool))
+		authGroup.POST("/stats/devices", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDeviceStats(dynamicPool))
+		authGroup.POST("/stats/severity", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetSeverityStats(dynamicPool))
+		authGroup.POST("/stats/timeline", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetTimelineStats(dynamicPool))
 		authGroup.GET("/stats/rate", handler.GetLogsRate())
-		authGroup.GET("/devices", handler.GetDevices(database))
-		authGroup.POST("/export/csv", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportCSV(database))
-		authGroup.POST("/export/html", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportHTML(database))
-		authGroup.GET("/auth/me", handler.GetMe(database))
-		authGroup.POST("/auth/change-password", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
-		authGroup.GET("/auth/sessions", handler.ListSessions(database))
-		authGroup.DELETE("/auth/sessions/:id", handler.RevokeSession(database))
-		authGroup.GET("/auth/session-check", handler.CheckSession(database))
-		authGroup.POST("/auth/activity", handler.Activity(database))
+		authGroup.GET("/devices", handler.GetDevices(dynamicPool))
+		authGroup.POST("/export/csv", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportCSV(dynamicPool))
+		authGroup.POST("/export/html", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportHTML(dynamicPool))
+		authGroup.GET("/auth/me", handler.GetMe(dynamicPool))
+		authGroup.POST("/auth/change-password", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(dynamicPool))
+		authGroup.GET("/auth/sessions", handler.ListSessions(dynamicPool))
+		authGroup.DELETE("/auth/sessions/:id", handler.RevokeSession(dynamicPool))
+		authGroup.GET("/auth/session-check", handler.CheckSession(dynamicPool))
+		authGroup.POST("/auth/activity", handler.Activity(dynamicPool))
 
-		notificationsGate := handler.RequireNotificationsEnabled(database)
+		notificationsGate := handler.RequireNotificationsEnabled(dynamicPool)
 
 		// Deliberately ungated: the bell needs GET /notifications to reach it
 		// even while disabled, since that's how it learns enabled:false and
 		// hides itself. mark-read is harmless either way.
-		authGroup.GET("/notifications", handler.GetNotifications(database))
-		authGroup.POST("/notifications/mark-read", handler.MarkNotificationsRead(database))
-		authGroup.GET("/notifications/stream", notificationsGate, handler.StreamNotifications(notifHub, database))
+		authGroup.GET("/notifications", handler.GetNotifications(dynamicPool))
+		authGroup.POST("/notifications/mark-read", handler.MarkNotificationsRead(dynamicPool))
+		authGroup.GET("/notifications/stream", notificationsGate, handler.StreamNotifications(notifHub, dynamicPool))
 
-		authGroup.GET("/push/vapid-public-key", notificationsGate, handler.GetVAPIDPublicKey(database))
-		authGroup.POST("/push/subscribe", notificationsGate, handler.SubscribePush(database))
-		authGroup.POST("/push/unsubscribe", notificationsGate, handler.UnsubscribePush(database))
+		authGroup.GET("/push/vapid-public-key", notificationsGate, handler.GetVAPIDPublicKey(dynamicPool))
+		authGroup.POST("/push/subscribe", notificationsGate, handler.SubscribePush(dynamicPool))
+		authGroup.POST("/push/unsubscribe", notificationsGate, handler.UnsubscribePush(dynamicPool))
 
 		// Readable by every authenticated role (including viewer) - channel
 		// secrets are never included in the response, only config + a
 		// has_secret flag, so there's nothing sensitive to gate here. Creating,
 		// editing and deleting channels stays admin-only (adminGroup below).
-		authGroup.GET("/admin/notification-channels", notificationsGate, handler.ListNotificationChannels(database))
+		authGroup.GET("/admin/notification-channels", notificationsGate, handler.ListNotificationChannels(dynamicPool))
 
 		// Readable by every authenticated role (including viewer) - db.GetAllAlerts
 		// and db.GetNotificationHistory already drop admin-only rule types for
@@ -714,18 +711,18 @@ r := gin.New()
 		// viewers and hide non-admin-only rules/history from them too. Creating,
 		// updating and deleting alert rules stays editor/admin-only (editorGroup
 		// below).
-		authGroup.GET("/alerts", notificationsGate, handler.ListAlerts(database))
-		authGroup.POST("/admin/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
+		authGroup.GET("/alerts", notificationsGate, handler.ListAlerts(dynamicPool))
+		authGroup.POST("/admin/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(dynamicPool))
 
 		authGroup.GET("/parsers", handler.ListParsers(engine))
 		authGroup.POST("/parsers/fields", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ListParsedFields(engine))
-		authGroup.GET("/dashboards", handler.ListDashboards(database))
-		authGroup.GET("/dashboards/:id", handler.GetDashboard(database))
-		authGroup.POST("/dashboards/:id/data", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDashboardData(database))
-		authGroup.POST("/dashboards/:id/count", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDashboardDataCount(database))
-		authGroup.POST("/dashboards/:id/export/csv", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportDashboardCSV(database))
-		authGroup.POST("/dashboards/:id/export/html", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportDashboardHTML(database))
-		authGroup.PATCH("/dashboards/:id/pin", handler.TogglePinDashboard(database))
+		authGroup.GET("/dashboards", handler.ListDashboards(dynamicPool))
+		authGroup.GET("/dashboards/:id", handler.GetDashboard(dynamicPool))
+		authGroup.POST("/dashboards/:id/data", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDashboardData(dynamicPool))
+		authGroup.POST("/dashboards/:id/count", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDashboardDataCount(dynamicPool))
+		authGroup.POST("/dashboards/:id/export/csv", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportDashboardCSV(dynamicPool))
+		authGroup.POST("/dashboards/:id/export/html", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportDashboardHTML(dynamicPool))
+		authGroup.PATCH("/dashboards/:id/pin", handler.TogglePinDashboard(dynamicPool))
 
 		editorGroup := authGroup.Group("")
 		editorGroup.Use(authCfg.RoleRequired("admin", "editor"))
@@ -737,63 +734,63 @@ r := gin.New()
 			editorGroup.POST("/parsers/test", handler.TestParser(engine))
 			editorGroup.POST("/parsers/reparse", handler.ReparseUnparsed(engine))
 
-			editorGroup.POST("/dashboards", handler.CreateDashboard(database))
-			editorGroup.PUT("/dashboards/:id", handler.UpdateDashboard(database))
-			editorGroup.DELETE("/dashboards/:id", handler.DeleteDashboard(database))
-			editorGroup.PATCH("/dashboards/:id/public", handler.TogglePublicDashboard(database))
+			editorGroup.POST("/dashboards", handler.CreateDashboard(dynamicPool))
+			editorGroup.PUT("/dashboards/:id", handler.UpdateDashboard(dynamicPool))
+			editorGroup.DELETE("/dashboards/:id", handler.DeleteDashboard(dynamicPool))
+			editorGroup.PATCH("/dashboards/:id/public", handler.TogglePublicDashboard(dynamicPool))
 
-			editorGroup.POST("/alerts", notificationsGate, handler.CreateAlert(alertEngine))
-			editorGroup.PUT("/alerts/:id", notificationsGate, handler.UpdateAlert(alertEngine))
-			editorGroup.DELETE("/alerts/:id", notificationsGate, handler.DeleteAlert(alertEngine))
+			editorGroup.POST("/alerts", notificationsGate, handler.CreateAlert(dynamicPool, alertEngine))
+			editorGroup.PUT("/alerts/:id", notificationsGate, handler.UpdateAlert(dynamicPool, alertEngine))
+			editorGroup.DELETE("/alerts/:id", notificationsGate, handler.DeleteAlert(dynamicPool, alertEngine))
 
-			editorGroup.GET("/users/directory", handler.ListUserDirectory(database))
+			editorGroup.GET("/users/directory", handler.ListUserDirectory(dynamicPool))
 		}
 
 		adminGroup := authGroup.Group("/admin")
 		adminGroup.Use(authCfg.AdminRequired())
 		{
-			adminGroup.GET("/users", handler.ListUsers(database))
-			adminGroup.POST("/users", handler.CreateUser(database))
-			adminGroup.PUT("/users/:id", handler.UpdateUser(database))
-			adminGroup.DELETE("/users/:id", handler.DeleteUser(database))
-			adminGroup.PUT("/users/:id/reset-password", handler.ResetPassword(database))
-			adminGroup.POST("/users/:id/unlock", handler.UnlockUserHandler(database))
-			adminGroup.GET("/settings", handler.GetSettings(database))
-			adminGroup.PUT("/settings", handler.UpdateSettings(database))
-			adminGroup.POST("/settings/cleanup", handler.CleanupLogs(database))
-			adminGroup.DELETE("/logs", handler.PurgeAllLogs(database, ic))
+			adminGroup.GET("/users", handler.ListUsers(dynamicPool))
+			adminGroup.POST("/users", handler.CreateUser(dynamicPool))
+			adminGroup.PUT("/users/:id", handler.UpdateUser(dynamicPool))
+			adminGroup.DELETE("/users/:id", handler.DeleteUser(dynamicPool))
+			adminGroup.PUT("/users/:id/reset-password", handler.ResetPassword(dynamicPool))
+			adminGroup.POST("/users/:id/unlock", handler.UnlockUserHandler(dynamicPool))
+			adminGroup.GET("/settings", handler.GetSettings(dynamicPool))
+			adminGroup.PUT("/settings", handler.UpdateSettings(dynamicPool))
+			adminGroup.POST("/settings/cleanup", handler.CleanupLogs(dynamicPool))
+			adminGroup.DELETE("/logs", handler.PurgeAllLogs(dynamicPool, ic))
 			adminGroup.POST("/ingestion/pause", handler.PauseIngestion(ic))
 			adminGroup.POST("/ingestion/resume", handler.ResumeIngestion(ic))
 			adminGroup.GET("/ingestion/status", handler.GetIngestionStatus(ic))
 			adminGroup.GET("/tailer-metrics", handler.GetTailerMetrics())
-			adminGroup.POST("/ldap/test", handler.TestLDAP(database))
-			adminGroup.POST("/audit-log", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetAuditLog(database))
-			adminGroup.POST("/audit-logs", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetAuditLogsHandler(database))
+			adminGroup.POST("/ldap/test", handler.TestLDAP(dynamicPool))
+			adminGroup.POST("/audit-log", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetAuditLog(dynamicPool))
+			adminGroup.POST("/audit-logs", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetAuditLogsHandler(dynamicPool))
 			adminGroup.GET("/slow-queries", handler.GetSlowQueries())
 			adminGroup.DELETE("/slow-queries", handler.ClearSlowQueriesHandler())
-			adminGroup.GET("/health/containers", handler.GetContainersHealth(database))
-			adminGroup.PUT("/devices/:ip/alias", handler.UpdateDeviceAlias(database))
-		adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(database))
-		adminGroup.POST("/nginx-reload", handler.ReloadNginx(database))
+			adminGroup.GET("/health/containers", handler.GetContainersHealth(dynamicPool))
+			adminGroup.PUT("/devices/:ip/alias", handler.UpdateDeviceAlias(dynamicPool))
+		adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(dynamicPool))
+		adminGroup.POST("/nginx-reload", handler.ReloadNginx(dynamicPool))
 		adminGroup.GET("/rabbitmq-url", handler.GetRabbitMQURL())
 
-			adminGroup.GET("/relay/whitelist", handler.ListRelayWhitelist(database))
-			adminGroup.POST("/relay/whitelist", handler.CreateRelayWhitelistEntry(database))
-			adminGroup.DELETE("/relay/whitelist/:id", handler.DeleteRelayWhitelistEntry(database))
-			adminGroup.POST("/relay/whitelist/:id/certificate", handler.GenerateCertificateForWhitelistEntry(database))
-			adminGroup.GET("/relay/certificates", handler.ListRelayCertificates(database))
-			adminGroup.POST("/relay/certificates", handler.CreateRelayCertificate(database))
-			adminGroup.DELETE("/relay/certificates/:id", handler.RevokeRelayCertificate(database))
-			adminGroup.POST("/relay/certificates/:id/regenerate", handler.RegenerateRelayCertificate(database))
+			adminGroup.GET("/relay/whitelist", handler.ListRelayWhitelist(dynamicPool))
+			adminGroup.POST("/relay/whitelist", handler.CreateRelayWhitelistEntry(dynamicPool))
+			adminGroup.DELETE("/relay/whitelist/:id", handler.DeleteRelayWhitelistEntry(dynamicPool))
+			adminGroup.POST("/relay/whitelist/:id/certificate", handler.GenerateCertificateForWhitelistEntry(dynamicPool))
+			adminGroup.GET("/relay/certificates", handler.ListRelayCertificates(dynamicPool))
+			adminGroup.POST("/relay/certificates", handler.CreateRelayCertificate(dynamicPool))
+			adminGroup.DELETE("/relay/certificates/:id", handler.RevokeRelayCertificate(dynamicPool))
+			adminGroup.POST("/relay/certificates/:id/regenerate", handler.RegenerateRelayCertificate(dynamicPool))
 
-			adminGroup.DELETE("/notifications/history", notificationsGate, handler.ClearNotificationHistory(database))
+			adminGroup.DELETE("/notifications/history", notificationsGate, handler.ClearNotificationHistory(dynamicPool))
 
 			// API Key management
-			adminGroup.GET("/api-keys", handler.ListAPIKeys(database))
-			adminGroup.POST("/api-keys", handler.CreateAPIKey(database))
-			adminGroup.PUT("/api-keys/:id", handler.UpdateAPIKey(database))
-			adminGroup.DELETE("/api-keys/:id", handler.DeleteAPIKey(database))
-			adminGroup.POST("/api-keys/:id/reset", handler.ResetAPIKey(database))
+			adminGroup.GET("/api-keys", handler.ListAPIKeys(dynamicPool))
+			adminGroup.POST("/api-keys", handler.CreateAPIKey(dynamicPool))
+			adminGroup.PUT("/api-keys/:id", handler.UpdateAPIKey(dynamicPool))
+			adminGroup.DELETE("/api-keys/:id", handler.DeleteAPIKey(dynamicPool))
+			adminGroup.POST("/api-keys/:id/reset", handler.ResetAPIKey(dynamicPool))
 		}
 
 		// Same /admin path prefix as adminGroup above, but readable/usable by
@@ -809,20 +806,20 @@ r := gin.New()
 		adminEditorGroup := authGroup.Group("/admin")
 		adminEditorGroup.Use(authCfg.RoleRequired("admin", "editor"))
 		{
-			adminEditorGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))
-			adminEditorGroup.PUT("/notification-channels/:id", notificationsGate, handler.UpdateNotificationChannel(database))
-			adminEditorGroup.DELETE("/notification-channels/:id", notificationsGate, handler.DeleteNotificationChannel(database))
-			adminEditorGroup.POST("/notification-channels/:id/test", notificationsGate, handler.TestNotificationChannel(database, notifHub))
+			adminEditorGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(dynamicPool))
+			adminEditorGroup.PUT("/notification-channels/:id", notificationsGate, handler.UpdateNotificationChannel(dynamicPool))
+			adminEditorGroup.DELETE("/notification-channels/:id", notificationsGate, handler.DeleteNotificationChannel(dynamicPool))
+			adminEditorGroup.POST("/notification-channels/:id/test", notificationsGate, handler.TestNotificationChannel(dynamicPool, notifHub))
 		}
 	}
 
 	// Public API routes (API key authentication)
 	publicAPI := r.Group("/api/v1")
-	publicAPI.Use(middleware.APIKeyAuth(database))
+	publicAPI.Use(middleware.APIKeyAuth(dynamicPool))
 	{
-		publicAPI.POST("/logs/export", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportJSON(database))
-		publicAPI.POST("/logs/export-parsed", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportParsedJSON(database))
-		publicAPI.GET("/stats", handler.ExportStats(database))
+		publicAPI.POST("/logs/export", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportJSON(dynamicPool))
+		publicAPI.POST("/logs/export-parsed", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportParsedJSON(dynamicPool))
+		publicAPI.GET("/stats", handler.ExportStats(dynamicPool))
 	}
 
 	// The real listener only needs the schema (ready since <-schemaReady
@@ -876,7 +873,7 @@ r := gin.New()
 			}
 		}
 		sharedstate.WaitForReplicas(ctx, sharedClient, identity, apiReplicas, 10*time.Minute)
-		tailer.Run(ctx, database, logFilePath, engine, ic, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient)
+		tailer.Run(ctx, dynamicPool, logFilePath, engine, ic, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient)
 	}()
 
 	quit := make(chan os.Signal, 1)
@@ -905,20 +902,20 @@ r := gin.New()
 // HEALTHCHECK (and a Swarm deployment's health-based task monitor) to see
 // the container as "starting" rather than unreachable while the schema
 // migration is still running. See the startupSrv comment in main().
-func startupHealthHandler(database *sql.DB) http.Handler {
+func startupHealthHandler(pool *db.DynamicPool) http.Handler {
 	r := gin.New()
 	configureTrustedProxies(r)
 	r.Use(gin.Recovery())
-	r.GET("/api/health", handler.HealthCheck(database))
+	r.GET("/api/health", handler.HealthCheck(pool))
 	return r
 }
 
 // waitForWizardDatabase runs a minimal, database-less HTTP server exposing
 // only the setup wizard's endpoints, and blocks until the wizard submits
-// working database settings. It returns the resulting live connection so
+// working database settings. It returns the resulting live pool so
 // main() can continue its normal startup sequence on it.
-func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.DB {
-	ready := make(chan *sql.DB, 1)
+func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *db.DynamicPool {
+	ready := make(chan *db.DynamicPool, 1)
 
 	r := gin.New()
 	configureTrustedProxies(r)
@@ -955,7 +952,7 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 		}
 	}()
 
-	database := <-ready
+	dynamicPool := <-ready
 	slog.Info("database settings received from setup wizard, handing off to the main server")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -964,7 +961,7 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 		slog.Warn("setup wizard server did not shut down cleanly", "error", err)
 	}
 
-	return database
+	return dynamicPool
 }
 
 // defaultTrustedProxies covers the private/loopback ranges a reverse proxy

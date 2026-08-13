@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"logmara/db"
 	"logmara/middleware"
 	"logmara/model"
 
@@ -67,7 +68,7 @@ func csvSafe(s string) string {
 	return s
 }
 
-func ExportCSV(db *sql.DB) gin.HandlerFunc {
+func ExportCSV(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req ExportFilterRequest
 		_ = c.ShouldBindJSON(&req)
@@ -90,15 +91,15 @@ func ExportCSV(db *sql.DB) gin.HandlerFunc {
 		}
 
 		whereClauses, args, _ := buildLogWhereClauses(exportFilterOptionsFromBody(c))
-		writeCSVExport(c, db, buildWhereSQL(whereClauses), args, limit, nil, "Logs")
+		writeCSVExport(c, pool, buildWhereSQL(whereClauses), args, limit, nil, "Logs")
 	}
 }
 
-func ExportHTML(db *sql.DB) gin.HandlerFunc {
+func ExportHTML(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(180 * time.Second))
 		whereClauses, args, _ := buildLogWhereClauses(exportFilterOptionsFromBody(c))
-		writeHTMLExport(c, db, buildWhereSQL(whereClauses), args, 5000, nil, "Logs")
+		writeHTMLExport(c, pool, buildWhereSQL(whereClauses), args, 5000, nil, "Logs")
 	}
 }
 
@@ -108,8 +109,8 @@ func ExportHTML(db *sql.DB) gin.HandlerFunc {
 // resolveDashboardFilters) and whether fields carries a dashboard's custom
 // parsed-field columns (nil for the generic endpoint, which has none).
 // sourceLabel identifies the export origin ("Logs" or dashboard name).
-func writeCSVExport(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int, fields []string, sourceLabel string) {
-	rows, err := queryExportRows(c, db, whereSQL, args, limit)
+func writeCSVExport(c *gin.Context, pool *db.DynamicPool, whereSQL string, args []interface{}, limit int, fields []string, sourceLabel string) {
+	rows, err := queryExportRows(c, pool, whereSQL, args, limit)
 	if err != nil {
 		middleware.HandleError(c, model.NewInternalKey("error.queryFailed", "Query failed", err))
 		return
@@ -150,8 +151,8 @@ func writeCSVExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfac
 // writeHTMLExport streams the filtered rows as an HTML report. See
 // writeCSVExport for why this is shared between two callers and what fields
 // is for. sourceLabel identifies the export origin ("Logs" or dashboard name).
-func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int, fields []string, sourceLabel string) {
-	rows, err := queryExportRows(c, db, whereSQL, args, limit)
+func writeHTMLExport(c *gin.Context, pool *db.DynamicPool, whereSQL string, args []interface{}, limit int, fields []string, sourceLabel string) {
+	rows, err := queryExportRows(c, pool, whereSQL, args, limit)
 	if err != nil {
 		middleware.HandleError(c, model.NewInternalKey("error.queryFailed", "Query failed", err))
 		return
@@ -291,7 +292,8 @@ func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 // times the visitor sees on screen. Falls back to UTC and retries once if
 // Postgres rejects the zone name (unknown zones only fail at AT TIME ZONE
 // evaluation, not query parse time). Pass limit <= 0 to skip the LIMIT clause.
-func queryExportRows(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int) (*sql.Rows, error) {
+func queryExportRows(c *gin.Context, pool *db.DynamicPool, whereSQL string, args []interface{}, limit int) (*sql.Rows, error) {
+	database := pool.Get()
 	var req ExportFilterRequest
 	_ = c.ShouldBindJSON(&req)
 	tz := req.TZ
@@ -321,7 +323,7 @@ func queryExportRows(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 		if limit > 0 {
 			fullArgs = append(fullArgs, limit)
 		}
-		return db.Query(query, fullArgs...)
+		return database.Query(query, fullArgs...)
 	}
 
 	rows, err := runQuery(tz)

@@ -1,7 +1,6 @@
 package alertengine
 
 import (
-	"database/sql"
 	"fmt"
 	"time"
 
@@ -19,8 +18,8 @@ const defaultRelayCertWarningDays = 30
 // Threshold for "silent for this many minutes" - it's already the numeric
 // field every rule type has, no schema change needed for a second one).
 // Intended to be called periodically (see the ticker in main.go).
-func (e *Engine) CheckRelayCertExpiring(database *sql.DB) {
-	if db.GetSetting(database, "notifications_enabled", "true") != "true" {
+func (e *Engine) CheckRelayCertExpiring() {
+	if db.GetSetting(e.pool.Get(), "notifications_enabled", "true") != "true" {
 		return
 	}
 
@@ -36,7 +35,7 @@ func (e *Engine) CheckRelayCertExpiring(database *sql.DB) {
 		}
 		cooldown := time.Duration(rule.CooldownMinutes) * time.Minute
 
-		certs, err := db.GetExpiringRelayCertificates(database, time.Duration(warnDays)*24*time.Hour)
+		certs, err := db.GetExpiringRelayCertificates(e.pool.Get(), time.Duration(warnDays)*24*time.Hour)
 		if err != nil || len(certs) == 0 {
 			continue
 		}
@@ -47,7 +46,7 @@ func (e *Engine) CheckRelayCertExpiring(database *sql.DB) {
 				continue
 			}
 
-			_ = db.MarkAlertFired(database, rule.ID)
+			_ = db.MarkAlertFired(e.pool.Get(), rule.ID)
 			daysLeft := int(time.Until(cert.ExpiresAt).Hours() / 24)
 			e.dispatcher.DispatchAlert(rule, notify.Payload{
 				Title: fmt.Sprintf("Relay certificate expiring: %s", cert.Label),

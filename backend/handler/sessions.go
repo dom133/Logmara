@@ -14,8 +14,9 @@ import (
 // ListSessions returns the caller's own active sessions (devices/browsers
 // with a still-usable refresh token) so they can review and sign out of any
 // they don't recognize.
-func ListSessions(database *sql.DB) gin.HandlerFunc {
+func ListSessions(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		uid, ok := extractUserID(c)
 		if !ok {
 			middleware.HandleError(c, model.NewUnauthorizedKey("auth.required", "Authentication required", nil))
@@ -43,8 +44,9 @@ func ListSessions(database *sql.DB) gin.HandlerFunc {
 }
 
 // RevokeSession signs out one of the caller's own sessions by id.
-func RevokeSession(database *sql.DB) gin.HandlerFunc {
+func RevokeSession(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		uid, ok := extractUserID(c)
 		if !ok {
 			middleware.HandleError(c, model.NewUnauthorizedKey("auth.required", "Authentication required", nil))

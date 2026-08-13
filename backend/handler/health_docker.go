@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -117,7 +116,7 @@ var healthDockerStatusRe = regexp.MustCompile(`\(([a-z: ]+)\)\s*$`)
 // derived from data the app already has (last_seen, certificate status),
 // since the relay host itself isn't reachable this way at all (see the
 // "relays" section below and README "Syslog Relay" / "Health").
-func GetContainersHealth(database *sql.DB) gin.HandlerFunc {
+func GetContainersHealth(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Second)
 		defer cancel()
@@ -135,7 +134,7 @@ func GetContainersHealth(database *sql.DB) gin.HandlerFunc {
 		if err := dockerProxyGET(ctx, "/info", &infoOut); err != nil {
 			resp.DockerAvailable = false
 			resp.Message = "Docker proxy unreachable - the docker-proxy sidecar isn't running or isn't configured. See README \"Health\"."
-			resp.Relays = fetchRelayHealth(database)
+			resp.Relays = fetchRelayHealth(pool)
 			c.JSON(http.StatusOK, resp)
 			return
 		}
@@ -176,7 +175,7 @@ func GetContainersHealth(database *sql.DB) gin.HandlerFunc {
 			}
 		}
 
-		resp.Relays = fetchRelayHealth(database)
+		resp.Relays = fetchRelayHealth(pool)
 		c.JSON(http.StatusOK, resp)
 	}
 }
@@ -393,7 +392,8 @@ func relayHeartbeatLastSeen(ips []string) map[string]time.Time {
 // this reports the best proxy signal already on hand: whether logs are
 // still arriving from its whitelisted IP, and whether its certificate is
 // still valid.
-func fetchRelayHealth(database *sql.DB) []RelayHealth {
+func fetchRelayHealth(pool *db.DynamicPool) []RelayHealth {
+	database := pool.Get()
 	entries, err := db.GetRelayWhitelist(database)
 	if err != nil || len(entries) == 0 {
 		return []RelayHealth{}

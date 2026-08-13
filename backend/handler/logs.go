@@ -81,8 +81,9 @@ type LogQueryRequest struct {
 	Sort       string `json:"sort"`
 }
 
-func GetLogs(db *sql.DB) gin.HandlerFunc {
+func GetLogs(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var req LogQueryRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			req.Limit = 50
@@ -162,7 +163,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 
 		ctx, cancel := context.WithTimeout(c.Request.Context(), filteredQueryTimeout)
 		defer cancel()
-		rows, err := db.QueryContext(ctx, logsQuery, args...)
+		rows, err := database.QueryContext(ctx, logsQuery, args...)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("error.queryFailed", "Query failed", err))
 			return
@@ -195,8 +196,9 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 // GetLogs. Deliberately a separate endpoint - the paginated /logs endpoint
 // avoids COUNT(*) for cost reasons (see the comment there), but the sidebar
 // total only needs one COUNT(*) per filter change, not per page.
-func GetLogsCount(database *sql.DB) gin.HandlerFunc {
+func GetLogsCount(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var req LogQueryRequest
 		_ = c.ShouldBindJSON(&req)
 
@@ -235,7 +237,7 @@ func GetLogsCount(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func GetDevices(db *sql.DB) gin.HandlerFunc {
+func GetDevices(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		devicesCacheMu.RLock()
 		if time.Since(devicesCacheTime) < devicesTTL && devicesCache != nil {
@@ -246,7 +248,7 @@ func GetDevices(db *sql.DB) gin.HandlerFunc {
 		}
 		devicesCacheMu.RUnlock()
 
-		devices := fetchDevices(db)
+		devices := fetchDevices(pool)
 
 		devicesCacheMu.Lock()
 		devicesCache = devices
@@ -257,12 +259,13 @@ func GetDevices(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func fetchDevices(db *sql.DB) []model.DeviceStats {
+func fetchDevices(pool *db.DynamicPool) []model.DeviceStats {
+	database := pool.Get()
 	// Reads from the mv_device_stats rollup (refreshed on a schedule)
 	// instead of aggregating the entire syslog_logs table live on every
 	// cache miss - the live GROUP BY + unnest scan over 1M+ rows was the
 	// most expensive query on this endpoint.
-	rows, err := db.Query(`
+	rows, err := database.Query(`
 		SELECT d.fromhost_ip, d.hostname, d.total_logs, d.last_seen,
 			d.emergency, d.alert, d.critical, d.err_count, d.warning, d.notice, d.info, d.debug,
 			d.parsers, d.via_relay,
@@ -308,8 +311,9 @@ func fetchDevices(db *sql.DB) []model.DeviceStats {
 	return devices
 }
 
-func UpdateDeviceAlias(db *sql.DB) gin.HandlerFunc {
+func UpdateDeviceAlias(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		ip := c.Param("ip")
 		var body struct {
 			DisplayName string `json:"display_name" binding:"required"`
@@ -319,9 +323,9 @@ func UpdateDeviceAlias(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 		var curHostname sql.NullString
-		db.QueryRow("SELECT hostname FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1 ORDER BY timestamp DESC LIMIT 1", ip).Scan(&curHostname)
+		database.QueryRow("SELECT hostname FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1 ORDER BY timestamp DESC LIMIT 1", ip).Scan(&curHostname)
 		oldhn := curHostname.String
-		_, err := db.Exec(
+		_, err := database.Exec(
 			`INSERT INTO device_aliases (fromhost_ip, display_name, old_hostname) VALUES ($1, $2, $3)
 			 ON CONFLICT (fromhost_ip) DO UPDATE SET display_name = $2, old_hostname = $3, updated_at = NOW()`,
 			ip, body.DisplayName, oldhn,

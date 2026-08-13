@@ -16,6 +16,7 @@ import (
 
 	"logmara/alertengine"
 	"logmara/control"
+	"logmara/db"
 	"logmara/model"
 	"logmara/parser"
 	"logmara/sharedstate"
@@ -46,7 +47,7 @@ func (wp *WorkerPool) NumWorkers() int {
 type worker struct {
 	id         int
 	parser     *parser.Engine
-	pool     *db.DynamicPool
+	db       *sql.DB
 	alerts     *alertengine.Engine
 	rate       sharedstate.RateCounter
 	flushTrk   *sharedstate.FlushTracker
@@ -88,9 +89,10 @@ func NewWorkerPool(numWorkers int, pool *db.DynamicPool, alerts *alertengine.Eng
 		}
 	}
 
-	pool := &WorkerPool{}
+	db := pool.Get()
+	wp := &WorkerPool{}
 	for i := 0; i < numWorkers; i++ {
-		pe := parser.NewEngine(db)
+		pe := parser.NewEngine(pool)
 		w := &worker{
 			id:       i,
 			parser:   pe,
@@ -105,9 +107,9 @@ func NewWorkerPool(numWorkers int, pool *db.DynamicPool, alerts *alertengine.Eng
 				LastFlushAt: time.Now(),
 			},
 		}
-		pool.workers = append(pool.workers, w)
+		wp.workers = append(wp.workers, w)
 	}
-	return pool
+	return wp
 }
 
 func (wp *WorkerPool) Start(ctx context.Context) {
@@ -287,7 +289,7 @@ func (w *worker) run(ctx context.Context) {
 						Severity:  "error",
 						Message:   fmt.Sprintf("%s %s", tag, sanitizedLine),
 					}
-					w.alerts.EvaluateMalformedJSON(w.db, sanitizedLine)
+					w.alerts.EvaluateMalformedJSON(sanitizedLine)
 					w.metrics.Mutex.Lock()
 					w.metrics.ParseErrors++
 					w.metrics.Mutex.Unlock()
@@ -361,7 +363,7 @@ func (w *worker) run(ctx context.Context) {
 							d.Nack(false, true)
 						}
 					} else {
-						w.alerts.EvaluateBatch(w.db, entries)
+						w.alerts.EvaluateBatch(entries)
 						w.flushTrk.ReportFlushed(ctx, queueEntries)
 						for _, d := range batchDelivries {
 							d.Ack(false)

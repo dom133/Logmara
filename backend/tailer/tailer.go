@@ -426,13 +426,14 @@ type pipeline struct {
 // the distributed pipeline with RabbitMQ.
 func Run(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
 	if sharedClient == nil {
-		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, nil)
+		runIngestionLoop(ctx, pool.Get(), filePath, engine, ic, alerts, rate, reopenLogFile, nil)
 		return
 	}
-	runWithVIPElection(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
+	runWithVIPElection(ctx, pool, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
 }
 
 func runWithVIPElection(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+	db := pool.Get()
 	// myNode identifies the physical Swarm node this task runs on. It's used
 	// below ONLY to compare against the VIP marker file, which keepalived
 	// (notify_vip.sh) stamps with `hostname` - i.e. also the node, not the
@@ -461,7 +462,7 @@ func runWithVIPElection(ctx context.Context, pool *db.DynamicPool, filePath stri
 
 	// All replicas start the consumer pipeline (RabbitMQ queue + WorkerPool).
 	// This allows every replica to consume and execute tasks from the queue.
-	pipeline := startConsumerPipeline(ctx, db, filePath, engine, ic, alerts, rate, sharedClient, taskID)
+	pipeline := startConsumerPipeline(ctx, pool, filePath, engine, ic, alerts, rate, sharedClient, taskID)
 
 	// If RabbitMQ is unavailable, the fallback local ingestion loop is running.
 	if pipeline.queue == nil {
@@ -563,6 +564,7 @@ func runWithVIPElection(ctx context.Context, pool *db.DynamicPool, filePath stri
 
 func startConsumerPipeline(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController,
 	alerts *alertengine.Engine, rate sharedstate.RateCounter, sharedClient *sharedstate.Client, nodeID string) *pipeline {
+	db := pool.Get()
 
 	rabbitmqURL := util.ResolveRabbitMQURL()
 	if rabbitmqURL == "" {
@@ -580,7 +582,7 @@ func startConsumerPipeline(ctx context.Context, pool *db.DynamicPool, filePath s
 	}
 
 	flushTrk := sharedstate.NewFlushTracker(sharedClient)
-	workerPool := NewWorkerPool(0, db, alerts, rate, flushTrk, queue, ic)
+	workerPool := NewWorkerPool(0, pool, alerts, rate, flushTrk, queue, ic)
 	metricsColl := NewTailerMetricsCollector(queue, flushTrk, rate, workerPool, sharedClient, nodeID)
 
 	workerPool.Start(ctx)
@@ -724,7 +726,7 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func runIngestionLoop(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
 	slog.Info("file tailer started", "path", filePath)
 	batchSize := 5000
 	batchInterval := 500 * time.Millisecond
@@ -743,7 +745,7 @@ func runIngestionLoop(ctx context.Context, pool *db.DynamicPool, filePath string
 			if err := flushBatch(db, entries, rate); err != nil {
 				slog.Error("final flush error", "error", err)
 			} else {
-				alerts.EvaluateBatch(db, entries)
+				alerts.EvaluateBatch(entries)
 			}
 		}
 		savePosition(posFile, filePos, filePath, sharedClient)
@@ -878,7 +880,7 @@ func runIngestionLoop(ctx context.Context, pool *db.DynamicPool, filePath string
 					Severity:  "error",
 					Message:   fmt.Sprintf("%s %s", tag, sanitizedLine),
 				}
-				alerts.EvaluateMalformedJSON(db, sanitizedLine)
+				alerts.EvaluateMalformedJSON(sanitizedLine)
 			}
 
 			entry.Hostname = sanitizeForPostgres(entry.Hostname)
@@ -928,7 +930,7 @@ func runIngestionLoop(ctx context.Context, pool *db.DynamicPool, filePath string
 					if err := flushBatch(db, entries, rate); err != nil {
 						slog.Error("flush error", "error", err)
 					} else {
-						alerts.EvaluateBatch(db, entries)
+						alerts.EvaluateBatch(entries)
 					}
 				}
 				flushedPos = curFilePos
@@ -952,7 +954,7 @@ func runIngestionLoop(ctx context.Context, pool *db.DynamicPool, filePath string
 			if err := flushBatch(db, entries, rate); err != nil {
 				slog.Error("flush error", "error", err)
 			} else {
-				alerts.EvaluateBatch(db, entries)
+				alerts.EvaluateBatch(entries)
 			}
 			flushedPos = curFilePos
 			savePosition(posFile, flushedPos, filePath, sharedClient)
@@ -990,7 +992,7 @@ func rowArgs(entry model.IngestEntry) []interface{} {
 	}
 }
 
-func flushBatch(pool *db.DynamicPool, entries []model.IngestEntry, rate sharedstate.RateCounter) error {
+func flushBatch(db *sql.DB, entries []model.IngestEntry, rate sharedstate.RateCounter) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -1019,7 +1021,7 @@ func flushBatch(pool *db.DynamicPool, entries []model.IngestEntry, rate sharedst
 	return nil
 }
 
-func insertChunk(pool *db.DynamicPool, entries []model.IngestEntry) (int, error) {
+func insertChunk(db *sql.DB, entries []model.IngestEntry) (int, error) {
 	var sb strings.Builder
 	sb.WriteString("INSERT INTO syslog_logs (")
 	sb.WriteString(insertQueryColumns)
@@ -1051,7 +1053,7 @@ func insertChunk(pool *db.DynamicPool, entries []model.IngestEntry) (int, error)
 	return int(n), nil
 }
 
-func insertRowsIndividually(pool *db.DynamicPool, entries []model.IngestEntry) int {
+func insertRowsIndividually(db *sql.DB, entries []model.IngestEntry) int {
 	query := `INSERT INTO syslog_logs (` + insertQueryColumns + `)
 		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
 	stmt, err := db.Prepare(query)
@@ -1164,7 +1166,7 @@ func loadPosition(path string) (pos int64, fingerprint string, ok bool) {
 	return pos, raw[sep+1:], true
 }
 
-func loadStartPosition(pool *db.DynamicPool, filePath, posFile string, sharedClient *sharedstate.Client) (filePos, flushedPos int64) {
+func loadStartPosition(db *sql.DB, filePath, posFile string, sharedClient *sharedstate.Client) (filePos, flushedPos int64) {
 	return loadStartPositionFromReader(db, filePath, posFile, sharedClient)
 }
 

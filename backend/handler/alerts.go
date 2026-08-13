@@ -12,8 +12,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func ListAlerts(database *sql.DB) gin.HandlerFunc {
+func ListAlerts(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		userID := c.GetInt64("user_id")
 		isAdmin := db.IsUserAdmin(database, userID)
 		alerts, err := db.GetAllAlerts(database, isAdmin, userID)
@@ -25,9 +26,9 @@ func ListAlerts(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func CreateAlert(engine *alertengine.Engine) gin.HandlerFunc {
-	database := engine.GetDB()
+func CreateAlert(pool *db.DynamicPool, engine *alertengine.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var req model.AlertRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
@@ -57,9 +58,9 @@ func CreateAlert(engine *alertengine.Engine) gin.HandlerFunc {
 	}
 }
 
-func UpdateAlert(engine *alertengine.Engine) gin.HandlerFunc {
-	database := engine.GetDB()
+func UpdateAlert(pool *db.DynamicPool, engine *alertengine.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidID", "Invalid ID", nil))
@@ -94,9 +95,9 @@ func UpdateAlert(engine *alertengine.Engine) gin.HandlerFunc {
 	}
 }
 
-func DeleteAlert(engine *alertengine.Engine) gin.HandlerFunc {
-	database := engine.GetDB()
+func DeleteAlert(pool *db.DynamicPool, engine *alertengine.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidID", "Invalid ID", nil))

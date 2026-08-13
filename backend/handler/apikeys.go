@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"logmara/audit"
+	"logmara/db"
 	"logmara/middleware"
 	"logmara/model"
 
@@ -58,8 +59,9 @@ func hashAPIKey(key string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func CreateAPIKey(database *sql.DB) gin.HandlerFunc {
+func CreateAPIKey(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		userID, username := actorFromContext(c)
 
 		var req struct {
@@ -107,7 +109,7 @@ func CreateAPIKey(database *sql.DB) gin.HandlerFunc {
 		keyHash := hashAPIKey(key)
 		keyPrefix := key[:8]
 
-		_, err = database.Exec(`
+		_, err = pool.Get().Exec(`
 			INSERT INTO api_keys (name, key_hash, key_prefix, permissions, scope_filters, allowed_ips, rate_limit_per_min, expires_at, created_by)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		`, req.Name, keyHash, keyPrefix, permsJSON, scopeJSON, pq.Array(allowedIPs), req.RateLimitPerMin, expiresAtPtr, userID)
@@ -125,9 +127,9 @@ func CreateAPIKey(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func ListAPIKeys(database *sql.DB) gin.HandlerFunc {
+func ListAPIKeys(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		rows, err := database.Query(`
+		rows, err := pool.Get().Query(`
 			SELECT k.id, k.name, k.key_prefix, k.permissions, k.scope_filters, k.allowed_ips, k.is_active,
 			       k.rate_limit_per_min, k.expires_at, k.last_used_at, k.total_requests, k.created_at,
 			       u.username AS created_by_username
@@ -195,8 +197,9 @@ func ListAPIKeys(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func UpdateAPIKey(database *sql.DB) gin.HandlerFunc {
+func UpdateAPIKey(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		userID, username := actorFromContext(c)
 		idStr := c.Param("id")
 		id, _ := strconv.Atoi(idStr)
@@ -304,7 +307,7 @@ func UpdateAPIKey(database *sql.DB) gin.HandlerFunc {
 		args = append(args, id)
 
 		query := "UPDATE api_keys SET " + joinSQL(setters) + " WHERE id = $" + strconv.Itoa(argCount)
-		_, err := database.Exec(query, args...)
+		_, err := pool.Get().Exec(query, args...)
 		if err != nil {
 			c.AbortWithError(http.StatusInternalServerError, model.NewInternal("Failed to update API key", err))
 			return
@@ -316,13 +319,14 @@ func UpdateAPIKey(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func DeleteAPIKey(database *sql.DB) gin.HandlerFunc {
+func DeleteAPIKey(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		userID, username := actorFromContext(c)
 		idStr := c.Param("id")
 		id, _ := strconv.Atoi(idStr)
 
-		_, err := database.Exec("DELETE FROM api_keys WHERE id = $1", id)
+		_, err := pool.Get().Exec("DELETE FROM api_keys WHERE id = $1", id)
 		if err != nil {
 			c.AbortWithError(http.StatusInternalServerError, model.NewInternal("Failed to delete API key", err))
 			return
@@ -335,8 +339,9 @@ func DeleteAPIKey(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func ResetAPIKey(database *sql.DB) gin.HandlerFunc {
+func ResetAPIKey(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		userID, username := actorFromContext(c)
 		idStr := c.Param("id")
 		id, _ := strconv.Atoi(idStr)
@@ -345,7 +350,7 @@ func ResetAPIKey(database *sql.DB) gin.HandlerFunc {
 		keyHash := hashAPIKey(key)
 		keyPrefix := key[:8]
 
-		_, err := database.Exec("UPDATE api_keys SET key_hash = $1, key_prefix = $2 WHERE id = $3", keyHash, keyPrefix, id)
+		_, err := pool.Get().Exec("UPDATE api_keys SET key_hash = $1, key_prefix = $2 WHERE id = $3", keyHash, keyPrefix, id)
 		if err != nil {
 			c.AbortWithError(http.StatusInternalServerError, model.NewInternal("Failed to reset API key", err))
 			return

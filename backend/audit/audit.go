@@ -35,7 +35,7 @@ func LogAudit(db *sql.DB, userID int64, username, action, ip, details string) {
 	}
 
 	if e := engine.Load(); e != nil {
-		e.EvaluateAuditLog(db, action, userID, username, ip, details)
+		e.EvaluateAuditLog(action, userID, username, ip, details)
 	}
 }
 
