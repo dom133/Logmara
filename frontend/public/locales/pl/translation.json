@@ -360,6 +360,7 @@
     "rotateNowConfirm": "To uruchomi natychmiastową rotację wszystkich sekretów. System zacznie używać nowych poświadczeń, a stare wejdą w okres łaski. Kontynuować?",
     "rotationSuccess": "Rotacja uruchomiona pomyślnie",
     "rotationFailed": "Rotacja nieudana",
+    "rotationPartial": "Rotacja zakończona częściowo - niektóre sekrety nie zostały przerotowane",
     "vaultNotConfigured": "Vault nie jest skonfigurowany",
     "vaultNotConfiguredDesc": "Rotacja sekretów wymaga skonfigurowanego HashiCorp Vault. Bez Vault sekrety są ładowane tylko z zmiennych środowiskowych.",
     "secondaryKeyActive": "Aktywny klucz pomocniczy (okres łaski)",

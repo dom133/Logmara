@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync/atomic"
@@ -184,6 +185,37 @@ func TriggerManualRotation() {
 	manualTriggeredRef.Store(true)
 }
 
+// waitRotationComplete blocks until all 4 secrets have a newer last_rotated_at
+// timestamp than before the trigger, or until timeout (60s).
+func waitRotationComplete(before [4]time.Time) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("rotation timed out after 60s")
+		case <-ticker.C:
+			allDone := true
+			for i := 0; i < 4; i++ {
+				if v := secretLastRotatedAt[i].Load(); v != nil {
+					if t, ok := v.(*time.Time); ok && t.After(before[i]) {
+						continue
+					}
+				}
+				allDone = false
+				break
+			}
+			if allDone {
+				return nil
+			}
+		}
+	}
+}
+
 // GetRotationStatus returns the current rotation status for all secrets.
 func GetRotationStatus() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -192,14 +224,29 @@ func GetRotationStatus() gin.HandlerFunc {
 	}
 }
 
-// TriggerRotation signals the main rotation goroutine to rotate all secrets.
+// TriggerRotation triggers rotation and waits for all secrets to complete,
+// returning the final rotation status with per-secret results.
 func TriggerRotation() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
+
+		var before [4]time.Time
+		for i := 0; i < 4; i++ {
+			if v := secretLastRotatedAt[i].Load(); v != nil {
+				if t, ok := v.(*time.Time); ok {
+					before[i] = *t
+				}
+			}
+		}
+
 		TriggerManualRotation()
-		c.JSON(http.StatusOK, gin.H{
-			"status":  "rotation triggered",
-			"message": "Secret rotation has been triggered. Check status endpoint for results.",
-		})
+
+		if err := waitRotationComplete(before); err != nil {
+			slog.Warn("rotation wait timed out", "error", err)
+		}
+
+		status := buildRotationStatus()
+		c.JSON(http.StatusOK, status)
 	}
 }
 

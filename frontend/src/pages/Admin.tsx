@@ -377,9 +377,17 @@ await testLDAPConnection({
   const handleTriggerRotation = async () => {
     setRotating(true)
     try {
-      await triggerRotation()
-      message.success(t('admin.rotationSuccess'))
-      loadRotationStatus()
+      const status = await triggerRotation()
+      setRotationStatus(status)
+      const failed = status.secrets.filter((s: SecretRotationStatus) => s.last_result === 'failed')
+      const succeeded = status.secrets.filter((s: SecretRotationStatus) => s.last_result === 'success')
+      if (failed.length > 0 && succeeded.length === 0) {
+        message.error(t('admin.rotationFailed'))
+      } else if (failed.length > 0) {
+        message.warning(t('admin.rotationPartial'))
+      } else {
+        message.success(t('admin.rotationSuccess'))
+      }
     } catch (e: unknown) {
       message.error(getErrorMessage(e, t('admin.rotationFailed')))
     } finally {

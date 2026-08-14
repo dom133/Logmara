@@ -1292,17 +1292,12 @@ export interface RotationStatus {
   secrets: SecretRotationStatus[]
 }
 
-export interface RotationTriggerResponse {
-  status: string
-  message: string
-}
-
 export async function getRotationStatus(): Promise<RotationStatus> {
   const res = await api.get('/admin/rotation/status')
   return res.data
 }
 
-export async function triggerRotation(): Promise<RotationTriggerResponse> {
+export async function triggerRotation(): Promise<RotationStatus> {
   const res = await api.post('/admin/rotation/trigger')
   return res.data
 }

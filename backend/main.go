@@ -582,7 +582,7 @@ func main() {
 			now := time.Now()
 			handler.SetRotationTimestamps(now, now.Add(24*time.Hour))
 			go func() {
-				time.Sleep(24 * time.Hour)
+				time.Sleep(4 * time.Hour)
 				authCfg.ClearSecondarySecret()
 			}()
 		},
@@ -597,7 +597,7 @@ func main() {
 				slog.Info("util: all secrets re-encrypted, scheduling secondary key cleanup", "count", ok)
 				handler.SetSecretRotationResult(1, "success", "")
 				go func() {
-					time.Sleep(24 * time.Hour)
+					time.Sleep(4 * time.Hour)
 					util.ClearSecondaryEncryptionKey()
 				}()
 			}
@@ -621,6 +621,14 @@ func main() {
 			}
 			slog.Info("postgres: swapped to rotated connection pool")
 			handler.SetSecretRotationResult(2, "success", "")
+		},
+		OnRotateFailure: func(engine string, errMsg string) {
+			slog.Warn("vault: dynamic secret rotation failed", "engine", engine, "error", errMsg)
+			if engine == "database" {
+				handler.SetSecretRotationResult(2, "failed", errMsg)
+			} else if engine == "rabbitmq" {
+				handler.SetSecretRotationResult(3, "failed", errMsg)
+			}
 		},
 	})
 

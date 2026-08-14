@@ -239,6 +239,7 @@ type RotationCallbacks struct {
 	RotateEncryptionKey func(newKey string)
 	RotateRabbitMQURL   func(newURL string)
 	RotatePostgreSQLDSN func(newDSN string)
+	OnRotateFailure     func(engine string, errMsg string)
 }
 
 // StartRotation starts a background goroutine that rotates application
@@ -323,7 +324,7 @@ func (c *Client) rotateSecrets(ctx context.Context, cb RotationCallbacks) {
 	}
 
 	// Rotate dynamic PostgreSQL credentials
-	c.rotateDynamicSecret(ctx, "database", cb.RotatePostgreSQLDSN)
+	c.rotateDynamicSecret(ctx, "database", cb.RotatePostgreSQLDSN, cb.OnRotateFailure)
 
 	// Redis has no dynamic-secret rotation: neither Vault Redis plugin
 	// discovers the current master through Sentinel, and unilaterally
@@ -333,7 +334,7 @@ func (c *Client) rotateSecrets(ctx context.Context, cb RotationCallbacks) {
 	// rotation stays a manual scripts/rotate-secrets.sh operation.
 
 	// Rotate dynamic RabbitMQ credentials
-	c.rotateDynamicSecret(ctx, "rabbitmq", cb.RotateRabbitMQURL)
+	c.rotateDynamicSecret(ctx, "rabbitmq", cb.RotateRabbitMQURL, cb.OnRotateFailure)
 
 	slog.Info("vault: secrets rotation complete")
 }
@@ -343,7 +344,7 @@ func (c *Client) rotateSecrets(ctx context.Context, cb RotationCallbacks) {
 // secrets engines (secret-dynamic/{database,redis,rabbitmq}/roles/logmara-app).
 const dynamicRoleName = "logmara-app"
 
-func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callback func(string)) {
+func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callback func(string), onFailure func(string, string)) {
 	if c == nil || callback == nil {
 		return
 	}
@@ -360,10 +361,16 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 	secret, err := c.api.Logical().ReadWithContext(ctx2, path)
 	if err != nil {
 		slog.Warn("vault: failed to rotate dynamic secret", "engine", engine, "error", err)
+		if onFailure != nil {
+			onFailure(engine, err.Error())
+		}
 		return
 	}
 	if secret == nil || secret.Data == nil {
 		slog.Warn("vault: no dynamic secret returned", "engine", engine, "path", path)
+		if onFailure != nil {
+			onFailure(engine, "no secret data returned from Vault")
+		}
 		return
 	}
 
@@ -406,5 +413,8 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 		slog.Info("vault: dynamic secret rotated", "engine", engine)
 	} else {
 		slog.Warn("vault: dynamic secret rotation produced no value", "engine", engine, "data_keys", keys)
+		if onFailure != nil {
+			onFailure(engine, "rotation produced no value")
+		}
 	}
 }

@@ -360,6 +360,7 @@
     "rotateNowConfirm": "This will rotate all secrets immediately. The system will use new credentials and the old ones will enter a grace period. Continue?",
     "rotationSuccess": "Rotation triggered successfully",
     "rotationFailed": "Rotation failed",
+    "rotationPartial": "Rotation partially successful - some secrets failed to rotate",
     "vaultNotConfigured": "Vault is not configured",
     "vaultNotConfiguredDesc": "Secret rotation requires HashiCorp Vault to be configured. Without Vault, secrets are loaded from environment variables only.",
     "secondaryKeyActive": "Secondary key active (grace period)",
