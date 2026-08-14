@@ -14,7 +14,6 @@ import (
 	"logmara/rotation"
 	"logmara/sharedstate"
 	"logmara/tailer"
-	"logmara/util"
 	"logmara/vaultclient"
 
 	"github.com/gin-gonic/gin"
@@ -29,6 +28,7 @@ var (
 	manualTriggeredRef   atomic.Bool
 	secretResults        [4]atomicValue
 	secretLastRotatedAt  [4]atomicValue
+	secondaryKeyActive   [4]atomic.Bool
 	dbRef                *sql.DB
 	rotationBroadcaster  *sharedstate.Broadcaster
 )
@@ -73,18 +73,20 @@ func loadRotationStateFromDB() {
 		"secret_rotation_rabbitmq_at",
 	}
 	for i, key := range secretKeys {
+		prefix := key[:len(key)-3]
 		if ts := db.GetSetting(dbRef, key, ""); ts != "" {
 			if t, err := time.Parse(time.RFC3339, ts); err == nil {
 				secretLastRotatedAt[i].Store(&t)
 			}
 		}
-		if result := db.GetSetting(dbRef, key[:len(key)-3]+"_result", ""); result != "" {
-			errMsg := db.GetSetting(dbRef, key[:len(key)-3]+"_error", "")
+		if result := db.GetSetting(dbRef, prefix+"_result", ""); result != "" {
 			secretResults[i].Store(rotation.SecretResult{
 				Result: result,
-				Error:  errMsg,
 				Time:   time.Time{},
 			})
+		}
+		if sec := db.GetSetting(dbRef, prefix+"_secondary", ""); sec == "true" {
+			secondaryKeyActive[i].Store(true)
 		}
 	}
 
@@ -128,12 +130,11 @@ func SetRotationTimestamps(last, next time.Time) {
 }
 
 // SetSecretRotationResult updates the rotation result for a specific secret.
-func SetSecretRotationResult(index int, result string, errMsg string) {
+func SetSecretRotationResult(index int, result string) {
 	if index >= 0 && index < 4 {
 		now := time.Now()
 		secretResults[index].Store(rotation.SecretResult{
 			Result: result,
-			Error:  errMsg,
 			Time:   now,
 		})
 		secretLastRotatedAt[index].Store(&now)
@@ -142,7 +143,13 @@ func SetSecretRotationResult(index int, result string, errMsg string) {
 			prefix := keys[index]
 			db.UpdateSetting(dbRef, prefix+"_at", now.Format(time.RFC3339))
 			db.UpdateSetting(dbRef, prefix+"_result", result)
-			db.UpdateSetting(dbRef, prefix+"_error", errMsg)
+		}
+		if (index == 0 || index == 1) && result == "success" {
+			secondaryKeyActive[index].Store(true)
+			if dbRef != nil {
+				keys := []string{"secret_rotation_jwt", "secret_rotation_encryption"}
+				db.UpdateSetting(dbRef, keys[index]+"_secondary", "true")
+			}
 		}
 		if rotationBroadcaster != nil {
 			if err := rotationBroadcaster.Publish(context.Background(), rotationSyncChannel, ""); err != nil {
@@ -162,13 +169,29 @@ func SetSecretLastRotatedAt(index int, t time.Time) {
 
 // RestoreSecretResult restores a persisted rotation result into in-memory
 // state without writing to the database or broadcasting.
-func RestoreSecretResult(index int, result string, errMsg string) {
+func RestoreSecretResult(index int, result string) {
 	if index >= 0 && index < 4 {
 		secretResults[index].Store(rotation.SecretResult{
 			Result: result,
-			Error:  errMsg,
 			Time:   time.Time{},
 		})
+	}
+}
+
+// ClearSecondaryKeyFlag clears the secondary key flag for a secret, persists
+// to DB, and broadcasts sync to other replicas.
+func ClearSecondaryKeyFlag(index int) {
+	if index >= 0 && index < 4 {
+		secondaryKeyActive[index].Store(false)
+		if dbRef != nil {
+			keys := []string{"secret_rotation_jwt", "secret_rotation_encryption"}
+			db.UpdateSetting(dbRef, keys[index]+"_secondary", "false")
+		}
+		if rotationBroadcaster != nil {
+			if err := rotationBroadcaster.Publish(context.Background(), rotationSyncChannel, ""); err != nil {
+				slog.Warn("failed to broadcast rotation sync", "error", err)
+			}
+		}
 	}
 }
 
@@ -263,7 +286,6 @@ type SecretRotationStatus struct {
 	Name              string  `json:"name"`
 	LastRotatedAt     *string `json:"last_rotated_at"`
 	LastResult        string  `json:"last_result"`
-	LastError         string  `json:"last_error"`
 	HasSecondaryKey   bool    `json:"has_secondary_key"`
 	RabbitMQConnected *bool   `json:"rabbitmq_connected,omitempty"`
 }
@@ -301,12 +323,9 @@ func buildRotationStatus() RotationStatusResponse {
 
 	// JWT Secret
 	resp.Secrets[0] = SecretRotationStatus{
-		Name:       "JWT Secret",
-		LastResult: getSecretResult(0),
-		LastError:  getSecretError(0),
-	}
-	if authConfigRef != nil {
-		resp.Secrets[0].HasSecondaryKey = authConfigRef.HasSecondarySecret()
+		Name:            "JWT Secret",
+		LastResult:      getSecretResult(0),
+		HasSecondaryKey: secondaryKeyActive[0].Load(),
 	}
 	if v := secretLastRotatedAt[0].Load(); v != nil {
 		if t, ok := v.(*time.Time); ok {
@@ -317,11 +336,10 @@ func buildRotationStatus() RotationStatusResponse {
 
 	// Encryption Key
 	resp.Secrets[1] = SecretRotationStatus{
-		Name:       "Encryption Key",
-		LastResult: getSecretResult(1),
-		LastError:  getSecretError(1),
+		Name:            "Encryption Key",
+		LastResult:      getSecretResult(1),
+		HasSecondaryKey: secondaryKeyActive[1].Load(),
 	}
-	resp.Secrets[1].HasSecondaryKey = util.HasSecondaryKey()
 	if v := secretLastRotatedAt[1].Load(); v != nil {
 		if t, ok := v.(*time.Time); ok {
 			s := t.Format(time.RFC3339)
@@ -333,7 +351,6 @@ func buildRotationStatus() RotationStatusResponse {
 	resp.Secrets[2] = SecretRotationStatus{
 		Name:       "PostgreSQL Credentials",
 		LastResult: getSecretResult(2),
-		LastError:  getSecretError(2),
 	}
 	if v := secretLastRotatedAt[2].Load(); v != nil {
 		if t, ok := v.(*time.Time); ok {
@@ -346,7 +363,6 @@ func buildRotationStatus() RotationStatusResponse {
 	resp.Secrets[3] = SecretRotationStatus{
 		Name:       "RabbitMQ Credentials",
 		LastResult: getSecretResult(3),
-		LastError:  getSecretError(3),
 	}
 	if v := secretLastRotatedAt[3].Load(); v != nil {
 		if t, ok := v.(*time.Time); ok {
@@ -366,14 +382,8 @@ func getSecretResult(index int) string {
 			return r.Result
 		}
 	}
-	return "none"
-}
-
-func getSecretError(index int) string {
-	if v := secretResults[index].Load(); v != nil {
-		if r, ok := v.(rotation.SecretResult); ok {
-			return r.Error
-		}
+	if v := secretLastRotatedAt[index].Load(); v != nil {
+		return "success"
 	}
-	return ""
+	return "none"
 }

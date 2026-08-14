@@ -2062,9 +2062,6 @@ const handleCleanup = async () => {
                               <Space direction="vertical" size={4}>
                                 <Tag color={resultColor(result)}>{resultLabel(result)}</Tag>
                                 {record.has_secondary_key && <Tag color="orange">{t('admin.secondaryKeyActive')}</Tag>}
-                                {record.last_error && (
-                                  <span style={{ wordBreak: 'break-all', fontSize: 12 }}>{record.last_error}</span>
-                                )}
                               </Space>
                             ),
                           },

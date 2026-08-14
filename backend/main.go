@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -275,8 +274,7 @@ func loadRotationTimestamps(database *sql.DB) {
 		}
 		prefix := key[:len(key)-3]
 		if result := db.GetSetting(database, prefix+"_result", ""); result != "" {
-			errMsg := db.GetSetting(database, prefix+"_error", "")
-			handler.RestoreSecretResult(i, result, errMsg)
+			handler.RestoreSecretResult(i, result)
 		}
 	}
 }
@@ -578,12 +576,13 @@ func main() {
 	go vc.StartRotation(ctx, vaultclient.RotationCallbacks{
 		RotateJWTSecret: func(s string) {
 			authCfg.RotateSecret(s)
-			handler.SetSecretRotationResult(0, "success", "")
+			handler.SetSecretRotationResult(0, "success")
 			now := time.Now()
 			handler.SetRotationTimestamps(now, now.Add(24*time.Hour))
 			go func() {
 				time.Sleep(4 * time.Hour)
 				authCfg.ClearSecondarySecret()
+				handler.ClearSecondaryKeyFlag(0)
 			}()
 		},
 		RotateEncryptionKey: func(s string) {
@@ -592,22 +591,23 @@ func main() {
 			ok, failed, err := util.ReencryptAllSecrets(db)
 			if failed > 0 {
 				slog.Error("util: re-encryption failed for some secrets", "ok", ok, "failed", failed, "error", err)
-				handler.SetSecretRotationResult(1, "failed", fmt.Sprintf("re-encryption failed for %d secrets", failed))
+				handler.SetSecretRotationResult(1, "failed")
 			} else {
 				slog.Info("util: all secrets re-encrypted, scheduling secondary key cleanup", "count", ok)
-				handler.SetSecretRotationResult(1, "success", "")
+				handler.SetSecretRotationResult(1, "success")
 				go func() {
 					time.Sleep(4 * time.Hour)
 					util.ClearSecondaryEncryptionKey()
+					handler.ClearSecondaryKeyFlag(1)
 				}()
 			}
 		},
 		RotateRabbitMQURL: func(newURL string) {
 			if err := tailer.RotateRabbitMQURL(newURL); err != nil {
 				slog.Error("rabbitmq: failed to apply rotated URL", "error", err)
-				handler.SetSecretRotationResult(3, "failed", err.Error())
+				handler.SetSecretRotationResult(3, "failed")
 			} else {
-				handler.SetSecretRotationResult(3, "success", "")
+				handler.SetSecretRotationResult(3, "success")
 			}
 		},
 		// PostgreSQL: the live connection pool is wrapped behind a DynamicPool
@@ -616,18 +616,18 @@ func main() {
 		RotatePostgreSQLDSN: func(newDSN string) {
 			if err := dynamicPool.Rotate(newDSN); err != nil {
 				slog.Error("postgres: failed to rotate connection pool", "error", err)
-				handler.SetSecretRotationResult(2, "failed", err.Error())
+				handler.SetSecretRotationResult(2, "failed")
 				return
 			}
 			slog.Info("postgres: swapped to rotated connection pool")
-			handler.SetSecretRotationResult(2, "success", "")
+			handler.SetSecretRotationResult(2, "success")
 		},
 		OnRotateFailure: func(engine string, errMsg string) {
 			slog.Warn("vault: dynamic secret rotation failed", "engine", engine, "error", errMsg)
 			if engine == "database" {
-				handler.SetSecretRotationResult(2, "failed", errMsg)
+				handler.SetSecretRotationResult(2, "failed")
 			} else if engine == "rabbitmq" {
-				handler.SetSecretRotationResult(3, "failed", errMsg)
+				handler.SetSecretRotationResult(3, "failed")
 			}
 		},
 	})
