@@ -539,6 +539,10 @@ func main() {
 			handler.SetSecretRotationResult(0, "success", "")
 			now := time.Now()
 			handler.SetRotationTimestamps(now, now.Add(24*time.Hour))
+			go func() {
+				time.Sleep(24 * time.Hour)
+				authCfg.ClearSecondarySecret()
+			}()
 		},
 		RotateEncryptionKey: func(s string) {
 			util.RotateEncryptionKey(s)
