@@ -357,6 +357,13 @@ func (cfg *Config) ClearSecondarySecret() {
 	slog.Info("auth: JWT secondary key cleared")
 }
 
+// HasSecondarySecret returns true if a secondary (grace period) key is active.
+func (cfg *Config) HasSecondarySecret() bool {
+	cfg.secretMu.RLock()
+	defer cfg.secretMu.RUnlock()
+	return len(cfg.jwtSecretSecondary) > 0
+}
+
 // GetPrimarySecret returns the current primary JWT secret as a string.
 func (cfg *Config) GetPrimarySecret() string {
 	cfg.secretMu.RLock()

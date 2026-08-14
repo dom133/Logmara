@@ -3,7 +3,7 @@ import { Card, Table, Button, Modal, Form, Input, Select, Switch, Checkbox, Spac
 import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PlusOutlined, CopyOutlined, KeyOutlined, CloudOutlined, ContainerOutlined, CheckCircleOutlined, WarningOutlined, DashOutlined, NodeIndexOutlined, ClusterOutlined, GlobalOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react/esm/core'
 import echarts from '../utils/echarts-core'
-import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, AggregatedTailerMetrics, ReplicaTailerMetrics, WorkerMetrics, SSLCertInfo } from '../services/api'
+import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, AggregatedTailerMetrics, ReplicaTailerMetrics, WorkerMetrics, SSLCertInfo, getRotationStatus, triggerRotation, RotationStatus, SecretRotationStatus } from '../services/api'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
 import { useAuth } from '../services/auth'
@@ -110,6 +110,11 @@ export default function Admin() {
     () => computeNodeRowSpans(tailerMetrics?.WorkerMetrics ?? []),
     [tailerMetrics]
   )
+
+  // Rotation status state
+  const [rotationStatus, setRotationStatus] = useState<RotationStatus | null>(null)
+  const [rotationLoading, setRotationLoading] = useState(false)
+  const [rotating, setRotating] = useState(false)
 
   const tailerSparklineOption = (data: number[], color: string) => ({
     tooltip: { trigger: 'axis' as const },
@@ -332,6 +337,31 @@ await testLDAPConnection({
     }
   }
 
+  const loadRotationStatus = async () => {
+    setRotationLoading(true)
+    try {
+      const data = await getRotationStatus()
+      setRotationStatus(data)
+    } catch {
+      message.error(t('admin.rotationStatusLoadFailed'))
+    } finally {
+      setRotationLoading(false)
+    }
+  }
+
+  const handleTriggerRotation = async () => {
+    setRotating(true)
+    try {
+      await triggerRotation()
+      message.success(t('admin.rotationSuccess'))
+      loadRotationStatus()
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, t('admin.rotationFailed')))
+    } finally {
+      setRotating(false)
+    }
+  }
+
   const handleCreateAPIKey = async () => {
     const values = apiKeyForm.getFieldsValue()
     try {
@@ -465,6 +495,9 @@ await testLDAPConnection({
       case 'tailer':
         await loadTailerMetrics()
         break
+      case 'rotation':
+        await loadRotationStatus()
+        break
     }
     tabCacheRef.current.set(tab, { loadedAt: Date.now() })
   }
@@ -478,6 +511,14 @@ await testLDAPConnection({
     const interval = setInterval(() => {
       loadTailerMetrics()
     }, 5000)
+    return () => clearInterval(interval)
+  }, [activeTab])
+
+  useEffect(() => {
+    if (activeTab !== 'rotation') return
+    const interval = setInterval(() => {
+      loadRotationStatus()
+    }, 30000)
     return () => clearInterval(interval)
   }, [activeTab])
 
@@ -1887,6 +1928,108 @@ const handleCleanup = async () => {
                       })}
                     </div>
                   ) : null}
+                </Card>
+              )
+            })(),
+          },
+          {
+            key: 'rotation',
+            label: t('admin.rotation'),
+            children: (() => {
+              const formatTime = (ts: string | null) => {
+                if (!ts) return t('admin.neverRotated')
+                return new Date(ts).toLocaleString()
+              }
+
+              const resultColor = (result: string) => {
+                if (result === 'success') return 'green'
+                if (result === 'failed') return 'red'
+                return 'default'
+              }
+
+              const resultLabel = (result: string) => {
+                if (result === 'success') return t('admin.resultSuccess')
+                if (result === 'failed') return t('admin.resultFailed')
+                return t('admin.resultNone')
+              }
+
+              const secretNames = [
+                t('admin.jwtSecret'),
+                t('admin.encryptionKey'),
+                t('admin.postgreSQL'),
+                t('admin.rabbitMQ'),
+              ]
+
+              return (
+                <Card
+                  title={t('admin.rotationTitle')}
+                  extra={rotationStatus?.vault_enabled ? (
+                    <Button
+                      type="primary"
+                      icon={<ReloadOutlined />}
+                      loading={rotating}
+                      onClick={() => {
+                        Modal.confirm({
+                          title: t('admin.rotateNow'),
+                          content: t('admin.rotateNowConfirm'),
+                          okText: t('admin.rotateNow'),
+                          cancelText: t('common.cancel'),
+                          onOk: handleTriggerRotation,
+                        })
+                      }}
+                    >
+                      {t('admin.rotateNow')}
+                    </Button>
+                  ) : null}
+                >
+                  {!rotationStatus?.vault_enabled ? (
+                    <Result
+                      status="warning"
+                      title={t('admin.vaultNotConfigured')}
+                      subTitle={t('admin.vaultNotConfiguredDesc')}
+                    />
+                  ) : (
+                    <div>
+                      <Descriptions bordered column={2} size="small" style={{ marginBottom: 24 }}>
+                        <Descriptions.Item label={t('admin.rotationInterval')}>{rotationStatus?.rotation_interval}</Descriptions.Item>
+                        <Descriptions.Item label={t('admin.lastRotation')}>{formatTime(rotationStatus?.last_rotation_at)}</Descriptions.Item>
+                        <Descriptions.Item label={t('admin.nextRotation')}>{formatTime(rotationStatus?.next_rotation_at)}</Descriptions.Item>
+                        <Descriptions.Item label={t('admin.rabbitMQConnected')}>
+                          {rotationStatus?.rabbitmq_connected ? (
+                            <Tag color="green">{t('admin.rabbitMQConnected')}</Tag>
+                          ) : (
+                            <Tag color="red">{t('admin.rabbitMQDisconnected')}</Tag>
+                          )}
+                        </Descriptions.Item>
+                      </Descriptions>
+
+                      <Row gutter={[16, 16]}>
+                        {rotationStatus?.secrets.map((secret: SecretRotationStatus, index: number) => (
+                          <Col span={12} key={index}>
+                            <Card size="small" style={{ height: '100%' }}>
+                              <Descriptions bordered column={1} size="small">
+                                <Descriptions.Item label={t('common.name')}>{secretNames[index] || secret.name}</Descriptions.Item>
+                                <Descriptions.Item label={t('admin.lastRotation')}>{formatTime(secret.last_rotated_at)}</Descriptions.Item>
+                                <Descriptions.Item label={t('admin.status')}>
+                                  <Tag color={resultColor(secret.last_result)}>{resultLabel(secret.last_result)}</Tag>
+                                </Descriptions.Item>
+                                {secret.last_error && (
+                                  <Descriptions.Item label={t('common.details')}>
+                                    <span style={{ wordBreak: 'break-all', fontSize: 12 }}>{secret.last_error}</span>
+                                  </Descriptions.Item>
+                                )}
+                                {secret.has_secondary_key && (
+                                  <Descriptions.Item label={t('admin.secondaryKeyActive')}>
+                                    <Tag color="orange">{t('admin.secondaryKeyActive')}</Tag>
+                                  </Descriptions.Item>
+                                )}
+                              </Descriptions>
+                            </Card>
+                          </Col>
+                        ))}
+                      </Row>
+                    </div>
+                  )}
                 </Card>
               )
             })(),

@@ -518,18 +518,37 @@ func main() {
 	}
 	util.SetEncryptionKey(encKey)
 
+	vc := vaultclient.Get()
+	handler.SetRotationRefs(vc, authCfg)
+
+	// Track rotation timestamps
+	if vc != nil {
+		now := time.Now()
+		handler.SetRotationTimestamps(now, now.Add(24*time.Hour))
+	}
+
 	// Start secret rotation goroutine (24h interval). StartRotation blocks
 	// in an infinite loop until ctx is cancelled - it must run in its own
 	// goroutine, or main() never reaches wg.Wait()/the tailer/the real
 	// HTTP server below, leaving /api/health stuck reporting "starting"
 	// forever.
-	vc := vaultclient.Get()
 	go vc.StartRotation(ctx, vaultclient.RotationCallbacks{
-		RotateJWTSecret:     func(s string) { authCfg.RotateSecret(s) },
-		RotateEncryptionKey: util.RotateEncryptionKey,
+		RotateJWTSecret: func(s string) {
+			authCfg.RotateSecret(s)
+			handler.SetSecretRotationResult(0, "success", "")
+			now := time.Now()
+			handler.SetRotationTimestamps(now, now.Add(24*time.Hour))
+		},
+		RotateEncryptionKey: func(s string) {
+			util.RotateEncryptionKey(s)
+			handler.SetSecretRotationResult(1, "success", "")
+		},
 		RotateRabbitMQURL: func(newURL string) {
 			if err := tailer.RotateRabbitMQURL(newURL); err != nil {
 				slog.Error("rabbitmq: failed to apply rotated URL", "error", err)
+				handler.SetSecretRotationResult(3, "failed", err.Error())
+			} else {
+				handler.SetSecretRotationResult(3, "success", "")
 			}
 		},
 		// PostgreSQL: the live connection pool is wrapped behind a DynamicPool
@@ -538,9 +557,11 @@ func main() {
 		RotatePostgreSQLDSN: func(newDSN string) {
 			if err := dynamicPool.Rotate(newDSN); err != nil {
 				slog.Error("postgres: failed to rotate connection pool", "error", err)
+				handler.SetSecretRotationResult(2, "failed", err.Error())
 				return
 			}
 			slog.Info("postgres: swapped to rotated connection pool")
+			handler.SetSecretRotationResult(2, "success", "")
 		},
 	})
 
@@ -773,6 +794,8 @@ r := gin.New()
 		adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(dynamicPool))
 		adminGroup.POST("/nginx-reload", handler.ReloadNginx(dynamicPool))
 		adminGroup.GET("/rabbitmq-url", handler.GetRabbitMQURL())
+		adminGroup.GET("/rotation/status", handler.GetRotationStatus())
+		adminGroup.POST("/rotation/trigger", handler.TriggerRotation())
 
 			adminGroup.GET("/relay/whitelist", handler.ListRelayWhitelist(dynamicPool))
 			adminGroup.POST("/relay/whitelist", handler.CreateRelayWhitelistEntry(dynamicPool))

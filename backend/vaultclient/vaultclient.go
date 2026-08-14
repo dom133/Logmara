@@ -50,8 +50,9 @@ const waitReadyTimeout = 5 * time.Minute
 type Client struct {
 	api *vaultapi.Client
 
-	mu    sync.Mutex
-	cache map[string]cacheEntry
+	mu          sync.Mutex
+	cache       map[string]cacheEntry
+	rotateNowCh chan struct{}
 }
 
 type cacheEntry struct {
@@ -106,7 +107,7 @@ func newClient() *Client {
 	c.SetToken(token)
 
 	slog.Info("vault: enabled", "addr", addr)
-	return &Client{api: c, cache: make(map[string]cacheEntry)}
+	return &Client{api: c, cache: make(map[string]cacheEntry), rotateNowCh: make(chan struct{}, 1)}
 }
 
 // GetSecret reads the "value" field of secret/data/logmara/<name> (KV v2),
@@ -260,7 +261,45 @@ func (c *Client) StartRotation(ctx context.Context, cb RotationCallbacks) {
 			return
 		case <-ticker.C:
 			c.rotateSecrets(ctx, cb)
+		case <-c.rotateNowCh:
+			slog.Info("vault: manual rotation triggered")
+			c.rotateSecrets(ctx, cb)
 		}
+	}
+}
+
+// RotateNow triggers an immediate rotation of all secrets. Returns a channel
+// that receives nil on success or an error if rotation failed. The channel
+// is closed after the result is sent.
+func (c *Client) RotateNow(ctx context.Context, cb RotationCallbacks) <-chan error {
+	if c == nil {
+		ch := make(chan error, 1)
+		ch <- fmt.Errorf("vault client not configured")
+		close(ch)
+		return ch
+	}
+
+	ch := make(chan error, 1)
+	go func() {
+		defer close(ch)
+		slog.Info("vault: rotating secrets (manual trigger)")
+		c.rotateSecrets(ctx, cb)
+		ch <- nil
+	}()
+	return ch
+}
+
+// TriggerRotateNow sends a fire-and-forget signal to the rotation goroutine
+// to trigger an immediate rotation. No-op if the goroutine isn't running.
+func (c *Client) TriggerRotateNow() {
+	if c == nil || c.rotateNowCh == nil {
+		return
+	}
+	select {
+	case c.rotateNowCh <- struct{}{}:
+		slog.Info("vault: manual rotation signal sent to goroutine")
+	default:
+		slog.Warn("vault: manual rotation channel full, signal dropped")
 	}
 }
 
@@ -309,6 +348,8 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 		return
 	}
 
+	slog.Info("vault: rotating dynamic secret", "engine", engine)
+
 	ctx2, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
@@ -322,9 +363,16 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 		return
 	}
 	if secret == nil || secret.Data == nil {
-		slog.Warn("vault: no dynamic secret returned", "engine", engine)
+		slog.Warn("vault: no dynamic secret returned", "engine", engine, "path", path)
 		return
 	}
+
+	// Log available data keys for debugging (without values)
+	keys := make([]string, 0, len(secret.Data))
+	for k := range secret.Data {
+		keys = append(keys, k)
+	}
+	slog.Debug("vault: dynamic secret data keys", "engine", engine, "keys", keys)
 
 	var newValue string
 	switch engine {
@@ -356,5 +404,7 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 	if newValue != "" {
 		callback(newValue)
 		slog.Info("vault: dynamic secret rotated", "engine", engine)
+	} else {
+		slog.Warn("vault: dynamic secret rotation produced no value", "engine", engine, "data_keys", keys)
 	}
 }

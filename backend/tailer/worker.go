@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"database/sql"
+
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
@@ -47,7 +47,7 @@ func (wp *WorkerPool) NumWorkers() int {
 type worker struct {
 	id         int
 	parser     *parser.Engine
-	db       *sql.DB
+	pool       *db.DynamicPool
 	alerts     *alertengine.Engine
 	rate       sharedstate.RateCounter
 	flushTrk   *sharedstate.FlushTracker
@@ -89,14 +89,13 @@ func NewWorkerPool(numWorkers int, pool *db.DynamicPool, alerts *alertengine.Eng
 		}
 	}
 
-	db := pool.Get()
 	wp := &WorkerPool{}
 	for i := 0; i < numWorkers; i++ {
 		pe := parser.NewEngine(pool)
 		w := &worker{
 			id:       i,
 			parser:   pe,
-			db:       db,
+			pool:     pool,
 			alerts:   alerts,
 			rate:     rate,
 			flushTrk: flushTrk,
@@ -357,7 +356,7 @@ func (w *worker) run(ctx context.Context) {
 						batchDelivries = nil
 						continue
 					}
-					if err := flushBatch(w.db, entries, w.rate); err != nil {
+					if err := flushBatch(w.pool.Get(), entries, w.rate); err != nil {
 						slog.Error("worker: flush error", "id", w.id, "error", err)
 						for _, d := range batchDelivries {
 							d.Nack(false, true)

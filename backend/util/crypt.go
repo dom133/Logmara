@@ -48,6 +48,13 @@ func ClearSecondaryEncryptionKey() {
 	slog.Info("util: encryption secondary key cleared")
 }
 
+// HasSecondaryKey returns true if a secondary (grace period) key is active.
+func HasSecondaryKey() bool {
+	encryptMu.RLock()
+	defer encryptMu.RUnlock()
+	return encryptKeySecondary != ""
+}
+
 // Encrypt encrypts plaintext using the primary key.
 func Encrypt(plaintext string) (string, error) {
 	encryptMu.RLock()

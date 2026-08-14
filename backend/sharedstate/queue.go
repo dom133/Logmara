@@ -27,6 +27,10 @@ type Queue struct {
 	channel  *amqp.Channel
 	queue    amqp.Queue
 	closed   bool
+
+	lastRotatedAt time.Time
+	lastResult    string
+	lastError     string
 }
 
 func NewQueue(url string) (*Queue, error) {
@@ -195,11 +199,14 @@ func (q *Queue) Purge(_ context.Context) (uint32, error) {
 }
 
 // RotateURL closes the current RabbitMQ connection, reconnects with the
-// new URL, and re-declares the queue. Downtime is ~100 ms.
+// new URL, and re-declares the queue. If reconnect fails, it falls back
+// to the previous URL and attempts to reconnect with it.
 func (q *Queue) RotateURL(newURL string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
+	now := time.Now()
+	oldURL := q.url
 	q.url = newURL
 
 	if q.channel != nil {
@@ -210,11 +217,35 @@ func (q *Queue) RotateURL(newURL string) error {
 	}
 
 	if err := q.connect(); err != nil {
-		slog.Error("queue: rotate URL failed, reconnecting with previous URL", "error", err)
-		return err
+		slog.Warn("queue: rotate URL failed with new URL, falling back to previous", "error", err)
+		q.url = oldURL
+		if fallbackErr := q.connect(); fallbackErr != nil {
+			slog.Error("queue: fallback reconnect also failed", "error", fallbackErr)
+			q.lastRotatedAt = now
+			q.lastResult = "failed"
+			q.lastError = err.Error()
+			return fmt.Errorf("rotate failed: %w (fallback also failed: %v)", err, fallbackErr)
+		}
+		slog.Info("queue: fallback reconnect to previous URL succeeded")
+		q.lastRotatedAt = now
+		q.lastResult = "failed"
+		q.lastError = "new URL failed, fell back to previous: " + err.Error()
+		return fmt.Errorf("rotate failed, fell back to previous URL: %w", err)
 	}
+
 	slog.Info("queue: URL rotated successfully")
+	q.lastRotatedAt = now
+	q.lastResult = "success"
+	q.lastError = ""
 	return nil
+}
+
+// RotationStatus returns the timestamp, result, and error of the last
+// rotation attempt. Safe to call concurrently.
+func (q *Queue) RotationStatus() (time.Time, string, string) {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return q.lastRotatedAt, q.lastResult, q.lastError
 }
 
 // Close shuts down the RabbitMQ connection.
