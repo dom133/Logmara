@@ -296,11 +296,18 @@ func main() {
 	migrateOnly := flag.Bool("migrate-only", false, "run pending DB migration and builtin parser/settings seeding, then exit")
 	flag.Parse()
 	if *migrateOnly {
-		if err := vaultclient.Get().WaitUntilReady(); err != nil {
+		vc := vaultclient.Get()
+		if err := vc.WaitUntilReady(); err != nil {
 			slog.Error("vault not ready", "error", err)
 			os.Exit(1)
 		}
 		dsn := util.ResolveDatabaseURL()
+		if vc != nil {
+			if creds, err := vc.FetchDynamicCredentials(context.Background()); err == nil && creds.PGDSN != "" {
+				slog.Info("database: using dynamic credentials from Vault")
+				dsn = creds.PGDSN
+			}
+		}
 		if dsn == "" {
 			slog.Error("DATABASE_URL not set; cannot run --migrate-only")
 			os.Exit(1)
@@ -370,15 +377,33 @@ func main() {
 	// as well as the plain DATABASE_URL env var, so a Swarm deployment can
 	// keep the DB password out of the deploy-time environment - see
 	// util.ResolveDatabaseURL.
-	// If Vault is configured, wait for it to become unsealed first.
-	// ResolveDatabaseURL pulls the DB password from Vault, so attempting
-	// connection before Vault is ready always fails with an empty password.
-	if err := vaultclient.Get().WaitUntilReady(); err != nil {
+	// If Vault is configured, wait for it to become unsealed first, then
+	// fetch dynamic credentials for PostgreSQL and RabbitMQ.
+	vc := vaultclient.Get()
+	if err := vc.WaitUntilReady(); err != nil {
 		slog.Error("vault not ready", "error", err)
 		os.Exit(1)
 	}
 
-	dsn := util.ResolveDatabaseURL()
+	// Fetch dynamic credentials from Vault, or fall back to static.
+	var dsn, rabbitmqURL string
+	if vc != nil {
+		creds, err := vc.FetchDynamicCredentials(context.Background())
+		if err == nil && creds.PGDSN != "" {
+			slog.Info("database: using dynamic credentials from Vault")
+			dsn = creds.PGDSN
+			rabbitmqURL = creds.RabbitMQ
+		} else {
+			if err != nil {
+				slog.Warn("vault: failed to fetch dynamic credentials, falling back to static", "error", err)
+			}
+			dsn = util.ResolveDatabaseURL()
+			rabbitmqURL = util.ResolveRabbitMQURL()
+		}
+	} else {
+		dsn = util.ResolveDatabaseURL()
+		rabbitmqURL = util.ResolveRabbitMQURL()
+	}
 
 	var dynamicPool *db.DynamicPool
 	if dsn != "" {
@@ -563,7 +588,6 @@ func main() {
 	}
 	util.SetEncryptionKey(encKey)
 
-	vc := vaultclient.Get()
 	handler.SetRotationRefs(vc, authCfg, dynamicPool.Get())
 
 	// Restore rotation timestamps from database (persists across restarts)
@@ -983,7 +1007,7 @@ r := gin.New()
 			ic.Resume()
 		}
 
-		tailer.Run(ctx, dynamicPool, logFilePath, engine, ic, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient)
+		tailer.Run(ctx, dynamicPool, logFilePath, engine, ic, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient, rabbitmqURL)
 	}()
 
 	quit := make(chan os.Signal, 1)
