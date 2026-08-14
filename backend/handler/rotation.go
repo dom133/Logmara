@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"logmara/auth"
 	"logmara/db"
 	"logmara/rotation"
+	"logmara/sharedstate"
 	"logmara/tailer"
 	"logmara/util"
 	"logmara/vaultclient"
@@ -26,6 +29,7 @@ var (
 	secretResults        [4]atomicValue
 	secretLastRotatedAt  [4]atomicValue
 	dbRef                *sql.DB
+	rotationBroadcaster  *sharedstate.Broadcaster
 )
 
 type atomicValue struct {
@@ -38,6 +42,61 @@ func (av *atomicValue) Load() interface{} {
 
 func (av *atomicValue) Store(v interface{}) {
 	av.v = v
+}
+
+const rotationSyncChannel = "rotation:sync"
+
+func SetRotationBroadcaster(b *sharedstate.Broadcaster) {
+	rotationBroadcaster = b
+}
+
+// StartRotationSyncSubscriber listens for rotation sync events from other
+// replicas and reloads the local rotation state from the database.
+func StartRotationSyncSubscriber(ctx context.Context, b *sharedstate.Broadcaster) {
+	b.Subscribe(ctx, rotationSyncChannel, func(string) {
+		loadRotationStateFromDB()
+	})
+}
+
+// loadRotationStateFromDB reloads rotation timestamps and results from the
+// database so this replica's in-memory state reflects the latest rotation.
+func loadRotationStateFromDB() {
+	if dbRef == nil {
+		return
+	}
+
+	secretKeys := []string{
+		"secret_rotation_jwt_at",
+		"secret_rotation_encryption_at",
+		"secret_rotation_pg_at",
+		"secret_rotation_rabbitmq_at",
+	}
+	for i, key := range secretKeys {
+		if ts := db.GetSetting(dbRef, key, ""); ts != "" {
+			if t, err := time.Parse(time.RFC3339, ts); err == nil {
+				secretLastRotatedAt[i].Store(&t)
+			}
+		}
+		if result := db.GetSetting(dbRef, key[:len(key)-3]+"_result", ""); result != "" {
+			errMsg := db.GetSetting(dbRef, key[:len(key)-3]+"_error", "")
+			secretResults[i].Store(rotation.SecretResult{
+				Result: result,
+				Error:  errMsg,
+				Time:   time.Time{},
+			})
+		}
+	}
+
+	if ts := db.GetSetting(dbRef, "secret_rotation_last_at", ""); ts != "" {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			lastRotationAtRef.Store(&t)
+		}
+	}
+	if ts := db.GetSetting(dbRef, "secret_rotation_next_at", ""); ts != "" {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			nextRotationAtRef.Store(&t)
+		}
+	}
 }
 
 // SetRotationRefs registers the references needed for the rotation status
@@ -77,9 +136,17 @@ func SetSecretRotationResult(index int, result string, errMsg string) {
 			Time:   now,
 		})
 		secretLastRotatedAt[index].Store(&now)
-		if dbRef != nil && index >= 0 && index < 4 {
-			keys := []string{"secret_rotation_jwt_at", "secret_rotation_encryption_at", "secret_rotation_pg_at", "secret_rotation_rabbitmq_at"}
-			db.UpdateSetting(dbRef, keys[index], now.Format(time.RFC3339))
+		if dbRef != nil {
+			keys := []string{"secret_rotation_jwt", "secret_rotation_encryption", "secret_rotation_pg", "secret_rotation_rabbitmq"}
+			prefix := keys[index]
+			db.UpdateSetting(dbRef, prefix+"_at", now.Format(time.RFC3339))
+			db.UpdateSetting(dbRef, prefix+"_result", result)
+			db.UpdateSetting(dbRef, prefix+"_error", errMsg)
+		}
+		if rotationBroadcaster != nil {
+			if err := rotationBroadcaster.Publish(context.Background(), rotationSyncChannel, ""); err != nil {
+				slog.Warn("failed to broadcast rotation sync", "error", err)
+			}
 		}
 	}
 }
@@ -89,6 +156,18 @@ func SetSecretRotationResult(index int, result string, errMsg string) {
 func SetSecretLastRotatedAt(index int, t time.Time) {
 	if index >= 0 && index < 4 {
 		secretLastRotatedAt[index].Store(&t)
+	}
+}
+
+// RestoreSecretResult restores a persisted rotation result into in-memory
+// state without writing to the database or broadcasting.
+func RestoreSecretResult(index int, result string, errMsg string) {
+	if index >= 0 && index < 4 {
+		secretResults[index].Store(rotation.SecretResult{
+			Result: result,
+			Error:  errMsg,
+			Time:   time.Time{},
+		})
 	}
 }
 

@@ -239,8 +239,8 @@ func (rl *rateLimiter) Allow(ip string) bool {
 	return true
 }
 
-// loadRotationTimestamps restores rotation timestamps from the database
-// so the UI doesn't show "never rotated" after a restart.
+// loadRotationTimestamps restores rotation timestamps and results from the
+// database so the UI doesn't show "never rotated" after a restart.
 func loadRotationTimestamps(database *sql.DB) {
 	var last time.Time
 	if ts := db.GetSetting(database, "secret_rotation_last_at", ""); ts != "" {
@@ -272,6 +272,11 @@ func loadRotationTimestamps(database *sql.DB) {
 			if t, err := time.Parse(time.RFC3339, ts); err == nil {
 				handler.SetSecretLastRotatedAt(i, t)
 			}
+		}
+		prefix := key[:len(key)-3]
+		if result := db.GetSetting(database, prefix+"_result", ""); result != "" {
+			errMsg := db.GetSetting(database, prefix+"_error", "")
+			handler.RestoreSecretResult(i, result, errMsg)
 		}
 	}
 }
@@ -633,6 +638,8 @@ func main() {
 		broadcaster := sharedstate.NewBroadcaster(sharedClient)
 		handler.SetCacheBroadcaster(broadcaster)
 		go handler.StartCacheInvalidationSubscriber(ctx, broadcaster)
+		handler.SetRotationBroadcaster(broadcaster)
+		go handler.StartRotationSyncSubscriber(ctx, broadcaster)
 		handler.SetSlowQueryStore(sharedClient)
 	}
 
