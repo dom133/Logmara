@@ -368,7 +368,7 @@ EOF
         echo "Enabling RabbitMQ dynamic secrets engine..."
         vault_cli secrets enable -path=secret-dynamic/rabbitmq rabbitmq 2>/dev/null || true
         vault_cli write secret-dynamic/rabbitmq/config/connection \
-            url="http://haproxy-rabbitmq:15672" \
+            connection_uri="http://haproxy-rabbitmq:15672" \
             username="${RABBITMQ_DEFAULT_USER}" \
             password="${RABBITMQ_DEFAULT_PASS}" 2>/dev/null || true
         vault_cli write secret-dynamic/rabbitmq/roles/logmara-app \
