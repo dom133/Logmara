@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -67,46 +66,17 @@ func SetSecretRotationResult(index int, result string, errMsg string) {
 	}
 }
 
-// TriggerManualRotation triggers an immediate rotation of all secrets.
-func TriggerManualRotation(ctx context.Context) error {
+// TriggerManualRotation signals the main rotation goroutine to perform an
+// immediate rotation. It does NOT spawn a parallel goroutine with its own
+// callbacks — that would rotate the JWT key twice (once from the main
+// goroutine, once from here) and invalidate the user's current access token,
+// causing a login loop (401 → /login → silent refresh → new token → 401 again).
+func TriggerManualRotation() {
 	if vaultClientRef == nil {
-		return nil
+		return
 	}
-
-	cb := buildRotationCallbacks()
-	ch := vaultClientRef.RotateNow(ctx, cb)
-	err := <-ch
-	if err == nil {
-		manualTriggeredRef.Store(true)
-	}
-	return err
-}
-
-func buildRotationCallbacks() vaultclient.RotationCallbacks {
-	return vaultclient.RotationCallbacks{
-		RotateJWTSecret: func(s string) {
-			if authConfigRef != nil {
-				authConfigRef.RotateSecret(s)
-				SetSecretRotationResult(0, "success", "")
-				lastRot := time.Now()
-				lastRotationAtRef.Store(&lastRot)
-			}
-		},
-		RotateEncryptionKey: func(s string) {
-			util.RotateEncryptionKey(s)
-			SetSecretRotationResult(1, "success", "")
-			lastRot := time.Now()
-			lastRotationAtRef.Store(&lastRot)
-		},
-		RotatePostgreSQLDSN: func(dsn string) {
-			SetSecretRotationResult(2, "pending", "")
-			// Actual pool rotation happens in the callback registered in main.go
-		},
-		RotateRabbitMQURL: func(url string) {
-			SetSecretRotationResult(3, "pending", "")
-			// Actual queue rotation happens in the callback registered in main.go
-		},
-	}
+	vaultClientRef.TriggerRotateNow()
+	manualTriggeredRef.Store(true)
 }
 
 // GetRotationStatus returns the current rotation status for all secrets.
@@ -117,23 +87,13 @@ func GetRotationStatus() gin.HandlerFunc {
 	}
 }
 
-// TriggerRotation triggers an immediate rotation of all secrets.
+// TriggerRotation signals the main rotation goroutine to rotate all secrets.
 func TriggerRotation() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
-		defer cancel()
-
-		err := TriggerManualRotation(ctx)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "rotation failed: " + err.Error(),
-			})
-			return
-		}
-
+		TriggerManualRotation()
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "rotation triggered",
-			"message": "All secrets rotation has been triggered. Check status endpoint for results.",
+			"message": "Secret rotation has been triggered. Check status endpoint for results.",
 		})
 	}
 }
