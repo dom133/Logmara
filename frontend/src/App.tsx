@@ -327,7 +327,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
               </Button>
             </div>
           </Header>
-          <Content style={{ margin: 16, padding: 24, background: token.colorBgContainer, borderRadius: 8 }}>
+          <Content style={{ margin: isMobile ? 8 : 16, padding: isMobile ? 12 : 24, background: token.colorBgContainer, borderRadius: 8 }}>
             <PasswordExpiryWarning />
             <ErrorBoundary>{children}</ErrorBoundary>
           </Content>
