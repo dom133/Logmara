@@ -255,6 +255,9 @@ func loadRotationTimestamps(database *sql.DB) {
 		}
 	}
 	if !last.IsZero() {
+		if next.IsZero() || next.Before(time.Now()) {
+			next = last.Add(24 * time.Hour)
+		}
 		handler.SetRotationTimestamps(last, next)
 	}
 
