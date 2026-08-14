@@ -1280,6 +1280,7 @@ export interface SecretRotationStatus {
   last_result: string
   last_error: string
   has_secondary_key: boolean
+  rabbitmq_connected?: boolean
 }
 
 export interface RotationStatus {
@@ -1288,8 +1289,6 @@ export interface RotationStatus {
   last_rotation_at: string | null
   next_rotation_at: string | null
   manual_triggered: boolean
-  rabbitmq_connected: boolean
-  rabbitmq_host: string
   secrets: SecretRotationStatus[]
 }
 

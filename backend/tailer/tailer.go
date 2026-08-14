@@ -666,6 +666,15 @@ func GetTailerQueueLength() int64 {
 	return currentPipeline.queue.Len(context.Background())
 }
 
+// GetQueueConnected returns true if the RabbitMQ connection is currently
+// established and healthy.
+func GetQueueConnected() bool {
+	if currentPipeline == nil || currentPipeline.queue == nil {
+		return false
+	}
+	return !currentPipeline.queue.IsClosed()
+}
+
 func stopPipeline(p *pipeline) {
 	if p == nil {
 		return

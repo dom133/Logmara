@@ -1994,40 +1994,64 @@ const handleCleanup = async () => {
                         <Descriptions.Item label={t('admin.rotationInterval')}>{rotationStatus?.rotation_interval}</Descriptions.Item>
                         <Descriptions.Item label={t('admin.lastRotation')}>{formatTime(rotationStatus?.last_rotation_at)}</Descriptions.Item>
                         <Descriptions.Item label={t('admin.nextRotation')}>{formatTime(rotationStatus?.next_rotation_at)}</Descriptions.Item>
-                        <Descriptions.Item label={t('admin.rabbitMQConnected')}>
-                          {rotationStatus?.rabbitmq_connected ? (
-                            <Tag color="green">{t('admin.rabbitMQConnected')}</Tag>
-                          ) : (
-                            <Tag color="red">{t('admin.rabbitMQDisconnected')}</Tag>
-                          )}
-                        </Descriptions.Item>
                       </Descriptions>
 
-                      <Row gutter={[16, 16]}>
-                        {rotationStatus?.secrets.map((secret: SecretRotationStatus, index: number) => (
-                          <Col span={12} key={index}>
-                            <Card size="small" style={{ height: '100%' }}>
-                              <Descriptions bordered column={1} size="small">
-                                <Descriptions.Item label={t('common.name')}>{secretNames[index] || secret.name}</Descriptions.Item>
-                                <Descriptions.Item label={t('admin.lastRotation')}>{formatTime(secret.last_rotated_at)}</Descriptions.Item>
-                                <Descriptions.Item label={t('admin.status')}>
-                                  <Tag color={resultColor(secret.last_result)}>{resultLabel(secret.last_result)}</Tag>
-                                </Descriptions.Item>
-                                {secret.last_error && (
-                                  <Descriptions.Item label={t('common.details')}>
-                                    <span style={{ wordBreak: 'break-all', fontSize: 12 }}>{secret.last_error}</span>
-                                  </Descriptions.Item>
+                      <Table
+                        size="small"
+                        pagination={false}
+                        rowKey="name"
+                        columns={[
+                          {
+                            title: t('common.name'),
+                            dataIndex: 'name',
+                            key: 'name',
+                            render: (_: string, record: SecretRotationStatus) => {
+                              const idx = rotationStatus?.secrets.indexOf(record) ?? 0
+                              return secretNames[idx] || record.name
+                            },
+                          },
+                          {
+                            title: t('admin.lastRotation'),
+                            dataIndex: 'last_rotated_at',
+                            key: 'last_rotated_at',
+                            render: (ts: string | null) => formatTime(ts),
+                          },
+                          {
+                            title: t('admin.status'),
+                            dataIndex: 'last_result',
+                            key: 'last_result',
+                            render: (result: string, record: SecretRotationStatus) => (
+                              <Space direction="vertical" size={4}>
+                                <Tag color={resultColor(result)}>{resultLabel(result)}</Tag>
+                                {record.has_secondary_key && <Tag color="orange">{t('admin.secondaryKeyActive')}</Tag>}
+                                {record.last_error && (
+                                  <span style={{ wordBreak: 'break-all', fontSize: 12 }}>{record.last_error}</span>
                                 )}
-                                {secret.has_secondary_key && (
-                                  <Descriptions.Item label={t('admin.secondaryKeyActive')}>
-                                    <Tag color="orange">{t('admin.secondaryKeyActive')}</Tag>
-                                  </Descriptions.Item>
-                                )}
-                              </Descriptions>
-                            </Card>
-                          </Col>
-                        ))}
-                      </Row>
+                              </Space>
+                            ),
+                          },
+                          {
+                            title: t('admin.connection'),
+                            key: 'connection',
+                            render: (_: any, record: SecretRotationStatus) => {
+                              if (record.rabbitmq_connected !== undefined) {
+                                return record.rabbitmq_connected
+                                  ? <Tag color="green">{t('admin.rabbitMQConnected')}</Tag>
+                                  : <Tag color="red">{t('admin.rabbitMQDisconnected')}</Tag>
+                              }
+                              return <Tag color="default">—</Tag>
+                            },
+                          },
+                        ]}
+                        dataSource={
+                          rotationStatus?.secrets.map((secret: SecretRotationStatus, index: number) => ({
+                            ...secret,
+                            key: index,
+                            display_name: secretNames[index] || secret.name,
+                            secondaryTags: [],
+                          })) ?? []
+                        }
+                      />
                     </div>
                   )}
                 </Card>

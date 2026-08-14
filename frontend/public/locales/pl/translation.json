@@ -367,6 +367,7 @@
     "resultFailed": "Nieudane",
     "resultNone": "Jeszcze nie zrotowane",
     "neverRotated": "Nigdy",
+    "connection": "Połączenie",
     "rabbitMQConnected": "Połączono",
     "rabbitMQDisconnected": "Rozłączono",
     "rotationStatusLoadFailed": "Nie udało się załadować statusu rotacji"

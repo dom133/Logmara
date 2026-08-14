@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -236,6 +237,40 @@ func (rl *rateLimiter) Allow(ip string) bool {
 	}
 	entry.tokens--
 	return true
+}
+
+// loadRotationTimestamps restores rotation timestamps from the database
+// so the UI doesn't show "never rotated" after a restart.
+func loadRotationTimestamps(database *sql.DB) {
+	var last time.Time
+	if ts := db.GetSetting(database, "secret_rotation_last_at", ""); ts != "" {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			last = t
+		}
+	}
+	var next time.Time
+	if ts := db.GetSetting(database, "secret_rotation_next_at", ""); ts != "" {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			next = t
+		}
+	}
+	if !last.IsZero() {
+		handler.SetRotationTimestamps(last, next)
+	}
+
+	secretKeys := []string{
+		"secret_rotation_jwt_at",
+		"secret_rotation_encryption_at",
+		"secret_rotation_pg_at",
+		"secret_rotation_rabbitmq_at",
+	}
+	for i, key := range secretKeys {
+		if ts := db.GetSetting(database, key, ""); ts != "" {
+			if t, err := time.Parse(time.RFC3339, ts); err == nil {
+				handler.SetSecretLastRotatedAt(i, t)
+			}
+		}
+	}
 }
 
 func main() {
@@ -520,12 +555,11 @@ func main() {
 	util.SetEncryptionKey(encKey)
 
 	vc := vaultclient.Get()
-	handler.SetRotationRefs(vc, authCfg)
+	handler.SetRotationRefs(vc, authCfg, dynamicPool.Get())
 
-	// Track rotation timestamps
+	// Restore rotation timestamps from database (persists across restarts)
 	if vc != nil {
-		now := time.Now()
-		handler.SetRotationTimestamps(now, now.Add(24*time.Hour))
+		loadRotationTimestamps(dynamicPool.Get())
 	}
 
 	// Start secret rotation goroutine (24h interval). StartRotation blocks
