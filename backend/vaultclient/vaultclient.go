@@ -428,10 +428,10 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 		username, _ := secret.Data["username"].(string)
 		password, _ := secret.Data["password"].(string)
 		if username != "" && password != "" {
-			host := os.Getenv("PG_HOST")
-			port := os.Getenv("PG_PORT")
-			dbname := os.Getenv("PG_DB")
-			sslmode := os.Getenv("PG_SSLMODE")
+			host := os.Getenv("POSTGRES_HOST")
+			port := os.Getenv("POSTGRES_PORT")
+			dbname := os.Getenv("POSTGRES_DB")
+			sslmode := os.Getenv("POSTGRES_SSLMODE")
 			newValue = "postgres://" + username + ":" + password + "@" + host + ":" + port + "/" + dbname + "?sslmode=" + sslmode
 		}
 	case "redis":
@@ -536,12 +536,12 @@ func buildDynamicValue(engine string, secret *vaultapi.Secret) (string, error) {
 		if username == "" || password == "" {
 			return "", fmt.Errorf("missing username or password from Vault")
 		}
-		host := os.Getenv("PG_HOST")
-		port := os.Getenv("PG_PORT")
-		dbname := os.Getenv("PG_DB")
-		sslmode := os.Getenv("PG_SSLMODE")
+		host := os.Getenv("POSTGRES_HOST")
+		port := os.Getenv("POSTGRES_PORT")
+		dbname := os.Getenv("POSTGRES_DB")
+		sslmode := os.Getenv("POSTGRES_SSLMODE")
 		if host == "" {
-			return "", fmt.Errorf("PG_HOST not set")
+			return "", fmt.Errorf("POSTGRES_HOST not set")
 		}
 		if port == "" {
 			port = "5432"
