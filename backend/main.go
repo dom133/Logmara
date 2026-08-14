@@ -600,7 +600,35 @@ func main() {
 	// goroutine, or main() never reaches wg.Wait()/the tailer/the real
 	// HTTP server below, leaving /api/health stuck reporting "starting"
 	// forever.
-	go vc.StartRotation(ctx, vaultclient.RotationCallbacks{
+	//
+	// In HA mode (sharedClient != nil), only one replica acts as the
+	// rotation leader. The other replicas skip StartRotation and rely on
+	// FetchDynamicCredentials() at startup + the rotation:sync channel
+	// for status updates. Manual rotation (GUI) is forwarded via
+	// rotation:trigger to the leader.
+	//
+	// rotationTriggerBroadcaster is set on every replica so GUI-triggered
+	// rotation can reach the leader regardless of which replica handles
+	// the request. Only the leader subscribes to rotation:trigger.
+	// When sharedClient is nil (single-server), the broadcaster is nil
+	// and TriggerRotation falls back to direct TriggerManualRotation().
+	isRotationLeader := true
+	if sharedClient != nil {
+		rotationTriggerBroadcaster := sharedstate.NewBroadcaster(sharedClient)
+		handler.SetRotationTriggerBroadcaster(rotationTriggerBroadcaster)
+
+		rotationElector := sharedstate.NewLeaderElector(sharedClient, "vault-rotation", 25*time.Hour)
+		if rotationElector.Acquire(ctx) {
+			slog.Info("vault: this replica is rotation leader")
+			go handler.StartRotationTriggerSubscriber(ctx, rotationTriggerBroadcaster)
+		} else {
+			slog.Info("vault: another replica is rotation leader, skipping StartRotation")
+			isRotationLeader = false
+		}
+	}
+
+	if isRotationLeader {
+		go vc.StartRotation(ctx, vaultclient.RotationCallbacks{
 		RotateJWTSecret: func(s string) {
 			authCfg.RotateSecret(s)
 			handler.SetSecretRotationResult(0, "success")
@@ -658,6 +686,7 @@ func main() {
 			}
 		},
 	})
+	}
 
 	engine := parser.NewEngine(dynamicPool)
 	ic := control.New(ctx, sharedClient)

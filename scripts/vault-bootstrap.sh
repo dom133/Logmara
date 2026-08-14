@@ -349,8 +349,8 @@ EOF
         vault_cli write secret-dynamic/database/roles/logmara-app \
             db_name=db \
             creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT logmara_app_group TO \"{{name}}\";" \
-            default_ttl="24h" \
-            max_ttl="48h" 2>/dev/null || true
+            default_ttl="48h" \
+            max_ttl="72h" 2>/dev/null || true
 
         # Redis dynamic secrets are deliberately NOT set up here. Both the
         # official redis-database-plugin and the community
@@ -393,8 +393,8 @@ EOF
         vault_cli write secret-dynamic/rabbitmq/roles/logmara-app \
             vhosts='{"/":{"configure": ".*", "write": ".*", "read": ".*"}}' \
             tags="administrator,management" \
-            default_ttl="24h" \
-            max_ttl="48h" 2>/dev/null || true
+            default_ttl="48h" \
+            max_ttl="72h" 2>/dev/null || true
 
         # Update policy to allow dynamic secret reads
         vault_cli policy write logmara-dynamic - <<'EOF'

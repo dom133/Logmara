@@ -46,9 +46,16 @@ func (av *atomicValue) Store(v interface{}) {
 }
 
 const rotationSyncChannel = "rotation:sync"
+const rotationTriggerChannel = "rotation:trigger"
+
+var rotationTriggerBroadcaster *sharedstate.Broadcaster
 
 func SetRotationBroadcaster(b *sharedstate.Broadcaster) {
 	rotationBroadcaster = b
+}
+
+func SetRotationTriggerBroadcaster(b *sharedstate.Broadcaster) {
+	rotationTriggerBroadcaster = b
 }
 
 // StartRotationSyncSubscriber listens for rotation sync events from other
@@ -56,6 +63,15 @@ func SetRotationBroadcaster(b *sharedstate.Broadcaster) {
 func StartRotationSyncSubscriber(ctx context.Context, b *sharedstate.Broadcaster) {
 	b.Subscribe(ctx, rotationSyncChannel, func(string) {
 		loadRotationStateFromDB()
+	})
+}
+
+// StartRotationTriggerSubscriber listens for rotation trigger events.
+// Only the rotation leader should subscribe to this channel.
+func StartRotationTriggerSubscriber(ctx context.Context, b *sharedstate.Broadcaster) {
+	b.Subscribe(ctx, rotationTriggerChannel, func(string) {
+		slog.Info("rotation: received trigger from other replica")
+		TriggerManualRotation()
 	})
 }
 
@@ -247,8 +263,9 @@ func GetRotationStatus() gin.HandlerFunc {
 	}
 }
 
-// TriggerRotation triggers rotation and waits for all secrets to complete,
-// returning the final rotation status with per-secret results.
+// TriggerRotation triggers rotation via Redis pub/sub (so it reaches the
+// rotation leader even if this replica isn't it) and waits for all secrets
+// to complete, returning the final rotation status with per-secret results.
 func TriggerRotation() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
@@ -262,7 +279,15 @@ func TriggerRotation() gin.HandlerFunc {
 			}
 		}
 
-		TriggerManualRotation()
+		// Publish rotation trigger to reach the leader replica.
+		// If Redis isn't available, fall back to direct trigger.
+		if rotationTriggerBroadcaster != nil {
+			if err := rotationTriggerBroadcaster.Publish(context.Background(), rotationTriggerChannel, ""); err != nil {
+				slog.Warn("failed to publish rotation trigger", "error", err)
+			}
+		} else {
+			TriggerManualRotation()
+		}
 
 		if err := waitRotationComplete(before); err != nil {
 			slog.Warn("rotation wait timed out", "error", err)
