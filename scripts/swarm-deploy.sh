@@ -169,12 +169,15 @@ run_pre_update() {
       "http://${api_host}:${port}/api/maintenance/pre-update" \
       --max-time 10 2>/dev/null) || true
 
-    if [[ "$http_code" == "202" || "$http_code" == "000" ]]; then
-        echo "Pre-update trigger sent (HTTP $http_code), waiting for completion..."
+    if [[ "$http_code" == "000" ]]; then
+        echo "Warning: cannot reach API for pre-update, proceeding with deploy"
+        return 0
+    elif [[ "$http_code" == "202" ]]; then
+        echo "Pre-update trigger sent, waiting for completion..."
     elif [[ "$http_code" == "409" ]]; then
         echo "Pre-update already in progress, waiting for completion..."
     else
-        echo "Warning: pre-update trigger failed (HTTP $http_code), proceeding with deploy anyway"
+        echo "Warning: pre-update trigger failed (HTTP $http_code), proceeding with deploy"
         return 0
     fi
 
