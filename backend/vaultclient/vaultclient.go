@@ -386,10 +386,12 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 			break
 		}
 
-		// Retry only on deadline exceeded; other errors are likely
-		// misconfiguration and won't be fixed by retrying.
-		if err == context.DeadlineExceeded && attempt < dynamicSecretMaxRetries {
-			slog.Warn("vault: dynamic secret rotation timed out, will retry", "engine", engine, "attempt", attempt+1, "error", err)
+		// Retry on deadline exceeded or Vault 500 (transient backend errors
+		// like PostgreSQL "tuple concurrently updated"). Other errors are
+		// likely misconfiguration and won't be fixed by retrying.
+		isRetryable := (err == context.DeadlineExceeded) || strings.Contains(err.Error(), "Code: 500")
+		if isRetryable && attempt < dynamicSecretMaxRetries {
+			slog.Warn("vault: dynamic secret rotation failed, will retry", "engine", engine, "attempt", attempt+1, "error", err)
 			continue
 		}
 
