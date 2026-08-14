@@ -406,7 +406,7 @@ Running more than one `api`/`frontend` replica used to be unsafe: an in-memory r
 - **Rate limiting** (`backend/main.go`) — a Lua script does an atomic sliding-window check against Redis instead of an in-process map, so limits are shared across every replica.
 - **Tailer leader election** (`backend/tailer/tailer.go`) — a Redis lock (`SET NX PX` + periodic renew, the standard Redis distributed-lock pattern) ensures exactly one `api` replica is ever actively tailing/flushing/compacting `logs.jsonl` at a time; losing the lock (crash, node loss) lets another replica take over within a few seconds.
 - **Cache invalidation** (`backend/handler/stats.go`, `logs.go`) — a purge or alias update now publishes over Redis pub/sub so every replica's local cache clears, not just the one that handled the request.
-- **Ingestion pause/resume** (`backend/control/ingestion.go`) — the pause flag lives in Redis with a local cached copy kept current via pub/sub, so `GET /admin/ingestion/status` is consistent no matter which replica answers.
+- **Ingestion pause/resume** (`backend/control/ingestion.go`) — the pause flag lives in Redis with a local cached copy kept current via pub/sub, so pause state is consistent across all replicas.
 - **Slow-query log** (`backend/handler/slow_query_logger.go`) — moved from a per-process in-memory ring buffer to a Redis list, so the admin view is consistent across replicas.
 - **Migration safety** (`backend/db/db.go`'s `MigrateWithLock`) — a Postgres advisory lock serializes concurrent replicas' schema migrations on startup/rolling deploy, independent of Redis.
 - **Nginx reload fan-out** (`backend/handler/admin.go`) — resolves `NGINX_RELOAD_TARGETS_HOST` (Swarm's `tasks.frontend`, which returns every replica's task IP) and reloads each one in parallel instead of hitting a single fixed URL.
@@ -1276,15 +1276,6 @@ Every route below except **Authentication**/**Initialization** requires a valid 
 | GET | `/api/admin/health/containers` | Container/Swarm service status + relay liveness (see [Health Monitoring](#health-monitoring)) |
 | POST | `/api/admin/ssl/upload` | Upload PEM certificate/key for HTTPS |
 | POST | `/api/admin/nginx-reload` | Trigger an nginx config reload (all replicas in HA mode) |
-| GET | `/api/admin/rabbitmq-url` | Get the RabbitMQ management UI URL |
-
-### Ingestion Control
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/admin/ingestion/pause` | Pause the tailer's ingestion |
-| POST | `/api/admin/ingestion/resume` | Resume ingestion |
-| GET | `/api/admin/ingestion/status` | Current pause/resume state |
 
 ### Syslog Relay
 

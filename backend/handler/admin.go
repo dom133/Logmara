@@ -957,42 +957,6 @@ func TestLDAP(pool *db.DynamicPool) gin.HandlerFunc {
 	}
 }
 
-type AuditLogRequest struct {
-	Limit int `json:"limit"`
-}
-
-func GetAuditLog(pool *db.DynamicPool) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var req AuditLogRequest
-		_ = c.ShouldBindJSON(&req)
-		limit := req.Limit
-		if limit <= 0 || limit > 1000 {
-			limit = DefaultAdminLimit
-		}
-
-		rows, err := pool.Get().Query(
-			"SELECT id, user_id, username, action, ip, details, created_at FROM audit_log ORDER BY created_at DESC LIMIT $1",
-			limit,
-		)
-		if err != nil {
-			middleware.HandleError(c, model.NewInternalKey("admin.auditLogFailed", "Failed to fetch audit log", err))
-			return
-		}
-		defer rows.Close()
-
-		var logs []db.AuditLog
-		for rows.Next() {
-			var a db.AuditLog
-			if err := rows.Scan(&a.ID, &a.UserID, &a.Username, &a.Action, &a.IP, &a.Details, &a.CreatedAt); err != nil {
-				continue
-			}
-			logs = append(logs, a)
-		}
-
-		c.JSON(http.StatusOK, logs)
-	}
-}
-
 type AuditLogQueryRequest struct {
 	Username string `json:"username"`
 	Action   string `json:"action"`
@@ -1039,26 +1003,6 @@ func GetAuditLogsHandler(pool *db.DynamicPool) gin.HandlerFunc {
 			"data":  logs,
 			"total": total,
 		})
-	}
-}
-
-func PauseIngestion(ic control.IngestionController) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ic.Pause()
-		c.JSON(http.StatusOK, gin.H{"message": "Ingestion paused", "paused": true})
-	}
-}
-
-func ResumeIngestion(ic control.IngestionController) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ic.Resume()
-		c.JSON(http.StatusOK, gin.H{"message": "Ingestion resumed", "paused": false})
-	}
-}
-
-func GetIngestionStatus(ic control.IngestionController) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"paused": ic.IsPaused()})
 	}
 }
 

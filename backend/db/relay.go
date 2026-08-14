@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"logmara/model"
-
-	"github.com/lib/pq"
 )
 
 func scanRelayWhitelistRows(rows *sql.Rows) ([]model.RelayWhitelistEntry, error) {
@@ -258,36 +256,4 @@ func GetRelayCertificateStatus(db *sql.DB, id int64) (string, error) {
 	return status, err
 }
 
-// GetLastSeenByIPs reads per-IP last-seen timestamps from mv_device_stats -
-// the same rollup alertengine's device silence check and the Devices tab
-// already use - for whichever of ips actually have logs on record. Used by
-// the Health tab as a liveness proxy for relays (see
-// handler.fetchRelayHealth): there's no way to reach a relay host directly
-// (see docker-compose.relay.yml), so "still sending logs" is the best signal
-// available. IPs with no matching row (never seen) are simply absent from
-// the result, not an error.
-func GetLastSeenByIPs(db *sql.DB, ips []string) (map[string]time.Time, error) {
-	result := make(map[string]time.Time, len(ips))
-	if len(ips) == 0 {
-		return result, nil
-	}
 
-	rows, err := db.Query(
-		`SELECT fromhost_ip, last_seen FROM mv_device_stats WHERE fromhost_ip = ANY($1) AND last_seen IS NOT NULL`,
-		pq.Array(ips),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("get last seen by ips: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var ip string
-		var lastSeen time.Time
-		if err := rows.Scan(&ip, &lastSeen); err != nil {
-			return nil, fmt.Errorf("scan last seen row: %w", err)
-		}
-		result[ip] = lastSeen
-	}
-	return result, rows.Err()
-}

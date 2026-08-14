@@ -3,7 +3,7 @@ import { Card, Table, Button, Modal, Form, Input, Select, Switch, Checkbox, Spac
 import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PlusOutlined, CopyOutlined, KeyOutlined, CloudOutlined, ContainerOutlined, CheckCircleOutlined, WarningOutlined, DashOutlined, NodeIndexOutlined, ClusterOutlined, GlobalOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react/esm/core'
 import echarts from '../utils/echarts-core'
-import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, AggregatedTailerMetrics, ReplicaTailerMetrics, WorkerMetrics, SSLCertInfo, getRotationStatus, triggerRotation, RotationStatus, SecretRotationStatus } from '../services/api'
+import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDevices, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, AggregatedTailerMetrics, ReplicaTailerMetrics, WorkerMetrics, SSLCertInfo, getRotationStatus, triggerRotation, RotationStatus, SecretRotationStatus } from '../services/api'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
 import { useAuth } from '../services/auth'
@@ -247,7 +247,7 @@ await testLDAPConnection({
     setDevicesLoading(true)
     try {
       const [data, alerts] = await Promise.all([
-        getDeviceStats(),
+        getDevices(),
         getAlerts().catch(() => [] as AlertRule[]),
       ])
       setDevices(data)
