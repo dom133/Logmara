@@ -372,7 +372,7 @@ EOF
             username="${RABBITMQ_DEFAULT_USER}" \
             password="${RABBITMQ_DEFAULT_PASS}" 2>/dev/null || true
         vault_cli write secret-dynamic/rabbitmq/roles/logmara-app \
-            vhost="/" \
+            vhost_permissions="vhost=/,configure=.*,write=.*,read=.*" \
             tags="administrator,management" \
             default_ttl="24h" \
             max_ttl="48h" 2>/dev/null || true
