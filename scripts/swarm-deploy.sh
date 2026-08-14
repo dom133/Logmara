@@ -151,6 +151,58 @@ deploy_stack() {
 }
 
 # ---------------------------------------------------------------------------
+# Pre-update maintenance: pause ingest, compact logs, reset position
+# ---------------------------------------------------------------------------
+run_pre_update() {
+    # Try to reach the API via the internal Docker network.
+    # In Swarm, services can reach each other by service name.
+    local api_host="logmara-app_api"
+    local port="8080"
+    local max_wait=120  # seconds
+
+    echo
+    echo "=== Running pre-update maintenance ==="
+
+    # Trigger pre-update preparation
+    local http_code
+    http_code=$(curl -sf -o /dev/null -w "%{http_code}" -X POST \
+      "http://${api_host}:${port}/api/maintenance/pre-update" \
+      --max-time 10 2>/dev/null) || true
+
+    if [[ "$http_code" == "202" || "$http_code" == "000" ]]; then
+        echo "Pre-update trigger sent (HTTP $http_code), waiting for completion..."
+    elif [[ "$http_code" == "409" ]]; then
+        echo "Pre-update already in progress, waiting for completion..."
+    else
+        echo "Warning: pre-update trigger failed (HTTP $http_code), proceeding with deploy anyway"
+        return 0
+    fi
+
+    # Poll for completion
+    local elapsed=0
+    while [[ $elapsed -lt $max_wait ]]; do
+        local status
+        status=$(curl -sf "http://${api_host}:${port}/api/maintenance/status" \
+          --max-time 5 2>/dev/null) || true
+
+        if echo "$status" | grep -q '"completed"'; then
+            echo "Pre-update maintenance completed"
+            return 0
+        elif echo "$status" | grep -q '"preparing"'; then
+            if (( elapsed % 10 == 0 )); then
+                echo "  Still preparing... (${elapsed}s)"
+            fi
+        fi
+
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    echo "Warning: pre-update timed out after ${max_wait}s, proceeding with deploy anyway"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Deploy
 # ---------------------------------------------------------------------------
 case "$STACK" in
@@ -172,6 +224,7 @@ case "$STACK" in
         ;;
     app)
         name="${STACK_NAME_OVERRIDE:-logmara-app}"
+        run_pre_update
         deploy_stack "docker-stack.app.yml" "$name"
         ;;
     monitoring)
@@ -183,6 +236,7 @@ case "$STACK" in
         deploy_stack "docker-stack.postgres.yml" "${STACK_NAME_OVERRIDE:-logmara-pg}"
         deploy_stack "docker-stack.redis.yml"  "${STACK_NAME_OVERRIDE:-logmara-redis}"
         deploy_stack "docker-stack.rabbitmq.yml" "${STACK_NAME_OVERRIDE:-logmara-rabbitmq}"
+        run_pre_update
         deploy_stack "docker-stack.app.yml"    "${STACK_NAME_OVERRIDE:-logmara-app}"
         ;;
     *)

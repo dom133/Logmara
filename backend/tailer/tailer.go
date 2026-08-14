@@ -110,6 +110,14 @@ var currentPipeline *pipeline
 // non-leader replicas can still serve the admin endpoint.
 var currentSharedClient *sharedstate.Client
 
+// currentIC is the ingestion controller (nil when not initialized).
+// Used by maintenance to pause/resume ingestion during pre-update.
+var currentIC control.IngestionController
+
+// currentReopenLogFile is the callback to ask rsyslog to reopen the log file.
+// Used by maintenance to reopen after truncating the file.
+var currentReopenLogFile func() error
+
 // --- purge coordination (Redis pub/sub) ---
 // When multiple api replicas are behind a load balancer, only the VIP leader
 // owns the RabbitMQ pipeline.  Purge requests arriving at a non-leader are
@@ -425,6 +433,8 @@ type pipeline struct {
 // When sharedClient is set (multiple api replicas over NFS), it uses
 // the distributed pipeline with RabbitMQ.
 func Run(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+	currentIC = ic
+	currentReopenLogFile = reopenLogFile
 	if sharedClient == nil {
 		runIngestionLoop(ctx, pool.Get(), filePath, engine, ic, alerts, rate, reopenLogFile, nil)
 		return

@@ -34,6 +34,9 @@ import (
 
 const appVersion = "0.0.3"
 
+// logFilePath is set during main() and used by the SIGUSR1 handler.
+var logFilePath string
+
 func versionHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"version": appVersion})
 }
@@ -660,6 +663,11 @@ func main() {
 	notifHub := notifyhub.NewHub(ctx, sharedClient)
 	alertEngine.SetOnInApp(notifHub.Publish)
 
+	// Maintenance state tracks pre-update preparation lifecycle.
+	// In HA mode it's synced via Redis so any replica can trigger or poll status.
+	maintenanceState := sharedstate.NewMaintenanceState(sharedClient)
+	tailer.SetMaintenanceState(maintenanceState)
+
 	// Redis-backed (shared across replicas) when sharedClient is set, so the
 	// dashboard's logs/sec figure is the same regardless of which replica
 	// answers the request - falls back to in-memory otherwise, same as
@@ -736,6 +744,11 @@ r := gin.New()
 	r.GET("/api/health", handler.HealthCheck(dynamicPool))
 	r.GET("/api/version", versionHandler)
 	r.GET("/api/settings/default-language", defaultLanguageHandler(dynamicPool))
+
+	// Maintenance endpoints - unauthenticated, Docker-network only.
+	// Used by deployment scripts to prepare for rolling updates.
+	r.POST("/api/maintenance/pre-update", handler.MaintenancePreUpdate(logFilePath))
+	r.GET("/api/maintenance/status", handler.MaintenanceStatus())
 
 	metricsGroup := r.Group("/api")
 	metricsGroup.Use(authCfg.JWTRequired())
@@ -960,8 +973,22 @@ r := gin.New()
 			}
 		}
 		sharedstate.WaitForReplicas(ctx, sharedClient, identity, apiReplicas, 10*time.Minute)
+
+		// Auto-resume ingestion after rolling update.
+		// If pre-update maintenance completed (file truncated, position reset),
+		// clear the flag and resume ingestion so the tailer starts from 0.
+		if maintenanceState.Status() == sharedstate.MaintenanceCompleted {
+			slog.Info("maintenance: detected completed pre-update, auto-resuming ingestion")
+			maintenanceState.Clear()
+			ic.Resume()
+		}
+
 		tailer.Run(ctx, dynamicPool, logFilePath, engine, ic, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient)
 	}()
+
+	// SIGUSR1 handler for pre-update preparation (Unix only).
+	// Setup is in maintenance_unix.go (build-tagged).
+	setupMaintenanceSignal()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
