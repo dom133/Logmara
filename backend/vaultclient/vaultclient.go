@@ -37,9 +37,21 @@ const rotationInterval = 24 * time.Hour
 // notes in scripts/vault-bootstrap.sh and scripts/rotate-secrets.sh).
 const mountPrefix = "secret/data/logmara/"
 
-// requestTimeout bounds a single Vault read so a network hiccup can't hang
-// whatever request path triggered it.
+// requestTimeout bounds a single Vault KV read/write so a network hiccup can't
+// hang whatever request path triggered it.
 const requestTimeout = 5 * time.Second
+
+// dynamicSecretTimeout bounds a single dynamic-credentials request
+// (database, rabbitmq). Generating credentials is slower than a KV read
+// because Vault must connect to the backend, execute DDL, and return creds.
+const dynamicSecretTimeout = 15 * time.Second
+
+// dynamicSecretMaxRetries is how many times to retry a dynamic-credentials
+// request when it fails with context.DeadlineExceeded.
+const dynamicSecretMaxRetries = 2
+
+// dynamicSecretRetryDelay is the wait between retries.
+const dynamicSecretRetryDelay = 2 * time.Second
 
 // waitReadyInterval is how long to sleep between seal-status checks.
 const waitReadyInterval = 5 * time.Second
@@ -351,21 +363,43 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 
 	slog.Info("vault: rotating dynamic secret", "engine", engine)
 
-	ctx2, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
-
 	// Dynamic secrets engines issue credentials via <mount>/creds/<role>,
 	// not the mount root - reading "secret-dynamic/<engine>" directly
 	// always 404s.
 	path := "secret-dynamic/" + engine + "/creds/" + dynamicRoleName
-	secret, err := c.api.Logical().ReadWithContext(ctx2, path)
-	if err != nil {
+
+	var secret *vaultapi.Secret
+	var err error
+
+	maxAttempts := 1 + dynamicSecretMaxRetries
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			slog.Info("vault: retrying dynamic secret rotation", "engine", engine, "attempt", attempt+1, "max", maxAttempts)
+			time.Sleep(dynamicSecretRetryDelay)
+		}
+
+		ctx2, cancel := context.WithTimeout(ctx, dynamicSecretTimeout)
+		secret, err = c.api.Logical().ReadWithContext(ctx2, path)
+		cancel()
+
+		if err == nil {
+			break
+		}
+
+		// Retry only on deadline exceeded; other errors are likely
+		// misconfiguration and won't be fixed by retrying.
+		if err == context.DeadlineExceeded && attempt < dynamicSecretMaxRetries {
+			slog.Warn("vault: dynamic secret rotation timed out, will retry", "engine", engine, "attempt", attempt+1, "error", err)
+			continue
+		}
+
 		slog.Warn("vault: failed to rotate dynamic secret", "engine", engine, "error", err)
 		if onFailure != nil {
 			onFailure(engine, err.Error())
 		}
 		return
 	}
+
 	if secret == nil || secret.Data == nil {
 		slog.Warn("vault: no dynamic secret returned", "engine", engine, "path", path)
 		if onFailure != nil {
