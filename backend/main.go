@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -541,7 +542,19 @@ func main() {
 		},
 		RotateEncryptionKey: func(s string) {
 			util.RotateEncryptionKey(s)
-			handler.SetSecretRotationResult(1, "success", "")
+			db := dynamicPool.Get()
+			ok, failed, err := util.ReencryptAllSecrets(db)
+			if failed > 0 {
+				slog.Error("util: re-encryption failed for some secrets", "ok", ok, "failed", failed, "error", err)
+				handler.SetSecretRotationResult(1, "failed", fmt.Sprintf("re-encryption failed for %d secrets", failed))
+			} else {
+				slog.Info("util: all secrets re-encrypted, scheduling secondary key cleanup", "count", ok)
+				handler.SetSecretRotationResult(1, "success", "")
+				go func() {
+					time.Sleep(24 * time.Hour)
+					util.ClearSecondaryEncryptionKey()
+				}()
+			}
 		},
 		RotateRabbitMQURL: func(newURL string) {
 			if err := tailer.RotateRabbitMQURL(newURL); err != nil {

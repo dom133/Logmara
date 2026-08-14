@@ -446,42 +446,14 @@ rotate_one() {
             ;;
     esac
 
-    # Step 2: special handling for encryption_key (DB re-encryption)
+    # Step 2: special handling for encryption_key
+    # The app now handles re-encryption automatically during rotation.
+    # After the script writes the new key to Vault, the app will pick it up
+    # on the next rotation cycle (or immediately if triggered via the API).
     if [[ "$name" == "encryption_key" ]]; then
-        echo "WARNING: Rotating encryption_key will re-encrypt sensitive data in the database."
-        echo "This may take a moment depending on the amount of encrypted data."
-        read -p "Continue? (y/N): " confirm
-        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-            echo "Aborted rotating $name."
-            return 1
-        fi
-
-        local old_key old_pg_app_pass
-        old_key=$(read_secret encryption_key)
-        if [[ -z "$old_key" ]]; then
-            echo "ERROR: Could not read old encryption key" >&2
-            return 1
-        fi
-        old_pg_app_pass=$(read_secret pg_app_password)
-
-        echo "Re-encrypting database with new key..."
-        docker run --rm \
-            --network syslog_net \
-            -e OLD_ENCRYPTION_KEY="$old_key" \
-            -e NEW_ENCRYPTION_KEY="$value" \
-            -e PG_HOST=haproxy \
-            -e PG_PORT=5000 \
-            -e PG_USER=syslog \
-            -e PG_PASSWORD="$old_pg_app_pass" \
-            -e PG_DB=syslog_db \
-            -e PG_SSLMODE=disable \
-            -v "$REPO_ROOT:/app" \
-            golang:1.24-bookworm \
-            sh -c 'cd /app/backend && go run ./cmd/rotatekey' || {
-                echo "ERROR: Database re-encryption failed" >&2
-                return 1
-            }
-        echo "Database re-encryption complete."
+        echo "NOTE: encryption_key rotation writes the new key to Vault."
+        echo "The app will re-encrypt database secrets on the next rotation cycle."
+        echo "To trigger immediate rotation, call POST /api/admin/rotation/trigger"
     fi
 
     # Step 3: update the secret in the store
