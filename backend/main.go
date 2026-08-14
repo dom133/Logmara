@@ -32,7 +32,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const appVersion = "0.0.3"
+const appVersion = "0.1.0"
 
 // logFilePath is set during main() and used by the SIGUSR1 handler.
 var logFilePath string
