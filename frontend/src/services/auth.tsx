@@ -20,6 +20,7 @@ interface User {
 interface AuthContextType {
   user: User | null
   loading: boolean
+  refreshing: boolean
   login: (username: string, password: string, remember?: boolean) => Promise<{ ok: boolean; error?: string; passwordExpired?: boolean }>
   logout: () => Promise<void>
   isAdmin: boolean
@@ -68,6 +69,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const onLoginPage = location.pathname === '/login'
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [sessionTimeout, setSessionTimeoutValue] = useState<number | null>(300)
   const [isSessionExpiringSoon, setIsSessionExpiringSoon] = useState(false)
   const [showSessionWarning, setShowSessionWarning] = useState(false)
@@ -253,12 +255,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // tells the backend to reject this when the session wasn't set up with
       // "remember" (see handler.Refresh) - those sessions are only meant to
       // last as long as the access token / an actively open, extended tab.
+      setRefreshing(true)
       const ok = await trySilentRefresh()
       if (!ok) {
         resetToLoggedOut()
       } else {
         setLoading(false)
       }
+      setRefreshing(false)
     }
   }, [resetToLoggedOut, trySilentRefresh])
 
@@ -413,6 +417,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <AuthContext.Provider value={{
       user,
       loading,
+      refreshing,
       login,
       logout,
       isAdmin,

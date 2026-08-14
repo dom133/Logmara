@@ -373,9 +373,9 @@ function AppLayout({ children }: { children: React.ReactNode }) {
 }
 
 function PrivateRoute({ children, requireAdmin }: { children: React.ReactNode; requireAdmin?: boolean }) {
-  const { user, isAdmin, loading } = useAuth()
+  const { user, isAdmin, loading, refreshing } = useAuth()
   const location = useLocation()
-  if (loading) return null
+  if (loading || refreshing) return <RouteFallback />
   if (!user) return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />
   if (requireAdmin && !isAdmin) return <Navigate to="/" replace />
   return <AppLayout>{children}</AppLayout>
