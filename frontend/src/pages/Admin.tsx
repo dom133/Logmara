@@ -116,12 +116,37 @@ export default function Admin() {
   const [rotationLoading, setRotationLoading] = useState(false)
   const [rotating, setRotating] = useState(false)
 
-  const tailerSparklineOption = (data: number[], color: string) => ({
-    tooltip: { trigger: 'axis' as const },
-    xAxis: { type: 'category' as const, show: false, data: data.map((_, i) => i) },
-    yAxis: { type: 'value' as const, show: false, min: 0 },
+  const tailerSparklineOption = (history: Array<{ t: number; v: number }>, color: string) => ({
+    tooltip: {
+      trigger: 'axis' as const,
+      formatter: (params: any[]) => {
+        const p = params[0]
+        if (!p) return ''
+        const val = Math.round(p.value)
+        return `${p.name}<br/>${Math.round(val).toLocaleString()}`
+      },
+    },
+    xAxis: {
+      type: 'category' as const,
+      data: history.map(p => {
+        const d = new Date(p.t)
+        return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
+      }),
+      axisLabel: {
+        rotate: 30,
+        fontSize: 10,
+        interval: Math.max(0, Math.floor(history.length / 8) - 1),
+      },
+    },
+    yAxis: {
+      type: 'value' as const,
+      min: 0,
+      axisLabel: {
+        formatter: (val: number) => Math.round(val).toLocaleString(),
+      },
+    },
     series: [{
-      data,
+      data: history.map(p => Math.round(p.v)),
       type: 'line' as const,
       smooth: true,
       showSymbol: false,
@@ -129,14 +154,14 @@ export default function Admin() {
       lineStyle: { width: 2 },
       itemStyle: { color },
     }],
-    grid: { left: 4, right: 4, top: 8, bottom: 4 },
+    grid: { left: 48, right: 16, top: 12, bottom: 40 },
   })
   const tailerLogsRateOption = useMemo(
-    () => tailerSparklineOption(tailerHistory.map(p => p.logsPerSec), '#1890ff'),
+    () => tailerSparklineOption(tailerHistory.map(p => ({ t: p.t, v: p.logsPerSec })), '#1890ff'),
     [tailerHistory]
   )
   const tailerQueueDepthOption = useMemo(
-    () => tailerSparklineOption(tailerHistory.map(p => p.queueDepth), '#fa8c16'),
+    () => tailerSparklineOption(tailerHistory.map(p => ({ t: p.t, v: p.queueDepth })), '#fa8c16'),
     [tailerHistory]
   )
   const [apiKeyEditing, setApiKeyEditing] = useState<APIKey | null>(null)
@@ -1768,9 +1793,9 @@ const handleCleanup = async () => {
                         <Col xs={24} md={12}>
                           <Card size="small" title={t('admin.logsPerSecTrend')}>
                             {tailerHistory.length > 1 ? (
-                              <ReactECharts echarts={echarts} option={tailerLogsRateOption} style={{ height: 120 }} />
+                              <ReactECharts echarts={echarts} option={tailerLogsRateOption} style={{ height: 200 }} />
                             ) : (
-                              <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,0,0,0.45)' }}>
+                              <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,0,0,0.45)' }}>
                                 {t('admin.gatheringHistory')}
                               </div>
                             )}
@@ -1779,9 +1804,9 @@ const handleCleanup = async () => {
                         <Col xs={24} md={12}>
                           <Card size="small" title={t('admin.queueDepthTrend')}>
                             {tailerHistory.length > 1 ? (
-                              <ReactECharts echarts={echarts} option={tailerQueueDepthOption} style={{ height: 120 }} />
+                              <ReactECharts echarts={echarts} option={tailerQueueDepthOption} style={{ height: 200 }} />
                             ) : (
-                              <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,0,0,0.45)' }}>
+                              <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,0,0,0.45)' }}>
                                 {t('admin.gatheringHistory')}
                               </div>
                             )}
