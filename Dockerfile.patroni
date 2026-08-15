@@ -1,0 +1,18 @@
+# Postgres 16 + Patroni, for the HA stack (docker-stack.postgres.yml).
+# Built on the same postgres:16-alpine base as the single-server
+# docker-compose.yml, just adding Patroni for automatic leader
+# election/failover via etcd.
+FROM postgres:16-alpine
+
+RUN apk add --no-cache python3 py3-pip gettext curl \
+    && apk add --no-cache --virtual .build-deps gcc musl-dev postgresql-dev python3-dev \
+    && pip3 install --break-system-packages --no-cache-dir "patroni[etcd3]==3.3.*" psycopg2-binary \
+    && apk del .build-deps
+
+COPY patroni/patroni.yml.tpl /patroni.yml.tpl
+COPY patroni/entrypoint.sh /entrypoint.sh
+COPY patroni/post_init.sh /scripts/post_init.sh
+RUN chmod +x /entrypoint.sh /scripts/post_init.sh
+
+EXPOSE 5432 8008
+ENTRYPOINT ["/entrypoint.sh"]

@@ -26,6 +26,16 @@ if [ ! -f "$NGINX_CONF_DIR/https.conf" ]; then
     touch "$NGINX_CONF_DIR/https.conf"
 fi
 
+if [ ! -f "$NGINX_CONF_DIR/cors.conf" ]; then
+    # Default-deny map so nginx has a valid $cors_allow_origin definition
+    # before the backend's first sync writes the real allowed-origins list.
+    cat > "$NGINX_CONF_DIR/cors.conf" <<'EOF'
+map $http_origin $cors_allow_origin {
+    default "";
+}
+EOF
+fi
+
 # httpd lives in the separate busybox-extras binary, not the base busybox
 # (which only has the applets baked into Alpine's minimal `busybox` package).
 busybox-extras httpd -f -p 8081 -h /srv/reload-sidecar &

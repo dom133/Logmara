@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/lib/pq"
 )
 
 func getUserRole(c *gin.Context) string {
@@ -284,73 +285,159 @@ func DeleteDashboard(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
+// resolveDashboardFilters loads a dashboard's config (enforcing the same
+// owner/public/admin visibility rule as every other dashboard endpoint) and
+// merges it with the live query-string overrides (search/severity/from/to),
+// returning filter options ready for buildLogWhereClauses. Shared by
+// GetDashboardData, GetDashboardDataCount and the dashboard export handlers
+// so the device/field scoping from cfg can't be forgotten in one of them.
+func resolveDashboardFilters(db *sql.DB, c *gin.Context) (*model.DashboardConfig, LogFilterOptions, error) {
+	id, err := parseIDParam(c.Param("id"))
+	if err != nil {
+		return nil, LogFilterOptions{}, model.NewBadRequest("invalid id", nil)
+	}
+
+	userID := c.GetInt64("user_id")
+	isAdmin := getUserRole(c) == RoleAdmin
+
+	configRaw, err := getDashboardConfig(db, id, userID, isAdmin)
+	if err != nil {
+		return nil, LogFilterOptions{}, model.NewNotFound("dashboard not found", err)
+	}
+
+	cfg, err := parseDashboardConfig(configRaw)
+	if err != nil {
+		return nil, LogFilterOptions{}, model.NewBadRequest("invalid dashboard config", err)
+	}
+
+	requiredParsers, err := resolveParsersForFields(db, cfg.Fields)
+	if err != nil {
+		return nil, LogFilterOptions{}, model.NewInternal("failed to resolve parsers for fields", err)
+	}
+
+	opts := LogFilterOptions{
+		Severity:        firstNonEmpty(c.DefaultQuery("severity", ""), cfg.Filters.Severity),
+		From:            firstNonEmpty(c.DefaultQuery("from", ""), cfg.Filters.From),
+		To:              firstNonEmpty(c.DefaultQuery("to", ""), cfg.Filters.To),
+		Search:          firstNonEmpty(c.DefaultQuery("search", ""), cfg.Filters.Search),
+		Devices:         cfg.Devices,
+		RequiredParsers: requiredParsers,
+	}
+
+	// A device narrowed down via the live filter must stay within the
+	// dashboard's own device scope - otherwise a viewer of a public,
+	// multi-device dashboard could pass an arbitrary fromhost_ip and see
+	// logs from a device the dashboard was never scoped to.
+	if fromHostIP := c.Query("fromhost_ip"); fromHostIP != "" {
+		if len(cfg.Devices) == 0 || containsString(cfg.Devices, fromHostIP) {
+			opts.Devices = []string{fromHostIP}
+		}
+	}
+
+	return cfg, opts, nil
+}
+
+func containsString(list []string, target string) bool {
+	for _, v := range list {
+		if v == target {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveParsersForFields maps a dashboard's selected field names back to
+// the parser(s) that own them, so log rows can be checked against
+// matched_parsers (verifying they were actually parsed by that parser)
+// rather than just showing up because they matched some unrelated parser.
+func resolveParsersForFields(db *sql.DB, fields []string) ([]string, error) {
+	if len(fields) == 0 {
+		return nil, nil
+	}
+
+	rows, err := db.Query(`
+		SELECT DISTINCT p.name
+		FROM parsed_fields_registry f
+		JOIN parsers p ON f.parser_id = p.id
+		WHERE f.field_name = ANY($1)
+	`, pq.Array(fields))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
 func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id, err := parseIDParam(c.Param("id"))
+		cfg, opts, err := resolveDashboardFilters(db, c)
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			middleware.HandleError(c, err)
 			return
 		}
 
-		userID := c.GetInt64("user_id")
-		isAdmin := getUserRole(c) == RoleAdmin
-
-		configRaw, err := getDashboardConfig(db, id, userID, isAdmin)
-		if err != nil {
-			middleware.HandleError(c, model.NewNotFound("dashboard not found", err))
-			return
-		}
-
-		cfg, err := parseDashboardConfig(configRaw)
-		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("invalid dashboard config", err))
-			return
-		}
-
-		limitInt, _ := parsePagination(c, DefaultPageLimit, MaxPageLimit)
+		limitInt, offsetInt := parsePagination(c, DefaultPageLimit, MaxPageLimit)
 		cursor := c.Query("cursor")
+		sort := c.DefaultQuery("sort", "timestamp_desc")
 
-		severityFilter := firstNonEmpty(c.DefaultQuery("severity", ""), cfg.Filters.Severity)
-		fromFilter := firstNonEmpty(c.DefaultQuery("from", ""), cfg.Filters.From)
-		toFilter := firstNonEmpty(c.DefaultQuery("to", ""), cfg.Filters.To)
-		searchTerm := firstNonEmpty(c.DefaultQuery("search", ""), cfg.Filters.Search)
-
-		opts := LogFilterOptions{
-			Severity:  severityFilter,
-			From:      fromFilter,
-			To:        toFilter,
-			Devices:   cfg.Devices,
-			HasFields: len(cfg.Fields) > 0,
-		}
 		whereClauses, args, argIdx := buildLogWhereClauses(opts)
 
-		if searchTerm != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("search_vector @@ websearch_to_tsquery('english', $%d)", argIdx))
-			args = append(args, searchTerm)
-			argIdx++
+		orderClause := "timestamp DESC, id DESC"
+		cursorOp := "<"
+		switch sort {
+		case "timestamp_asc":
+			orderClause = "timestamp ASC, id ASC"
+			cursorOp = ">"
+		case "severity":
+			orderClause = "severity ASC, timestamp DESC, id DESC"
+		case "hostname":
+			orderClause = "hostname ASC, timestamp DESC, id DESC"
 		}
+		useCursor := cursorSupported(sort)
 
-		if cursor != "" {
+		if useCursor && cursor != "" {
 			ts, id, err := decodeLogCursor(cursor)
 			if err != nil {
 				middleware.HandleError(c, model.NewBadRequest("invalid cursor", err))
 				return
 			}
-			whereClauses = append(whereClauses, fmt.Sprintf("(timestamp, id) < ($%d, $%d)", argIdx, argIdx+1))
+			whereClauses = append(whereClauses, fmt.Sprintf("(timestamp, id) %s ($%d, $%d)", cursorOp, argIdx, argIdx+1))
 			args = append(args, ts, id)
 			argIdx += 2
+			offsetInt = 0
 		}
 
 		whereSQL := buildWhereSQL(whereClauses)
 
 		// Fetch one extra row to detect more pages instead of a separate
-		// exact COUNT(*)/materialized-view lookup on every request.
-		logsQuery := fmt.Sprintf(
-			"SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at, '' "+
-				"FROM syslog_logs %s ORDER BY timestamp DESC, id DESC LIMIT $%d",
-			whereSQL, argIdx,
-		)
-		args = append(args, limitInt+1)
+		// exact COUNT(*)/materialized-view lookup on every request. Sorts
+		// other than timestamp fall back to OFFSET paging, same tradeoff as
+		// GetLogs (see cursorSupported).
+		var logsQuery string
+		if useCursor {
+			logsQuery = fmt.Sprintf(
+				"SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at, '' "+
+					"FROM syslog_logs %s ORDER BY %s LIMIT $%d",
+				whereSQL, orderClause, argIdx,
+			)
+			args = append(args, limitInt+1)
+		} else {
+			logsQuery = fmt.Sprintf(
+				"SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at, '' "+
+					"FROM syslog_logs %s ORDER BY %s LIMIT $%d OFFSET $%d",
+				whereSQL, orderClause, argIdx, argIdx+1,
+			)
+			args = append(args, limitInt+1, offsetInt)
+		}
 
 		var logs []model.SyslogLog
 		_ = timedQuery("dashboard_data_logs", func() error {
@@ -369,7 +456,7 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			logs = logs[:limitInt]
 		}
 		nextCursor := ""
-		if hasMore && len(logs) > 0 {
+		if hasMore && useCursor && len(logs) > 0 {
 			last := logs[len(logs)-1]
 			nextCursor = encodeLogCursor(last.Timestamp, last.ID)
 		}
@@ -381,6 +468,69 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			Fields:     cfg.Fields,
 			Devices:    cfg.Devices,
 		})
+	}
+}
+
+// GetDashboardDataCount returns the exact number of rows matching the same
+// filters as GetDashboardData, without paginating - a single COUNT(*) per
+// filter change instead of one per page (see GetLogsCount).
+func GetDashboardDataCount(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		_, opts, err := resolveDashboardFilters(db, c)
+		if err != nil {
+			middleware.HandleError(c, err)
+			return
+		}
+
+		whereClauses, args, _ := buildLogWhereClauses(opts)
+		whereSQL := buildWhereSQL(whereClauses)
+
+		var total int64
+		_ = timedQuery("dashboard_data_count", func() error {
+			return db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL), args...).Scan(&total)
+		})
+
+		c.JSON(http.StatusOK, gin.H{"total": total})
+	}
+}
+
+// ExportDashboardCSV exports a dashboard's log view as CSV, honoring the
+// same device/field scoping and filter overrides as GetDashboardData.
+func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cfg, opts, err := resolveDashboardFilters(db, c)
+		if err != nil {
+			middleware.HandleError(c, err)
+			return
+		}
+
+		limitStr := c.DefaultQuery("limit", "100000")
+		limit, err := strconv.Atoi(limitStr)
+		if err != nil || limit <= 0 {
+			limit = DefaultExportLimit
+		}
+		if limit > MaxExportLimit {
+			limit = MaxExportLimit
+		}
+
+		whereClauses, args, _ := buildLogWhereClauses(opts)
+		writeCSVExport(c, db, buildWhereSQL(whereClauses), args, limit, cfg.Fields)
+	}
+}
+
+// ExportDashboardHTML exports a dashboard's log view as an HTML report,
+// honoring the same device/field scoping and filter overrides as
+// GetDashboardData.
+func ExportDashboardHTML(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cfg, opts, err := resolveDashboardFilters(db, c)
+		if err != nil {
+			middleware.HandleError(c, err)
+			return
+		}
+
+		whereClauses, args, _ := buildLogWhereClauses(opts)
+		writeHTMLExport(c, db, buildWhereSQL(whereClauses), args, 5000, cfg.Fields)
 	}
 }
 

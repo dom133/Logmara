@@ -1,0 +1,239 @@
+# HA PostgreSQL for Docker Swarm: etcd (DCS) + Patroni-managed Postgres + HAProxy.
+#
+# This is an OPTIONAL, additive stack for multi-node deployments. It does not
+# replace or modify docker-compose.yml, which remains the supported
+# single-server deployment path (see README "Quick Start").
+#
+# `postgres1/2/3` run the image built from Dockerfile.patroni (Patroni on
+# top of the same postgres:16-alpine base as docker-compose.yml) — build and
+# push it first, `docker stack deploy` cannot build:
+#   docker build -f Dockerfile.patroni -t ${REGISTRY:?}/syslog-gui-patroni:${TAG:-latest} .
+#   docker push ${REGISTRY:?}/syslog-gui-patroni:${TAG:-latest}
+#
+# Prerequisites (see README "High Availability Deployment"):
+#   - Docker Swarm initialized, 3 nodes labeled pg_id=1 / pg_id=2 / pg_id=3
+#   - Local per-node data directories created on each pg node, e.g.
+#     /srv/syslog-ha/pg and /srv/syslog-ha/etcd
+#   - `docker network create -d overlay --attachable syslog_net` run once
+#   - Secrets created: pg_superuser_password, pg_replication_password,
+#     pg_app_password (see README)
+#   - `docker config create haproxy_pg_cfg haproxy/haproxy.cfg`
+#
+# Deploy with: docker stack deploy -c docker-stack.postgres.yml syslog-pg
+
+version: "3.8"
+
+x-patroni-image: &patroni-image ${REGISTRY:?set REGISTRY to your image registry}/syslog-gui-patroni:${TAG:-latest}
+
+x-patroni-secrets: &patroni-secrets
+  - pg_superuser_password
+  - pg_replication_password
+  - pg_app_password
+
+x-patroni-healthcheck: &patroni-healthcheck
+  test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
+  interval: 5s
+  timeout: 3s
+  retries: 10
+
+x-patroni-logging: &patroni-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Duplicated per node below (YAML merge keys don't deep-merge maps, so
+# PATRONI_NAME is set explicitly per service instead of via anchor
+# inheritance for `environment:`).
+x-patroni-env-common: &patroni-env-common
+  POSTGRES_USER: ${POSTGRES_USER:-syslog}
+  POSTGRES_DB: ${POSTGRES_DB:-syslog_db}
+
+services:
+  etcd1:
+    image: quay.io/coreos/etcd:v3.5.15
+    networks: [syslog_net]
+    command:
+      - etcd
+      - --name=etcd1
+      - --initial-advertise-peer-urls=http://etcd1:2380
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd1:2379
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=syslog-pg-etcd
+      - --data-dir=/etcd-data
+    volumes:
+      - type: bind
+        source: /srv/syslog-ha/etcd
+        target: /etcd-data
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [node.labels.pg_id == 1]
+
+  etcd2:
+    image: quay.io/coreos/etcd:v3.5.15
+    networks: [syslog_net]
+    command:
+      - etcd
+      - --name=etcd2
+      - --initial-advertise-peer-urls=http://etcd2:2380
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd2:2379
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=syslog-pg-etcd
+      - --data-dir=/etcd-data
+    volumes:
+      - type: bind
+        source: /srv/syslog-ha/etcd
+        target: /etcd-data
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [node.labels.pg_id == 2]
+
+  etcd3:
+    image: quay.io/coreos/etcd:v3.5.15
+    networks: [syslog_net]
+    command:
+      - etcd
+      - --name=etcd3
+      - --initial-advertise-peer-urls=http://etcd3:2380
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd3:2379
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=syslog-pg-etcd
+      - --data-dir=/etcd-data
+    volumes:
+      - type: bind
+        source: /srv/syslog-ha/etcd
+        target: /etcd-data
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [node.labels.pg_id == 3]
+
+  postgres1:
+    image: *patroni-image
+    hostname: postgres1
+    networks: [syslog_net]
+    environment:
+      <<: *patroni-env-common
+      PATRONI_NAME: postgres1
+    secrets: *patroni-secrets
+    volumes:
+      - type: bind
+        source: /srv/syslog-ha/pg
+        target: /home/postgres/pgdata
+    healthcheck: *patroni-healthcheck
+    logging: *patroni-logging
+    depends_on: [etcd1, etcd2, etcd3]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+      update_config:
+        order: stop-first
+      placement:
+        constraints: [node.labels.pg_id == 1]
+
+  postgres2:
+    image: *patroni-image
+    hostname: postgres2
+    networks: [syslog_net]
+    environment:
+      <<: *patroni-env-common
+      PATRONI_NAME: postgres2
+    secrets: *patroni-secrets
+    volumes:
+      - type: bind
+        source: /srv/syslog-ha/pg
+        target: /home/postgres/pgdata
+    healthcheck: *patroni-healthcheck
+    logging: *patroni-logging
+    depends_on: [etcd1, etcd2, etcd3]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+      update_config:
+        order: stop-first
+      placement:
+        constraints: [node.labels.pg_id == 2]
+
+  postgres3:
+    image: *patroni-image
+    hostname: postgres3
+    networks: [syslog_net]
+    environment:
+      <<: *patroni-env-common
+      PATRONI_NAME: postgres3
+    secrets: *patroni-secrets
+    volumes:
+      - type: bind
+        source: /srv/syslog-ha/pg
+        target: /home/postgres/pgdata
+    healthcheck: *patroni-healthcheck
+    logging: *patroni-logging
+    depends_on: [etcd1, etcd2, etcd3]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+      update_config:
+        order: stop-first
+      placement:
+        constraints: [node.labels.pg_id == 3]
+
+  haproxy:
+    image: haproxy:2.9-alpine
+    networks: [syslog_net]
+    configs:
+      - source: haproxy_pg_cfg
+        target: /usr/local/etc/haproxy/haproxy.cfg
+    ports:
+      # Published on every "app" node via host mode; point api's
+      # DATABASE_URL at any app node's address on this port, or at the
+      # keepalived VIP if it also fronts this port.
+      - target: 5000
+        published: 5000
+        mode: host
+    depends_on: [postgres1, postgres2, postgres3]
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: any
+      placement:
+        constraints: [node.labels.app == true]
+    logging: *patroni-logging
+
+networks:
+  syslog_net:
+    external: true
+
+secrets:
+  pg_superuser_password:
+    external: true
+  pg_replication_password:
+    external: true
+  pg_app_password:
+    external: true
+
+configs:
+  haproxy_pg_cfg:
+    external: true

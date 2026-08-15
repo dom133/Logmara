@@ -2,6 +2,7 @@ package tailer
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"syslog-gui/control"
 	"syslog-gui/model"
 	"syslog-gui/parser"
+	"syslog-gui/sharedstate"
 )
 
 const (
@@ -24,7 +26,78 @@ const (
 	positionFileName   = ".tailer_pos"
 )
 
-func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.IngestionController) {
+// Run starts the log tailer. When elector is nil (single-server/single-
+// replica deployments, i.e. Redis not configured), it runs the ingestion
+// loop directly and unconditionally - exactly like the original Start did.
+// When elector is set (multiple api replicas sharing the same log file over
+// NFS), only the replica that currently holds the elected lock actually
+// tails/flushes/compacts; the others wait, ready to take over the moment
+// the lock becomes available (leader crash, node loss, etc.).
+func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector) {
+	if elector == nil {
+		runIngestionLoop(ctx, db, filePath, engine, ic)
+		return
+	}
+	runWithLeaderElection(ctx, db, filePath, engine, ic, elector)
+}
+
+func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector) {
+	const retryInterval = 5 * time.Second
+	const renewInterval = 5 * time.Second
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		if !elector.Acquire(ctx) {
+			if !sleepOrDone(ctx, retryInterval) {
+				return
+			}
+			continue
+		}
+
+		slog.Info("tailer: acquired leader lock, starting ingestion")
+		leaderCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			runIngestionLoop(leaderCtx, db, filePath, engine, ic)
+		}()
+
+	renewLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				cancel()
+				<-done
+				elector.Release(context.Background())
+				return
+			case <-time.After(renewInterval):
+				if !elector.Renew(ctx) {
+					slog.Warn("tailer: lost leader lock, stepping down")
+					cancel()
+					<-done
+					break renewLoop
+				}
+			}
+		}
+	}
+}
+
+// sleepOrDone waits for d or until ctx is cancelled, whichever comes first.
+// Returns false if ctx was cancelled, so callers can bail out promptly
+// instead of finishing out the full sleep.
+func sleepOrDone(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
+}
+
+func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController) {
 	slog.Info("file tailer started", "path", filePath)
 	batchSize := 500
 	batchInterval := 2 * time.Second
@@ -37,17 +110,26 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 	lastCompaction := time.Now()
 
 	for {
+		if ctx.Err() != nil {
+			slog.Info("file tailer stopping")
+			return
+		}
+
 		f, err := os.OpenFile(filePath, os.O_RDWR, 0644)
 		if err != nil {
 			slog.Error("waiting for file", "path", filePath, "error", err)
-			time.Sleep(2 * time.Second)
+			if !sleepOrDone(ctx, 2*time.Second) {
+				return
+			}
 			continue
 		}
 
 		stat, err := f.Stat()
 		if err != nil {
 			f.Close()
-			time.Sleep(2 * time.Second)
+			if !sleepOrDone(ctx, 2*time.Second) {
+				return
+			}
 			continue
 		}
 
@@ -73,7 +155,9 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 
 		if _, err := f.Seek(filePos, 0); err != nil {
 			f.Close()
-			time.Sleep(1 * time.Second)
+			if !sleepOrDone(ctx, 1*time.Second) {
+				return
+			}
 			continue
 		}
 
@@ -156,7 +240,9 @@ func Start(db *sql.DB, filePath string, engine *parser.Engine, ic *control.Inges
 			entries = entries[:0]
 		}
 
-		time.Sleep(200 * time.Millisecond)
+		if !sleepOrDone(ctx, 200*time.Millisecond) {
+			return
+		}
 	}
 }
 

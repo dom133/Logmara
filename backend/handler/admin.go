@@ -4,10 +4,12 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"syslog-gui/auth"
@@ -215,10 +217,13 @@ func GetSettings(database *sql.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		for _, k := range []string{"jwt_secret", "encryption_key", "ldap_bind_password"} {
-			if v, ok := settings[k]; ok && v != "" {
-				settings[k] = "****"
-			}
+		// Not used by the frontend and not worth exposing: encryption keys and
+		// the one-time DB connection settings captured during setup.
+		for _, k := range []string{"jwt_secret", "encryption_key", "db_host", "db_port", "db_name", "db_user", "db_password"} {
+			delete(settings, k)
+		}
+		if v, ok := settings["ldap_bind_password"]; ok && v != "" {
+			settings["ldap_bind_password"] = "****"
 		}
 		c.JSON(http.StatusOK, settings)
 	}
@@ -234,9 +239,11 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 
 		oldHttpsEnabled := db.GetSetting(database, "https_enabled", "false")
 		oldHttpsRedirect := db.GetSetting(database, "https_redirect", "false")
+		oldCorsOrigins := db.GetSetting(database, "cors_origins", "")
 
 		newHttpsEnabled := settings["https_enabled"]
 		newHttpsRedirect := settings["https_redirect"]
+		newCorsOrigins := settings["cors_origins"]
 
 		if newHttpsEnabled == "true" && oldHttpsEnabled != "true" {
 			sslDir := os.Getenv("SSL_DIR")
@@ -262,15 +269,15 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 			}
 		}
 
-		httpsChanged := oldHttpsEnabled != newHttpsEnabled || oldHttpsRedirect != newHttpsRedirect
+		nginxConfigChanged := oldHttpsEnabled != newHttpsEnabled || oldHttpsRedirect != newHttpsRedirect || oldCorsOrigins != newCorsOrigins
 
-		if httpsChanged {
+		if nginxConfigChanged {
 			// A handful of quick retries absorbs the case where the admin
 			// toggles this shortly after `docker compose up`, before the
 			// frontend's reload sidecar has come up - without making the
 			// save button hang for the same ~30s startup budget used
 			// elsewhere.
-			if err := reloadNginxWithRetry(newHttpsEnabled == "true", newHttpsRedirect == "true", 5, 2*time.Second); err != nil {
+			if err := reloadNginxWithRetry(newHttpsEnabled == "true", newHttpsRedirect == "true", newCorsOrigins, 5, 2*time.Second); err != nil {
 				slog.Warn("nginx reload failed after settings update", "error", err)
 				c.JSON(http.StatusOK, gin.H{
 					"message":             "Settings updated",
@@ -302,6 +309,9 @@ const httpsServerBlock = `server {
     }
 
     location /api/logs/stream {
+        add_header Access-Control-Allow-Origin $cors_allow_origin always;
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, PATCH, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
         proxy_pass http://api:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -315,6 +325,12 @@ const httpsServerBlock = `server {
     }
 
     location /api/ {
+        add_header Access-Control-Allow-Origin $cors_allow_origin always;
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, PATCH, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+        if ($request_method = OPTIONS) {
+            return 204;
+        }
         proxy_pass http://api:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -324,11 +340,35 @@ const httpsServerBlock = `server {
 }
 `
 
+// corsMapDirective renders the nginx `map` block that resolves the
+// request's Origin header to an Access-Control-Allow-Origin value: "*"
+// allows any origin, an empty list allows none. This is the only CORS
+// enforcement in the app - clients only ever reach the API through this
+// nginx proxy, so there's nothing equivalent on the backend side.
+func corsMapDirective(origins string) string {
+	var b strings.Builder
+	b.WriteString("map $http_origin $cors_allow_origin {\n")
+	b.WriteString("    default \"\";\n")
+	for _, o := range strings.Split(origins, ",") {
+		o = strings.TrimSpace(o)
+		if o == "" {
+			continue
+		}
+		if o == "*" {
+			return "map $http_origin $cors_allow_origin {\n    default $http_origin;\n}\n"
+		}
+		b.WriteString(fmt.Sprintf("    %q $http_origin;\n", o))
+	}
+	b.WriteString("}\n")
+	return b.String()
+}
+
 // reloadNginx writes the https.conf (443 server block, present only when
-// httpsEnabled) and redirect.conf (HTTP->HTTPS redirect, only meaningful
-// when https is actually enabled) fragments consumed by nginx, then asks
-// the frontend container's reload sidecar to apply them.
-func reloadNginx(httpsEnabled, redirectEnabled bool) error {
+// httpsEnabled), redirect.conf (HTTP->HTTPS redirect, only meaningful when
+// https is actually enabled), and cors.conf (Origin match map used by both
+// server blocks) fragments consumed by nginx, then asks the frontend
+// container's reload sidecar to apply them.
+func reloadNginx(httpsEnabled, redirectEnabled bool, corsOrigins string) error {
 	confDir := os.Getenv("NGINX_CONF_DIR")
 	if confDir == "" {
 		confDir = "/data/nginx"
@@ -353,13 +393,82 @@ func reloadNginx(httpsEnabled, redirectEnabled bool) error {
 		return fmt.Errorf("write redirect.conf: %w", err)
 	}
 
-	reloadURL := os.Getenv("NGINX_RELOAD_URL")
-	if reloadURL == "" {
-		reloadURL = "http://frontend:8081/cgi-bin/reload.sh"
+	if err := os.WriteFile(filepath.Join(confDir, "cors.conf"), []byte(corsMapDirective(corsOrigins)), 0644); err != nil {
+		return fmt.Errorf("write cors.conf: %w", err)
 	}
 
+	return postReloadRequests()
+}
+
+// postReloadRequests hits the frontend's reload sidecar. With a single
+// frontend replica (the default - NGINX_RELOAD_TARGETS_HOST unset), this is
+// exactly the original single-target POST via NGINX_RELOAD_URL. With
+// multiple frontend replicas behind Swarm, NGINX_RELOAD_TARGETS_HOST is set
+// to a DNS name that resolves to every replica's task IP (e.g. Swarm's
+// "tasks.frontend", which - unlike the plain "frontend" service name -
+// always returns one A record per running task rather than round-robining
+// through a single VIP) and every one of them gets reloaded in parallel.
+func postReloadRequests() error {
+	targetsHost := os.Getenv("NGINX_RELOAD_TARGETS_HOST")
+	if targetsHost == "" {
+		reloadURL := os.Getenv("NGINX_RELOAD_URL")
+		if reloadURL == "" {
+			reloadURL = "http://frontend:8081/cgi-bin/reload.sh"
+		}
+		return postReload(reloadURL)
+	}
+
+	port := os.Getenv("NGINX_RELOAD_PORT")
+	if port == "" {
+		port = "8081"
+	}
+
+	ips, err := net.LookupHost(targetsHost)
+	if err != nil {
+		return fmt.Errorf("resolve nginx reload targets %q: %w", targetsHost, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("nginx reload targets %q resolved to no addresses", targetsHost)
+	}
+
+	type reloadResult struct {
+		ip  string
+		err error
+	}
+	results := make(chan reloadResult, len(ips))
+	for _, ip := range ips {
+		go func(ip string) {
+			url := fmt.Sprintf("http://%s:%s/cgi-bin/reload.sh", ip, port)
+			results <- reloadResult{ip: ip, err: postReload(url)}
+		}(ip)
+	}
+
+	succeeded := 0
+	var failures []string
+	for i := 0; i < len(ips); i++ {
+		r := <-results
+		if r.err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", r.ip, r.err))
+			continue
+		}
+		succeeded++
+	}
+
+	if succeeded == 0 {
+		return fmt.Errorf("nginx reload failed on all %d target(s): %s", len(ips), strings.Join(failures, "; "))
+	}
+	if len(failures) > 0 {
+		// Partial failure is expected during a rolling deploy (a replica
+		// briefly not listening while it restarts) - log it but don't fail
+		// the whole settings update over it.
+		slog.Warn("nginx reload failed on some targets", "succeeded", succeeded, "total", len(ips), "errors", strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+func postReload(url string) error {
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(reloadURL, "text/plain", nil)
+	resp, err := client.Post(url, "text/plain", nil)
 	if err != nil {
 		return fmt.Errorf("nginx reload request: %w", err)
 	}
@@ -373,10 +482,10 @@ func reloadNginx(httpsEnabled, redirectEnabled bool) error {
 // reloadNginxWithRetry retries reloadNginx a few times with a fixed delay,
 // smoothing over the brief window (container startup, or an admin action
 // that races it) where the frontend's reload sidecar isn't listening yet.
-func reloadNginxWithRetry(httpsEnabled, redirectEnabled bool, attempts int, delay time.Duration) error {
+func reloadNginxWithRetry(httpsEnabled, redirectEnabled bool, corsOrigins string, attempts int, delay time.Duration) error {
 	var err error
 	for i := 0; i < attempts; i++ {
-		if err = reloadNginx(httpsEnabled, redirectEnabled); err == nil {
+		if err = reloadNginx(httpsEnabled, redirectEnabled, corsOrigins); err == nil {
 			return nil
 		}
 		if i < attempts-1 {
@@ -386,8 +495,8 @@ func reloadNginxWithRetry(httpsEnabled, redirectEnabled bool, attempts int, dela
 	return err
 }
 
-// ReloadNginx re-applies the current HTTPS/redirect settings and triggers an
-// nginx config reload via the frontend container's sidecar.
+// ReloadNginx re-applies the current HTTPS/redirect/CORS settings and
+// triggers an nginx config reload via the frontend container's sidecar.
 func ReloadNginx(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if err := SyncNginxHTTPS(database); err != nil {
@@ -398,12 +507,12 @@ func ReloadNginx(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// SyncNginxHTTPS applies the persisted https_enabled/https_redirect settings
-// to the frontend's nginx config, with the same short retry budget as
-// UpdateSettings. Call this at backend startup (after migration/env
-// overrides) so a container restart converges nginx to the stored setting
-// instead of leaving whatever was baked into the image or left over from a
-// previous state.
+// SyncNginxHTTPS applies the persisted https_enabled/https_redirect/
+// cors_origins settings to the frontend's nginx config, with the same short
+// retry budget as UpdateSettings. Call this at backend startup (after
+// migration/env overrides) so a container restart converges nginx to the
+// stored setting instead of leaving whatever was baked into the image or
+// left over from a previous state.
 func SyncNginxHTTPS(database *sql.DB) error {
 	return SyncNginxHTTPSWithRetry(database, 5, 2*time.Second)
 }
@@ -415,7 +524,8 @@ func SyncNginxHTTPS(database *sql.DB) error {
 func SyncNginxHTTPSWithRetry(database *sql.DB, attempts int, delay time.Duration) error {
 	httpsEnabled := db.GetSetting(database, "https_enabled", "false") == "true"
 	redirectEnabled := db.GetSetting(database, "https_redirect", "false") == "true"
-	return reloadNginxWithRetry(httpsEnabled, redirectEnabled, attempts, delay)
+	corsOrigins := db.GetSetting(database, "cors_origins", "")
+	return reloadNginxWithRetry(httpsEnabled, redirectEnabled, corsOrigins, attempts, delay)
 }
 
 func CleanupLogs(database *sql.DB) gin.HandlerFunc {
@@ -444,7 +554,7 @@ type PurgeRequest struct {
 	PauseDuringPurge bool `json:"pause_during_purge"`
 }
 
-func PurgeAllLogs(database *sql.DB, ic *control.IngestionController) gin.HandlerFunc {
+func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req PurgeRequest
 		_ = c.ShouldBindJSON(&req)
@@ -558,21 +668,21 @@ func GetAuditLog(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func PauseIngestion(ic *control.IngestionController) gin.HandlerFunc {
+func PauseIngestion(ic control.IngestionController) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ic.Pause()
 		c.JSON(http.StatusOK, gin.H{"message": "Ingestion paused", "paused": true})
 	}
 }
 
-func ResumeIngestion(ic *control.IngestionController) gin.HandlerFunc {
+func ResumeIngestion(ic control.IngestionController) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ic.Resume()
 		c.JSON(http.StatusOK, gin.H{"message": "Ingestion resumed", "paused": false})
 	}
 }
 
-func GetIngestionStatus(ic *control.IngestionController) gin.HandlerFunc {
+func GetIngestionStatus(ic control.IngestionController) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"paused": ic.IsPaused()})
 	}

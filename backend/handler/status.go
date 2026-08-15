@@ -31,16 +31,29 @@ func CheckInitialized(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
+// CheckInitializedStandalone reports status before a database connection
+// exists (no DATABASE_URL at startup) - the wizard is always shown, never
+// the "starting" spinner, since we're waiting on user input, not migration.
+func CheckInitializedStandalone() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"initialized": false,
+			"starting":    false,
+		})
+	}
+}
+
 func GetDbConfig() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		dsn := os.Getenv("DATABASE_URL")
 		if dsn == "" {
 			c.JSON(http.StatusOK, gin.H{
-				"host":     "postgres",
-				"port":     5432,
-				"name":     "syslog_db",
-				"user":     "syslog",
-				"password": "",
+				"configured": false,
+				"host":       "postgres",
+				"port":       5432,
+				"name":       "syslog_db",
+				"user":       "syslog",
+				"password":   "",
 			})
 			return
 		}
@@ -48,11 +61,12 @@ func GetDbConfig() gin.HandlerFunc {
 		u, err := url.Parse(dsn)
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
-				"host":     "",
-				"port":     0,
-				"name":     "",
-				"user":     "",
-				"password": "",
+				"configured": true,
+				"host":       "",
+				"port":       0,
+				"name":       "",
+				"user":       "",
+				"password":   "",
 			})
 			return
 		}
@@ -69,11 +83,12 @@ func GetDbConfig() gin.HandlerFunc {
 		_, _ = u.User.Password()
 
 		c.JSON(http.StatusOK, gin.H{
-			"host":     host,
-			"port":     port,
-			"name":     name,
-			"user":     user,
-			"password": "",
+			"configured": true,
+			"host":       host,
+			"port":       port,
+			"name":       name,
+			"user":       user,
+			"password":   "",
 		})
 	}
 }

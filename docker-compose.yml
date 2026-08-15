@@ -1,6 +1,16 @@
 services:
   postgres:
     image: postgres:16-alpine
+    command:
+      - postgres
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - effective_cache_size=3GB
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=256MB
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-syslog_db}
       POSTGRES_USER: ${POSTGRES_USER:-syslog}
@@ -18,11 +28,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.0'
-          memory: 512M
+          cpus: '4.0'
+          memory: 4096M
         reservations:
-          cpus: '0.25'
-          memory: 128M
+          cpus: '1.0'
+          memory: 1024M
     logging:
       driver: json-file
       options:
@@ -50,11 +60,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.5'
-          memory: 256M
+          cpus: '1.0'
+          memory: 512M
         reservations:
-          cpus: '0.1'
-          memory: 64M
+          cpus: '0.25'
+          memory: 128M
     logging:
       driver: json-file
       options:
@@ -81,6 +91,11 @@ services:
       # app_settings so it shows up under Settings.
       HTTPS_ENABLED: ${HTTPS_ENABLED:-}
       HTTPS_REDIRECT: ${HTTPS_REDIRECT:-}
+      # Optional: seeds the initial allowed CORS origin(s) for the frontend
+      # (comma-separated) the first time the database is initialized. After
+      # that, it's managed from the admin Settings UI and this env var is
+      # ignored on subsequent restarts.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
     volumes:
       - log_data:/data
     ports:
@@ -94,11 +109,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.0'
-          memory: 512M
+          cpus: '2.0'
+          memory: 2048M
         reservations:
-          cpus: '0.25'
-          memory: 128M
+          cpus: '0.5'
+          memory: 512M
     logging:
       driver: json-file
       options:
@@ -122,11 +137,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.5'
-          memory: 256M
+          cpus: '1.0'
+          memory: 512M
         reservations:
-          cpus: '0.1'
-          memory: 64M
+          cpus: '0.25'
+          memory: 128M
     logging:
       driver: json-file
       options:

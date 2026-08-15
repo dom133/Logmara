@@ -46,6 +46,7 @@ type Dashboard struct {
 
 type DashboardConfig struct {
 	Devices []string         `json:"devices"`
+	Parsers []string         `json:"parsers,omitempty"`
 	Fields  []string         `json:"fields"`
 	Filters DashboardFilters `json:"filters"`
 }
