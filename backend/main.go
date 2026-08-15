@@ -83,15 +83,35 @@ func main() {
 	}
 	defer database.Close()
 
-	if err := db.Migrate(database); err != nil {
-		slog.Error("failed to migrate database", "error", err)
-		os.Exit(1)
-	}
-
-	db.RefreshMaterializedViews(database)
+	db.SetAppStarting(true)
+	go func() {
+		if err := db.Migrate(database); err != nil {
+			slog.Error("failed to migrate database", "error", err)
+			os.Exit(1)
+		}
+		db.RefreshMaterializedViews(database)
+		db.SetAppStarting(false)
+		slog.Info("database migration and initialization complete")
+	}()
 
 	ctx, maintCancel := context.WithCancel(context.Background())
 	stopVacuum, stopMV := db.StartMaintenance(ctx, database)
+
+	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		slog.Info("fast dashboard MV refresh started", "interval_seconds", 30)
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("fast dashboard MV refresh stopped")
+				return
+			case <-ticker.C:
+				db.RefreshMV(database)
+			}
+		}
+	}()
 
 	auth.Init(database)
 
@@ -129,8 +149,8 @@ func main() {
 	authGroup := r.Group("/api")
 	authGroup.Use(auth.JWTRequired())
 	{
-		authGroup.GET("/logs", handler.GetLogs(database))
-		authGroup.GET("/logs/stream", handler.StreamLogs(database))
+		authGroup.POST("/logs", handler.GetLogs(database))
+		
 		authGroup.GET("/stats/dashboard", handler.GetDashboardStats(database))
 		authGroup.GET("/stats/devices", handler.GetDeviceStats(database))
 		authGroup.GET("/stats/severity", handler.GetSeverityStats(database))
@@ -185,6 +205,8 @@ func main() {
 			adminGroup.GET("/slow-queries", handler.GetSlowQueries())
 			adminGroup.DELETE("/slow-queries", handler.ClearSlowQueriesHandler())
 			adminGroup.PUT("/devices/:ip/alias", handler.UpdateDeviceAlias(database))
+			adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(database))
+			adminGroup.POST("/nginx-reload", handler.ReloadNginx(database))
 		}
 	}
 

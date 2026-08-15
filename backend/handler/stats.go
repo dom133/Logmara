@@ -110,11 +110,17 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 			_, err = db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_timeline_hourly")
 			return err
 		})
-		_ = timedQuery("dashboard_stats_scalar_mv", func() error {
+		err := timedQuery("dashboard_stats_scalar_mv", func() error {
 			var refreshedAt pq.NullTime
 			row := db.QueryRow("SELECT total_logs, logs_last_hour, logs_last_day, unique_devices, refreshed_at FROM mv_dashboard_summary LIMIT 1")
 			return row.Scan(&stats.TotalLogs, &stats.LogsLastHour, &stats.LogsLastDay, &stats.UniqueDevices, &refreshedAt)
 		})
+		if err != nil {
+			_ = timedQuery("dashboard_stats_scalar_fallback", func() error {
+				row := db.QueryRow("SELECT COUNT(*), COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour'), COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 day'), COUNT(DISTINCT hostname) FROM syslog_logs")
+				return row.Scan(&stats.TotalLogs, &stats.LogsLastHour, &stats.LogsLastDay, &stats.UniqueDevices)
+			})
+		}
 	} else {
 		_ = timedQuery("dashboard_stats_scalar", func() error {
 			row := db.QueryRow(fmt.Sprintf(
@@ -425,7 +431,7 @@ func GetTimelineStats(db *sql.DB) gin.HandlerFunc {
 
 			_ = timedQuery("timeline_stats", func() error {
 				query := fmt.Sprintf(
-					"SELECT date_trunc(%s, hour) as ts, SUM(cnt) as cnt FROM mv_timeline_hourly WHERE hour >= now() - interval '%s' GROUP BY ts ORDER BY ts",
+					"SELECT date_trunc('%s', hour) as ts, SUM(cnt) as cnt FROM mv_timeline_hourly WHERE hour >= now() - interval '%s' GROUP BY ts ORDER BY ts",
 					field, lookback,
 				)
 				rows, err := db.Query(query)

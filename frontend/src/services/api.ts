@@ -28,7 +28,7 @@ api.interceptors.response.use(
   response => response,
   async error => {
     const originalRequest = error.config
-    if (error.response?.status === 401 && !originalRequest._retry && originalRequest.url !== '/auth/login') {
+    if (error.response?.status === 401 && !originalRequest._retry && originalRequest.url !== '/auth/login' && originalRequest.url !== '/auth/refresh') {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           retryQueue.push({ resolve, reject })
@@ -82,6 +82,7 @@ export interface LogEntry {
   parsed_fields?: Record<string, string>
   matched_parsers?: string[]
   created_at: string
+  display_name?: string
 }
 
 export interface DashboardStats {
@@ -123,7 +124,7 @@ export async function getLogs(params: {
   to?: string
   sort?: string
 }) {
-  const res = await api.get('/logs', { params })
+  const res = await api.post('/logs', params)
   return res.data || { logs: [], total: 0 }
 }
 
@@ -437,6 +438,8 @@ export async function testLDAPConnection(data: {
 	server: string
 	port: number
 	use_tls: boolean
+	verify_cert: boolean
+	ca_cert: string
 	base_dn: string
 	bind_dn: string
 	bind_password: string
@@ -448,7 +451,7 @@ export async function testLDAPConnection(data: {
 // --- Init / Setup ---
 export async function checkInitialized() {
 	const res = await api.get('/status/initialized')
-	return res.data as { initialized: boolean }
+	return res.data as { initialized: boolean; starting: boolean }
 }
 
 export async function generateKeys() {
@@ -515,5 +518,16 @@ export async function getSlowQueries() {
 
 export async function clearSlowQueries() {
 	const res = await api.delete('/admin/slow-queries')
+	return res.data
+}
+
+export async function uploadSSLCerts(certFile: File, keyFile: File) {
+	const formData = new FormData()
+	formData.append('cert', certFile)
+	formData.append('key', keyFile)
+	const res = await api.post('/admin/ssl/upload', formData, {
+		headers: { 'Content-Type': 'multipart/form-data' },
+		timeout: 60000,
+	})
 	return res.data
 }

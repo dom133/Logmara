@@ -56,7 +56,7 @@ func startMVScheduler(ctx context.Context, db *sql.DB, interval time.Duration) f
 				close(done)
 				return
 			case <-ticker.C:
-				refreshMV(db)
+				RefreshMV(db)
 			}
 		}
 	}()
@@ -75,7 +75,7 @@ func runVacuumAnalyze(db *sql.DB) {
 	slog.Info("VACUUM ANALYZE completed", "table", "syslog_logs")
 }
 
-func refreshMV(db *sql.DB) {
+func RefreshMV(db *sql.DB) {
 	slog.Info("refreshing materialized views")
 	for _, mv := range []string{"mv_dashboard_summary", "mv_dashboard_severity", "mv_timeline_hourly"} {
 		_, err := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY " + mv)

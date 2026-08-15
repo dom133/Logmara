@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -13,6 +14,16 @@ import (
 	"syslog-gui/db/parsers"
 	"syslog-gui/util"
 )
+
+var appStarting atomic.Bool
+
+func SetAppStarting(v bool) {
+	appStarting.Store(v)
+}
+
+func IsAppStarting() bool {
+	return appStarting.Load()
+}
 
 func Connect(dsn string) (*sql.DB, error) {
 	db, err := sql.Open("postgres", dsn)
@@ -73,7 +84,6 @@ func Migrate(db *sql.DB) error {
 			parsed_fields JSONB DEFAULT '{}',
 			created_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
-		`DROP INDEX IF EXISTS idx_syslog_timestamp`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_hostname ON syslog_logs (hostname)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_severity ON syslog_logs (severity)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_app_name ON syslog_logs (app_name)`,
@@ -81,8 +91,10 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='parsed_fields') THEN ALTER TABLE syslog_logs ADD COLUMN parsed_fields JSONB DEFAULT '{}'; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='matched_parsers') THEN ALTER TABLE syslog_logs ADD COLUMN matched_parsers TEXT[] DEFAULT '{}'; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='fromhost_ip') THEN ALTER TABLE syslog_logs ADD COLUMN fromhost_ip VARCHAR(255); END IF; END $$`,
-		`DROP INDEX IF EXISTS idx_syslog_parsed_fields`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_parsed_fields ON syslog_logs USING GIN (parsed_fields)`,
+		`DO $$ BEGIN EXECUTE 'DROP INDEX IF EXISTS idx_syslog_parsed_fields'; EXCEPTION WHEN OTHERS THEN NULL; END $$`,
+		`DO $$ BEGIN EXECUTE 'DROP INDEX IF EXISTS idx_syslog_timestamp'; EXCEPTION WHEN OTHERS THEN NULL; END $$`,
+		`DO $$ BEGIN EXECUTE 'DROP INDEX IF EXISTS idx_syslog_recent_7d'; EXCEPTION WHEN OTHERS THEN NULL; END $$`,
+		`DO $$ BEGIN CREATE INDEX idx_syslog_parsed_fields ON syslog_logs USING GIN (parsed_fields); EXCEPTION WHEN undefined_object THEN NULL; END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_fromhost_ip ON syslog_logs (fromhost_ip)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_fromhost_severity ON syslog_logs (fromhost_ip, severity)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_sev_errors ON syslog_logs (severity, timestamp) WHERE severity IN ('err', 'crit', 'alert', 'emerg')`,
@@ -107,6 +119,7 @@ func Migrate(db *sql.DB) error {
 		`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_summary_key ON mv_dashboard_summary (refreshed_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_coalesce_fromhost_ip ON syslog_logs (COALESCE(fromhost_ip, ''))`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_coalesce_dev_ts ON syslog_logs (COALESCE(fromhost_ip, ''), timestamp DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_app_ts_cover ON syslog_logs (app_name, timestamp DESC) INCLUDE (hostname, severity)`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_severity AS
 			SELECT NOW() as refreshed_at, severity, COUNT(*) as cnt FROM syslog_logs GROUP BY severity
@@ -208,22 +221,32 @@ func Migrate(db *sql.DB) error {
 			updated_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='device_aliases' AND column_name='old_hostname') THEN ALTER TABLE device_aliases ADD COLUMN old_hostname VARCHAR(255); END IF; END $$`,
-		`DO $$
+	}
+
+	for _, stmt := range statements {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("migration failed (%s): %w", stmt[:50], err)
+		}
+	}
+
+	var isPartitioned bool
+	db.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p')").Scan(&isPartitioned)
+	if !isPartitioned {
+		partitionStmts := []string{
+			`ALTER TABLE syslog_logs DROP CONSTRAINT IF EXISTS syslog_logs_pkey`,
+			`ALTER TABLE syslog_logs ADD PRIMARY KEY (timestamp, id)`,
+			`DROP TABLE IF EXISTS syslog_logs_new CASCADE`,
+			`CREATE TABLE syslog_logs_new (LIKE syslog_logs INCLUDING DEFAULTS INCLUDING GENERATED INCLUDING STORAGE) PARTITION BY RANGE (timestamp)`,
+			`ALTER TABLE syslog_logs_new ADD PRIMARY KEY (timestamp, id)`,
+			`DO $$
 DECLARE
 	v_min_ts TIMESTAMPTZ;
 	v_max_ts TIMESTAMPTZ;
 	v_start DATE;
 	v_end DATE;
 	v_curr DATE;
-	v_part_name TEXT;
 BEGIN
-	-- Skip if already partitioned
-	IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p') THEN
-		RETURN;
-	END IF;
-
 	SELECT MIN(timestamp), MAX(timestamp) INTO v_min_ts, v_max_ts FROM syslog_logs;
-
 	IF v_min_ts IS NOT NULL THEN
 		v_start := date_trunc('month', v_min_ts)::DATE;
 		v_end := (date_trunc('month', v_max_ts) + INTERVAL '1 month')::DATE;
@@ -231,34 +254,45 @@ BEGIN
 		v_start := date_trunc('month', NOW())::DATE;
 		v_end := (date_trunc('month', NOW()) + INTERVAL '1 month')::DATE;
 	END IF;
-
-	ALTER TABLE syslog_logs DROP CONSTRAINT IF EXISTS syslog_logs_pkey;
-	ALTER TABLE syslog_logs ADD PRIMARY KEY (timestamp, id);
-	ALTER TABLE syslog_logs SET PARTITION KEY (RANGE (timestamp));
-
 	v_curr := v_start;
 	WHILE v_curr < v_end LOOP
-		v_part_name := 'syslog_logs_' || to_char(v_curr, 'YYYY_MM');
-		EXECUTE format(
-			'CREATE TABLE IF NOT EXISTS %I PARTITION OF syslog_logs FOR VALUES FROM (%L) TO (%L)',
-			v_part_name, v_curr, v_curr + INTERVAL '1 month'
-		);
+		EXECUTE format('CREATE TABLE IF NOT EXISTS %I PARTITION OF syslog_logs_new FOR VALUES FROM (%L) TO (%L)', 'syslog_logs_' || to_char(v_curr, 'YYYY_MM'), v_curr, v_curr + INTERVAL '1 month');
 		v_curr := v_curr + INTERVAL '1 month';
 	END LOOP;
-
-	CREATE TABLE IF NOT EXISTS syslog_logs_default PARTITION OF syslog_logs DEFAULT;
-	CREATE INDEX IF NOT EXISTS idx_syslog_timestamp ON syslog_logs USING BRIN (timestamp);
-	CREATE INDEX IF NOT EXISTS idx_syslog_recent_7d ON syslog_logs (timestamp DESC) WHERE timestamp >= NOW() - INTERVAL '7 days';
+	EXECUTE 'CREATE TABLE IF NOT EXISTS syslog_logs_default PARTITION OF syslog_logs_new DEFAULT';
 END $$`,
+			`INSERT INTO syslog_logs_new (id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, created_at, matched_parsers) SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, created_at, matched_parsers FROM syslog_logs`,
+			`DROP TABLE syslog_logs CASCADE`,
+			`ALTER TABLE syslog_logs_new RENAME TO syslog_logs`,
+			`CREATE SEQUENCE IF NOT EXISTS syslog_logs_id_seq OWNED BY syslog_logs.id`,
+			`ALTER TABLE syslog_logs ALTER COLUMN id SET DEFAULT nextval('syslog_logs_id_seq')`,
+			`SELECT setval('syslog_logs_id_seq', GREATEST(1, COALESCE((SELECT MAX(id) FROM syslog_logs), 0)))`,
+		}
+		for _, stmt := range partitionStmts {
+			if _, err := db.Exec(stmt); err != nil {
+				truncated := stmt
+				if len(truncated) > 50 {
+					truncated = truncated[:50]
+				}
+				return fmt.Errorf("partitioning failed (%s): %w", truncated, err)
+			}
+		}
+	}
+
+	postStmts := []string{
+		`DO $$ BEGIN CREATE INDEX idx_syslog_timestamp ON syslog_logs USING BRIN (timestamp); EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_object THEN NULL; END $$`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_timeline_hourly AS
 			SELECT date_trunc('hour', timestamp) AS hour, COUNT(*) AS cnt FROM syslog_logs GROUP BY 1 ORDER BY 1
 		`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_timeline_hourly_key ON mv_timeline_hourly (hour)`,
 	}
-
-	for _, stmt := range statements {
+	for _, stmt := range postStmts {
 		if _, err := db.Exec(stmt); err != nil {
-			return fmt.Errorf("migration failed (%s): %w", stmt[:50], err)
+			truncated := stmt
+			if len(truncated) > 50 {
+				truncated = truncated[:50]
+			}
+			return fmt.Errorf("post-migration failed (%s): %w", truncated, err)
 		}
 	}
 
@@ -365,6 +399,7 @@ func seedSettings(db *sql.DB) error {
 	settings := map[string]string{
 		"retention_days":      "30",
 		"jwt_expiry":          "24",
+		"session_timeout_min": "15",
 		"is_initialized":      "false",
 		"ldap_enabled":        "false",
 		"ldap_server":         "",
@@ -382,6 +417,7 @@ func seedSettings(db *sql.DB) error {
 		"ldap_auto_provision": "true",
 		"encryption_key":      "",
 		"cors_origins":        "",
+		"https_redirect":      "false",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -394,6 +430,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "Days to keep logs before auto-deletion"
 		case "jwt_expiry":
 			desc = "JWT token expiry in hours"
+		case "session_timeout_min":
+			desc = "Session timeout in minutes"
 		case "is_initialized":
 			desc = "Application initialization flag"
 		case "ldap_enabled":
@@ -428,6 +466,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "AES-256 encryption key for sensitive data"
 		case "cors_origins":
 			desc = "Allowed CORS origins (comma-separated)"
+		case "https_redirect":
+			desc = "Redirect HTTP traffic to HTTPS"
 		}
 		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
 			return fmt.Errorf("seed setting %s: %w", k, err)

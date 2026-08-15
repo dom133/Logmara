@@ -1,6 +1,6 @@
 import { useEffect, useState, createContext, useContext } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link as RouterLink } from 'react-router-dom'
-import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Space } from 'antd'
+import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Space, Typography } from 'antd'
 import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
@@ -12,6 +12,7 @@ import DashboardViewPage from './pages/DashboardView'
 import Admin from './pages/Admin'
 import SetupWizard from './pages/SetupWizard'
 import ErrorBoundary from './components/ErrorBoundary'
+import { SessionWarningModal } from './components/SessionWarningModal'
 import { AuthProvider, useAuth } from './services/auth'
 import { getDashboards, getDashboard, Dashboard as DashboardType, checkInitialized } from './services/api'
 
@@ -164,7 +165,7 @@ const navItems = [
 ]
 
 function AppLayout({ children }: { children: React.ReactNode }) {
-  const { user, logout, isAdmin } = useAuth()
+  const { user, logout, isAdmin, showSessionWarning, sessionWarningCountdown, extendSession } = useAuth()
   const { token } = theme.useToken()
   const { themeMode, toggleTheme } = useTheme()
   const location = useLocation()
@@ -290,6 +291,13 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           <ErrorBoundary>{children}</ErrorBoundary>
         </Content>
       </Layout>
+      {showSessionWarning && (
+        <SessionWarningModal
+          countdown={sessionWarningCountdown}
+          onExtend={extendSession}
+          onLogout={logout}
+        />
+      )}
     </Layout>
   )
 }
@@ -302,14 +310,33 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   const [initialized, setInitialized] = useState<boolean | null>(null)
+  const [starting, setStarting] = useState(false)
 
   useEffect(() => {
+    let cancelled = false
     const check = async () => {
       const res = await checkInitialized()
-      setInitialized(res.initialized)
+      if (cancelled) return
+      if (res.starting) {
+        setStarting(true)
+        setTimeout(() => check(), 2000)
+      } else {
+        setStarting(false)
+        setInitialized(res.initialized)
+      }
     }
     check()
+    return () => { cancelled = true }
   }, [])
+
+  if (starting) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flexDirection: 'column', gap: 16, height: '100vh' }}>
+        <Spin size="large" />
+        <Typography.Text type="secondary">System starting... Please wait</Typography.Text>
+      </div>
+    )
+  }
 
   if (initialized === null) {
     return (

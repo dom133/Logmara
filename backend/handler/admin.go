@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -231,6 +232,29 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		oldHttpsEnabled := db.GetSetting(database, "https_enabled", "false")
+		oldHttpsRedirect := db.GetSetting(database, "https_redirect", "false")
+
+		newHttpsEnabled := settings["https_enabled"]
+		newHttpsRedirect := settings["https_redirect"]
+
+		if newHttpsEnabled == "true" && oldHttpsEnabled != "true" {
+			sslDir := os.Getenv("SSL_DIR")
+			if sslDir == "" {
+				sslDir = "/data/ssl"
+			}
+			certPath := filepath.Join(sslDir, "server.crt")
+			keyPath := filepath.Join(sslDir, "server.key")
+			if _, err := os.Stat(certPath); os.IsNotExist(err) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot enable HTTPS: SSL certificate not found. Please upload certificate and key first."})
+				return
+			}
+			if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot enable HTTPS: SSL private key not found. Please upload certificate and key first."})
+				return
+			}
+		}
+
 		for k, v := range settings {
 			if err := db.UpdateSetting(database, k, v); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to update setting: " + k})
@@ -238,7 +262,69 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 			}
 		}
 
+		httpsChanged := oldHttpsEnabled != newHttpsEnabled || oldHttpsRedirect != newHttpsRedirect
+
+		if httpsChanged {
+			if err := reloadNginx(newHttpsRedirect == "true"); err != nil {
+				slog.Warn("nginx reload failed after settings update", "error", err)
+				c.JSON(http.StatusOK, gin.H{
+					"message":             "Settings updated",
+					"nginx_reload_error": err.Error(),
+				})
+				return
+			}
+		}
+
 		c.JSON(http.StatusOK, gin.H{"message": "Settings updated"})
+	}
+}
+
+// reloadNginx writes the HTTP->HTTPS redirect config fragment consumed by
+// nginx and asks the frontend container's reload sidecar to apply it.
+func reloadNginx(redirectEnabled bool) error {
+	confDir := os.Getenv("NGINX_CONF_DIR")
+	if confDir == "" {
+		confDir = "/data/nginx"
+	}
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		return fmt.Errorf("create nginx conf dir: %w", err)
+	}
+
+	redirectConf := ""
+	if redirectEnabled {
+		redirectConf = "return 301 https://$host$request_uri;\n"
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "redirect.conf"), []byte(redirectConf), 0644); err != nil {
+		return fmt.Errorf("write redirect.conf: %w", err)
+	}
+
+	reloadURL := os.Getenv("NGINX_RELOAD_URL")
+	if reloadURL == "" {
+		reloadURL = "http://frontend:8081/cgi-bin/reload.sh"
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(reloadURL, "text/plain", nil)
+	if err != nil {
+		return fmt.Errorf("nginx reload request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("nginx reload returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// ReloadNginx re-applies the current HTTPS redirect setting and triggers an
+// nginx config reload via the frontend container's sidecar.
+func ReloadNginx(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		redirectEnabled := db.GetSetting(database, "https_redirect", "false") == "true"
+		if err := reloadNginx(redirectEnabled); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "nginx reloaded"})
 	}
 }
 
@@ -322,6 +408,7 @@ type TestLDAPRequest struct {
 	Port         int    `json:"port"`
 	UseTLS       bool   `json:"use_tls"`
 	VerifyCert   bool   `json:"verify_cert"`
+	CaCert       string `json:"ca_cert"`
 	BaseDN       string `json:"base_dn"`
 	BindDN       string `json:"bind_dn"`
 	BindPassword string `json:"bind_password"`
@@ -339,7 +426,7 @@ func TestLDAP(database *sql.DB) gin.HandlerFunc {
 			req.Port = 389
 		}
 
-		err := ldap.TestConnection(req.Server, req.Port, req.UseTLS, req.BaseDN, req.BindDN, req.BindPassword)
+		err := ldap.TestConnection(req.Server, req.Port, req.UseTLS, req.VerifyCert, req.CaCert, req.BaseDN, req.BindDN, req.BindPassword)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return

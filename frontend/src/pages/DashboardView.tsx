@@ -1,10 +1,9 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form, message } from 'antd'
-import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined, ClockCircleOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import { getDashboard, getDashboardData, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardDataResponse, LogEntry, getDevices, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
-import { useSSE } from '../hooks/useSSE'
 import SeverityTag from '../components/SeverityTag'
 import { SEVERITY_LABELS } from '../constants'
 import { useAuth } from '../services/auth'
@@ -13,6 +12,7 @@ const { Title, Text } = Typography
 const { RangePicker } = DatePicker
 
 const severities = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug']
+const INTERVAL_OPTIONS = [1, 3, 5, 10, 30]
 
 export default function DashboardViewPage() {
   const { id } = useParams<{ id: string }>()
@@ -33,7 +33,6 @@ export default function DashboardViewPage() {
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
   const [detailLog, setDetailLog] = useState<LogEntry | null>(null)
   const [devices, setDevices] = useState<DeviceStats[]>([])
-  const [streaming, setStreaming] = useState(false)
   const { user } = useAuth()
   const isOwner = dashboard?.owner_id === user?.id
   const searchRef = useRef<InputRef>(null)
@@ -61,7 +60,8 @@ export default function DashboardViewPage() {
     return m
   }, [devices])
 
-  const resolveHostname = (hostname: string, fromhost_ip?: string): string => {
+  const resolveHostname = (hostname: string, fromhost_ip?: string, displayName?: string): string => {
+    if (displayName) return displayName
     return deviceMap.get(fromhost_ip || hostname || '') || hostname || '-'
   }
 
@@ -82,29 +82,12 @@ export default function DashboardViewPage() {
     setDevices(d)
   }
 
-  const handleNewLogs = useCallback((newLogs: LogEntry[]) => {
-    setLogs(prev => {
-      const ids = new Set(prev.map(l => l.id))
-      const unique = newLogs.filter(l => !ids.has(l.id))
-      if (unique.length === 0) return prev
-      setTotal(t => t + unique.length)
-      const combined = [...unique, ...prev]
-      return combined.slice(0, pageSize * 3)
-    })
-  }, [pageSize])
-
-  const { connected } = useSSE({
-    onNewLogs: handleNewLogs,
-    filters: {
-      fromhost_ip: (dashboard?.config?.devices ?? []).join(',') || undefined,
-      severity: severityFilter || dashboard?.config?.filters?.severity || undefined,
-      search: searchOverride || dashboard?.config?.filters?.search || undefined,
-      from: dateRange?.[0]?.toISOString() || dashboard?.config?.filters?.from || undefined,
-      to: dateRange?.[1]?.toISOString() || dashboard?.config?.filters?.to || undefined,
-      require_parser: (dashboard?.config?.fields?.length ?? 0) > 0 ? 'true' : undefined,
-    },
-    enabled: streaming,
+  const [isTabActive, setIsTabActive] = useState(true)
+  const [refreshInterval, setRefreshInterval] = useState(() => {
+    const saved = localStorage.getItem(`dashboard_refresh_interval_${dashboardId}`)
+    return saved ? parseInt(saved, 10) : 5
   })
+  const [appendMode, setAppendMode] = useState(true)
 
   const loadLogs = useCallback(async (offset: number) => {
     setTableLoading(true)
@@ -121,7 +104,19 @@ export default function DashboardViewPage() {
     }
   }, [dashboardId, pageSize, dateRange])
 
-  const [isTabActive, setIsTabActive] = useState(true)
+  const pollLogs = useCallback(async () => {
+    if (!appendMode) return
+    try {
+      const from = dateRange?.[0]?.toISOString() || ''
+      const to = dateRange?.[1]?.toISOString() || ''
+      const offset = (page - 1) * pageSize
+      const data = await getDashboardData(dashboardId, pageSize, offset, searchOverrideRef.current, severityRef.current, from, to)
+      setTotal(data.total)
+      setLogs(data.logs)
+    } catch (e) {
+      // error handled by API
+    }
+  }, [dashboardId, pageSize, page, dateRange, appendMode])
 
   useEffect(() => {
     loadDashboard()
@@ -150,6 +145,18 @@ export default function DashboardViewPage() {
       loadLogs(0)
     }
   }, [dashboard, loadLogs])
+
+  useEffect(() => {
+    localStorage.setItem(`dashboard_refresh_interval_${dashboardId}`, refreshInterval.toString())
+  }, [refreshInterval, dashboardId])
+
+  useEffect(() => {
+    if (!isTabActive) return
+    const interval = setInterval(() => {
+      pollLogs()
+    }, refreshInterval * 1000)
+    return () => clearInterval(interval)
+  }, [isTabActive, pollLogs, refreshInterval])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -221,7 +228,7 @@ export default function DashboardViewPage() {
       dataIndex: 'hostname',
       key: 'hostname',
       width: 150,
-      render: (v: string, r: LogEntry) => <Tag color="blue">{resolveHostname(v, r.fromhost_ip)}</Tag>,
+      render: (v: string, r: LogEntry) => <Tag color="blue">{resolveHostname(v, r.fromhost_ip, r.display_name)}</Tag>,
       filters: Array.from(new Set(logs.map(l => l.hostname))).map(h => ({ text: h, value: h })),
       onFilter: (v: string, record: LogEntry) => record.hostname === String(v),
     },
@@ -271,7 +278,7 @@ export default function DashboardViewPage() {
     if (!detailLog) return null
     const items: { label: string; content: React.ReactNode }[] = [
       { label: 'Timestamp', content: new Date(detailLog.timestamp).toLocaleString() },
-      { label: 'Hostname', content: <Tag color="blue">{resolveHostname(detailLog.hostname, detailLog.fromhost_ip)}</Tag> },
+      { label: 'Hostname', content: <Tag color="blue">{resolveHostname(detailLog.hostname, detailLog.fromhost_ip, detailLog.display_name)}</Tag> },
       { label: 'Source IP', content: detailLog.fromhost_ip ? <Tag color="green">{detailLog.fromhost_ip}</Tag> : '-' },
       { label: 'Severity', content: <SeverityTag severity={detailLog.severity} /> },
       { label: 'Facility', content: detailLog.facility ?? '-' },
@@ -357,13 +364,21 @@ export default function DashboardViewPage() {
             onChange={(dates) => setDateRange(dates as [any, any] | null)}
           />
           <Button icon={<ReloadOutlined />} onClick={() => loadLogs((page - 1) * pageSize)} loading={tableLoading}>Apply</Button>
+          <Select
+            size="small"
+            style={{ width: 100 }}
+            value={refreshInterval}
+            onChange={setRefreshInterval}
+            options={INTERVAL_OPTIONS.map(v => ({ label: `${v}s`, value: v }))}
+            suffixIcon={<ClockCircleOutlined />}
+          />
           <Button
-            icon={<ThunderboltOutlined />}
-            type={streaming ? 'primary' : 'default'}
-            style={{ color: streaming && connected ? '#52c41a' : undefined }}
-            onClick={() => setStreaming(!streaming)}
+            size="small"
+            icon={<UnorderedListOutlined />}
+            onClick={() => setAppendMode(!appendMode)}
+            style={{ color: appendMode ? '#1890ff' : undefined }}
           >
-            {streaming ? (connected ? 'Live ●' : 'Connecting...') : 'Live'}
+            Live
           </Button>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
         </div>
