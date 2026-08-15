@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link as RouterLink } from 'react-router-dom'
-import { Layout, theme } from 'antd'
+import { Layout, theme, Spin } from 'antd'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import LogsViewer from './pages/LogsViewer'
@@ -8,8 +8,9 @@ import ParsersPage from './pages/Parsers'
 import DashboardsPage from './pages/Dashboards'
 import DashboardViewPage from './pages/DashboardView'
 import Admin from './pages/Admin'
+import SetupWizard from './pages/SetupWizard'
 import { AuthProvider, useAuth } from './services/auth'
-import { getDashboards, Dashboard as DashboardType } from './services/api'
+import { getDashboards, Dashboard as DashboardType, checkInitialized } from './services/api'
 
 const { Sider, Content } = Layout
 
@@ -154,18 +155,41 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  const [initialized, setInitialized] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    checkInitialized().then((res) => setInitialized(res.initialized))
+  }, [])
+
+  if (initialized === null) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
+        <Spin size="large" />
+      </div>
+    )
+  }
+
   return (
     <BrowserRouter>
       <AuthProvider>
         <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
-          <Route path="/logs" element={<PrivateRoute><LogsViewer /></PrivateRoute>} />
-          <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />
-          <Route path="/dashboards" element={<PrivateRoute><DashboardsPage /></PrivateRoute>} />
-          <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
-          <Route path="/admin" element={<PrivateRoute><Admin /></PrivateRoute>} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          {!initialized ? (
+            <>
+              <Route path="/setup" element={<SetupWizard />} />
+              <Route path="*" element={<Navigate to="/setup" replace />} />
+            </>
+          ) : (
+            <>
+              <Route path="/login" element={<Login />} />
+              <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
+              <Route path="/logs" element={<PrivateRoute><LogsViewer /></PrivateRoute>} />
+              <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />
+              <Route path="/dashboards" element={<PrivateRoute><DashboardsPage /></PrivateRoute>} />
+              <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
+              <Route path="/admin" element={<PrivateRoute><Admin /></PrivateRoute>} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </>
+          )}
         </Routes>
       </AuthProvider>
     </BrowserRouter>
