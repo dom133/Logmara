@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getErrorMessage } from '../error'
+import { getErrorMessage } from './error'
 
 describe('getErrorMessage', () => {
   it('returns fallback for null', () => {

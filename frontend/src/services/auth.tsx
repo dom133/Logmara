@@ -16,6 +16,12 @@ interface AuthContextType {
   logout: () => Promise<void>
   isAdmin: boolean
   canEdit: boolean
+  sessionTimeout: number | null
+  setSessionTimeout: (timeout: number) => void
+  isSessionExpiringSoon: boolean
+  showSessionWarning: boolean
+  setShowSessionWarning: (show: boolean) => void
+  extendSession: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType>({} as AuthContextType)
@@ -23,11 +29,36 @@ const AuthContext = createContext<AuthContextType>({} as AuthContextType)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('token'))
   const [user, setUser] = useState<User | null>(null)
+  const [sessionTimeout, setSessionTimeoutValue] = useState<number | null>(300) // Default: 5 minutes
+  const [isSessionExpiringSoon, setIsSessionExpiringSoon] = useState(false)
+  const [showSessionWarning, setShowSessionWarning] = useState(false)
+  const [tokenExpiryTimer, setTokenExpiryTimer] = useState<any | null>(null)
 
   useEffect(() => {
     if (token) {
       api.defaults.headers.common['Authorization'] = `Bearer ${token}`
       loadUser()
+      
+      // Parse token to get expiry time
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1]))
+        const currentTime = Math.floor(Date.now() / 1000)
+        const timeRemaining = payload.exp - currentTime
+        
+        if (timeRemaining > 0) {
+          // Set up timer for session warnings
+          const warningTime = Math.max(0, timeRemaining - 30) * 1000 // 30 seconds before expiration
+          if (warningTime > 0 && warningTime < 300000) { // Don't show warning for very short sessions
+            const timer = setTimeout(() => {
+              setIsSessionExpiringSoon(true)
+              setShowSessionWarning(true)
+            }, warningTime)
+            setTokenExpiryTimer(timer)
+          }
+        }
+      } catch (e) {
+        console.error('Error parsing token:', e)
+      }
     }
   }, [token])
 
@@ -48,37 +79,116 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setToken(t)
       localStorage.setItem('token', t)
       localStorage.setItem('refresh_token', rt)
-      setUser(res.data.user)
+      api.defaults.headers.common['Authorization'] = `Bearer ${t}`
+      loadUser()
       return { ok: true }
-    } catch (e: unknown) {
-      return {
-        ok: false,
-        error: e.response?.data?.error || 'Invalid credentials',
-      }
+    } catch (error: any) {
+      return { ok: false, error: error.response?.data?.message || 'Login failed' }
     }
   }
 
   const logout = async () => {
-    const rt = localStorage.getItem('refresh_token')
-    if (rt) {
-      try {
-        await api.post('/auth/logout', { refresh_token: rt })
-      } catch { /* ignore */ }
+    try {
+      await api.post('/auth/logout')
+    } catch (e) {
+      console.error('Error during logout:', e)
     }
     setToken(null)
     setUser(null)
     localStorage.removeItem('token')
     localStorage.removeItem('refresh_token')
     delete api.defaults.headers.common['Authorization']
+    
+    // Clear any pending timers
+    if (tokenExpiryTimer) {
+      clearTimeout(tokenExpiryTimer)
+      setTokenExpiryTimer(null)
+    }
+    setIsSessionExpiringSoon(false)
+    setShowSessionWarning(false)
   }
 
+  const extendSession = async () => {
+    try {
+      const refreshToken = localStorage.getItem('refresh_token')
+      if (!refreshToken) return
+      
+      const res = await refreshAccessToken(refreshToken)
+      const newToken = res.data.token
+      setToken(newToken)
+      localStorage.setItem('token', newToken)
+      api.defaults.headers.common['Authorization'] = `Bearer ${newToken}`
+      
+      // Reset the warning timer
+      setIsSessionExpiringSoon(false)
+      setShowSessionWarning(false)
+      
+      if (tokenExpiryTimer) {
+        clearTimeout(tokenExpiryTimer)
+        setTokenExpiryTimer(null)
+      }
+      
+      // Set up new timer
+      try {
+        const payload = JSON.parse(atob(newToken.split('.')[1]))
+        const currentTime = Math.floor(Date.now() / 1000)
+        const timeRemaining = payload.exp - currentTime
+        
+        if (timeRemaining > 0) {
+          const warningTime = Math.max(0, timeRemaining - 30) * 1000
+          if (warningTime > 0 && warningTime < 300000) {
+            const timer = setTimeout(() => {
+              setIsSessionExpiringSoon(true)
+              setShowSessionWarning(true)
+            }, warningTime)
+            setTokenExpiryTimer(timer)
+          }
+        }
+      } catch (e) {
+        console.error('Error parsing token:', e)
+      }
+    } catch (e) {
+      console.error('Error extending session:', e)
+      logout()
+    }
+  }
+
+  const isAdmin = user?.is_admin || false
+  const canEdit = user?.role === 'admin' || user?.role === 'editor'
+
+  useEffect(() => {
+    // Clean up timer on unmount
+    return () => {
+      if (tokenExpiryTimer) {
+        clearTimeout(tokenExpiryTimer)
+      }
+    }
+  }, [tokenExpiryTimer])
+
   return (
-    <AuthContext.Provider value={{ token, user, login, logout, isAdmin: user?.role === 'admin', canEdit: user?.role === 'admin' || user?.role === 'editor' }}>
+    <AuthContext.Provider value={{
+      token,
+      user,
+      login,
+      logout,
+      isAdmin,
+      canEdit,
+      sessionTimeout,
+      setSessionTimeout: setSessionTimeoutValue,
+      isSessionExpiringSoon,
+      showSessionWarning,
+      setShowSessionWarning,
+      extendSession
+    }}>
       {children}
     </AuthContext.Provider>
   )
 }
 
-export function useAuth() {
-  return useContext(AuthContext)
+export const useAuth = () => {
+  const context = useContext(AuthContext)
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider')
+  }
+  return context
 }

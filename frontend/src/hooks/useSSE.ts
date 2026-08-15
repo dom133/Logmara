@@ -48,13 +48,27 @@ export function useSSE({ onNewLogs, filters = {}, enabled = true }: UseSSEOption
   const filtersRef = useRef(filters)
   const enabledRef = useRef(enabled)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const isTabActiveRef = useRef(true)
+  const eventSourceRef = useRef<EventSource | null>(null) // Add EventSource reference
   onNewLogsRef.current = onNewLogs
   filtersRef.current = filters
   enabledRef.current = enabled
 
   const connect = useCallback(() => {
-    if (abortRef.current) {
-      abortRef.current.abort()
+    // Clean up existing connection
+    if (eventSourceRef.current) {
+      try {
+        eventSourceRef.current.close()
+      } catch (e) {
+        console.warn('Error closing previous EventSource:', e)
+      }
+      eventSourceRef.current = null
+    }
+
+    // Check if tab is still active
+    if (!isTabActiveRef.current) {
+      setConnected(false)
+      return
     }
 
     const controller = new AbortController()
@@ -73,77 +87,55 @@ export function useSSE({ onNewLogs, filters = {}, enabled = true }: UseSSEOption
       return
     }
 
-    fetch(url.toString(), {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'text/event-stream',
-      },
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          setConnected(false)
-          scheduleReconnect()
-          return
-        }
+    // Create EventSource properly for streaming
+    try {
+      const eventSource = new EventSource(url.toString() + `&token=${encodeURIComponent(token)}`)
+      eventSourceRef.current = eventSource
 
-        setConnected(true)
-        const reader = response.body?.getReader()
-        if (!reader) {
-          setConnected(false)
-          scheduleReconnect()
-          return
-        }
-
-        const decoder = new TextDecoder()
-        let buffer = ''
-
-        try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-
-            buffer += decoder.decode(value, { stream: true })
-            const lastDoubleNewline = buffer.lastIndexOf('\n\n')
-            if (lastDoubleNewline === -1) continue
-
-            const complete = buffer.slice(0, lastDoubleNewline + 2)
-            buffer = buffer.slice(lastDoubleNewline + 2)
-            const events = parseSSE(complete)
-
-for (const evt of events) {
-               if (evt.event === 'log' && evt.data) {
-                 try {
-                   const decoded = atob(evt.data)
-                   const logs = JSON.parse(decoded) as LogEntry[]
-                   if (Array.isArray(logs) && logs.length > 0) {
-                     onNewLogsRef.current(logs)
-                   }
-                 } catch {
-                   // ignore parse errors
-                 }
-               }
-             }
-          }
-        } catch (e: unknown) {
-          if (!(e instanceof DOMException) || e.name !== 'AbortError') {
-            console.error('SSE stream error:', e)
-          }
-        } finally {
-          setConnected(false)
+      eventSource.onmessage = (event) => {
+        if (event.data) {
           try {
-            reader.releaseLock()
-          } catch { /* ignore */ }
-          scheduleReconnect()
+            const decoded = atob(event.data)
+            const logs = JSON.parse(decoded) as LogEntry[]
+            if (Array.isArray(logs) && logs.length > 0) {
+              onNewLogsRef.current(logs)
+            }
+          } catch (e) {
+            // ignore parse errors
+          }
+        }
+      }
+
+      eventSource.onerror = (error) => {
+        console.error('SSE stream error:', error)
+        setConnected(false)
+        eventSource.close()
+        eventSourceRef.current = null
+        scheduleReconnect()
+      }
+
+      eventSource.onopen = () => {
+        setConnected(true)
+        console.log('SSE connection opened successfully')
+      }
+
+      // Add cleanup for when controller is aborted
+      controller.signal.addEventListener('abort', () => {
+        if (eventSourceRef.current) {
+          try {
+            eventSourceRef.current.close()
+            eventSourceRef.current = null
+          } catch (e) {
+            console.warn('Error closing EventSource during abort:', e)
+          }
         }
       })
-      .catch((e: unknown) => {
-        if ((e as Error)?.name !== 'AbortError') {
-          setConnected(false)
-          scheduleReconnect()
-        }
-      })
+
+    } catch (error) {
+      console.error('Failed to create SSE connection:', error)
+      setConnected(false)
+      scheduleReconnect()
+    }
   }, [])
 
   const scheduleReconnect = useCallback(() => {
@@ -156,7 +148,29 @@ for (const evt of events) {
   }, [connect])
 
   useEffect(() => {
+    // Check if tab is active
+    const handleVisibilityChange = () => {
+      isTabActiveRef.current = !document.hidden
+      
+      // If tab became active and we should be connected, reconnect
+      if (isTabActiveRef.current && enabledRef.current && !abortRef.current?.signal.aborted) {
+        connect()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    
     if (!enabled) {
+      // Clean up when disabled
+      if (eventSourceRef.current) {
+        try {
+          eventSourceRef.current.close()
+        } catch (e) {
+          console.warn('Error closing EventSource during disable:', e)
+        }
+        eventSourceRef.current = null
+      }
+      
       if (abortRef.current) {
         abortRef.current.abort()
         abortRef.current = null
@@ -172,6 +186,18 @@ for (const evt of events) {
     connect()
 
     return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      
+      // Clean up all resources when component unmounts
+      if (eventSourceRef.current) {
+        try {
+          eventSourceRef.current.close()
+        } catch (e) {
+          console.warn('Error closing EventSource during cleanup:', e)
+        }
+        eventSourceRef.current = null
+      }
+      
       if (abortRef.current) {
         abortRef.current.abort()
         abortRef.current = null

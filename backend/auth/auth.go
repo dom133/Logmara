@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"time"
 
 	"syslog-gui/db"
@@ -18,6 +19,7 @@ import (
 )
 
 var jwtSecret []byte
+var jwtExpiryMin = 15
 
 func Init(database *sql.DB) {
 	secret := os.Getenv("JWT_SECRET")
@@ -29,6 +31,14 @@ func Init(database *sql.DB) {
 		db.UpdateSetting(database, "jwt_secret", secret)
 	}
 	jwtSecret = []byte(secret)
+
+	timeoutStr := os.Getenv("SESSION_TIMEOUT_MIN")
+	if timeoutStr == "" {
+		timeoutStr = db.GetSetting(database, "session_timeout_min", "15")
+	}
+	if t, err := strconv.Atoi(timeoutStr); err == nil && t > 0 {
+		jwtExpiryMin = t
+	}
 }
 
 func generateRandomKey() string {
@@ -42,7 +52,7 @@ func GenerateToken(userID int64, username string, role string) (string, error) {
 		"user_id":  userID,
 		"username": username,
 		"role":     role,
-		"exp":      time.Now().Add(15 * time.Minute).Unix(),
+		"exp":      time.Now().Add(time.Duration(jwtExpiryMin) * time.Minute).Unix(),
 		"iat":      time.Now().Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { Table, Input, InputRef, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Dropdown, Modal, Descriptions } from 'antd'
 import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { getLogs, getDevices, exportCSV, exportHTML, LogEntry, DeviceStats, resolveDeviceDisplayName } from '../services/api'
-import dayjs from 'dayjs'
+import dayjs, { type Dayjs } from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import { useSSE } from '../hooks/useSSE'
 import SeverityTag from '../components/SeverityTag'
@@ -68,11 +68,28 @@ export default function LogsViewer() {
     ],
   )
 
+  const [isTabActive, setIsTabActive] = useState(true)
+
   useEffect(() => {
     loadDevices()
-    const interval = setInterval(loadDevices, 30000)
-    return () => clearInterval(interval)
-  }, [])
+    const interval = setInterval(() => {
+      if (isTabActive) {
+        loadDevices()
+      }
+    }, 30000)
+    
+    // Check if tab is active
+    const handleVisibilityChange = () => {
+      setIsTabActive(!document.hidden)
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [isTabActive])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -135,16 +152,18 @@ export default function LogsViewer() {
     }
   }, [filters, pagination.pageSize])
 
-  const handleTableChange = (pag) => {
-    setPagination(pag)
-    loadLogs((pag.current - 1) * pag.pageSize)
+  const handleTableChange = (pag: { current?: number; pageSize?: number }) => {
+    const page = pag.current ?? 1
+    const size = pag.pageSize ?? 50
+    setPagination({ current: page, pageSize: size })
+    loadLogs((page - 1) * size)
   }
 
   const handleSearch = (value: string) => {
     setFilters(f => ({ ...f, search: value }))
   }
 
-  const handleDateRange = (dates) => {
+  const handleDateRange = (dates: [Dayjs | null, Dayjs | null] | null) => {
     setFilters(f => ({
       ...f,
       from: dates?.[0]?.toISOString() || '',
@@ -202,7 +221,7 @@ export default function LogsViewer() {
       width: 90,
       render: (v: string) => <SeverityTag severity={v} />,
       filters: severities.map(s => ({ text: s.toUpperCase(), value: s })),
-      onFilter: (v, record: LogEntry) => record.severity === String(v),
+      onFilter: (v: string, record: LogEntry) => record.severity === String(v),
     },
     {
       title: 'Device',

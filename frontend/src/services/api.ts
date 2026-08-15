@@ -501,3 +501,19 @@ export async function getDbConfig() {
 	const res = await api.get('/init/db-config')
 	return res.data as DbConfig
 }
+
+export interface SlowQueryRecord {
+	name: string
+	duration_ms: number
+	timestamp: string
+}
+
+export async function getSlowQueries() {
+	const res = await api.get('/admin/slow-queries')
+	return res.data as SlowQueryRecord[]
+}
+
+export async function clearSlowQueries() {
+	const res = await api.delete('/admin/slow-queries')
+	return res.data
+}

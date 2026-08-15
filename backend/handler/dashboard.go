@@ -339,14 +339,17 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 		)
 		args = append(args, limitInt, offsetInt)
 
-		rows, err := db.Query(logsQuery, args...)
-		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Query failed", err))
-			return
-		}
-		defer rows.Close()
+		var logs []model.SyslogLog
+		_ = timedQuery("dashboard_data_logs", func() error {
+			rows, err := db.Query(logsQuery, args...)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
 
-		logs := scanLogRows(rows)
+			logs = scanLogRows(rows)
+			return nil
+		})
 
 		countOpts := LogFilterOptions{
 			Severity:  cfg.Filters.Severity,
@@ -365,7 +368,9 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 
 		countSQL := buildWhereSQL(countClauses)
 		var total int64
-		db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", countSQL), countArgs...).Scan(&total)
+		_ = timedQuery("dashboard_data_count", func() error {
+			return db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", countSQL), countArgs...).Scan(&total)
+		})
 
 		c.JSON(http.StatusOK, model.DashboardDataResponse{
 			Logs:    logs,

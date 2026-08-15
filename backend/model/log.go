@@ -156,7 +156,7 @@ type DashboardStats struct {
 type DeviceCount struct {
 	Hostname   string `json:"hostname"`
 	FromHostIP string `json:"fromhost_ip"`
-	Count      int64  `json:"count"`
+	Count      int64  `json:"total_logs"`
 }
 
 type ErrorMessage struct {

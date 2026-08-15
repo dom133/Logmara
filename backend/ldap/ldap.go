@@ -186,6 +186,7 @@ func dialLDAP(cfg *Config) (*ldaplib.Conn, error) {
 func buildTLSConfig(cfg *Config) *tls.Config {
 	tc := &tls.Config{
 		InsecureSkipVerify: !cfg.VerifyCert,
+		ServerName:         cfg.Server,
 	}
 
 	if cfg.CaCert != "" && cfg.VerifyCert {
@@ -210,7 +211,7 @@ func TestConnection(server string, port int, useTLS bool, baseDN, bindDN, bindPa
 		BaseDN:       baseDN,
 		BindDN:       bindDN,
 		BindPassword: bindPassword,
-		VerifyCert:   true,
+		VerifyCert:   false,
 	}
 
 	l, err := dialLDAP(cfg)

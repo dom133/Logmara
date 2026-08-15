@@ -121,12 +121,29 @@ export default function DashboardViewPage() {
     }
   }, [dashboardId, pageSize, dateRange])
 
+  const [isTabActive, setIsTabActive] = useState(true)
+
   useEffect(() => {
     loadDashboard()
     loadDevices()
-    const interval = setInterval(loadDevices, 30000)
-    return () => clearInterval(interval)
-  }, [dashboardId])
+    const interval = setInterval(() => {
+      if (isTabActive) {
+        loadDevices()
+      }
+    }, 30000)
+    
+    // Check if tab is active
+    const handleVisibilityChange = () => {
+      setIsTabActive(!document.hidden)
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [dashboardId, isTabActive])
 
   useEffect(() => {
     if (dashboard) {
@@ -179,7 +196,7 @@ export default function DashboardViewPage() {
           key: `pf_${field}`,
           width: 120,
           ellipsis: true,
-          render: (_v, r: LogEntry) => {
+          render: (_v: unknown, r: LogEntry) => {
             const val = r.parsed_fields?.[field]
             return val ? <Tag color="geekblue" style={{ maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis' }}>{val}</Tag> : <Tag>-</Tag>
           },
@@ -206,7 +223,7 @@ export default function DashboardViewPage() {
       width: 150,
       render: (v: string, r: LogEntry) => <Tag color="blue">{resolveHostname(v, r.fromhost_ip)}</Tag>,
       filters: Array.from(new Set(logs.map(l => l.hostname))).map(h => ({ text: h, value: h })),
-      onFilter: (v, record: LogEntry) => record.hostname === String(v),
+      onFilter: (v: string, record: LogEntry) => record.hostname === String(v),
     },
     {
       title: 'Severity',
@@ -215,7 +232,7 @@ export default function DashboardViewPage() {
       width: 100,
       render: (v: string) => <SeverityTag severity={v} />,
       filters: severities.map(s => ({ text: (SEVERITY_LABELS[s] || s).toUpperCase(), value: s })),
-      onFilter: (v, record: LogEntry) => record.severity === String(v),
+      onFilter: (v: string, record: LogEntry) => record.severity === String(v),
     },
     {
       title: 'App',

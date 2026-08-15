@@ -4,14 +4,27 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"syslog-gui/model"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
 )
+
+func timedQuery(name string, fn func() error) error {
+	start := time.Now()
+	err := fn()
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
+		slog.Warn("slow query", "name", name, "duration_ms", elapsed.Milliseconds())
+		recordSlowQuery(name, elapsed)
+	}
+	return err
+}
 
 type LogFilterOptions struct {
 	Hostname   string

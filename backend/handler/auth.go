@@ -187,7 +187,7 @@ func Logout(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func GetMe() gin.HandlerFunc {
+func GetMe(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, exists := c.Get("claims")
 		if !exists {
@@ -200,10 +200,17 @@ func GetMe() gin.HandlerFunc {
 		role := (*mapClaims)["role"].(string)
 
 		userID := int((*mapClaims)["user_id"].(float64))
+		var isAdmin bool
+		err := database.QueryRow("SELECT is_admin FROM users WHERE id = $1", userID).Scan(&isAdmin)
+		if err != nil {
+			isAdmin = false
+		}
 		c.JSON(http.StatusOK, gin.H{
-			"id":       userID,
-			"username": username,
-			"role":     role,
+			"id":        userID,
+			"username":  username,
+			"role":      role,
+			"is_admin":  isAdmin,
+			"is_active": true,
 		})
 	}
 }

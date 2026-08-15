@@ -318,12 +318,13 @@ func PurgeAllLogs(database *sql.DB, ic *control.IngestionController) gin.Handler
 }
 
 type TestLDAPRequest struct {
-	Server       string `json:"server" binding:"max=256"`
+	Server       string `json:"server"`
 	Port         int    `json:"port"`
 	UseTLS       bool   `json:"use_tls"`
-	BaseDN       string `json:"base_dn" binding:"max=512"`
-	BindDN       string `json:"bind_dn" binding:"max=512"`
-	BindPassword string `json:"bind_password" binding:"max=256"`
+	VerifyCert   bool   `json:"verify_cert"`
+	BaseDN       string `json:"base_dn"`
+	BindDN       string `json:"bind_dn"`
+	BindPassword string `json:"bind_password"`
 }
 
 func TestLDAP(database *sql.DB) gin.HandlerFunc {
@@ -397,5 +398,18 @@ func ResumeIngestion(ic *control.IngestionController) gin.HandlerFunc {
 func GetIngestionStatus(ic *control.IngestionController) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"paused": ic.IsPaused()})
+	}
+}
+
+func GetSlowQueries() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, GetSlowQueryRecords())
+	}
+}
+
+func ClearSlowQueriesHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ClearSlowQueries()
+		c.JSON(http.StatusOK, gin.H{"message": "Slow query log cleared"})
 	}
 }

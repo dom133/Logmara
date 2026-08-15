@@ -73,7 +73,7 @@ func Migrate(db *sql.DB) error {
 			parsed_fields JSONB DEFAULT '{}',
 			created_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_timestamp ON syslog_logs (timestamp DESC)`,
+		`DROP INDEX IF EXISTS idx_syslog_timestamp`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_hostname ON syslog_logs (hostname)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_severity ON syslog_logs (severity)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_app_name ON syslog_logs (app_name)`,
@@ -91,6 +91,27 @@ func Migrate(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_syslog_fts ON syslog_logs USING GIN (search_vector)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_dev_ts ON syslog_logs (fromhost_ip, timestamp DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_sev_ts ON syslog_logs (severity, timestamp DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_ts_sev_host_cover ON syslog_logs (timestamp DESC) INCLUDE (severity, hostname)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_ts_dev_cover ON syslog_logs (timestamp DESC) INCLUDE (fromhost_ip, hostname)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_dev_sev_cover ON syslog_logs (fromhost_ip) INCLUDE (hostname)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_sev_dev_cover ON syslog_logs (severity) INCLUDE (fromhost_ip, hostname)`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_summary AS
+			SELECT
+				NOW() as refreshed_at,
+				COUNT(*) as total_logs,
+				COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour') as logs_last_hour,
+				COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 day') as logs_last_day,
+				COUNT(DISTINCT hostname) as unique_devices,
+				COUNT(DISTINCT fromhost_ip) as unique_ips
+			FROM syslog_logs
+		`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_summary_key ON mv_dashboard_summary (refreshed_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_coalesce_fromhost_ip ON syslog_logs (COALESCE(fromhost_ip, ''))`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_app_ts_cover ON syslog_logs (app_name, timestamp DESC) INCLUDE (hostname, severity)`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_severity AS
+			SELECT NOW() as refreshed_at, severity, COUNT(*) as cnt FROM syslog_logs GROUP BY severity
+		`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_severity_key ON mv_dashboard_severity (severity)`,
 		`CREATE TABLE IF NOT EXISTS users (
 			id SERIAL PRIMARY KEY,
 			username VARCHAR(100) UNIQUE NOT NULL,
@@ -187,6 +208,52 @@ func Migrate(db *sql.DB) error {
 			updated_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='device_aliases' AND column_name='old_hostname') THEN ALTER TABLE device_aliases ADD COLUMN old_hostname VARCHAR(255); END IF; END $$`,
+		`DO $$
+DECLARE
+	v_min_ts TIMESTAMPTZ;
+	v_max_ts TIMESTAMPTZ;
+	v_start DATE;
+	v_end DATE;
+	v_curr DATE;
+	v_part_name TEXT;
+BEGIN
+	-- Skip if already partitioned
+	IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p') THEN
+		RETURN;
+	END IF;
+
+	SELECT MIN(timestamp), MAX(timestamp) INTO v_min_ts, v_max_ts FROM syslog_logs;
+
+	IF v_min_ts IS NOT NULL THEN
+		v_start := date_trunc('month', v_min_ts)::DATE;
+		v_end := (date_trunc('month', v_max_ts) + INTERVAL '1 month')::DATE;
+	ELSE
+		v_start := date_trunc('month', NOW())::DATE;
+		v_end := (date_trunc('month', NOW()) + INTERVAL '1 month')::DATE;
+	END IF;
+
+	ALTER TABLE syslog_logs DROP CONSTRAINT IF EXISTS syslog_logs_pkey;
+	ALTER TABLE syslog_logs ADD PRIMARY KEY (timestamp, id);
+	ALTER TABLE syslog_logs SET PARTITION KEY (RANGE (timestamp));
+
+	v_curr := v_start;
+	WHILE v_curr < v_end LOOP
+		v_part_name := 'syslog_logs_' || to_char(v_curr, 'YYYY_MM');
+		EXECUTE format(
+			'CREATE TABLE IF NOT EXISTS %I PARTITION OF syslog_logs FOR VALUES FROM (%L) TO (%L)',
+			v_part_name, v_curr, v_curr + INTERVAL '1 month'
+		);
+		v_curr := v_curr + INTERVAL '1 month';
+	END LOOP;
+
+	CREATE TABLE IF NOT EXISTS syslog_logs_default PARTITION OF syslog_logs DEFAULT;
+	CREATE INDEX IF NOT EXISTS idx_syslog_timestamp ON syslog_logs USING BRIN (timestamp);
+	CREATE INDEX IF NOT EXISTS idx_syslog_recent_7d ON syslog_logs (timestamp DESC) WHERE timestamp >= NOW() - INTERVAL '7 days';
+END $$`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_timeline_hourly AS
+			SELECT date_trunc('hour', timestamp) AS hour, COUNT(*) AS cnt FROM syslog_logs GROUP BY 1 ORDER BY 1
+		`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_timeline_hourly_key ON mv_timeline_hourly (hour)`,
 	}
 
 	for _, stmt := range statements {
@@ -581,4 +648,25 @@ func GetUserByUsername(db *sql.DB, username string) (*User, error) {
 		return nil, err
 	}
 	return &u, nil
+}
+
+func RefreshMaterializedViews(db *sql.DB) {
+	slog.Info("refreshing materialized views")
+	_, err1 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_summary")
+	_, err2 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_severity")
+	if err1 != nil || err2 != nil {
+		slog.Error("materialized view refresh failed", "err1", err1, "err2", err2)
+	}
+	slog.Info("materialized views refreshed")
+}
+
+func StartMVRefreshLoop(db *sql.DB, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			RefreshMaterializedViews(db)
+		}
+	}()
+	slog.Info("materialized view refresh loop started", "interval", interval)
 }
