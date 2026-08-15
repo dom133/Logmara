@@ -36,7 +36,7 @@ api.interceptors.response.use(
   response => response,
   error => {
     const originalRequest = error.config
-    if (error.response?.status === 401 && originalRequest.url !== '/auth/login' && originalRequest.url !== '/auth/refresh' && originalRequest.url !== '/auth/me' && window.location.pathname !== '/login') {
+    if (error.response?.status === 401 && originalRequest.url !== '/auth/login' && originalRequest.url !== '/auth/refresh' && originalRequest.url !== '/auth/me' && originalRequest.url !== '/auth/session-check' && originalRequest.url !== '/auth/activity' && window.location.pathname !== '/login') {
       window.location.href = '/login'
     }
     return Promise.reject(error)
@@ -92,7 +92,7 @@ export interface DeviceStats {
   uses_proxy: boolean
 }
 
-export interface LogsPage {
+interface LogsPage {
   logs: LogEntry[]
   has_more: boolean
   next_cursor: string
@@ -159,11 +159,6 @@ export async function getDevices() {
 
 export function resolveDeviceDisplayName(device: DeviceStats): string {
   return device.display_name || device.hostname || device.fromhost_ip || '-'
-}
-
-export async function getDeviceStats() {
-  const res = await api.get('/devices')
-  return (res.data?.devices || []) as DeviceStats[]
 }
 
 export async function updateDeviceAlias(ip: string, displayName: string) {
@@ -253,7 +248,7 @@ export interface ParserFieldDef {
   type: string
 }
 
-export interface ParserTestResponse {
+interface ParserTestResponse {
   matched: boolean
   parser_name: string | null
   fields: Record<string, string> | null
@@ -297,7 +292,7 @@ export interface Dashboard {
 	updated_by_username: string
 }
 
-export interface DashboardDataResponse {
+interface DashboardDataResponse {
   logs: LogEntry[]
   has_more: boolean
   next_cursor: string
@@ -668,7 +663,7 @@ export async function getDbConfig() {
 	return res.data as DbConfig
 }
 
-export interface DatabaseSettings {
+interface DatabaseSettings {
 	host: string
 	port: number
 	name: string
@@ -699,7 +694,7 @@ export async function clearSlowQueries() {
 
 // --- Health (Admin > Health) ---
 
-export interface ContainerHealth {
+interface ContainerHealth {
 	name: string
 	image: string
 	state: string
@@ -708,7 +703,7 @@ export interface ContainerHealth {
 	node?: string
 }
 
-export interface ServiceHealth {
+interface ServiceHealth {
 	name: string
 	mode: string
 	image: string
@@ -719,7 +714,7 @@ export interface ServiceHealth {
 	tasks: ContainerHealth[]
 }
 
-export interface RelayHealth {
+interface RelayHealth {
 	label: string
 	ip_address: string
 	cert_status: string
@@ -758,7 +753,7 @@ export interface SSLCertInfo {
 	error?: string
 }
 
-export interface SSLUploadResult {
+interface SSLUploadResult {
 	message?: string
 	cert_info?: SSLCertInfo
 }
@@ -897,7 +892,7 @@ export type AlertRuleType = 'log_threshold' | 'device_silence' | 'audit_log' | '
 export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app' | 'push'
 export type FieldConditionOperator = 'equals' | 'contains' | 'not_equals' | 'regex'
 
-export type FieldConditionsLogic = 'and' | 'or'
+type FieldConditionsLogic = 'and' | 'or'
 
 export interface AlertFieldCondition {
 	id?: number
@@ -1223,7 +1218,7 @@ export interface WorkerMetrics {
   reconnect_count: number
 }
 
-export interface TailerMetrics {
+interface TailerMetrics {
   NumWorkers: number
   QueueDepth: number
   QueueMaxLen: number
@@ -1262,7 +1257,7 @@ export interface AggregatedTailerMetrics {
   UpdatedAt: string
 }
 
-export interface TailerMetricsResponse {
+interface TailerMetricsResponse {
   pipeline_active: boolean
   metrics: AggregatedTailerMetrics | null
   replicas: ReplicaTailerMetrics[] | null
@@ -1278,7 +1273,6 @@ export interface SecretRotationStatus {
   name: string
   last_rotated_at: string | null
   last_result: string
-  last_error: string
   has_secondary_key: boolean
   rabbitmq_connected?: boolean
 }
@@ -1292,17 +1286,12 @@ export interface RotationStatus {
   secrets: SecretRotationStatus[]
 }
 
-export interface RotationTriggerResponse {
-  status: string
-  message: string
-}
-
 export async function getRotationStatus(): Promise<RotationStatus> {
   const res = await api.get('/admin/rotation/status')
   return res.data
 }
 
-export async function triggerRotation(): Promise<RotationTriggerResponse> {
+export async function triggerRotation(): Promise<RotationStatus> {
   const res = await api.post('/admin/rotation/trigger')
   return res.data
 }

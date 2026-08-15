@@ -12,9 +12,9 @@ import (
 )
 
 func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func(), func(), func(), func()) {
-	vacuumInterval := getIntervalHours("VACUUM_INTERVAL_HOURS", "vacuum_interval_hours", 24)
-	mvInterval := getIntervalMinutes("MV_REFRESH_INTERVAL_MIN", "mv_refresh_interval_min", 30)
-	partitionInterval := getIntervalHours("PARTITION_CREATE_INTERVAL_HOURS", "partition_create_interval_hours", 24)
+	vacuumInterval := getIntervalHours("VACUUM_INTERVAL_HOURS", 24)
+	mvInterval := getIntervalMinutes("MV_REFRESH_INTERVAL_MIN", 30)
+	partitionInterval := getIntervalHours("PARTITION_CREATE_INTERVAL_HOURS", 24)
 
 	// StartMaintenance itself runs synchronously on main's startup path,
 	// before the real HTTP listener binds (see main.go's <-schemaReady wait)
@@ -357,7 +357,7 @@ func RefreshMV(ctx context.Context, db *sql.DB) {
 	}
 }
 
-func getIntervalHours(envKey, settingKey string, defaultHours int) time.Duration {
+func getIntervalHours(envKey string, defaultHours int) time.Duration {
 	if v := os.Getenv(envKey); v != "" {
 		if h, err := strconv.Atoi(v); err == nil && h > 0 {
 			return time.Duration(h) * time.Hour
@@ -366,7 +366,7 @@ func getIntervalHours(envKey, settingKey string, defaultHours int) time.Duration
 	return time.Duration(defaultHours) * time.Hour
 }
 
-func getIntervalMinutes(envKey, settingKey string, defaultMinutes int) time.Duration {
+func getIntervalMinutes(envKey string, defaultMinutes int) time.Duration {
 	if v := os.Getenv(envKey); v != "" {
 		if m, err := strconv.Atoi(v); err == nil && m > 0 {
 			return time.Duration(m) * time.Minute

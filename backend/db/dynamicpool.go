@@ -64,14 +64,6 @@ func (dp *DynamicPool) Rotate(dsn string) error {
 	return nil
 }
 
-// RotationStatus returns the timestamp, result, and error of the last
-// rotation attempt. Safe to call concurrently.
-func (dp *DynamicPool) RotationStatus() (time.Time, string, string) {
-	dp.mu.RLock()
-	defer dp.mu.RUnlock()
-	return dp.lastRotatedAt, dp.lastResult, dp.lastError
-}
-
 // Close shuts down the current pool.
 func (dp *DynamicPool) Close() {
 	db := dp.db.Load().(*sql.DB)

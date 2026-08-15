@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -33,7 +32,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const appVersion = "0.0.3"
+const appVersion = "0.1.0"
+
+// logFilePath is set during main() and used by the SIGUSR1 handler.
+var logFilePath string
 
 func versionHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"version": appVersion})
@@ -239,8 +241,8 @@ func (rl *rateLimiter) Allow(ip string) bool {
 	return true
 }
 
-// loadRotationTimestamps restores rotation timestamps from the database
-// so the UI doesn't show "never rotated" after a restart.
+// loadRotationTimestamps restores rotation timestamps and results from the
+// database so the UI doesn't show "never rotated" after a restart.
 func loadRotationTimestamps(database *sql.DB) {
 	var last time.Time
 	if ts := db.GetSetting(database, "secret_rotation_last_at", ""); ts != "" {
@@ -255,6 +257,9 @@ func loadRotationTimestamps(database *sql.DB) {
 		}
 	}
 	if !last.IsZero() {
+		if next.IsZero() || next.Before(time.Now()) {
+			next = last.Add(24 * time.Hour)
+		}
 		handler.SetRotationTimestamps(last, next)
 	}
 
@@ -269,6 +274,10 @@ func loadRotationTimestamps(database *sql.DB) {
 			if t, err := time.Parse(time.RFC3339, ts); err == nil {
 				handler.SetSecretLastRotatedAt(i, t)
 			}
+		}
+		prefix := key[:len(key)-3]
+		if result := db.GetSetting(database, prefix+"_result", ""); result != "" {
+			handler.RestoreSecretResult(i, result)
 		}
 	}
 }
@@ -570,12 +579,13 @@ func main() {
 	go vc.StartRotation(ctx, vaultclient.RotationCallbacks{
 		RotateJWTSecret: func(s string) {
 			authCfg.RotateSecret(s)
-			handler.SetSecretRotationResult(0, "success", "")
+			handler.SetSecretRotationResult(0, "success")
 			now := time.Now()
 			handler.SetRotationTimestamps(now, now.Add(24*time.Hour))
 			go func() {
-				time.Sleep(24 * time.Hour)
+				time.Sleep(4 * time.Hour)
 				authCfg.ClearSecondarySecret()
+				handler.ClearSecondaryKeyFlag(0)
 			}()
 		},
 		RotateEncryptionKey: func(s string) {
@@ -584,22 +594,23 @@ func main() {
 			ok, failed, err := util.ReencryptAllSecrets(db)
 			if failed > 0 {
 				slog.Error("util: re-encryption failed for some secrets", "ok", ok, "failed", failed, "error", err)
-				handler.SetSecretRotationResult(1, "failed", fmt.Sprintf("re-encryption failed for %d secrets", failed))
+				handler.SetSecretRotationResult(1, "failed")
 			} else {
 				slog.Info("util: all secrets re-encrypted, scheduling secondary key cleanup", "count", ok)
-				handler.SetSecretRotationResult(1, "success", "")
+				handler.SetSecretRotationResult(1, "success")
 				go func() {
-					time.Sleep(24 * time.Hour)
+					time.Sleep(4 * time.Hour)
 					util.ClearSecondaryEncryptionKey()
+					handler.ClearSecondaryKeyFlag(1)
 				}()
 			}
 		},
 		RotateRabbitMQURL: func(newURL string) {
 			if err := tailer.RotateRabbitMQURL(newURL); err != nil {
 				slog.Error("rabbitmq: failed to apply rotated URL", "error", err)
-				handler.SetSecretRotationResult(3, "failed", err.Error())
+				handler.SetSecretRotationResult(3, "failed")
 			} else {
-				handler.SetSecretRotationResult(3, "success", "")
+				handler.SetSecretRotationResult(3, "success")
 			}
 		},
 		// PostgreSQL: the live connection pool is wrapped behind a DynamicPool
@@ -608,11 +619,19 @@ func main() {
 		RotatePostgreSQLDSN: func(newDSN string) {
 			if err := dynamicPool.Rotate(newDSN); err != nil {
 				slog.Error("postgres: failed to rotate connection pool", "error", err)
-				handler.SetSecretRotationResult(2, "failed", err.Error())
+				handler.SetSecretRotationResult(2, "failed")
 				return
 			}
 			slog.Info("postgres: swapped to rotated connection pool")
-			handler.SetSecretRotationResult(2, "success", "")
+			handler.SetSecretRotationResult(2, "success")
+		},
+		OnRotateFailure: func(engine string, errMsg string) {
+			slog.Warn("vault: dynamic secret rotation failed", "engine", engine, "error", errMsg)
+			if engine == "database" {
+				handler.SetSecretRotationResult(2, "failed")
+			} else if engine == "rabbitmq" {
+				handler.SetSecretRotationResult(3, "failed")
+			}
 		},
 	})
 
@@ -630,6 +649,8 @@ func main() {
 		broadcaster := sharedstate.NewBroadcaster(sharedClient)
 		handler.SetCacheBroadcaster(broadcaster)
 		go handler.StartCacheInvalidationSubscriber(ctx, broadcaster)
+		handler.SetRotationBroadcaster(broadcaster)
+		go handler.StartRotationSyncSubscriber(ctx, broadcaster)
 		handler.SetSlowQueryStore(sharedClient)
 	}
 
@@ -641,6 +662,11 @@ func main() {
 	audit.SetAlertEngine(alertEngine)
 	notifHub := notifyhub.NewHub(ctx, sharedClient)
 	alertEngine.SetOnInApp(notifHub.Publish)
+
+	// Maintenance state tracks pre-update preparation lifecycle.
+	// In HA mode it's synced via Redis so any replica can trigger or poll status.
+	maintenanceState := sharedstate.NewMaintenanceState(sharedClient)
+	tailer.SetMaintenanceState(maintenanceState)
 
 	// Redis-backed (shared across replicas) when sharedClient is set, so the
 	// dashboard's logs/sec figure is the same regardless of which replica
@@ -718,6 +744,11 @@ r := gin.New()
 	r.GET("/api/health", handler.HealthCheck(dynamicPool))
 	r.GET("/api/version", versionHandler)
 	r.GET("/api/settings/default-language", defaultLanguageHandler(dynamicPool))
+
+	// Maintenance endpoints - unauthenticated, Docker-network only.
+	// Used by deployment scripts to prepare for rolling updates.
+	r.POST("/api/maintenance/pre-update", handler.MaintenancePreUpdate(logFilePath))
+	r.GET("/api/maintenance/status", handler.MaintenanceStatus())
 
 	metricsGroup := r.Group("/api")
 	metricsGroup.Use(authCfg.JWTRequired())
@@ -831,12 +862,8 @@ r := gin.New()
 			adminGroup.PUT("/settings", handler.UpdateSettings(dynamicPool))
 			adminGroup.POST("/settings/cleanup", handler.CleanupLogs(dynamicPool))
 			adminGroup.DELETE("/logs", handler.PurgeAllLogs(dynamicPool, ic))
-			adminGroup.POST("/ingestion/pause", handler.PauseIngestion(ic))
-			adminGroup.POST("/ingestion/resume", handler.ResumeIngestion(ic))
-			adminGroup.GET("/ingestion/status", handler.GetIngestionStatus(ic))
 			adminGroup.GET("/tailer-metrics", handler.GetTailerMetrics())
 			adminGroup.POST("/ldap/test", handler.TestLDAP(dynamicPool))
-			adminGroup.POST("/audit-log", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetAuditLog(dynamicPool))
 			adminGroup.POST("/audit-logs", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetAuditLogsHandler(dynamicPool))
 			adminGroup.GET("/slow-queries", handler.GetSlowQueries())
 			adminGroup.DELETE("/slow-queries", handler.ClearSlowQueriesHandler())
@@ -844,7 +871,6 @@ r := gin.New()
 			adminGroup.PUT("/devices/:ip/alias", handler.UpdateDeviceAlias(dynamicPool))
 		adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(dynamicPool))
 		adminGroup.POST("/nginx-reload", handler.ReloadNginx(dynamicPool))
-		adminGroup.GET("/rabbitmq-url", handler.GetRabbitMQURL())
 		adminGroup.GET("/rotation/status", handler.GetRotationStatus())
 		adminGroup.POST("/rotation/trigger", handler.TriggerRotation())
 
@@ -947,8 +973,22 @@ r := gin.New()
 			}
 		}
 		sharedstate.WaitForReplicas(ctx, sharedClient, identity, apiReplicas, 10*time.Minute)
+
+		// Auto-resume ingestion after rolling update.
+		// If pre-update maintenance completed (file truncated, position reset),
+		// clear the flag and resume ingestion so the tailer starts from 0.
+		if maintenanceState.Status() == sharedstate.MaintenanceCompleted {
+			slog.Info("maintenance: detected completed pre-update, auto-resuming ingestion")
+			maintenanceState.Clear()
+			ic.Resume()
+		}
+
 		tailer.Run(ctx, dynamicPool, logFilePath, engine, ic, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient)
 	}()
+
+	// SIGUSR1 handler for pre-update preparation (Unix only).
+	// Setup is in maintenance_unix.go (build-tagged).
+	setupMaintenanceSignal()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

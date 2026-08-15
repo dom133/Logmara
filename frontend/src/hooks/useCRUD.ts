@@ -1,14 +1,14 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { message, FormInstance } from 'antd'
 
-export interface CrudState<T> {
+interface CrudState<T> {
   items: T[]
   loading: boolean
   modalOpen: boolean
   editing: T | null
 }
 
-export interface CrudHandlers<T, CreateData, UpdateData> {
+interface CrudHandlers<T, CreateData, UpdateData> {
   items: T[]
   loading: boolean
   modalOpen: boolean

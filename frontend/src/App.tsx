@@ -327,7 +327,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
               </Button>
             </div>
           </Header>
-          <Content style={{ margin: 16, padding: 24, background: token.colorBgContainer, borderRadius: 8 }}>
+          <Content style={{ margin: isMobile ? 8 : 16, padding: isMobile ? 12 : 24, background: token.colorBgContainer, borderRadius: 8 }}>
             <PasswordExpiryWarning />
             <ErrorBoundary>{children}</ErrorBoundary>
           </Content>
@@ -373,9 +373,9 @@ function AppLayout({ children }: { children: React.ReactNode }) {
 }
 
 function PrivateRoute({ children, requireAdmin }: { children: React.ReactNode; requireAdmin?: boolean }) {
-  const { user, isAdmin, loading } = useAuth()
+  const { user, isAdmin, loading, refreshing } = useAuth()
   const location = useLocation()
-  if (loading) return null
+  if (loading || refreshing) return <RouteFallback />
   if (!user) return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />
   if (requireAdmin && !isAdmin) return <Navigate to="/" replace />
   return <AppLayout>{children}</AppLayout>

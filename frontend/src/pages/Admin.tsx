@@ -3,7 +3,7 @@ import { Card, Table, Button, Modal, Form, Input, Select, Switch, Checkbox, Spac
 import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PlusOutlined, CopyOutlined, KeyOutlined, CloudOutlined, ContainerOutlined, CheckCircleOutlined, WarningOutlined, DashOutlined, NodeIndexOutlined, ClusterOutlined, GlobalOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react/esm/core'
 import echarts from '../utils/echarts-core'
-import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, AggregatedTailerMetrics, ReplicaTailerMetrics, WorkerMetrics, SSLCertInfo, getRotationStatus, triggerRotation, RotationStatus, SecretRotationStatus } from '../services/api'
+import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDevices, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, AggregatedTailerMetrics, ReplicaTailerMetrics, WorkerMetrics, SSLCertInfo, getRotationStatus, triggerRotation, RotationStatus, SecretRotationStatus } from '../services/api'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
 import { useAuth } from '../services/auth'
@@ -11,6 +11,7 @@ import AdminUsers from '../components/AdminUsers'
 import { containerStateColor, containerStateIcon, serviceStateColor, serviceStateIcon, serviceStateLabel } from '../utils/adminUtils'
 import { SEVERITY_ORDER, SEVERITY_COLORS, getSeverityLabels } from '../constants'
 import { useTranslation } from 'react-i18next'
+import { useIsMobile } from '../hooks/useIsMobile'
 import i18nInstance, { languageDisplayName, sortLanguagesEnglishFirst, getLoadedLanguages } from '../i18n'
 
 const { Option } = Select
@@ -97,6 +98,7 @@ export default function Admin() {
   const [auditDetailRecord, setAuditDetailRecord] = useState<AuditLog | null>(null)
   const [activeTab, setActiveTab] = useState('users')
   const tabCacheRef = useRef<Map<string, { loadedAt: number }>>(new Map())
+  const isMobile = useIsMobile()
 
   // API Keys state
   const [apiKeys, setApiKeys] = useState<APIKey[]>([])
@@ -245,7 +247,7 @@ await testLDAPConnection({
     setDevicesLoading(true)
     try {
       const [data, alerts] = await Promise.all([
-        getDeviceStats(),
+        getDevices(),
         getAlerts().catch(() => [] as AlertRule[]),
       ])
       setDevices(data)
@@ -377,9 +379,17 @@ await testLDAPConnection({
   const handleTriggerRotation = async () => {
     setRotating(true)
     try {
-      await triggerRotation()
-      message.success(t('admin.rotationSuccess'))
-      loadRotationStatus()
+      const status = await triggerRotation()
+      setRotationStatus(status)
+      const failed = status.secrets.filter((s: SecretRotationStatus) => s.last_result === 'failed')
+      const succeeded = status.secrets.filter((s: SecretRotationStatus) => s.last_result === 'success')
+      if (failed.length > 0 && succeeded.length === 0) {
+        message.error(t('admin.rotationFailed'))
+      } else if (failed.length > 0) {
+        message.warning(t('admin.rotationPartial'))
+      } else {
+        message.success(t('admin.rotationSuccess'))
+      }
     } catch (e: unknown) {
       message.error(getErrorMessage(e, t('admin.rotationFailed')))
     } finally {
@@ -1713,18 +1723,18 @@ const handleCleanup = async () => {
                       {isStale && <Tag icon={<WarningOutlined />} color="warning">{t('admin.staleData')}</Tag>}
                     </Space>
                   }
-                  extra={
-                    <Space>
-                      {tailerMetrics && (
-                        <Tooltip title={new Date(tailerMetrics.UpdatedAt).toLocaleString()}>
-                          <Tag>{t('admin.lastUpdated')}: {formatDurationAgo(updatedAgoMs)}</Tag>
-                        </Tooltip>
-                      )}
-                      <Button icon={<ReloadOutlined />} onClick={loadTailerMetrics} loading={tailerLoading}>
-                        {t('common.refresh')}
-                      </Button>
-                    </Space>
-                  }
+                    extra={
+                      <Space wrap>
+                        {tailerMetrics && (
+                          <Tooltip title={new Date(tailerMetrics.UpdatedAt).toLocaleString()}>
+                            <Tag>{t('admin.lastUpdated')}: {formatDurationAgo(updatedAgoMs)}</Tag>
+                          </Tooltip>
+                        )}
+                        <Button icon={<ReloadOutlined />} onClick={loadTailerMetrics} loading={tailerLoading}>
+                          {t('common.refresh')}
+                        </Button>
+                      </Space>
+                    }
                 >
                   {!tailerPipelineActive ? (
                     <Result
@@ -1735,12 +1745,12 @@ const handleCleanup = async () => {
                   ) : tailerMetrics ? (
                     <div>
                       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-                        <Col xs={24} sm={12} md={4}>
+                        <Col xs={24} sm={8} md={4}>
                           <Card>
                             <Statistic title={t('admin.numWorkers')} value={tailerMetrics.NumWorkers} />
                           </Card>
                         </Col>
-                        <Col xs={24} sm={12} md={4}>
+                        <Col xs={24} sm={8} md={4}>
                           <Card>
                             <Statistic
                               title={t('admin.queueDepth')}
@@ -1758,19 +1768,19 @@ const handleCleanup = async () => {
                             {tailerMetrics.QueueFull && <Tag color="red" style={{ marginTop: 4 }}>{t('admin.queueFull')}</Tag>}
                           </Card>
                         </Col>
-                        <Col xs={24} sm={12} md={4}>
+                        <Col xs={24} sm={8} md={4}>
                           <Card>
                             <Tooltip title={t('admin.logsPerSecondClusterTooltip')}>
                               <Statistic title={t('admin.logsPerSecond')} value={tailerMetrics.LogsPerSec} precision={1} />
                             </Tooltip>
                           </Card>
                         </Col>
-                        <Col xs={24} sm={12} md={4}>
+                        <Col xs={24} sm={8} md={4}>
                           <Card>
                             <Statistic title={t('admin.flushedPosition')} value={tailerMetrics.FlushedPos} />
                           </Card>
                         </Col>
-                        <Col xs={24} sm={12} md={4}>
+                        <Col xs={24} sm={8} md={4}>
                           <Card>
                             <Statistic
                               title={t('admin.reconnects')}
@@ -1779,7 +1789,7 @@ const handleCleanup = async () => {
                             />
                           </Card>
                         </Col>
-                        <Col xs={24} sm={12} md={4}>
+                        <Col xs={24} sm={8} md={4}>
                           <Card>
                             <Statistic
                               title={t('admin.parseErrors')}
@@ -1793,9 +1803,9 @@ const handleCleanup = async () => {
                         <Col xs={24} md={12}>
                           <Card size="small" title={t('admin.logsPerSecTrend')}>
                             {tailerHistory.length > 1 ? (
-                              <ReactECharts echarts={echarts} option={tailerLogsRateOption} style={{ height: 200 }} />
+                              <ReactECharts echarts={echarts} option={tailerLogsRateOption} style={{ height: isMobile ? 150 : 200 }} />
                             ) : (
-                              <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,0,0,0.45)' }}>
+                              <div style={{ height: isMobile ? 150 : 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,0,0,0.45)' }}>
                                 {t('admin.gatheringHistory')}
                               </div>
                             )}
@@ -1804,9 +1814,9 @@ const handleCleanup = async () => {
                         <Col xs={24} md={12}>
                           <Card size="small" title={t('admin.queueDepthTrend')}>
                             {tailerHistory.length > 1 ? (
-                              <ReactECharts echarts={echarts} option={tailerQueueDepthOption} style={{ height: 200 }} />
+                              <ReactECharts echarts={echarts} option={tailerQueueDepthOption} style={{ height: isMobile ? 150 : 200 }} />
                             ) : (
-                              <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,0,0,0.45)' }}>
+                              <div style={{ height: isMobile ? 150 : 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,0,0,0.45)' }}>
                                 {t('admin.gatheringHistory')}
                               </div>
                             )}
@@ -1818,6 +1828,7 @@ const handleCleanup = async () => {
                         dataSource={tailerMetrics.WorkerMetrics}
                         pagination={false}
                         size="small"
+                        scroll={{ x: 'max-content' }}
                         title={() => t('admin.workerStats')}
                         columns={[
                           {
@@ -1886,20 +1897,20 @@ const handleCleanup = async () => {
                             size="small"
                           >
                             <Row gutter={[16, 16]} style={{ marginBottom: 12 }}>
-                              <Col xs={24} sm={6}>
+                              <Col xs={12} sm={6}>
                                 <Statistic title={t('admin.numWorkers')} value={replica.NumWorkers} />
                               </Col>
-                              <Col xs={24} sm={6}>
+                              <Col xs={12} sm={6}>
                                 <Statistic title={t('admin.msgsProcessed')} value={replicaMsgsProcessed} />
                               </Col>
-                              <Col xs={24} sm={6}>
+                              <Col xs={12} sm={6}>
                                 <Statistic
                                   title={t('admin.reconnects')}
                                   value={replicaReconnects}
                                   valueStyle={replicaReconnects ? { color: '#cf1322' } : undefined}
                                 />
                               </Col>
-                              <Col xs={24} sm={6}>
+                              <Col xs={12} sm={6}>
                                 <Tooltip title={new Date(replica.UpdatedAt).toLocaleString()}>
                                   <Statistic title={t('admin.lastUpdated')} value={formatDurationAgo(replicaUpdatedAgoMs)} />
                                 </Tooltip>
@@ -1910,6 +1921,7 @@ const handleCleanup = async () => {
                               dataSource={replica.WorkerMetrics}
                               pagination={false}
                               size="small"
+                              scroll={{ x: 'max-content' }}
                               columns={[
                                 {
                                   title: t('admin.workerId'),
@@ -1988,22 +2000,22 @@ const handleCleanup = async () => {
               return (
                 <Card
                   title={t('admin.rotationTitle')}
-                  extra={rotationStatus?.vault_enabled ? (
-                    <Button
-                      type="primary"
-                      icon={<ReloadOutlined />}
-                      loading={rotating}
-                      onClick={() => {
-                        Modal.confirm({
-                          title: t('admin.rotateNow'),
-                          content: t('admin.rotateNowConfirm'),
-                          okText: t('admin.rotateNow'),
-                          cancelText: t('common.cancel'),
-                          onOk: handleTriggerRotation,
-                        })
-                      }}
-                    >
-                      {t('admin.rotateNow')}
+                    extra={rotationStatus?.vault_enabled ? (
+                      <Button
+                        type="primary"
+                        icon={<ReloadOutlined />}
+                        loading={rotating}
+                        onClick={() => {
+                          Modal.confirm({
+                            title: t('admin.rotateNow'),
+                            content: t('admin.rotateNowConfirm'),
+                            okText: t('admin.rotateNow'),
+                            cancelText: t('common.cancel'),
+                            onOk: handleTriggerRotation,
+                          })
+                        }}
+                      >
+                        {!isMobile && t('admin.rotateNow')}
                     </Button>
                   ) : null}
                 >
@@ -2015,7 +2027,7 @@ const handleCleanup = async () => {
                     />
                   ) : (
                     <div>
-                      <Descriptions bordered column={2} size="small" style={{ marginBottom: 24 }}>
+                      <Descriptions bordered column={{ xs: 1, sm: 2 }} size="small" style={{ marginBottom: 24 }}>
                         <Descriptions.Item label={t('admin.rotationInterval')}>{rotationStatus?.rotation_interval}</Descriptions.Item>
                         <Descriptions.Item label={t('admin.lastRotation')}>{formatTime(rotationStatus?.last_rotation_at)}</Descriptions.Item>
                         <Descriptions.Item label={t('admin.nextRotation')}>{formatTime(rotationStatus?.next_rotation_at)}</Descriptions.Item>
@@ -2025,6 +2037,7 @@ const handleCleanup = async () => {
                         size="small"
                         pagination={false}
                         rowKey="name"
+                        scroll={{ x: 'max-content' }}
                         columns={[
                           {
                             title: t('common.name'),
@@ -2049,9 +2062,6 @@ const handleCleanup = async () => {
                               <Space direction="vertical" size={4}>
                                 <Tag color={resultColor(result)}>{resultLabel(result)}</Tag>
                                 {record.has_secondary_key && <Tag color="orange">{t('admin.secondaryKeyActive')}</Tag>}
-                                {record.last_error && (
-                                  <span style={{ wordBreak: 'break-all', fontSize: 12 }}>{record.last_error}</span>
-                                )}
                               </Space>
                             ),
                           },

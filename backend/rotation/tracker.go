@@ -17,7 +17,6 @@ const (
 // SecretResult holds the outcome of a single secret rotation attempt.
 type SecretResult struct {
 	Result string    `json:"result"`
-	Error  string    `json:"error"`
 	Time   time.Time `json:"time"`
 }
 
@@ -25,8 +24,8 @@ type SecretStatus struct {
 	Name            string `json:"name"`
 	LastRotatedAt   *time.Time `json:"last_rotated_at"`
 	LastResult      string     `json:"last_result"`
-	LastError       string     `json:"last_error"`
 	HasSecondaryKey bool       `json:"has_secondary_key"`
+	RabbitMQHost    string     `json:"rabbitmq_host,omitempty"`
 }
 
 type Status struct {
@@ -78,7 +77,7 @@ func (t *Tracker) SetRotationTimestamps(last, next time.Time) {
 	t.nextRotationAt.Store(&next)
 }
 
-func (t *Tracker) SetSecretResult(secret string, result string, errMsg string) {
+func (t *Tracker) SetSecretResult(secret string, result string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -90,7 +89,6 @@ func (t *Tracker) SetSecretResult(secret string, result string, errMsg string) {
 	now := time.Now()
 	s.LastRotatedAt = &now
 	s.LastResult = result
-	s.LastError = errMsg
 
 	if secret == SecretJWT || secret == SecretEncryption {
 		s.HasSecondaryKey = true
@@ -127,7 +125,7 @@ func (t *Tracker) SetRabbitMQHost(rawURL string) {
 			}
 		}
 	}
-	t.secrets[SecretRabbitMQ].LastError = host
+	t.secrets[SecretRabbitMQ].RabbitMQHost = host
 }
 
 func (t *Tracker) SetRabbitMQConnected(connected bool) {
@@ -170,6 +168,6 @@ func (t *Tracker) GetStatus() Status {
 			*t.secrets[SecretRabbitMQ],
 		},
 		RabbitMQConnected: t.secrets[SecretRabbitMQ].LastResult == "connected",
-		RabbitMQHost:      t.secrets[SecretRabbitMQ].LastError,
+		RabbitMQHost:      t.secrets[SecretRabbitMQ].RabbitMQHost,
 	}
 }
