@@ -283,24 +283,53 @@ change_rabbitmq_password() {
     echo "RabbitMQ password changed successfully"
 }
 
-# Change Redis password inside the running service (all 3 nodes)
+# Change Redis password inside the running service (all 3 data nodes plus
+# the 3 sentinels that monitor them). Both groups match a
+# "name=logmara-redis" filter (same stack prefix), so the two loops below
+# filter on "_redis"/"_sentinel" specifically rather than reusing one
+# container list - redis-cli's CONFIG SET requirepass/masterauth isn't
+# meaningful against a sentinel process, and SENTINEL SET auth-pass isn't
+# a thing on a data node.
 change_redis_password() {
     local new_pass="$1"
     echo "Changing Redis password..."
     local old_pass
     old_pass=$(read_secret redis_password)
-    # Apply to all running Redis nodes
-    local container_ids
-    container_ids=$(docker ps -q --filter "name=logmara-redis" --filter "status=running")
-    if [[ -z "$container_ids" ]]; then
-        echo "ERROR: No running Redis container found" >&2
+
+    # Data nodes (redis1/2/3): update the client-auth and replication
+    # passwords. Already-authenticated connections (existing replication
+    # links, Sentinel's own connections) keep working through this - only
+    # new connections need the new password - so nothing here needs to be
+    # sequenced relative to the sentinel loop below.
+    local redis_ids
+    redis_ids=$(docker ps -q --filter "name=logmara-redis_redis" --filter "status=running")
+    if [[ -z "$redis_ids" ]]; then
+        echo "ERROR: No running Redis data node found" >&2
         return 1
     fi
-    for cid in $container_ids; do
+    for cid in $redis_ids; do
         echo "  Updating Redis node $cid..."
         docker exec "$cid" redis-cli -a "$old_pass" CONFIG SET requirepass "$new_pass" 2>/dev/null || true
         docker exec "$cid" redis-cli -a "$old_pass" CONFIG SET masterauth "$new_pass" 2>/dev/null || true
     done
+
+    # Sentinels: update the password each uses to talk to mymaster/its
+    # replicas, so a reconnect (network blip, or the failover this whole
+    # cluster exists to perform) doesn't authenticate with a password the
+    # data nodes no longer accept. Sentinel's own control port has no
+    # requirepass (see redis/sentinel.conf.tpl), so SENTINEL SET needs no
+    # -a flag here.
+    local sentinel_ids
+    sentinel_ids=$(docker ps -q --filter "name=logmara-redis_sentinel" --filter "status=running")
+    if [[ -z "$sentinel_ids" ]]; then
+        echo "WARNING: No running Sentinel container found - auth-pass not updated, failover may break until sentinels are restarted" >&2
+    else
+        for cid in $sentinel_ids; do
+            echo "  Updating Sentinel $cid..."
+            docker exec "$cid" redis-cli -p 26379 SENTINEL SET mymaster auth-pass "$new_pass" 2>/dev/null || true
+        done
+    fi
+
     echo "Redis password changed successfully"
 }
 
@@ -402,7 +431,9 @@ rotate_one() {
     if [[ "$skip_app_restart" == "true" ]]; then
         case "$name" in
             redis_password)
-                rolling_restart "logmara-redis_redis1" "logmara-redis_redis2" "logmara-redis_redis3"
+                rolling_restart \
+                    "logmara-redis_redis1" "logmara-redis_redis2" "logmara-redis_redis3" \
+                    "logmara-redis_sentinel1" "logmara-redis_sentinel2" "logmara-redis_sentinel3"
                 ;;
             rabbitmq_password)
                 rolling_restart "logmara-rabbitmq_rabbitmq1" "logmara-rabbitmq_rabbitmq2" "logmara-rabbitmq_rabbitmq3"
@@ -418,6 +449,9 @@ rotate_one() {
                     "logmara-redis_redis1" \
                     "logmara-redis_redis2" \
                     "logmara-redis_redis3" \
+                    "logmara-redis_sentinel1" \
+                    "logmara-redis_sentinel2" \
+                    "logmara-redis_sentinel3" \
                     "logmara-app_api"
                 ;;
             rabbitmq_password)
