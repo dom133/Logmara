@@ -48,6 +48,26 @@ A live demo is available at **[demo.logmara.com](https://demo.logmara.com)**:
 | PostgreSQL | 5432 | Persistent log storage |
 | docker-proxy | *(internal only, not published to the host)* | Read-only Docker Engine API sidecar backing [Health Monitoring](#health-monitoring) |
 
+## Features
+
+- 📜 **Live Log Viewer** — Browse, filter, and search ingested syslog messages in real-time
+- 🧩 **Parser Engine** — Define regex-based parsers to extract structured fields from raw log lines
+- 📊 **Custom Dashboards** — Create dashboards filtered by device, severity, or parsed fields
+- 📌 **Pin Dashboards** — Pin frequently-used dashboards to the sidebar for quick access
+- 📤 **Export** — Download logs as CSV or HTML reports
+- 📈 **Statistics** — Timeline charts, severity breakdown, and per-device metrics
+- 🔐 **Secure Authentication** — JWT access tokens (configurable timeout) + refresh tokens (7 days, or 60 with "remember this device" at login) with rotation, JWT blacklisting on logout
+- 📱 **Session Management** — Review and sign out your own active sessions/devices from the navbar (`GET`/`DELETE /api/auth/sessions`)
+- 🔒 **Account Lockout** — Automatic lockout after configurable failed login attempts, admin unlock from Admin panel
+- 🛡️ **CSRF Protection** — Double-submit cookie pattern on all mutating endpoints
+- 🪪 **LDAP/AD Integration** — Authenticate against Active Directory or OpenLDAP with TLS support
+- 📝 **Audit Logging** — Track login attempts, lockouts, unlocks, password changes, and admin actions
+- ⏱️ **Rate Limiting** — Login endpoint protected against brute-force attacks (Redis-shared in HA mode)
+- 🌐 **CORS Protection** — Configurable allowed origins
+- 🧙 **Setup Wizard** — Guided initial configuration with admin account, database, security keys, and optional LDAP/CORS
+- 🛠️ **Admin Panel** — User management, settings, audit log viewer, LDAP connection test
+- 🩺 **Health Monitoring** — Container/Swarm service status and syslog relay liveness in one place (see [Health Monitoring](#health-monitoring))
+
 ## Quick Start (Single Server)
 
 This is the default, fully-supported deployment path: **one server, one command, everything included** — frontend, API, rsyslog ingestion, and PostgreSQL all start together from `docker-compose.yml` (see the Architecture diagram above), nothing to set up separately. It is unaffected by the optional High Availability path below; skip that section entirely unless you specifically need to survive losing an entire server.
@@ -246,7 +266,7 @@ Getting here required backend code changes (not just Docker config) — see "How
 | [`docker-stack.redis.yml`](docker-stack.redis.yml) | 3-node Redis + 3-node Sentinel, backing `backend/sharedstate` (rate limiting, cache invalidation, tailer leader election, ingestion control, slow-query log) |
 | [`redis/sentinel.conf.tpl`](redis/sentinel.conf.tpl) | Sentinel config template loaded as a Swarm config at deploy time |
 | [`docker-stack.app.yml`](docker-stack.app.yml) | `api`, `rsyslog`, `frontend`, `haproxy-app` as Swarm services with real `deploy:` (placement, restart, update policy, `api`/`frontend` at `${API_REPLICAS:-2}`/`${FRONTEND_REPLICAS:-2}`) |
-| [`haproxy/haproxy-app.cfg`](haproxy/haproxy-app.cfg) | Load-balances `:80`/`:443` across every `frontend` replica cluster-wide (`tasks.frontend`); the API is only reachable through nginx, never published directly |
+| [`haproxy/haproxy-app.cfg`](haproxy/haproxy-app.cfg) | Load-balances `:80`/`:443` across every `frontend` replica cluster-wide (`tasks.frontend`), and internally load-balances every `api` replica (`tasks.api`) on `:8090` for nginx's `/api/` proxy_pass; the API is never published directly to the host |
 | [`keepalived/`](keepalived/) | VRRP config template + health-check scripts (`rsyslog` and `haproxy-app`) for the floating app/edge VIP |
 | [`scripts/swarm-bootstrap.sh`](scripts/swarm-bootstrap.sh) | Guided commands for swarm init/join, node labeling, network/secret/config creation |
 | [`nfs-ha/`](nfs-ha/) | *Optional* — DRBD resource template + keepalived VIP + promote/demote hooks for a synchronously-replicated NFS pair, instead of a single NFS box |
@@ -304,7 +324,7 @@ Swarm itself needs, between every swarm node (`pg1`-`pg3`, `app1`-`app2`):
 Everything else (Postgres 5432, Patroni's REST API 8008, etcd 2379/2380, Redis 6379, Sentinel 26379) travels over the `syslog_net` overlay network via that same VXLAN tunnel — you do **not** need to open those ports individually between nodes.
 
 What *does* need opening beyond the swarm nodes themselves:
-- `app1`/`app2`: `80/tcp`, `443/tcp` (`haproxy-app`, published with `mode: host` — `frontend` itself is no longer published) and `514/tcp`+`514/udp` (rsyslog, also `mode: host`) to whatever network your users/log senders are on. `8080/tcp` (the API) is never published — all API traffic is routed through nginx on `80`/`443`.
+- `app1`/`app2`: `80/tcp`, `443/tcp` (`haproxy-app`, published with `mode: host` — `frontend` itself is no longer published) and `514/tcp`+`514/udp` (rsyslog, also `mode: host`) to whatever network your users/log senders are on. `8080/tcp` (the API) is never published — all API traffic is routed through nginx on `80`/`443`. `7001/tcp` (`haproxy-app`'s stats page) is also published with `mode: host` for the failover test below — it has no `stats auth`, so only open it to trusted/admin source IPs, never to the same network as `80`/`443`.
 - `nfs1`: `2049/tcp` (NFS) and `111/tcp`+`111/udp` (portmapper), open to `app1`/`app2` specifically. If you deploy the optional [DRBD-replicated NFS pair](#optional-nfs-replica-drbd--keepalived) instead, `nfs1`/`nfs2` also need `7789/tcp` (DRBD replication) open to each other.
 
 ```bash
@@ -548,7 +568,7 @@ ip -br addr show eth0   # should list 10.0.0.100 on app1, not on app2
 
 For a third/fourth edge node, repeat the `app2` block with a unique lower `PRIORITY` (e.g. `90`, `80`) and `PEER_IPS` listing every *other* edge node's IP, one per indented line.
 
-Finally, point syslog senders at the VIP (`10.0.0.100:514`, tcp or udp) and browser/API clients/DNS at the same VIP for `80`/`443` — `haproxy-app` behind it load-balances across every `frontend` replica cluster-wide, not just whichever node currently holds the VIP, and nginx in turn proxies API requests across every `api` replica.
+Finally, point syslog senders at the VIP (`10.0.0.100:514`, tcp or udp) and browser/API clients/DNS at the same VIP for `80`/`443` — `haproxy-app` behind it load-balances across every `frontend` replica cluster-wide, not just whichever node currently holds the VIP, and nginx in turn proxies API requests to `haproxy-app`'s internal `:8090` listener, which load-balances across every `api` replica the same way.
 
 #### 12. First login
 
@@ -911,26 +931,6 @@ Admin > Health shows the up/down status of every container the app depends on. I
 
 A [relay](#syslog-relay-optional-multi-vlan) isn't on `syslog_net` and isn't reachable from the central server at all — by design, its only firewall rule is *outbound* 6515/tcp to the central server (see [Firewall](#firewall)). There's no socket, network path, or open port for the central server to check its container status through. The Health tab shows relay **liveness** instead, derived from data the app already has: whether a log has arrived recently from its whitelisted IP (`mv_device_stats.last_seen`, same rollup the Devices tab and device-silence alerts use) and whether its certificate is still `issued` rather than `revoked`. This is a proxy for "is it up and forwarding," not a container health check — a relay that's up but has nothing to forward will look identical to one that's down.
 
-## Features
-
-- 📜 **Live Log Viewer** — Browse, filter, and search ingested syslog messages in real-time
-- 🧩 **Parser Engine** — Define regex-based parsers to extract structured fields from raw log lines
-- 📊 **Custom Dashboards** — Create dashboards filtered by device, severity, or parsed fields
-- 📌 **Pin Dashboards** — Pin frequently-used dashboards to the sidebar for quick access
-- 📤 **Export** — Download logs as CSV or HTML reports
-- 📈 **Statistics** — Timeline charts, severity breakdown, and per-device metrics
-- 🔐 **Secure Authentication** — JWT access tokens (configurable timeout) + refresh tokens (7 days, or 60 with "remember this device" at login) with rotation, JWT blacklisting on logout
-- 📱 **Session Management** — Review and sign out your own active sessions/devices from the navbar (`GET`/`DELETE /api/auth/sessions`)
-- 🔒 **Account Lockout** — Automatic lockout after configurable failed login attempts, admin unlock from Admin panel
-- 🛡️ **CSRF Protection** — Double-submit cookie pattern on all mutating endpoints
-- 🪪 **LDAP/AD Integration** — Authenticate against Active Directory or OpenLDAP with TLS support
-- 📝 **Audit Logging** — Track login attempts, lockouts, unlocks, password changes, and admin actions
-- ⏱️ **Rate Limiting** — Login endpoint protected against brute-force attacks (Redis-shared in HA mode)
-- 🌐 **CORS Protection** — Configurable allowed origins
-- 🧙 **Setup Wizard** — Guided initial configuration with admin account, database, security keys, and optional LDAP/CORS
-- 🛠️ **Admin Panel** — User management, settings, audit log viewer, LDAP connection test
-- 🩺 **Health Monitoring** — Container/Swarm service status and syslog relay liveness in one place (see [Health Monitoring](#health-monitoring))
-
 ## GUI Configuration Guide
 
 ### Admin Settings
@@ -967,21 +967,7 @@ Navigate to the **Alerts** tab to create and manage alert rules. Alerts monitor 
 - **Testing & History**: Use the "Test Channel" button to verify connectivity. View past alerts and their resolution status in the history panel.
 
 ### Parsers
-The **Parsers** tab allows you to extract structured data from raw syslog messages using regex patterns.
-
-- **Create Parser**: Click "Create Parser" to define a new rule.
-  - **Name & Description**: Identify the parser purpose.
-  - **Device Type**: Classify the source (e.g., `mikrotik`, `ubiquiti`, `cisco`).
-  - **Match Type**: Determine how logs are matched:
-    - `hostname`: Match based on the log hostname.
-    - `app_name`: Match based on the application name.
-    - `message`: Match against the full message content.
-    - `all`: Apply to all incoming logs.
-  - **Match Value**: The pattern to match (when not using `message`).
-  - **Regex**: Enter a regex with named groups (e.g., `(?P<ip>\d+\.\d+\.\d+\.\d+)`) to extract fields.
-  - **Fields**: Define each extracted field's `Name`, `Label`, and `Type` (`string`, `number`, `ip`, `datetime`).
-- **Test Parser**: Paste a sample log line into the test modal to verify your regex extracts fields correctly.
-- **Management**: Enable/disable parsers, clone existing ones, or trigger a "Reparse" to apply changes to historical unparsed logs.
+The **Parsers** tab lets you create, test, and manage regex-based parsers that extract structured fields from raw syslog messages — see [Parser Engine](#parser-engine) below for the full field reference, built-in parsers, and API details.
 
 ### Dashboards
 The **Dashboards** tab provides customizable views of your log data.
@@ -999,76 +985,6 @@ The **Dashboards** tab provides customizable views of your log data.
   - **Charts**: Visualize trends over time.
 - **Export**: Download dashboard data as CSV or generate HTML reports.
 - **Customization**: Adjust visible columns and sort order; settings are saved to your profile.
-
-## Parser Creation Guide
-
-### Overview
-Logmara includes a powerful regex-based parser engine that allows you to extract structured data from raw syslog messages. Parsers can be created directly through the web interface or via API endpoints.
-
-### Creating a Parser
-1. Navigate to the **Admin Panel** → **Parsers**
-2. Click **Create New Parser**
-3. Fill in the following fields:
-   - **Name**: Descriptive name for the parser (e.g., "Apache Access Log")
-   - **Description**: Optional explanation of what this parser does
-   - **Device Type**: The type of device that generates this log format (e.g., "apache", "nginx", "firewall")
-   - **Match Type**: How to match the logs:
-     - `hostname` - Match on hostname pattern
-     - `fromhost_ip` - Match on IP address pattern  
-     - `regex` - Match against full message using regex pattern
-   - **Match Value**: Pattern to match (when Match Type is not "regex")
-   - **Regex**: Regular expression to extract fields from the log message
-   - **Enabled**: Enable/disable the parser
-
-### Writing Regex Patterns
-- The regex pattern should capture named groups for each field you want to extract
-- You can reference the parsed field name in your dashboard configuration
-- Example: `(?P<ip>\d+\.\d+\.\d+\.\d+) .* (?P<method>[A-Z]+) (?P<url>.*?) (?P<status>\d+)`
-  
-### Parser Fields Configuration
-In the parser creation interface, you can define the fields that should be extracted:
-- **Name**: Internal name of the field (e.g., "ip_address")
-- **Label**: Display name for users (e.g., "IP Address")
-- **Type**: Data type for filtering (e.g., "string", "integer", "timestamp")
-
-### REST API Integration
-Parsers can also be created programmatically using the following API endpoints:
-
-#### Create Parser
-```
-POST /api/parsers
-{
-  "name": "Apache Access Log",
-  "description": "Parser for Apache access logs",
-  "device_type": "apache", 
-  "match_type": "regex",
-  "match_value": null,
-  "regex": "(?P<ip>\\d+\\.\\d+\\.\\d+\\.\\d+) .* (?P<method>[A-Z]+) (?P<url>.*?) (?P<status>\\d+)",
-  "enabled": true,
-  "fields": [
-    {
-      "name": "ip_address",
-      "label": "IP Address",
-      "type": "string"
-    },
-    {
-      "name": "method", 
-      "label": "HTTP Method",
-      "type": "string"
-    }
-  ]
-}
-```
-
-#### Test Parser
-You can test your regex against sample log lines:
-```
-POST /api/parsers/test
-{
-  "pattern": "(?P<ip>\\d+\\.\\d+\\.\\d+\\.\\d+) .* (?P<method>[A-Z]+) (?P<url>.*?) (?P<status>\\d+)",
-  "sample_log": "192.168.1.1 - - [01/Jan/2023:12:00:00 +0000] \"GET /index.html HTTP/1.1\" 200 1234"
-}
-```
 
 ## API Endpoints
 
@@ -1189,6 +1105,19 @@ POST /api/parsers/test
     └── reload-sidecar/         # HTTP sidecar that restarts rsyslogd on relay config changes (SIGHUP can't reload config)
 ```
 
+## Development
+
+```bash
+# Backend (requires Go 1.21+)
+cd backend
+go run main.go
+
+# Frontend (requires Node 18+)
+cd frontend
+npm install
+npm run dev
+```
+
 ## Security
 
 - **JWT Access Tokens** — Short-lived (configurable via `session_timeout_min` setting, default 15 minutes), HS256 signed
@@ -1207,28 +1136,69 @@ POST /api/parsers/test
 - **Sensitive Data Masking** — JWT secret, encryption key, and LDAP password masked in API responses
 - **Certificate Verification** — LDAP TLS connections verify server certificates by default
 
-## Development
-
-```bash
-# Backend (requires Go 1.21+)
-cd backend
-go run main.go
-
-# Frontend (requires Node 18+)
-cd frontend
-npm install
-npm run dev
-```
-
 ## Parser Engine
 
-Logmara includes a robust parser engine that allows you to extract structured data from raw syslog messages using regular expressions.
+Logmara includes a robust parser engine that extracts structured data from raw syslog messages using regular expressions. Parsers can be created through the web interface (Admin > Parsers) or via the API.
 
 ### How Parsers Work
-1. **Pattern Matching**: Parsers match incoming log messages based on hostname, IP address, or regex patterns
-2. **Field Extraction**: Regular expressions define named capture groups to extract specific fields
-3. **Dynamic Parsing**: As logs arrive, they are automatically parsed by enabled parsers
-4. **Dashboard Integration**: Extracted fields can be used for filtering and visualization in dashboards
+1. **Pattern Matching**: parsers match incoming log messages against `hostname`, `app_name`, or the full `message`, or unconditionally (`all`)
+2. **Field Extraction**: named regex capture groups extract specific fields — independent of how the parser matched
+3. **Dynamic Parsing**: as logs arrive, every enabled parser that matches is applied automatically
+4. **Dashboard Integration**: extracted fields can be used for filtering and visualization in dashboards
+
+### Creating a Parser
+- **Name & Description**: identify the parser's purpose
+- **Device Type**: classify the source (e.g. `mikrotik`, `ubiquiti`, `cisco`)
+- **Match Type**: how a log is matched against this parser:
+  - `hostname` — glob-match against the log's hostname
+  - `app_name` — glob-match against the log's app name
+  - `message` — substring match against the full message content
+  - `all` — matches every incoming log
+- **Match Value**: the pattern to match (glob for `hostname`/`app_name`, substring for `message`; unused for `all`)
+- **Regex**: a regular expression with named groups (e.g. `(?P<ip>\d+\.\d+\.\d+\.\d+)`) to extract fields — always used for extraction, independent of Match Type
+- **Fields**: for each extracted field, define a `Name`, `Label`, and `Type` (`string`, `number`, `ip`, `mac`, `duration`)
+- **Enabled**: enable/disable the parser
+
+**Test Parser**: paste a sample log line into the test modal (or call `POST /api/parsers/test`) to verify your regex extracts fields correctly before saving.
+
+**Management**: enable/disable parsers, clone existing ones, or trigger a "Reparse" to apply changes to historical unparsed logs.
+
+### REST API
+
+#### Create Parser
+```
+POST /api/parsers
+{
+  "name": "Apache Access Log",
+  "description": "Parser for Apache access logs",
+  "device_type": "apache",
+  "match_type": "message",
+  "match_value": "GET",
+  "regex": "(?P<ip>\\d+\\.\\d+\\.\\d+\\.\\d+) .* (?P<method>[A-Z]+) (?P<url>.*?) (?P<status>\\d+)",
+  "enabled": true,
+  "fields": [
+    {
+      "name": "ip_address",
+      "label": "IP Address",
+      "type": "ip"
+    },
+    {
+      "name": "method",
+      "label": "HTTP Method",
+      "type": "string"
+    }
+  ]
+}
+```
+
+#### Test Parser
+```
+POST /api/parsers/test
+{
+  "pattern": "(?P<ip>\\d+\\.\\d+\\.\\d+\\.\\d+) .* (?P<method>[A-Z]+) (?P<url>.*?) (?P<status>\\d+)",
+  "sample_log": "192.168.1.1 - - [01/Jan/2023:12:00:00 +0000] \"GET /index.html HTTP/1.1\" 200 1234"
+}
+```
 
 ### Built-in Parsers
 The system ships with several dozen built-in parsers covering common log sources: Linux (SSHD auth, systemd, sudo, cron, NetworkManager, DHCP, kernel firewall drops), Cisco IOS, MikroTik, Palo Alto, FortiGate, pfSense/Suricata, Ubiquiti/UniFi, plus a couple of generic IP/MAC extractors.
@@ -1240,17 +1210,9 @@ They're defined as JSON files in [`backend/db/parsers/defaults/`](backend/db/par
 
 Either way you can edit, add, or remove builtin parser definitions on disk (same `name`/`description`/`device_type`/`match_type`/`match_value`/`regex`/`fields` shape as the API's parser objects) without rebuilding the image. A malformed file is skipped with a warning in the logs rather than blocking startup.
 
-### Creating Parsers
-Parsers can be created through the web interface or API with the following requirements:
-- **Name**: Descriptive identifier for the parser
-- **Device Type**: Log source classification (e.g., "nginx", "firewall")
-- **Match Criteria**: How to determine if a log matches this parser
-- **Regular Expression**: Named capture groups that define extracted fields
-- **Fields Configuration**: Define labels and data types for extracted fields
-
 ## External API
 
-Generate API keys from the Admin panel to programmatically export logs and view statistics. Keys support permission scoping, host/severity filters, rate limiting, and optional TTL expiration.
+Generate API keys from the Admin panel to programmatically export logs and view statistics. Keys support permission scoping, host/severity filters, an IP allowlist, rate limiting, and optional TTL expiration.
 
 ### Endpoints
 
@@ -1260,19 +1222,21 @@ All endpoints require the header `Authorization: Bearer <api-key>`.
 
 ```
 POST /api/v1/logs/export
+Content-Type: application/json
 ```
 
-Query params: `from`, `to`, `hostname`, `severity`, `message`, `offset`, `limit`
+JSON body fields (all optional): `hostname`, `fromhost_ip`, `severity`, `app_name`, `search`, `from`, `to`, `limit` (string, max 10000, default 1000), `cursor` (for pagination), `tz` (default `UTC`)
 
-Returns paginated raw log entries as JSON.
+Returns paginated raw log entries as JSON, with `has_more`/`next_cursor` for cursor-based pagination.
 
 #### Export Parsed Logs (JSON)
 
 ```
 POST /api/v1/logs/export-parsed
+Content-Type: application/json
 ```
 
-Same query params as above. Returns logs enriched with parsed fields from the parser engine.
+Same body fields as above. Returns logs enriched with parsed fields from the parser engine.
 
 #### View Statistics
 
@@ -1287,8 +1251,15 @@ Returns aggregate statistics: total logs, logs per severity, top hosts, etc.
 ### Example
 
 ```bash
+# Quick key check / stats (GET, query params)
 curl -H "Authorization: Bearer sk_live_xxxxx" \
-  "https://logmara.example.com/api/v1/logs/export?from=2025-01-01T00:00:00Z&to=2025-01-02T00:00:00Z&limit=100"
+  "https://logmara.example.com/api/v1/stats?from=2025-01-01T00:00:00Z&to=2025-01-02T00:00:00Z"
+
+# Export raw logs (POST, JSON body)
+curl -X POST "https://logmara.example.com/api/v1/logs/export" \
+  -H "Authorization: Bearer sk_live_xxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"from": "2025-01-01T00:00:00Z", "to": "2025-01-02T00:00:00Z", "limit": "100"}'
 ```
 
 ### Rate Limits
@@ -1297,7 +1268,16 @@ Each API key has a configurable per-minute request limit (default 60 req/min). E
 
 ### Scope Filters
 
-When creating a key, you can restrict it to specific hostnames and/or severities. These filters are applied as AND conditions on top of any query parameters.
+When creating a key, you can restrict it to specific hostnames and/or severities (each list matches with `OR` internally — any of the listed hostnames/severities qualifies). If you set both a hostname list and a severity list, `match_mode` controls how the two lists combine:
+
+- `and` (default) — a log must match one of the hostnames **and** one of the severities.
+- `or` — a log must match one of the hostnames **or** one of the severities.
+
+Set it via `POST`/`PUT /api/admin/api-keys` (`scope_filters.match_mode`) or from Admin > API Keys > Scope Filters > Match Mode. Existing keys created before this option existed default to `and`, preserving their original behavior.
+
+### IP Allowlist
+
+Restrict a key to specific client IPs via `allowed_ips` (`POST`/`PUT /api/admin/api-keys`) or from Admin > API Keys > Allowed IPs. Each entry is a single IP (`203.0.113.5`) or a CIDR range (`203.0.113.0/24`); a request from any other IP gets `403 Forbidden`. Leave it empty to allow any IP (the default).
 
 ---
 

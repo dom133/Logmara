@@ -108,12 +108,20 @@ func (s *lineSplitter) split(data []byte, atEOF bool) (advance int, token []byte
 // NFS), only the replica that currently holds the elected lock actually
 // tails/flushes/compacts; the others wait, ready to take over the moment
 // the lock becomes available (leader crash, node loss, etc.).
-func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter) {
+// reopenLogFile is called after compactFile atomically replaces filePath via
+// rename, so rsyslog (a separate, uncoordinated process/container that's
+// always the one actually appending to that shared file, in both
+// docker-compose.yml and docker-stack.app.yml - see compactFile's doc
+// comment) picks up the new inode instead of silently writing into the old,
+// now-unlinked one forever. Callers are expected to pass a real function
+// (main.go wires in handler.ReopenRsyslogLogFile); nil is only tolerated
+// here for tests that don't exercise the compaction path.
+func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error) {
 	if elector == nil {
-		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate)
+		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile)
 		return
 	}
-	runWithLeaderElection(ctx, db, filePath, engine, ic, elector, alerts, rate)
+	runWithLeaderElection(ctx, db, filePath, engine, ic, elector, alerts, rate, reopenLogFile)
 }
 
 const (
@@ -130,7 +138,7 @@ const (
 	startupJitterMax = 3 * time.Second
 )
 
-func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter) {
+func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error) {
 	startupJitter := time.Duration(rand.Int63n(int64(startupJitterMax)))
 	if !sleepOrDone(ctx, startupJitter) {
 		return
@@ -154,7 +162,7 @@ func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, eng
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			runIngestionLoop(leaderCtx, db, filePath, engine, ic, alerts, rate)
+			runIngestionLoop(leaderCtx, db, filePath, engine, ic, alerts, rate, reopenLogFile)
 		}()
 
 		consecutiveFails := 0
@@ -210,7 +218,7 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter) {
+func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error) {
 	slog.Info("file tailer started", "path", filePath)
 	batchSize := 500
 	batchInterval := 2 * time.Second
@@ -270,14 +278,25 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 
 		// Periodic compaction: remove data already flushed to DB
 		if (time.Since(lastCompaction) > compactionInterval || fileSize > maxFileSize) && fileSize > flushedPos*2 {
-			if err := compactFile(f, flushedPos, filePath); err != nil {
+			newF, err := compactFile(f, flushedPos, filePath, reopenLogFile)
+			if err != nil {
 				slog.Error("compaction error", "error", err)
-			} else {
-				filePos = 0
-				flushedPos = 0
-				savePosition(posFile, 0, filePath)
-				lastCompaction = time.Now()
+				// newF may be nil (compactFile already closed f and failed to
+				// reopen) or the original, still-good f (an earlier step
+				// failed) - either way, don't risk using a handle that might
+				// be stale or closed; drop it and let the top of this loop
+				// open a fresh one next pass.
+				f.Close()
+				if !sleepOrDone(ctx, 1*time.Second) {
+					return
+				}
+				continue
 			}
+			f = newF
+			filePos = 0
+			flushedPos = 0
+			savePosition(posFile, 0, filePath)
+			lastCompaction = time.Now()
 		}
 
 		if _, err := f.Seek(filePos, 0); err != nil {
@@ -435,47 +454,110 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 	}
 }
 
-func compactFile(f *os.File, flushedPos int64, filePath string) error {
+// compactFile drops the already-flushed prefix of filePath by writing the
+// still-unflushed tail (from flushedPos to EOF) to a temp file in the same
+// directory and atomically renaming it over filePath, instead of truncating
+// filePath in place and rewriting it through the same handle. The in-place
+// approach used to leave a window - the time between Truncate(0) succeeding
+// and the rewrite finishing, not instantaneous over NFS - during which the
+// shared file sat empty or half-written while rsyslog (a completely
+// separate, uncoordinated process/container, see rsyslog/syslog.conf's
+// omfile action) was still independently appending new syslog lines to it.
+// Anything rsyslog wrote into that window landed at the truncated file's
+// offset 0 too, and this function's own subsequent, non-append Write(0..)
+// would then clobber/interleave with it - a container killed mid-rewrite
+// (Swarm node failure, or SIGKILL past stop_grace_period during a rolling
+// update) made it worse by leaving the truncation itself unfinished. Either
+// way the next tail pass would hit corrupted bytes and log them as
+// "[MALFORMED JSON]".
+//
+// rename() is atomic and closes that window entirely, but it swaps the
+// directory entry to a new inode - it does not affect a file descriptor
+// rsyslogd already has open on the old one, which would otherwise keep
+// silently appending into now-unlinked, invisible, ultimately-lost data
+// forever. reopenLogFile (handler.ReopenRsyslogLogFile in production) asks
+// rsyslogd to reopen the path so its next write lands in the new file - see
+// that function's doc comment for why SIGHUP, not a full restart, is enough.
+//
+// Returns the file handle the caller must use from here on: on success this
+// is always a freshly reopened handle on the compacted file (the caller's
+// old one is closed by this function, since it now points at unlinked
+// content); on error it's either the caller's original handle (still valid -
+// every failure mode before the rename leaves filePath completely
+// untouched) or nil (the rename succeeded but reopening the now-renamed
+// path failed, which also already closed the original handle) - callers
+// must treat a non-nil error as "close whatever was returned, if anything,
+// and start this pass over" rather than assume which case they got.
+func compactFile(f *os.File, flushedPos int64, filePath string, reopenLogFile func() error) (*os.File, error) {
 	stat, err := f.Stat()
 	if err != nil {
-		return fmt.Errorf("stat: %w", err)
+		return f, fmt.Errorf("stat: %w", err)
 	}
 	fileSize := stat.Size()
 
 	if flushedPos >= fileSize {
 		slog.Info("nothing to compact", "flushedPos", flushedPos, "fileSize", fileSize)
-		return nil
+		return f, nil
 	}
 
 	// Read unprocessed data (from flushedPos to EOF)
 	if _, err := f.Seek(flushedPos, 0); err != nil {
-		return fmt.Errorf("seek to flushedPos: %w", err)
+		return f, fmt.Errorf("seek to flushedPos: %w", err)
 	}
 	remaining, err := io.ReadAll(f)
 	if err != nil {
-		return fmt.Errorf("read remaining: %w", err)
+		return f, fmt.Errorf("read remaining: %w", err)
 	}
 
 	slog.Info("compacting file", "path", filePath, "fileSize", fileSize, "remaining", len(remaining), "flushedPos", flushedPos)
 
-	// Truncate to 0
-	if err := f.Truncate(0); err != nil {
-		return fmt.Errorf("truncate: %w", err)
+	tmpPath := filePath + ".compact.tmp"
+	tmpFile, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return f, fmt.Errorf("create temp file: %w", err)
+	}
+	if _, err := tmpFile.Write(remaining); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return f, fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return f, fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return f, fmt.Errorf("close temp file: %w", err)
 	}
 
-	// Write back unprocessed data
-	if _, err := f.Seek(0, 0); err != nil {
-		return fmt.Errorf("seek to start: %w", err)
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		os.Remove(tmpPath)
+		return f, fmt.Errorf("rename temp file over original: %w", err)
 	}
-	if _, err := f.Write(remaining); err != nil {
-		return fmt.Errorf("write remaining: %w", err)
+
+	// f now points at the same unlinked, stale content rsyslog's own handle
+	// does - it must be reopened too, not just rsyslog's.
+	f.Close()
+	newF, err := os.OpenFile(filePath, os.O_RDWR, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("reopen compacted file: %w", err)
 	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("sync: %w", err)
+
+	if reopenLogFile != nil {
+		if err := reopenLogFile(); err != nil {
+			// Not fatal to compaction itself - the file on disk is correct
+			// either way, and this function's own reader is already fine
+			// (newF, above) - but rsyslog specifically won't see it until it
+			// reopens on its own (process restart) or a later compaction's
+			// call succeeds. Loud on purpose: a persistent failure here
+			// means new lines rsyslog writes are being silently lost.
+			slog.Error("compaction: failed to ask rsyslog to reopen the compacted log file - it may keep writing into the old, now-unlinked file until it restarts or a later compaction succeeds", "error", err)
+		}
 	}
 
 	slog.Info("compaction done", "remaining", len(remaining))
-	return nil
+	return newF, nil
 }
 
 const insertColumns = 13

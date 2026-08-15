@@ -51,6 +51,19 @@ map $http_origin $cors_allow_origin {
 EOF
 fi
 
+# Renders default.conf.template into the real config nginx loads. Only
+# $API_UPSTREAM is substituted (explicit list, not the image's own
+# unrestricted envsubst-on-templates feature) so nginx's own $-variables
+# (e.g. $host, $scheme, $cors_allow_origin) pass through untouched. Defaults
+# to the single-node docker-compose.yml's api service; set API_UPSTREAM to
+# haproxy-app:8090 in the Swarm stack to load-balance across every api task
+# via haproxy-app's api_http listener instead (see haproxy/haproxy-app.cfg).
+: "${API_UPSTREAM:=http://api:8080}"
+export API_UPSTREAM
+envsubst '${API_UPSTREAM}' \
+    < /etc/nginx/conf.d/default.conf.template \
+    > /etc/nginx/conf.d/default.conf
+
 # httpd lives in the separate busybox-extras binary, not the base busybox
 # (which only has the applets baked into Alpine's minimal `busybox` package).
 busybox-extras httpd -f -p 8081 -h /srv/reload-sidecar &

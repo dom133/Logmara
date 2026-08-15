@@ -543,7 +543,7 @@ func main() {
 	// everything else gated on sharedClient above.
 	logRate := sharedstate.NewRateCounter(sharedClient, "lograte")
 	handler.SetLogRateCounter(logRate)
-	go tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine, logRate)
+	go tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine, logRate, handler.ReopenRsyslogLogFile)
 
 	// Device silence checks run independently on every replica: the read
 	// (mv_device_stats) is cheap and the per-rule-per-device cooldown key in
@@ -595,6 +595,7 @@ r := gin.New()
 	r.Use(middleware.RequestID())
 	r.Use(middleware.ErrorHandler())
 	r.Use(middleware.SecurityHeaders())
+	r.Use(middleware.ServerIdentity())
 	r.Use(middleware.GzipCompress())
 	r.Use(middleware.ETag())
 	// CORS is handled entirely by the frontend's nginx reverse proxy (see
@@ -845,6 +846,7 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	r.Use(gin.Recovery())
 	r.Use(middleware.ErrorHandler())
 	r.Use(middleware.SecurityHeaders())
+	r.Use(middleware.ServerIdentity())
 	r.Use(middleware.GzipCompress())
 
 	initLimiter := newLimiter(sharedClient, "wizard-init", 3, time.Hour, "")

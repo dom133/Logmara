@@ -115,7 +115,7 @@ func MigrateWithLock(db *sql.DB) error {
 // schema_version table already records this value, so a forgotten bump
 // means an already-deployed instance will never see the new statement
 // applied.
-const schemaVersion = 3
+const schemaVersion = 4
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -458,6 +458,7 @@ func runSchemaMigration(db *sql.DB) error {
 			created_at TIMESTAMPTZ DEFAULT NOW(),
 			created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
 		)`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='api_keys' AND column_name='allowed_ips') THEN ALTER TABLE api_keys ADD COLUMN allowed_ips TEXT[]; END IF; END $$`,
 	}
 
 	for _, stmt := range statements {

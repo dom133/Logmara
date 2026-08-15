@@ -177,18 +177,57 @@ func writeRelayACL(database *sql.DB) error {
 // node needs its ACL applied, not just whichever one currently holds the
 // keepalived VIP.
 func reloadRelayConfig() error {
-	targetsHost := os.Getenv("RSYSLOG_RELOAD_TARGETS_HOST")
-	if targetsHost == "" {
-		url := os.Getenv("RSYSLOG_RELOAD_URL")
-		if url == "" {
-			url = "http://rsyslog:8082/cgi-bin/reload.sh"
-		}
+	// RSYSLOG_RELOAD_URL is only honored in the single-target (no
+	// RSYSLOG_RELOAD_TARGETS_HOST) case, and only for reload.sh specifically
+	// - it predates broadcastToRsyslogSidecars and lets a non-Swarm
+	// deployment point reload.sh at a nonstandard location; there's no
+	// equivalent override for other scripts since nothing needed one before.
+	if url := os.Getenv("RSYSLOG_RELOAD_URL"); url != "" && os.Getenv("RSYSLOG_RELOAD_TARGETS_HOST") == "" {
 		return postReload(url)
 	}
+	return broadcastToRsyslogSidecars("reload.sh")
+}
 
+// ReopenRsyslogLogFile asks every rsyslog edge node to SIGHUP its rsyslogd
+// process (kill -HUP - see reopen-logfile.sh, NOT the SIGTERM reload.sh
+// uses). Unlike a config reload, SIGHUP only makes rsyslogd close and reopen
+// its already-configured output files, without restarting the process or
+// interrupting the 514/6514/6515 listeners (see rsyslog/entrypoint.sh's
+// comment on why config changes need the heavier SIGTERM path instead).
+//
+// The api tailer calls this after atomically replacing /data/logs.jsonl via
+// rename during log compaction (see tailer.compactFile's doc comment for the
+// corruption this replaces: truncating that file in place while rsyslog
+// concurrently appends to it, with no coordination between the two, could
+// interleave or clobber bytes and produce "[MALFORMED JSON]" entries).
+// rename() swaps the directory entry but does not affect a file descriptor
+// rsyslogd already has open on the old inode - without this call, rsyslogd
+// would keep silently appending into that now-unlinked, invisible copy of
+// the file, and every line it wrote there would be lost the moment that fd
+// is finally closed (rsyslogd restart), never having been visible to the
+// tailer at all.
+func ReopenRsyslogLogFile() error {
+	return broadcastToRsyslogSidecars("reopen-logfile.sh")
+}
+
+// broadcastToRsyslogSidecars POSTs to cgiScript (reload.sh or
+// reopen-logfile.sh) on the rsyslog reload sidecar (busybox httpd, see
+// rsyslog/entrypoint.sh) on every edge node resolved via
+// RSYSLOG_RELOAD_TARGETS_HOST when set (Swarm's `mode: global` rsyslog, one
+// task per edge node - see docker-stack.app.yml), or a single
+// "http://rsyslog:<port>/cgi-bin/<cgiScript>" target otherwise
+// (docker-compose.yml's single rsyslog container). Succeeds as long as at
+// least one target succeeds, same tolerance as the original single-purpose
+// version of this function had.
+func broadcastToRsyslogSidecars(cgiScript string) error {
 	port := os.Getenv("RSYSLOG_RELOAD_PORT")
 	if port == "" {
 		port = "8082"
+	}
+
+	targetsHost := os.Getenv("RSYSLOG_RELOAD_TARGETS_HOST")
+	if targetsHost == "" {
+		return postReload(fmt.Sprintf("http://rsyslog:%s/cgi-bin/%s", port, cgiScript))
 	}
 
 	ips, err := net.LookupHost(targetsHost)
@@ -206,7 +245,7 @@ func reloadRelayConfig() error {
 	results := make(chan reloadResult, len(ips))
 	for _, ip := range ips {
 		go func(ip string) {
-			url := fmt.Sprintf("http://%s:%s/cgi-bin/reload.sh", ip, port)
+			url := fmt.Sprintf("http://%s:%s/cgi-bin/%s", ip, port, cgiScript)
 			results <- reloadResult{ip: ip, err: postReload(url)}
 		}(ip)
 	}
@@ -223,10 +262,10 @@ func reloadRelayConfig() error {
 	}
 
 	if succeeded == 0 {
-		return fmt.Errorf("rsyslog reload failed on all %d target(s): %s", len(ips), strings.Join(failures, "; "))
+		return fmt.Errorf("rsyslog %s failed on all %d target(s): %s", cgiScript, len(ips), strings.Join(failures, "; "))
 	}
 	if len(failures) > 0 {
-		slog.Warn("rsyslog relay reload failed on some targets", "succeeded", succeeded, "total", len(ips), "errors", strings.Join(failures, "; "))
+		slog.Warn("rsyslog sidecar call failed on some targets", "script", cgiScript, "succeeded", succeeded, "total", len(ips), "errors", strings.Join(failures, "; "))
 	}
 	return nil
 }

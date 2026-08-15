@@ -15,7 +15,8 @@ COPY --from=builder /app/relaybootstrap /usr/local/bin/relaybootstrap
 COPY rsyslog/syslog.conf /etc/rsyslog.d/syslog.conf
 COPY rsyslog/entrypoint.sh /entrypoint.sh
 COPY rsyslog/reload-sidecar/cgi-bin/reload.sh /srv/reload-sidecar/cgi-bin/reload.sh
-RUN chmod +x /entrypoint.sh /srv/reload-sidecar/cgi-bin/reload.sh
+COPY rsyslog/reload-sidecar/cgi-bin/reopen-logfile.sh /srv/reload-sidecar/cgi-bin/reopen-logfile.sh
+RUN chmod +x /entrypoint.sh /srv/reload-sidecar/cgi-bin/reload.sh /srv/reload-sidecar/cgi-bin/reopen-logfile.sh
 EXPOSE 514 514/udp 6514 6515
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD pgrep -x rsyslogd || exit 1
