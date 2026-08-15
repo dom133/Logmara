@@ -154,28 +154,30 @@ deploy_stack() {
 # Pre-update maintenance: pause ingest, compact logs, reset position
 # ---------------------------------------------------------------------------
 run_pre_update() {
-    # Find a running api container on any node in the cluster.
-    # `docker ps` on a manager node shows containers from all nodes, so
-    # `docker exec` will reach the correct container regardless of which
-    # physical node the api task is running on.
-    local api_container
-    api_container=$(docker ps -q \
-      --filter "name=logmara-app_api" \
-      --filter "status=running" 2>/dev/null | head -1)
-
-    if [[ -z "$api_container" ]]; then
-        echo "Warning: no running api container, skipping pre-update"
-        return 0
-    fi
+    # Use a throwaway container on syslog_net to reach the api service
+    # via Docker DNS. This works from any node, regardless of where
+    # api tasks are placed, and does not depend on docker ps output.
+    local helper="curlimages/curl"
 
     echo
     echo "=== Running pre-update maintenance ==="
 
-    # Trigger pre-update preparation via docker exec (localhost inside container)
+    # Trigger pre-update preparation
     local http_code
-    http_code=$(docker exec "$api_container" curl -sf -o /dev/null -w "%{http_code}" \
-      -X POST "http://localhost:8080/api/maintenance/pre-update" \
+    http_code=$(docker run --rm --network syslog_net --pull=missing "$helper" \
+      -sf -o /dev/null -w "%{http_code}" \
+      -X POST "http://api:8080/api/maintenance/pre-update" \
       --max-time 10 2>/dev/null) || true
+
+    if [[ -z "$http_code" ]]; then
+        echo "Warning: API is unreachable, cannot trigger pre-update"
+        read -r -p "Continue deployment anyway? [y/N] " ans
+        if [[ "$ans" != "y" ]] && [[ "$ans" != "Y" ]]; then
+            echo "Aborted."
+            exit 1
+        fi
+        return 0
+    fi
 
     if [[ "$http_code" == "202" ]]; then
         echo "Pre-update trigger sent, waiting for completion..."
@@ -186,29 +188,34 @@ run_pre_update() {
         return 0
     fi
 
-    # Poll for completion
-    local elapsed=0
-    local max_wait=120
-    while [[ $elapsed -lt $max_wait ]]; do
-        local status
-        status=$(docker exec "$api_container" curl -sf \
-          "http://localhost:8080/api/maintenance/status" \
-          --max-time 5 2>/dev/null) || true
+    # Poll for completion using a single container with an internal loop.
+    # This avoids spawning 120+ containers (one per poll iteration).
+    # --entrypoint sh overrides curlimages/curl's ENTRYPOINT ["curl"].
+    local poll_result
+    poll_result=$(docker run --rm --network syslog_net --pull=missing \
+      --entrypoint sh "$helper" \
+      -c '
+        for i in $(seq 1 120); do
+          status=$(curl -sf http://api:8080/api/maintenance/status --max-time 5 2>/dev/null) || true
+          if echo "$status" | grep -q "completed"; then
+            echo "completed"
+            exit 0
+          fi
+          if (( i % 10 == 0 )); then
+            echo "polling... ($i s)"
+          fi
+          sleep 1
+        done
+        echo "timeout"
+        exit 1
+      ' 2>/dev/null) || true
 
-        if echo "$status" | grep -q '"completed"'; then
-            echo "Pre-update maintenance completed"
-            return 0
-        elif echo "$status" | grep -q '"preparing"'; then
-            if (( elapsed % 10 == 0 )); then
-                echo "  Still preparing... (${elapsed}s)"
-            fi
-        fi
+    if echo "$poll_result" | grep -q "completed"; then
+        echo "Pre-update maintenance completed"
+        return 0
+    fi
 
-        sleep 1
-        elapsed=$((elapsed + 1))
-    done
-
-    echo "Warning: pre-update timed out after ${max_wait}s, proceeding with deploy anyway"
+    echo "Warning: pre-update timed out after 120s, proceeding with deploy anyway"
     return 0
 }
 

@@ -120,7 +120,7 @@ func MigrateWithLock(db *sql.DB) error {
 // schema_version table already records this value, so a forgotten bump
 // means an already-deployed instance will never see the new statement
 // applied.
-const schemaVersion = 8
+const schemaVersion = 9
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -796,6 +796,20 @@ END $$`, g.name, toCharFmt)
 			SELECT date_trunc('hour', timestamp) AS hour, COUNT(*) AS cnt FROM syslog_logs GROUP BY 1 ORDER BY 1
 			WITH NO DATA`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_timeline_hourly_key ON mv_timeline_hourly (hour)`,
+		`CREATE OR REPLACE FUNCTION refresh_mv(name TEXT)
+			RETURNS VOID AS $$
+			BEGIN
+				EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY %I', name);
+			EXCEPTION WHEN invalid_object_state THEN
+				EXECUTE format('REFRESH MATERIALIZED VIEW %I', name);
+			END;
+			$$ LANGUAGE plpgsql SECURITY DEFINER`,
+		`DO $$ BEGIN
+			PERFORM 1 FROM pg_roles WHERE rolname = 'logmara_app_group';
+			IF FOUND THEN
+				GRANT EXECUTE ON FUNCTION refresh_mv(TEXT) TO logmara_app_group;
+			END IF;
+		END $$`,
 	}
 	for _, stmt := range postStmts {
 		if _, err := conn.ExecContext(ctx, stmt); err != nil {
@@ -1691,23 +1705,31 @@ func EstimateSyslogLogsCount(ctx context.Context, db *sql.DB) (int64, error) {
 	return int64(estimate), nil
 }
 
-// refreshMaterializedView refreshes a single materialized view, using the
-// cheap CONCURRENTLY form once the view holds data from a prior refresh, or
-// falling back to a plain (locking) REFRESH for its very first population -
-// CONCURRENTLY errors out on a view that was created WITH NO DATA (see
-// runSchemaMigration, which now creates all dashboard materialized views
-// that way so the initial migration doesn't have to compute them inline).
+// refreshMaterializedView delegates to the refresh_mv() SECURITY DEFINER
+// function so that any dynamic Vault user can refresh the views regardless
+// of who owns them. The function tries CONCURRENTLY first and falls back
+// to a plain (locking) REFRESH on the first population.
+//
+// If the function doesn't exist yet (pre-upgrade deployment), falls back
+// to direct REFRESH MATERIALIZED VIEW with the same CONCURRENTLY/no-data
+// logic.
 func refreshMaterializedView(ctx context.Context, db *sql.DB, name string) error {
-	var populated bool
-	if err := db.QueryRowContext(ctx, `SELECT relispopulated FROM pg_class WHERE relname = $1`, name).Scan(&populated); err != nil {
-		return fmt.Errorf("check population state of %s: %w", name, err)
+	if _, err := db.ExecContext(ctx, "SELECT refresh_mv($1)", name); err == nil {
+		return nil
+	} else {
+		// Function not available (old deployment without vault-bootstrap.sh
+		// refresh_mv creation) — fall back to direct REFRESH.
+		var populated bool
+		if err2 := db.QueryRowContext(ctx, `SELECT relispopulated FROM pg_class WHERE relname = $1`, name).Scan(&populated); err2 != nil {
+			return fmt.Errorf("check population state of %s: %w", name, err2)
+		}
+		stmt := "REFRESH MATERIALIZED VIEW CONCURRENTLY " + name
+		if !populated {
+			stmt = "REFRESH MATERIALIZED VIEW " + name
+		}
+		_, err2 := db.ExecContext(ctx, stmt)
+		return err2
 	}
-	stmt := "REFRESH MATERIALIZED VIEW CONCURRENTLY " + name
-	if !populated {
-		stmt = "REFRESH MATERIALIZED VIEW " + name
-	}
-	_, err := db.ExecContext(ctx, stmt)
-	return err
 }
 
 func RefreshMaterializedViews(db *sql.DB) {

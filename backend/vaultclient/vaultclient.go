@@ -432,6 +432,9 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 			port := os.Getenv("POSTGRES_PORT")
 			dbname := os.Getenv("POSTGRES_DB")
 			sslmode := os.Getenv("POSTGRES_SSLMODE")
+			if sslmode == "" {
+				sslmode = "disable"
+			}
 			newValue = "postgres://" + username + ":" + password + "@" + host + ":" + port + "/" + dbname + "?sslmode=" + sslmode
 		}
 	case "redis":

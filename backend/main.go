@@ -1036,6 +1036,14 @@ r := gin.New()
 			ic.Resume()
 		}
 
+		// Safety net: if ingestion is still paused after all replicas are up
+		// (e.g. maintenance:status key expired in Redis before this point),
+		// resume so the tailer doesn't start in a permanently paused state.
+		if ic.IsPaused() {
+			slog.Info("ingestion: stale pause detected after replica startup, auto-resuming")
+			ic.Resume()
+		}
+
 		tailer.Run(ctx, dynamicPool, logFilePath, engine, ic, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient, rabbitmqURL)
 	}()
 

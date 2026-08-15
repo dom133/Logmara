@@ -331,19 +331,75 @@ EOF
         # per-table GRANTs, which avoids "tuple concurrently updated"
         # (SQLSTATE XX000) errors when Vault's CREATE ROLE races with
         # VACUUM / MV refresh / partition creation.
+        #
+        # This block runs unconditionally every time setup-dynamic-secrets
+        # is called, so that tables/sequences added by a newer migration
+        # also receive the grants and ownership transfer. Without it, a
+        # migration that runs ALTER TABLE on a table owned by postgres
+        # will fail with "must be owner of table <name>".
         docker run --rm \
           --network syslog_net \
           -e PGPASSWORD="$PG_SUPERUSER_PASSWORD" \
           postgres:16-alpine psql -h haproxy -p 5000 \
             -U "${PG_SUPERUSER:-postgres}" \
             -d "${PG_DB:-syslog_db}" \
-            -c "DO \$\$ BEGIN
-                IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'logmara_app_group') THEN
-                  CREATE ROLE logmara_app_group;
-                  GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO logmara_app_group;
-                  GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO logmara_app_group;
-                END IF;
-              END \$\$;" 2>/dev/null || true
+            -c "
+DO \$\$ BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'logmara_app_group') THEN
+        CREATE ROLE logmara_app_group;
+    END IF;
+END \$\$;
+
+GRANT CREATE ON SCHEMA public TO logmara_app_group;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO logmara_app_group;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO logmara_app_group;
+
+DO \$\$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN
+        SELECT tablename
+        FROM pg_tables
+        WHERE schemaname = 'public'
+          AND tableowner != 'logmara_app_group'
+    LOOP
+        EXECUTE format('ALTER TABLE %I OWNER TO logmara_app_group', r.tablename);
+    END LOOP;
+END \$\$;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT ALL PRIVILEGES ON TABLES TO logmara_app_group;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT ALL PRIVILEGES ON SEQUENCES TO logmara_app_group;" 2>/dev/null || true
+
+        # SECURITY DEFINER function so any app user (even after Vault rotates
+        # the dynamic credentials) can refresh the dashboard materialized
+        # views. The function runs as postgres (the owner), so ownership of
+        # the views themselves doesn't matter.
+        docker run --rm \
+          --network syslog_net \
+          -e PGPASSWORD="$PG_SUPERUSER_PASSWORD" \
+          postgres:16-alpine psql -h haproxy -p 5000 \
+            -U "${PG_SUPERUSER:-postgres}" \
+            -d "${PG_DB:-syslog_db}" \
+            -c "CREATE OR REPLACE FUNCTION refresh_mv(name TEXT)
+                RETURNS VOID AS \$\$
+                BEGIN
+                  EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY %I', name);
+                EXCEPTION WHEN invalid_object_state THEN
+                  EXECUTE format('REFRESH MATERIALIZED VIEW %I', name);
+                END;
+                \$\$ LANGUAGE plpgsql SECURITY DEFINER;" 2>/dev/null || true
+
+        docker run --rm \
+          --network syslog_net \
+          -e PGPASSWORD="$PG_SUPERUSER_PASSWORD" \
+          postgres:16-alpine psql -h haproxy -p 5000 \
+            -U "${PG_SUPERUSER:-postgres}" \
+            -d "${PG_DB:-syslog_db}" \
+            -c "GRANT EXECUTE ON FUNCTION refresh_mv(TEXT) TO logmara_app_group;" 2>/dev/null || true
 
         # Create role for application user
         vault_cli write secret-dynamic/database/roles/logmara-app \

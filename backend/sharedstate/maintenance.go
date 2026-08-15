@@ -9,7 +9,7 @@ import (
 
 const (
 	maintenanceStatusKey = "maintenance:status"
-	maintenanceStatusTTL = 30 * time.Minute
+	maintenanceStatusTTL = 24 * time.Hour
 )
 
 const (
