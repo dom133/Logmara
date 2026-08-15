@@ -14,9 +14,9 @@ interface StatCardProps {
 
 const StatCard: React.FC<StatCardProps> = ({ title, value, icon, color = '#1890ff', subtitle }) => (
   <Card hoverable style={{ width: '100%' }}>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
       {icon && <div style={{ fontSize: 24, color }}>{icon}</div>}
-      <div>
+      <div style={{ minWidth: 0, flex: 1 }}>
         <Text type="secondary">{title}</Text>
         <Title level={3} style={{ margin: '4px 0 0 0', color }}>
           {value}

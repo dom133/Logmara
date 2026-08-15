@@ -279,14 +279,14 @@ export default function LogsViewer() {
           <Input
             ref={searchRef}
             placeholder="Search messages... (Ctrl+K)"
-            style={{ width: 280 }}
+            style={{ minWidth: 200 }}
             allowClear
             onChange={e => handleSearch(e.target.value)}
             value={filters.search}
           />
           <Select
             placeholder="Device"
-            style={{ width: 180 }}
+            style={{ minWidth: 140 }}
             allowClear
             options={devices.map(d => ({ label: d, value: d }))}
             value={filters.hostname || undefined}
@@ -294,7 +294,7 @@ export default function LogsViewer() {
           />
           <Select
             placeholder="Severity"
-            style={{ width: 130 }}
+            style={{ minWidth: 100 }}
             allowClear
             options={severities.map(s => ({ label: s.toUpperCase(), value: s }))}
             value={filters.severity || undefined}
@@ -302,7 +302,7 @@ export default function LogsViewer() {
           />
           <Select
             placeholder="Date Preset"
-            style={{ width: 150 }}
+            style={{ minWidth: 120 }}
             allowClear
             options={DATE_PRESETS}
             onChange={v => {
@@ -313,12 +313,12 @@ export default function LogsViewer() {
             }}
           />
           <RangePicker
-            style={{ width: 300 }}
+            style={{ minWidth: 240 }}
             onChange={handleDateRange}
           />
           <Select
             placeholder="Sort"
-            style={{ width: 150 }}
+            style={{ minWidth: 130 }}
             value={filters.sort}
             onChange={v => setFilters(f => ({ ...f, sort: v }))}
             options={[
@@ -356,7 +356,7 @@ export default function LogsViewer() {
             dataSource={logs}
             rowKey="id"
             loading={loading}
-            scroll={{ x: 1200 }}
+            scroll={{ x: 'max-content' }}
             pagination={{
               ...pagination,
               total,
@@ -376,7 +376,7 @@ export default function LogsViewer() {
             open={detailModalOpen}
             onCancel={() => setDetailModalOpen(false)}
             footer={null}
-            width={700}
+            width={[700, '90%']}
           >
             {selectedLog && (
               <Descriptions bordered column={1} size="small">

@@ -292,6 +292,7 @@ export default function Admin() {
                   columns={enhanceColumns(userColumns)}
                   dataSource={users}
                   loading={loading}
+                  scroll={{ x: 'max-content' }}
                 />
               </Card>
             ),
@@ -303,17 +304,17 @@ export default function Admin() {
               <Card title="Application Settings">
                 <Form form={settingsForm} layout="vertical" onFinish={handleSaveSettings}>
                   <Form.Item label="Log Retention (days)" name="retention_days">
-                    <InputNumber min={1} max={3650} style={{ width: 200 }} />
+                    <InputNumber min={1} max={3650} style={{ width: '100%' }} />
                   </Form.Item>
                   <Form.Item label="Default Role" name="default_role">
-                    <Select style={{ width: 200 }}>
+                    <Select style={{ width: '100%' }}>
                       <Option value="viewer">Viewer</Option>
                       <Option value="editor">Editor</Option>
                       <Option value="admin">Admin</Option>
                     </Select>
                   </Form.Item>
                   <Form.Item label="JWT Expiry (hours)" name="jwt_expiry">
-                    <InputNumber min={1} max={8760} style={{ width: 200 }} />
+                    <InputNumber min={1} max={8760} style={{ width: '100%' }} />
                   </Form.Item>
                   <Divider />
                   <Space>
@@ -350,7 +351,7 @@ export default function Admin() {
                     <Input placeholder="ldap.example.com" disabled={!ldapEnabled} />
                   </Form.Item>
                   <Form.Item label="Port" name="ldap_port">
-                    <InputNumber min={1} max={65535} style={{ width: 200 }} disabled={!ldapEnabled} />
+                    <InputNumber min={1} max={65535} style={{ width: '100%' }} disabled={!ldapEnabled} />
                   </Form.Item>
                   <Form.Item label="Use TLS" name="ldap_use_tls" valuePropName="checked">
                     <Switch disabled={!ldapEnabled} />
@@ -378,7 +379,7 @@ export default function Admin() {
                     <Switch disabled={!ldapEnabled} />
                   </Form.Item>
                   <Form.Item label="Default Role (auto-provisioned)" name="ldap_default_role">
-                    <Select style={{ width: 200 }} disabled={!ldapEnabled}>
+                    <Select style={{ width: '100%' }} disabled={!ldapEnabled}>
                       <Option value="viewer">Viewer</Option>
                       <Option value="editor">Editor</Option>
                       <Option value="admin">Admin</Option>
@@ -416,6 +417,7 @@ export default function Admin() {
                   rowKey="hostname"
                   dataSource={devices}
                   pagination={false}
+                  scroll={{ x: 'max-content' }}
                   columns={[
                     {
                       title: 'Hostname',
@@ -503,6 +505,7 @@ export default function Admin() {
         onOk={handleCreate}
         okText="Create"
         cancelText="Cancel"
+        width={[500, '90%']}
       >
         <Form form={form} layout="vertical">
           <Form.Item name="username" label="Username" rules={[{ required: true, message: 'Required' }]}>
@@ -531,6 +534,7 @@ export default function Admin() {
         onOk={handleEditSave}
         okText="Save"
         cancelText="Cancel"
+        width={[500, '90%']}
       >
         <Form form={editForm} layout="vertical">
           <Form.Item label="Username">

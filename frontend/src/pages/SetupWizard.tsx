@@ -319,13 +319,15 @@ export default function SetupWizard() {
 
   return (
     <Layout style={{ minHeight: '100vh', background: '#f0f2f5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <Card style={{ width: 600, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+      <Card style={{ width: '100%', maxWidth: 600, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <Title level={3} style={{ margin: 0 }}>📡 SysLog GUI</Title>
           <Text type="secondary">First-time setup wizard</Text>
         </div>
 
-        <Steps current={current} style={{ marginBottom: 32 }} items={steps.map(s => ({ title: s.title, description: s.description }))} />
+        <div style={{ overflowX: 'auto', paddingBottom: 8 }}>
+          <Steps current={current} style={{ marginBottom: 32 }} items={steps.map(s => ({ title: s.title, description: s.description }))} />
+        </div>
 
         <Form form={form} layout="vertical">
           {renderStepContent()}

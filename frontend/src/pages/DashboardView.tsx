@@ -274,26 +274,26 @@ export default function DashboardViewPage() {
           </Button>}
           {!isOwner && dashboard.owner_username && <Tag color="blue">by {dashboard.owner_username}</Tag>}
         </Space>
-        <Space>
+        <Space wrap>
           <Input
             ref={searchRef}
             placeholder="Search... (Ctrl+K)"
             value={searchOverride}
             onChange={e => setSearchOverride(e.target.value)}
             onPressEnter={loadLogs}
-            style={{ width: 180 }}
+            style={{ minWidth: 180, flex: 1 }}
             prefix={<FilterOutlined />}
           />
           <Select
             placeholder="Severity"
             allowClear
-            style={{ width: 140 }}
+            style={{ minWidth: 140 }}
             value={severityFilter || undefined}
             onChange={(v) => setSeverityFilter(v || '')}
             options={severities.map(s => ({ label: SEVERITY_LABELS[s] || s, value: s }))}
           />
           <RangePicker
-            style={{ width: 260 }}
+            style={{ minWidth: 260 }}
             showTime
             value={dateRange}
             onChange={(dates) => setDateRange(dates as [any, any] | null)}
@@ -308,22 +308,22 @@ export default function DashboardViewPage() {
       )}
 
       <Row gutter={16} style={{ marginBottom: 16 }}>
-        <Col span={6}>
+        <Col xs={24} sm={12} md={8} lg={6}>
           <Card>
             <Statistic title="Matching Logs" value={total} />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={24} sm={12} md={8} lg={6}>
           <Card>
             <Statistic title="Devices" value={devices.length || 'All'} />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={24} sm={12} md={8} lg={6}>
           <Card>
             <Statistic title="Fields" value={fields.length || 'Default'} />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={24} sm={12} md={8} lg={6}>
           <Card>
             <Statistic title="Updated" value={new Date(dashboard.updated_at).toLocaleString()} />
           </Card>
@@ -372,7 +372,7 @@ export default function DashboardViewPage() {
         footer={[
           <Button key="close" onClick={() => setDetailLog(null)}>Close</Button>
         ]}
-        width={720}
+        width={[720, '90%']}
       >
         {detailLog && (
           <Descriptions column={2} size="small" bordered>

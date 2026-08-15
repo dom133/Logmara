@@ -243,6 +243,7 @@ export default function ParsersPage() {
         loading={loading}
         size="small"
         pagination={{ pageSize: 20 }}
+        scroll={{ x: 'max-content' }}
       />
 
       <Modal
@@ -250,7 +251,7 @@ export default function ParsersPage() {
         open={modalOpen}
         onCancel={() => { setModalOpen(false); setEditing(null) }}
         onOk={() => { form.validateFields().then(values => editing ? handleUpdate(values) : handleCreate(values)) }}
-        width={700}
+        width={[700, '90%']}
       >
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="Name" rules={[{ required: true }]}>
@@ -305,7 +306,7 @@ export default function ParsersPage() {
         open={testModalOpen}
         onCancel={() => { setTestModalOpen(false); setTestResult(null) }}
         footer={null}
-        width={800}
+        width={[800, '95%']}
       >
         <Form layout="vertical">
           <Form.Item label="Regex Pattern">
