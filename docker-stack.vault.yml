@@ -1,26 +1,22 @@
 # HashiCorp Vault HA stack for Docker Swarm - the 3-node server cluster.
 #
-# Vault agent (the sidecar that actually delivers secrets to the app
-# stacks) is a SEPARATE stack: docker-stack.vault-agent.yml. It has to be,
-# because its `vault_agent_token` secret doesn't exist until after this
-# stack is bootstrapped - and `docker stack deploy` refuses to create ANY
-# service in a stack if even one service references a Swarm secret/config
-# that doesn't exist yet, not just the one that's missing it. Splitting
-# them into two stacks is what lets vault-1/2/3 come up on the very first
-# deploy instead of the whole stack deploy failing outright.
-#
 # Required by docker-stack.postgres.yml, redis.yml, rabbitmq.yml, and
-# app.yml — they bind-mount vault-agent's local output for pg_app_password,
-# redis_password, rabbitmq_password, jwt_secret, and encryption_key, so
-# this stack (and docker-stack.vault-agent.yml) must be deployed and
-# bootstrapped before those.
+# app.yml before any of them can start: Patroni (postgres.yml), Redis
+# (redis.yml), RabbitMQ (rabbitmq.yml) and api (app.yml) all fetch their
+# secrets straight from Vault's HTTP API at their own startup (see
+# patroni/entrypoint.sh, redis/entrypoint.sh, redis/sentinel_entrypoint.sh,
+# rabbitmq/entrypoint.sh, rabbitmq/join_entrypoint.sh, backend/vaultclient),
+# authenticating with the `vault_agent_token` bootstrap token created below
+# - no separate sidecar or locally-rendered file involved for any of them.
+# This stack must be deployed and bootstrapped first.
 #
 # Architecture:
 #   - 3 Vault servers (vault-1, vault-2, vault-3) on dedicated nodes
-#   - Vault agent (docker-stack.vault-agent.yml, mode: global) reads from
-#     Vault, writes to local files
-#   - App services bind-mount agent output as :ro, *_FILE env vars point there
-#   - Zero Go code changes required - uses existing *_FILE convention
+#   - Every consumer (Patroni, Redis, RabbitMQ, api) calls Vault's HTTP API
+#     directly at its own container startup, using the `vault_agent_token`
+#     bootstrap token only to authenticate - no rendered files anywhere
+#   - Zero Go code changes required - uses existing *_FILE convention as a
+#     fallback for api when Vault isn't configured at all
 #
 # Prerequisites:
 #   - Docker Swarm initialized
@@ -44,7 +40,6 @@
 #   3. ./scripts/vault-bootstrap.sh unseal
 #   4. ./scripts/vault-bootstrap.sh policy
 #   5. ./scripts/vault-bootstrap.sh migrate-secrets   (creates vault_agent_token secret)
-#   6. ./scripts/swarm-deploy.sh vault-agent
 #
 # `entrypoint: [vault]` below bypasses the image's docker-entrypoint.sh:
 # given `server` as $1, it rebuilds the args as

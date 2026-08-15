@@ -51,14 +51,22 @@ Commands (run on the indicated node):
       `openssl rand -base64 32`, do not reuse these examples.
 
   redis-secret <redis-password>
-       Run on a manager, once: creates the redis_password secret consumed by
-       docker-stack.redis.yml. Its value must match REDIS_PASSWORD passed to
-       docker-stack.app.yml.
+       Run on a manager, once: creates the redis_password Docker secret.
+       Not read directly by docker-stack.redis.yml - it's the seed value
+       `./scripts/vault-bootstrap.sh migrate-secrets` copies into Vault,
+       from where redis/entrypoint.sh and redis/sentinel_entrypoint.sh
+       fetch it at container start. Its value must match REDIS_PASSWORD
+       passed to docker-stack.app.yml.
 
   rabbitmq-secret <rabbitmq-password>
        Run on a manager, once: creates the rabbitmq_password and
-       rabbitmq_erlang_cookie secrets consumed by docker-stack.rabbitmq.yml.
-       Its password value must match RABBITMQ_PASS passed to docker-stack.app.yml.
+       rabbitmq_erlang_cookie Docker secrets. rabbitmq_password is not read
+       directly by docker-stack.rabbitmq.yml - it's the seed value
+       `./scripts/vault-bootstrap.sh migrate-secrets` copies into Vault,
+       from where rabbitmq/entrypoint.sh and rabbitmq/join_entrypoint.sh
+       fetch it at container start (rabbitmq_erlang_cookie stays a native
+       Swarm secret, mounted directly). Its password value must match
+       RABBITMQ_PASS passed to docker-stack.app.yml.
 
   app-secrets <jwt-secret> <encryption-key>
       Run on a manager, once: creates the jwt_secret and encryption_key
@@ -67,25 +75,24 @@ Commands (run on the indicated node):
       Generate both with `openssl rand -base64 48`, do not reuse examples.
 
   haproxy-config
-      Run on a manager, once (and again any time haproxy/haproxy.cfg
-      changes — configs are immutable, so this recreates it with a new
-      name if it already exists and prints the docker service update
-      command to roll it out):
-        docker config create haproxy_pg_cfg haproxy/haproxy.cfg
+       DEPRECATED: haproxy configs are now auto-created by
+       scripts/swarm-deploy.sh using content-hash naming. This command
+       is kept for backward compatibility but no longer needed.
+         docker config create haproxy_pg_cfg haproxy/haproxy.cfg
 
-  haproxy-app-config
-      Same idea as haproxy-config, for haproxy/haproxy-app.cfg (fronts
-      frontend/api - docker-stack.app.yml's haproxy-app service):
-        docker config create haproxy_app_cfg haproxy/haproxy-app.cfg
+   haproxy-app-config
+       DEPRECATED: see haproxy-config above.
+         docker config create haproxy_app_cfg haproxy/haproxy-app.cfg
 
-  redis-sentinel-config
-       Same idea as haproxy-config, for redis/sentinel.conf.tpl:
-         docker config create redis_sentinel_cfg redis/sentinel.conf.tpl
+   redis-sentinel-config
+        DEPRECATED: redis sentinel config is now auto-created by
+        scripts/swarm-deploy.sh using content-hash naming.
+          docker config create redis_sentinel_cfg redis/sentinel.conf.tpl
 
-  haproxy-rabbitmq-config
-       Same idea as haproxy-config, for haproxy/haproxy-rabbitmq.cfg (fronts
-       rabbitmq1/2/3 - docker-stack.rabbitmq.yml's haproxy-rabbitmq service):
+   haproxy-rabbitmq-config
+       DEPRECATED: see haproxy-config above.
          docker config create haproxy_rabbitmq_cfg haproxy/haproxy-rabbitmq.cfg
+
 
 EOF
 }

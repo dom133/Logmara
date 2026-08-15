@@ -283,7 +283,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       rememberedRef.current = !!res.data.remembered
       setupSessionWarningRef.current(res.data.expires_at)
       return { ok: true }
-    } catch (error: any) {
+    } catch (error) {
       return { ok: false, error: getErrorMessage(error, t('login.loginFailed')) }
     }
   }, [])

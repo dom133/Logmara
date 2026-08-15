@@ -163,15 +163,15 @@ func Authenticate(cfg *Config, username, password string) (map[string]string, er
 }
 
 func dialLDAP(cfg *Config) (*ldaplib.Conn, error) {
-	addr := fmt.Sprintf("%s:%d", cfg.Server, cfg.Port)
-
 	tlsConfig := buildTLSConfig(cfg)
 
 	if cfg.UseTLS && cfg.Port == 636 {
-		return ldaplib.DialTLS("tcp", addr, tlsConfig)
+		addr := fmt.Sprintf("ldaps://%s:%d", cfg.Server, cfg.Port)
+		return ldaplib.DialURL(addr, ldaplib.DialWithTLSConfig(tlsConfig))
 	}
 
-	l, err := ldaplib.Dial("tcp", addr)
+	addr := fmt.Sprintf("ldap://%s:%d", cfg.Server, cfg.Port)
+	l, err := ldaplib.DialURL(addr)
 	if err != nil {
 		return nil, err
 	}

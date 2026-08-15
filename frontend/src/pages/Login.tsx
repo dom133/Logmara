@@ -5,8 +5,9 @@ import { useAuth } from '../services/auth'
 import { useTheme } from '../App'
 import { useTranslation } from 'react-i18next'
 import i18n from 'i18next'
-import { languageDisplayName, sortLanguagesEnglishFirst, onLanguagesChanged } from '../i18n'
+import { languageDisplayName, sortLanguagesEnglishFirst, onLanguagesChanged, getLoadedLanguages } from '../i18n'
 import { changePassword } from '../services/api'
+import { getErrorMessage } from '../utils/error'
 
 const { Title, Text } = Typography
 
@@ -59,8 +60,8 @@ export default function Login() {
       message.success(t('login.passwordChanged'))
       setShowPasswordExpired(false)
       changeForm.resetFields()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || t('login.passwordChangeFailed'))
+    } catch (e) {
+      message.error(getErrorMessage(e, t('login.passwordChangeFailed')))
     } finally {
       setChangeLoading(false)
     }
@@ -72,7 +73,7 @@ export default function Login() {
   // this listens for it directly - otherwise, on a cold cache where that
   // load takes a while, the switcher just never appears.
   const [languages, setLanguages] = useState(() =>
-    sortLanguagesEnglishFirst(Object.keys((i18n as any).store?.data || {}))
+    sortLanguagesEnglishFirst(getLoadedLanguages())
   )
   useEffect(() => onLanguagesChanged(langs => setLanguages(sortLanguagesEnglishFirst(langs))), [])
 

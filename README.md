@@ -68,6 +68,9 @@ A live demo is available at **[demo.logmara.com](https://demo.logmara.com)**:
 - 🧙 **Setup Wizard** — Guided initial configuration with admin account, database, security keys, and optional LDAP/CORS
 - 🛠️ **Admin Panel** — User management, settings, audit log viewer, LDAP connection test
 - 🩺 **Health Monitoring** — Container/Swarm service status and syslog relay liveness in one place (see [Health Monitoring](#health-monitoring))
+- 🚨 **Alerting** — Rules for log thresholds, device silence, config changes, and relay certificate expiry, delivered via email/webhook/Slack/Teams/in-app/push (see [Alerts](#alerts))
+- 🔀 **Syslog Relay** — mTLS-secured forwarding from remote VLANs into the central ingestion pipeline (see [Syslog Relay](#syslog-relay-optional-multi-vlan))
+- 🔑 **External API** — Scoped, rate-limited API keys for programmatic log export and stats (see [External API](#external-api))
 
 ## Quick Start (Single Server)
 
@@ -185,17 +188,12 @@ Copy `.env.example` and adjust values:
 | `PORT` | `8080` | API server port |
 | `LOG_FILE_PATH` | `/data/logs.jsonl` | Path to rsyslog JSON output |
 | `CORS_ORIGINS` | *(none)* | Comma-separated allowed origins for CORS. Only seeds the initial value in the database on first initialization — afterwards it's managed from the admin Settings UI |
-| `LDAP_SERVER` | *(none)* | LDAP/AD server hostname |
-| `LDAP_PORT` | `636` | LDAP server port |
-| `LDAP_USE_TLS` | `true` | Enable TLS for LDAP |
-| `LDAP_VERIFY_CERT` | `true` | Verify LDAP server certificate |
-| `LDAP_CA_CERT` | *(none)* | Path to CA certificate for LDAP |
-| `LDAP_BASE_DN` | *(none)* | Base DN for user search |
-| `LDAP_BIND_DN` | *(none)* | Bind DN for LDAP queries |
-| `LDAP_BIND_PASSWORD` | *(none)* | Bind password for LDAP queries |
 | `DOCKER_PROXY_URL` | `http://docker-proxy:2375` | Base URL of the `docker-proxy` sidecar backing Admin > Health — see [Health Monitoring](#health-monitoring) |
 | `PARSER_DEFS_DIR` | *(none — embedded defaults only)* | Directory the builtin parser definitions (`backend/db/parsers`) are bootstrapped into and re-read from on every start. Set this (and mount a persistent volume there) to edit/add/remove builtin parsers without rebuilding the image — see [Built-in Parsers](#built-in-parsers) |
 | `RABBITMQ_PASS` | *(required)* | RabbitMQ password for the `logmara` user. Generate with `openssl rand -base64 24`. Also accepted as `RABBITMQ_PASS_FILE` (Swarm secret). The RabbitMQ host/port/user are derived from `RABBITMQ_HOST`/`RABBITMQ_PORT`/`RABBITMQ_USER` env vars (defaults: `rabbitmq`, `5672`, `logmara`) |
+
+> [!NOTE]
+> **LDAP/AD is not configured via environment variables.** All of it — enable/disable, server, port, TLS, bind DN/password, user filter, attribute mapping, auto-provisioning — is a database-backed setting, editable from Admin > Settings (or set once during the Setup Wizard). See `backend/db/db.go`'s `ldap_*` default settings for the full list and defaults (`ldap_port` defaults to `389`, `ldap_use_tls` to `false`, `ldap_verify_cert` to `true`).
 
 ### Security keys
 
@@ -249,7 +247,7 @@ An additional, opt-in deployment path for surviving the loss of an entire server
 Getting here required backend code changes (not just Docker config) — see "How multi-replica safety works" below for what changed and why.
 
 <p align="center">
-  <img src="docs/architecture-ha-swarm.svg" alt="Multi-node Docker Swarm HA architecture: a floating keepalived VIP fronts an app/edge tier (app1, app2) running haproxy-app, frontend, api, rsyslog and keepalived, backed by a data tier (pg1-pg3) running Patroni-managed Postgres, etcd, Redis and Sentinel behind HAProxy, RabbitMQ cluster behind HAProxy, plus a shared NFS server for log_data, log_spool and parser_defs" width="1000" />
+  <img src="docs/architecture-ha-swarm.svg" alt="Multi-node Docker Swarm HA architecture: a floating keepalived VIP fronts an app/edge tier (app1, app2) running haproxy-app, frontend, api, rsyslog and keepalived, backed by a data tier (pg1-pg3) running Patroni-managed Postgres, etcd, Redis, Sentinel, RabbitMQ and a Vault node each, plus a shared NFS server for log_data, log_spool and parser_defs. Postgres, Redis, RabbitMQ and api all read their secrets straight from Vault's HTTP API, no sidecar involved" width="1000" />
 </p>
 
 ### Requirements
@@ -276,10 +274,9 @@ Getting here required backend code changes (not just Docker config) — see "How
 | [`scripts/swarm-bootstrap.sh`](scripts/swarm-bootstrap.sh) | Guided commands for swarm init/join, node labeling, network/secret/config creation |
 | [`scripts/swarm-deploy.sh`](scripts/swarm-deploy.sh) | Wrapper that sources `.env` then runs `docker stack deploy` (Swarm doesn't read `.env` on its own) |
 | [`scripts/build-images.sh`](scripts/build-images.sh) | Builds + pushes all Docker images, reading `REGISTRY`/`TAG` from `.env` |
-| [`docker-stack.vault.yml`](docker-stack.vault.yml) | 3-node Vault server cluster (Raft storage) |
-| [`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml) | Vault agent sidecars for secret injection into Postgres/Redis/RabbitMQ (`vault_agent`-labeled nodes only - `api` reads Vault's API directly instead) - a separate stack from the servers, see [Deploying Vault](#deploying-vault) for why |
-| [`vault/`](vault/) | Vault server and agent configuration files |
-| [`scripts/vault-bootstrap.sh`](scripts/vault-bootstrap.sh) | Vault init, unseal, policy creation, Docker→Vault secret migration, and creation of the `vault_agent_token` Docker secret the agent sidecars auto-authenticate with |
+| [`docker-stack.vault.yml`](docker-stack.vault.yml) | 3-node Vault server cluster (Raft storage). Every consumer (`api`, Patroni, Redis, RabbitMQ) reads its HTTP API directly - see [Deploying Vault](#deploying-vault) |
+| [`vault/`](vault/) | Vault server configuration files |
+| [`scripts/vault-bootstrap.sh`](scripts/vault-bootstrap.sh) | Vault init, unseal, policy creation, Docker→Vault secret migration, and creation of the `vault_agent_token` Docker secret every direct-API consumer authenticates with |
 | [`scripts/rotate-secrets.sh`](scripts/rotate-secrets.sh) | Secret rotation (auto-detects Docker secrets or Vault KV) - `rotate` for a single secret with a zero-downtime rolling restart, `rotate-batch` to rotate several secrets at once with logmara-app scaled to 0 for the duration |
 | [`scripts/backup-swarm.sh`](scripts/backup-swarm.sh) | Full state backup (etcd snapshot, Postgres dump, configs, join tokens) with optional S3 sync |
 | [`scripts/backup-cron.sh`](scripts/backup-cron.sh) | Cron entry point — runs `backup-swarm.sh` then prunes old backups (keeps newest 7 daily / 4 Sunday / 3 first-of-month) |
@@ -288,22 +285,21 @@ Getting here required backend code changes (not just Docker config) — see "How
 
 ### Deploying Vault
 
-`vault-agent` authenticates to Vault with a bootstrap token (`vault_agent_token`) that only exists once Vault itself has been initialized, unsealed, and `migrate-secrets` has run — so it's deployed as its **own stack**, [`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml), separate from the 3-node server cluster in `docker-stack.vault.yml`. This isn't just tidiness: `docker stack deploy` refuses to create *any* service in a stack if *any* service in it references a Swarm secret/config that doesn't exist yet, not just the one missing it — so if the agent were still a service inside `docker-stack.vault.yml`, the very first deploy would fail to create `vault-1`/`vault-2`/`vault-3` too, not just the agent.
-
 ```bash
 ./scripts/swarm-deploy.sh vault
 ./scripts/vault-bootstrap.sh init      # unseal keys + root token -> /srv/syslog-ha/vault-token
 ./scripts/vault-bootstrap.sh unseal
 ./scripts/vault-bootstrap.sh policy
 ./scripts/vault-bootstrap.sh migrate-secrets   # migrates existing Docker secrets into Vault, creates vault_agent_token
-./scripts/swarm-deploy.sh vault-agent   # only now does vault_agent_token exist
 ```
 
-#### How `api` reads secrets from Vault
+That's it — every consumer (`api`, Patroni, Redis, RabbitMQ) reads Vault's HTTP API directly at its own startup, authenticating with the `vault_agent_token` bootstrap token `migrate-secrets` just created. There is no sidecar and no locally-rendered secret file anywhere in this deployment.
 
-`api` (`backend/vaultclient`) reads `secret/data/logmara/<name>` straight from Vault's HTTP API — no `*_FILE`/`vault-agent` involved for `api` at all, unlike Postgres/Redis/RabbitMQ. It authenticates with the same `vault_agent_token` bootstrap token `vault-agent` uses (mounted via `VAULT_TOKEN_FILE`), and caches each secret in-process for 30s, so a `scripts/rotate-secrets.sh` rotation takes effect within that window with no `api` restart needed.
+#### How secrets are read from Vault
 
-There is deliberately **no fallback**: if Vault is unreachable, `api` won't start, rather than silently running on a stale value. Nothing to configure beyond what's already in `docker-stack.app.yml` (`VAULT_ADDR`, `VAULT_TOKEN_FILE`) — this applies automatically once Vault is deployed and bootstrapped per above. `vault-agent` itself doesn't need to run anywhere near `api` — see the node-labeling note in step 8 below.
+`api` (`backend/vaultclient`) reads `secret/data/logmara/<name>` straight from Vault's HTTP API, authenticating with `vault_agent_token` (mounted via `VAULT_TOKEN_FILE`), and caches each secret in-process for 30s, so a `scripts/rotate-secrets.sh` rotation takes effect within that window with no `api` restart needed. Patroni (`patroni/entrypoint.sh`), Redis (`redis/entrypoint.sh`, `redis/sentinel_entrypoint.sh`) and RabbitMQ (`rabbitmq/entrypoint.sh`, `rabbitmq/join_entrypoint.sh`) all fetch their own passwords the same way at container startup, each authenticating with the same `vault_agent_token` secret.
+
+There is deliberately **no fallback** for any of them when `VAULT_ADDR` is set: if Vault is unreachable, the container won't start, rather than silently running on a stale value. Nothing to configure beyond what's already in `docker-stack.app.yml`/`docker-stack.postgres.yml`/`docker-stack.redis.yml`/`docker-stack.rabbitmq.yml` (`VAULT_ADDR`, plus the `vault_agent_token` secret) — this applies automatically once Vault is deployed and bootstrapped per above.
 
 ### Vault UI
 
@@ -590,11 +586,11 @@ ENCRYPTION_KEY_VAL=$(openssl rand -base64 48)   # separate value; see "Security 
 ./scripts/swarm-bootstrap.sh redis-sentinel-config
 ./scripts/swarm-bootstrap.sh haproxy-rabbitmq-config
 ```
-All the passwords/keys now live only as Swarm secrets - none of them need to be exported as shell env vars again later, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later. `pg_superuser_password`, `pg_replication_password`, and `rabbitmq_erlang_cookie` stay mounted directly into their containers at `/run/secrets/*` as native Swarm secrets. The other five (`pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key`) are only the *source* values here — step 8 below migrates them into Vault. From there, Postgres/Redis/RabbitMQ read them at `/run/secrets/*` (bind-mounted from Vault agent's local output, not the Swarm secret directly — see [`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml)); `api` reads them straight from Vault's HTTP API instead (`backend/vaultclient`), no file involved.
+All the passwords/keys now live only as Swarm secrets - none of them need to be exported as shell env vars again later, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later. Only `rabbitmq_erlang_cookie` stays mounted directly into its containers at `/run/secrets/rabbitmq_erlang_cookie` as a native Swarm secret. The other seven (`pg_superuser_password`, `pg_replication_password`, `pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key`) are only the *source* values here — step 8 below migrates them into Vault, and nothing reads the Swarm secret itself afterwards: Patroni (`patroni/entrypoint.sh`), Redis (`redis/entrypoint.sh`/`redis/sentinel_entrypoint.sh`), RabbitMQ (`rabbitmq/entrypoint.sh`/`rabbitmq/join_entrypoint.sh`), and `api` (`backend/vaultclient`) all fetch their own secrets straight from Vault's HTTP API at their own startup instead - no file involved for any of them.
 
 #### 8. Deploy Vault and migrate secrets
 
-Postgres/Redis/RabbitMQ (steps 10 below) read `pg_app_password`, `redis_password`, and `rabbitmq_password` from a bind-mounted file `vault-agent` writes locally on whichever nodes host them; the app tier (step 11) reads all five directly from Vault's API instead (`backend/vaultclient` - no file, no `vault-agent` dependency for `api` at all). Either way, Vault must be deployed and fully bootstrapped *before* those stacks, or their containers will fail to start. `vault-agent` is a separate stack ([`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml)) from the Vault servers ([`docker-stack.vault.yml`](docker-stack.vault.yml)) — see [Deploying Vault](#deploying-vault) above for why. The commands, run once from `pg1`:
+Postgres, Redis and RabbitMQ (step 10 below) all fetch their passwords straight from Vault's HTTP API at their own container startup - Patroni's `entrypoint.sh` for `pg_superuser_password`/`pg_replication_password`/`pg_app_password`, `redis/entrypoint.sh`/`redis/sentinel_entrypoint.sh` for `redis_password`, `rabbitmq/entrypoint.sh`/`rabbitmq/join_entrypoint.sh` for `rabbitmq_password` - authenticating with the `vault_agent_token` bootstrap token created below. No local file, no sidecar involved for any of them. The app tier (step 11) follows the same direct-API pattern, fetching its own five secrets via `backend/vaultclient`. Either way, Vault must be deployed and fully bootstrapped *before* those stacks, or their containers will fail to start. The commands, run once from `pg1`:
 
 ```bash
 # 3 nodes for the Vault Raft cluster - reuse pg1-pg3/app1-app2 on a small
@@ -610,18 +606,6 @@ sudo mkdir -p /srv/syslog-ha/vault/vault<N>/data
 sudo chmod -R 777 /srv/syslog-ha/vault/vault<N>/data
 ```
 
-`vault-agent` only needs to run on nodes hosting `postgres1-3`/`redis1-3`/`sentinel1-3`/`rabbitmq1-3` - **not** on `app1`/`app2` (`api` doesn't need it at all) or even the `vault_id`-labeled nodes themselves, unless they double as one of those. In this example topology that's `pg1`/`pg2`/`pg3` (reusing `pg_id`/`cache_id`/`rabbitmq_id` per step 6):
-```bash
-docker node update --label-add vault_agent=true pg1
-docker node update --label-add vault_agent=true pg2
-docker node update --label-add vault_agent=true pg3
-```
-
-On each of those same nodes - Swarm services don't auto-create a bind mount's source directory the way plain `docker run -v` does, they just fail the task with "bind source path does not exist":
-```bash
-sudo mkdir -p /srv/syslog-ha/vault-secrets
-```
-
 Back on `pg1`:
 ```bash
 ./scripts/swarm-deploy.sh vault
@@ -630,13 +614,10 @@ watch docker service ls   # wait for vault-1/2/3 at Running before continuing
 ./scripts/vault-bootstrap.sh init      # unseal keys + root token -> /srv/syslog-ha/vault-token
 ./scripts/vault-bootstrap.sh unseal
 ./scripts/vault-bootstrap.sh policy
-./scripts/vault-bootstrap.sh migrate-secrets   # copies the 5 secrets above into Vault, creates vault_agent_token
-
-./scripts/swarm-deploy.sh vault-agent   # only now does vault_agent_token exist
-watch docker service ls   # wait for vault-agent at Running on every vault_agent-labeled node
+./scripts/vault-bootstrap.sh migrate-secrets   # copies the 7 secrets from step 7 into Vault, creates vault_agent_token
 ```
 
-Verify before moving on: `ls /srv/syslog-ha/vault-secrets/` on each `vault_agent`-labeled node should show `pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key`.
+That's all that's required — Postgres/Redis/RabbitMQ/`api` all read Vault directly from here on, no further node labeling or sidecar deployment needed.
 
 #### 9. Create local data directories on the Postgres nodes
 
@@ -1164,6 +1145,8 @@ The **Dashboards** tab provides customizable views of your log data.
 
 ## API Endpoints
 
+Every route below except **Authentication**/**Initialization** requires a valid session (JWT access token + CSRF header). Routes marked **(editor)** additionally require the `editor` or `admin` role; everything under **Admin** requires `admin`. Query/filter payloads are sent as a JSON body even on several routes that only read data, hence the `POST`s below that aren't creating anything.
+
 ### Authentication
 
 | Method | Path | Description |
@@ -1175,6 +1158,8 @@ The **Dashboards** tab provides customizable views of your log data.
 | POST | `/api/auth/change-password` | Change user password |
 | GET | `/api/auth/sessions` | List the caller's own active sessions/devices |
 | DELETE | `/api/auth/sessions/:id` | Sign out one of the caller's own sessions |
+| GET | `/api/auth/session-check` | Lightweight check that the current session is still valid |
+| POST | `/api/auth/activity` | Heartbeat used to track session inactivity for `session_timeout_min` |
 
 ### Initialization
 
@@ -1189,59 +1174,148 @@ The **Dashboards** tab provides customizable views of your log data.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/logs` | Query logs with filters |
-| GET | `/api/export/csv` | Export logs as CSV |
-| GET | `/api/export/html` | Export logs as HTML report |
+| POST | `/api/logs` | Query logs with filters (JSON body) |
+| POST | `/api/logs/count` | Count logs matching the same filters, without fetching rows |
+| POST | `/api/export/csv` | Export logs as CSV |
+| POST | `/api/export/html` | Export logs as HTML report |
 
-### Statistics
+### Statistics & Devices
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/stats/dashboard` | Overview statistics |
-| GET | `/api/stats/devices` | Per-device counts |
-| GET | `/api/stats/severity` | Severity distribution |
-| GET | `/api/stats/timeline` | Hourly timeline data |
+| POST | `/api/stats/dashboard` | Overview statistics |
+| POST | `/api/stats/devices` | Per-device counts |
+| POST | `/api/stats/severity` | Severity distribution |
+| POST | `/api/stats/timeline` | Hourly timeline data |
+| GET | `/api/stats/rate` | Current ingestion rate (logs/sec) |
+| GET | `/api/devices` | List known devices (with aliases) |
+| PUT | `/api/admin/devices/:ip/alias` | Set a friendly alias for a device IP (admin) |
+
+### Notifications & Push
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/notifications` | List the caller's in-app notifications (always reachable, even if the feature is disabled, so the bell can hide itself) |
+| POST | `/api/notifications/mark-read` | Mark notifications as read |
+| GET | `/api/notifications/stream` | SSE stream of new in-app notifications |
+| GET | `/api/push/vapid-public-key` | Get the VAPID public key for browser push subscriptions |
+| POST | `/api/push/subscribe` | Register a push subscription for the caller |
+| POST | `/api/push/unsubscribe` | Remove a push subscription |
+| GET | `/api/admin/notification-channels` | List configured notification channels (secrets never included) |
+| POST | `/api/admin/notification-channels` | Create a channel (editor) |
+| PUT | `/api/admin/notification-channels/:id` | Update a channel (editor) |
+| DELETE | `/api/admin/notification-channels/:id` | Delete a channel (editor) |
+| POST | `/api/admin/notification-channels/:id/test` | Send a test notification through a channel (editor) |
+| POST | `/api/admin/notifications/history` | Query alert notification history |
+| DELETE | `/api/admin/notifications/history` | Clear notification history (admin) |
+
+### Alerts
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/alerts` | List alert rules (rows filtered per-caller for non-admins) |
+| POST | `/api/alerts` | Create an alert rule (editor) |
+| PUT | `/api/alerts/:id` | Update an alert rule (editor) |
+| DELETE | `/api/alerts/:id` | Delete an alert rule (editor) |
 
 ### Parsers
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/parsers` | List all parsers |
-| POST | `/api/parsers` | Create new parser |
-| PUT | `/api/parsers/:id` | Update parser |
-| DELETE | `/api/parsers/:id` | Delete parser |
-| POST | `/api/parsers/test` | Test regex against sample |
-| POST | `/api/parsers/reparse` | Re-parse unparsed logs |
-| GET | `/api/parsers/fields` | List extracted field names |
+| POST | `/api/parsers` | Create new parser (editor) |
+| PUT | `/api/parsers/:id` | Update parser (editor) |
+| DELETE | `/api/parsers/:id` | Delete parser (editor) |
+| POST | `/api/parsers/:id/clone` | Clone an existing parser (editor) |
+| POST | `/api/parsers/test` | Test regex against sample (editor) |
+| POST | `/api/parsers/reparse` | Re-parse unparsed logs (editor) |
+| POST | `/api/parsers/fields` | List extracted field names matching a filter |
 
 ### Dashboards
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/dashboards` | List dashboards (pinned first) |
-| POST | `/api/dashboards` | Create dashboard |
+| POST | `/api/dashboards` | Create dashboard (editor) |
 | GET | `/api/dashboards/:id` | Get dashboard details |
-| PUT | `/api/dashboards/:id` | Update dashboard |
-| DELETE | `/api/dashboards/:id` | Delete dashboard |
-| GET | `/api/dashboards/:id/data` | Get dashboard log data |
+| PUT | `/api/dashboards/:id` | Update dashboard (editor) |
+| DELETE | `/api/dashboards/:id` | Delete dashboard (editor) |
 | PATCH | `/api/dashboards/:id/pin` | Toggle pin status |
+| PATCH | `/api/dashboards/:id/public` | Toggle public visibility (editor) |
+| POST | `/api/dashboards/:id/data` | Get dashboard log data |
+| POST | `/api/dashboards/:id/count` | Count dashboard log data |
+| POST | `/api/dashboards/:id/export/csv` | Export a dashboard's data as CSV |
+| POST | `/api/dashboards/:id/export/html` | Export a dashboard's data as an HTML report |
 
-### Admin
+### Users
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/admin/users` | List all users |
-| POST | `/api/admin/users` | Create user (admin only) |
-| PUT | `/api/admin/users/:id` | Update user role/status |
-| DELETE | `/api/admin/users/:id` | Delete user |
-| PUT | `/api/admin/users/:id/reset-password` | Reset user password |
+| GET | `/api/users/directory` | List users for assignment pickers, e.g. targeted notification channels (editor) |
+| GET | `/api/admin/users` | List all users (admin) |
+| POST | `/api/admin/users` | Create user (admin) |
+| PUT | `/api/admin/users/:id` | Update user role/status (admin) |
+| DELETE | `/api/admin/users/:id` | Delete user (admin) |
+| PUT | `/api/admin/users/:id/reset-password` | Reset user password (admin) |
+| POST | `/api/admin/users/:id/unlock` | Manually unlock a locked-out user (admin) |
+
+### Admin Settings & Maintenance
+
+| Method | Path | Description |
+|--------|------|-------------|
 | GET | `/api/admin/settings` | Get application settings |
 | PUT | `/api/admin/settings` | Update application settings |
 | POST | `/api/admin/settings/cleanup` | Clean up old logs |
 | DELETE | `/api/admin/logs` | Purge all logs |
-| GET | `/api/admin/audit-log` | View audit log entries |
 | POST | `/api/admin/ldap/test` | Test LDAP connection |
+| POST | `/api/admin/audit-log` | Query audit log entries (single-row filters) |
+| POST | `/api/admin/audit-logs` | Query audit log entries (paginated list) |
+| GET | `/api/admin/slow-queries` | View recent slow-query log entries |
+| DELETE | `/api/admin/slow-queries` | Clear the slow-query log |
+| GET | `/api/admin/tailer-metrics` | Tailer/ingestion pipeline performance metrics |
 | GET | `/api/admin/health/containers` | Container/Swarm service status + relay liveness (see [Health Monitoring](#health-monitoring)) |
+| POST | `/api/admin/ssl/upload` | Upload PEM certificate/key for HTTPS |
+| POST | `/api/admin/nginx-reload` | Trigger an nginx config reload (all replicas in HA mode) |
+| GET | `/api/admin/rabbitmq-url` | Get the RabbitMQ management UI URL |
+
+### Ingestion Control
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/admin/ingestion/pause` | Pause the tailer's ingestion |
+| POST | `/api/admin/ingestion/resume` | Resume ingestion |
+| GET | `/api/admin/ingestion/status` | Current pause/resume state |
+
+### Syslog Relay
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/admin/relay/whitelist` | List whitelisted relay IPs |
+| POST | `/api/admin/relay/whitelist` | Add an IP to the whitelist |
+| DELETE | `/api/admin/relay/whitelist/:id` | Remove an IP (also revokes its certificate) |
+| POST | `/api/admin/relay/whitelist/:id/certificate` | Generate a certificate for a whitelist entry |
+| GET | `/api/admin/relay/certificates` | List issued relay certificates |
+| POST | `/api/admin/relay/certificates` | Generate a certificate (and whitelist entry) |
+| DELETE | `/api/admin/relay/certificates/:id` | Revoke a certificate |
+| POST | `/api/admin/relay/certificates/:id/regenerate` | Renew/regenerate a certificate |
+
+### API Keys
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/admin/api-keys` | List API keys |
+| POST | `/api/admin/api-keys` | Create an API key |
+| PUT | `/api/admin/api-keys/:id` | Update an API key's scope/limits |
+| DELETE | `/api/admin/api-keys/:id` | Delete an API key |
+| POST | `/api/admin/api-keys/:id/reset` | Rotate an API key's secret |
+
+### Health & Metrics
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/health` | Liveness/readiness check (unauthenticated) |
+| GET | `/api/version` | Build version (unauthenticated) |
+| GET | `/api/metrics` | Prometheus metrics (requires a valid session; see [Deploying Monitoring](#deploying-monitoring)) |
 
 
 ## Project Structure
@@ -1262,17 +1336,24 @@ The **Dashboards** tab provides customizable views of your log data.
 ├── .env.example
 ├── backend/
 │   ├── main.go              # Entry point, route setup, rate limiter, CORS
+│   ├── alertengine/          # Alert rule evaluation (log_threshold, device_silence, config_change, relay_cert_expiring)
+│   ├── audit/                 # Audit log writer
 │   ├── auth/                 # JWT middleware, refresh tokens, bcrypt
 │   ├── cmd/relaybootstrap/   # One-shot CLI wrapping relaypki.EnsureCA, built into the rsyslog image
+│   ├── control/               # Ingestion pause/resume flag (Redis-backed in HA mode)
 │   ├── db/                   # Database connection, migrations, builtin parsers
 │   ├── handler/              # HTTP handlers (auth, logs, parsers, dashboards, admin, init, relay)
 │   ├── ldap/                 # LDAP/AD authentication with TLS
+│   ├── middleware/            # Request middleware (API keys, error handling, ETag, gzip, request ID)
 │   ├── model/                # Go structs for DB models
-│   ├── parser/               # Regex parser engine
+│   ├── notify/                 # Notification channel delivery (email, webhook, Slack, Teams, push)
+│   ├── notifyhub/              # In-app notification SSE hub
+│   ├── parser/                # Regex parser engine
 │   ├── relaypki/              # Internal CA + relay certificate issuance (mTLS)
 │   ├── tailer/               # File tailer for rsyslog JSONL
 │   ├── sharedstate/          # Shared state (RabbitMQ queue, Redis-backed rate limiter)
-│   └── util/                 # Key generation, encryption utilities
+│   ├── util/                  # Key generation, encryption utilities
+│   └── vaultclient/            # Vault HTTP API client for HA secret resolution
 ├── haproxy/
 │   ├── haproxy.cfg            # HAProxy config for Patroni Postgres
 │   ├── haproxy-app.cfg        # HAProxy config for frontend/api

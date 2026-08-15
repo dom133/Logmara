@@ -17,6 +17,33 @@ vault_fetch() {
     fi
 }
 
+# Wait for Vault to become unsealed before fetching secrets.
+# Skipped entirely if VAULT_ADDR is unset (local docker-compose path).
+if [ -n "$VAULT_ADDR" ]; then
+    _vault_wait_interval=5
+    _vault_wait_timeout=300
+    _vault_wait_elapsed=0
+    while [ "$_vault_wait_elapsed" -lt "$_vault_wait_timeout" ]; do
+        _vault_response=$(curl -sf \
+            -H "X-Vault-Token: $(cat /run/secrets/vault_agent_token)" \
+            "${VAULT_ADDR}/v1/sys/seal-status" 2>/dev/null) || true
+        if [ -n "$_vault_response" ]; then
+            _vault_sealed=$(echo "$_vault_response" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sealed',True))" 2>/dev/null || echo "true")
+            if [ "$_vault_sealed" = "False" ]; then
+                echo "vault is unsealed, proceeding"
+                break
+            fi
+        fi
+        echo "vault is sealed, waiting ${_vault_wait_interval}s (elapsed: ${_vault_wait_elapsed}s / ${_vault_wait_timeout}s)"
+        sleep "$_vault_wait_interval"
+        _vault_wait_elapsed=$((_vault_wait_elapsed + _vault_wait_interval))
+    done
+    if [ "$_vault_wait_elapsed" -ge "$_vault_wait_timeout" ]; then
+        echo "vault did not become unsealed within ${_vault_wait_timeout}s" >&2
+        exit 1
+    fi
+fi
+
 : "${PATRONI_SUPERUSER_PASSWORD:=$(vault_fetch pg_superuser_password)}"
 : "${PATRONI_REPLICATION_PASSWORD:=$(vault_fetch pg_replication_password)}"
 : "${POSTGRES_PASSWORD:=$(vault_fetch pg_app_password)}"

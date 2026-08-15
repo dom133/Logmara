@@ -20,12 +20,18 @@
 #     clusters, same as pg_id in docker-stack.postgres.yml)
 #   - `docker network create -d overlay --attachable syslog_net` (already
 #     done if docker-stack.postgres.yml is deployed)
-#   - docker-stack.vault.yml already deployed and bootstrapped - redis_password
-#     is supplied by vault-agent's bind-mounted output, not a native Swarm
-#     secret (see the redis-password-mount anchor below)
-#   - `docker config create redis_sentinel_cfg redis/sentinel.conf.tpl`
+#   - docker-stack.vault.yml already deployed and bootstrapped, with
+#     `./scripts/vault-bootstrap.sh migrate-secrets` run (creates the
+#     vault_agent_token Docker secret below). redis/entrypoint.sh and
+#     redis/sentinel_entrypoint.sh fetch redis_password straight from
+#     Vault's HTTP API at container start - same direct-API mechanism
+#     Patroni/api use (patroni/entrypoint.sh, backend/vaultclient) - using
+#     vault_agent_token only to authenticate that call, not a
+#     locally-rendered file.
 #
-# Deploy with: docker stack deploy -c docker-stack.redis.yml logmara-redis
+# Deploy with: ./scripts/swarm-deploy.sh redis (not a bare
+# `docker stack deploy` - see "content-hash name" note on the configs:
+# section below for why)
 
 version: "3.8"
 
@@ -35,24 +41,26 @@ x-redis-logging: &redis-logging
     max-size: "10m"
     max-file: "3"
 
-# Vault cutover: same /run/secrets/redis_password path every command below
-# already reads via `cat`, now a bind-mounted file written by vault-agent
-# (docker-stack.vault.yml) instead of a native Swarm secret.
-x-redis-password-mount: &redis-password-mount
-  - type: bind
-    source: /srv/syslog-ha/vault-secrets/redis_password
-    target: /run/secrets/redis_password
-    read_only: true
+x-redis-vault-env: &redis-vault-env
+  VAULT_ADDR: http://vault-1:8200
+
+x-redis-vault-secrets: &redis-vault-secrets
+  - vault_agent_token
 
 services:
   redis1:
     image: redis:7-alpine
     hostname: redis1
     networks: [syslog_net]
-    entrypoint: ["sh", "-c"]
-    command:
-      - exec redis-server --requirepass "$$(cat /run/secrets/redis_password)" --save "" --appendonly no
-    volumes: *redis-password-mount
+    environment:
+      <<: *redis-vault-env
+    entrypoint: ["/docker-entrypoint-init.d/entrypoint.sh"]
+    command: ["--save", "", "--appendonly", "no"]
+    configs:
+      - source: redis_entrypoint
+        target: /docker-entrypoint-init.d/entrypoint.sh
+        mode: 0755
+    secrets: *redis-vault-secrets
     logging: *redis-logging
     deploy:
       replicas: 1
@@ -65,10 +73,15 @@ services:
     image: redis:7-alpine
     hostname: redis2
     networks: [syslog_net]
-    entrypoint: ["sh", "-c"]
-    command:
-      - exec redis-server --requirepass "$$(cat /run/secrets/redis_password)" --masterauth "$$(cat /run/secrets/redis_password)" --replicaof redis1 6379 --save "" --appendonly no
-    volumes: *redis-password-mount
+    environment:
+      <<: *redis-vault-env
+    entrypoint: ["/docker-entrypoint-init.d/entrypoint.sh"]
+    command: ["--replicaof", "redis1", "6379", "--save", "", "--appendonly", "no"]
+    configs:
+      - source: redis_entrypoint
+        target: /docker-entrypoint-init.d/entrypoint.sh
+        mode: 0755
+    secrets: *redis-vault-secrets
     depends_on: [redis1]
     logging: *redis-logging
     deploy:
@@ -82,10 +95,15 @@ services:
     image: redis:7-alpine
     hostname: redis3
     networks: [syslog_net]
-    entrypoint: ["sh", "-c"]
-    command:
-      - exec redis-server --requirepass "$$(cat /run/secrets/redis_password)" --masterauth "$$(cat /run/secrets/redis_password)" --replicaof redis1 6379 --save "" --appendonly no
-    volumes: *redis-password-mount
+    environment:
+      <<: *redis-vault-env
+    entrypoint: ["/docker-entrypoint-init.d/entrypoint.sh"]
+    command: ["--replicaof", "redis1", "6379", "--save", "", "--appendonly", "no"]
+    configs:
+      - source: redis_entrypoint
+        target: /docker-entrypoint-init.d/entrypoint.sh
+        mode: 0755
+    secrets: *redis-vault-secrets
     depends_on: [redis1]
     logging: *redis-logging
     deploy:
@@ -99,15 +117,16 @@ services:
     image: redis:7-alpine
     hostname: sentinel1
     networks: [syslog_net]
-    entrypoint: ["sh", "-c"]
-    command:
-      - cp /etc/sentinel-template/sentinel.conf /tmp/sentinel.conf &&
-        echo "sentinel auth-pass mymaster $$(cat /run/secrets/redis_password)" >> /tmp/sentinel.conf &&
-        exec redis-sentinel /tmp/sentinel.conf
+    environment:
+      <<: *redis-vault-env
+    entrypoint: ["/docker-entrypoint-init.d/sentinel_entrypoint.sh"]
     configs:
       - source: redis_sentinel_cfg
         target: /etc/sentinel-template/sentinel.conf
-    volumes: *redis-password-mount
+      - source: redis_sentinel_entrypoint
+        target: /docker-entrypoint-init.d/sentinel_entrypoint.sh
+        mode: 0755
+    secrets: *redis-vault-secrets
     depends_on: [redis1, redis2, redis3]
     logging: *redis-logging
     deploy:
@@ -121,15 +140,16 @@ services:
     image: redis:7-alpine
     hostname: sentinel2
     networks: [syslog_net]
-    entrypoint: ["sh", "-c"]
-    command:
-      - cp /etc/sentinel-template/sentinel.conf /tmp/sentinel.conf &&
-        echo "sentinel auth-pass mymaster $$(cat /run/secrets/redis_password)" >> /tmp/sentinel.conf &&
-        exec redis-sentinel /tmp/sentinel.conf
+    environment:
+      <<: *redis-vault-env
+    entrypoint: ["/docker-entrypoint-init.d/sentinel_entrypoint.sh"]
     configs:
       - source: redis_sentinel_cfg
         target: /etc/sentinel-template/sentinel.conf
-    volumes: *redis-password-mount
+      - source: redis_sentinel_entrypoint
+        target: /docker-entrypoint-init.d/sentinel_entrypoint.sh
+        mode: 0755
+    secrets: *redis-vault-secrets
     depends_on: [redis1, redis2, redis3]
     logging: *redis-logging
     deploy:
@@ -143,15 +163,16 @@ services:
     image: redis:7-alpine
     hostname: sentinel3
     networks: [syslog_net]
-    entrypoint: ["sh", "-c"]
-    command:
-      - cp /etc/sentinel-template/sentinel.conf /tmp/sentinel.conf &&
-        echo "sentinel auth-pass mymaster $$(cat /run/secrets/redis_password)" >> /tmp/sentinel.conf &&
-        exec redis-sentinel /tmp/sentinel.conf
+    environment:
+      <<: *redis-vault-env
+    entrypoint: ["/docker-entrypoint-init.d/sentinel_entrypoint.sh"]
     configs:
       - source: redis_sentinel_cfg
         target: /etc/sentinel-template/sentinel.conf
-    volumes: *redis-password-mount
+      - source: redis_sentinel_entrypoint
+        target: /docker-entrypoint-init.d/sentinel_entrypoint.sh
+        mode: 0755
+    secrets: *redis-vault-secrets
     depends_on: [redis1, redis2, redis3]
     logging: *redis-logging
     deploy:
@@ -165,6 +186,21 @@ networks:
   syslog_net:
     external: true
 
+secrets:
+  # Same bootstrap token Patroni/api/RabbitMQ use (created by
+  # `scripts/vault-bootstrap.sh migrate-secrets`) - only used to authenticate
+  # redis/entrypoint.sh's and redis/sentinel_entrypoint.sh's direct Vault API
+  # calls, never written to disk as the actual password.
+  vault_agent_token:
+    external: true
+
 configs:
   redis_sentinel_cfg:
-    external: true
+    file: redis/sentinel.conf.tpl
+    name: redis_sentinel_cfg_${REDIS_SENTINEL_CFG_HASH:-unset}
+  redis_entrypoint:
+    file: redis/entrypoint.sh
+    name: redis_entrypoint_${REDIS_ENTRYPOINT_HASH:-unset}
+  redis_sentinel_entrypoint:
+    file: redis/sentinel_entrypoint.sh
+    name: redis_sentinel_entrypoint_${REDIS_SENTINEL_ENTRYPOINT_HASH:-unset}

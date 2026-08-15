@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,11 +46,26 @@ func sanitizeForPostgres(s string) string {
 
 var truncatedISORe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}$`)
 
+// looksTruncatedAtSource reports whether line has the shape of a JsonLines
+// record (rsyslog/syslog.conf's template, always opening with
+// {"timestamp":") that got cut short before its closing brace, rather than
+// being genuinely unparseable garbage. Seen in practice when a single
+// property value (typically "message") is unusually long and heavily
+// escaped: rsyslog's own JSON-escaping truncates it and drops the closing
+// "}" - a source-side/rsyslog-side data loss no retry or bigger
+// $MaxMessageSize on our end can recover, worth labeling distinctly from
+// actual malformed input.
+func looksTruncatedAtSource(line string, unmarshalErr error) bool {
+	return strings.HasPrefix(line, `{"timestamp":"`) &&
+		strings.Contains(unmarshalErr.Error(), "unexpected end of JSON input")
+}
+
 const (
 	compactionInterval = 30 * time.Minute
 	maxFileSize        = 100 * 1024 * 1024
 	positionFileName   = ".tailer_pos"
 	maxLineSize        = 10 * 1024 * 1024
+	backseekLimit      = 1024 * 1024
 )
 
 // lineSplitter behaves like bufio.ScanLines, with two differences:
@@ -66,6 +82,7 @@ func (s *lineSplitter) split(data []byte, atEOF bool) (advance int, token []byte
 	}
 	if len(data) >= maxLineSize {
 		s.lastAdvance = maxLineSize
+		slog.Warn("tailer: line exceeded maxLineSize, force-cut", "len", len(data), "maxLineSize", maxLineSize)
 		return maxLineSize, data[0:maxLineSize], nil
 	}
 	return 0, nil, nil
@@ -73,6 +90,7 @@ func (s *lineSplitter) split(data []byte, atEOF bool) (advance int, token []byte
 
 const vipMarkerPath = "/data/.vip_master"
 const myNodeEnvKey = "MY_NODE"
+const swarmTaskIdentityEnvKey = "SWARM_TASK_IDENTITY"
 const vipCheckInterval = 5 * time.Second
 const vipStartupDelay = 3 * time.Second
 const vipStartupJitterMax = 2 * time.Second
@@ -104,11 +122,6 @@ const (
 )
 
 var purgeMu sync.Mutex
-
-type purgeRequest struct {
-	id string
-	ch chan purgeResult
-}
 
 type purgeResult struct {
 	msgs uint32
@@ -234,6 +247,19 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 		slog.Warn("tailer metrics: no valid replica metrics found, falling back to local", "registered_replicas", len(replicaIDs))
 		return localFallback()
 	}
+
+	// SMembers returns replica IDs in no particular (and not necessarily
+	// stable) order, which would otherwise make both tables reshuffle on
+	// every poll and scatter same-node workers apart. Sort by node then
+	// worker ID so IDs that repeat across nodes (each replica numbers its
+	// own workers from 0) are grouped and the UI stays stable.
+	sort.Slice(replicas, func(i, j int) bool { return replicas[i].NodeID < replicas[j].NodeID })
+	sort.Slice(allWorkerMetrics, func(i, j int) bool {
+		if allWorkerMetrics[i].NodeID != allWorkerMetrics[j].NodeID {
+			return allWorkerMetrics[i].NodeID < allWorkerMetrics[j].NodeID
+		}
+		return allWorkerMetrics[i].ID < allWorkerMetrics[j].ID
+	})
 
 	return &AggregatedTailerMetrics{
 		PipelineActive: true,
@@ -388,10 +414,25 @@ func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine
 }
 
 func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+	// myNode identifies the physical Swarm node this task runs on. It's used
+	// below ONLY to compare against the VIP marker file, which keepalived
+	// (notify_vip.sh) stamps with `hostname` - i.e. also the node, not the
+	// task. It must stay node-scoped or VIP leader matching breaks.
 	myNode := strings.TrimSpace(os.Getenv(myNodeEnvKey))
 	if myNode == "" {
 		slog.Warn("tailer: MY_NODE not set, falling back to os.Hostname()")
 		myNode, _ = os.Hostname()
+	}
+
+	// taskID uniquely identifies this replica (node+slot), unlike myNode
+	// above which is shared by every replica colocated on the same Swarm
+	// node. It's used as the Redis key/registration identity for tailer
+	// metrics, so replicas colocated on one node don't clobber each other's
+	// worker stats under the same key - see SWARM_TASK_IDENTITY in
+	// docker-stack.app.yml and middleware.ServerIdentity.
+	taskID := strings.TrimSpace(os.Getenv(swarmTaskIdentityEnvKey))
+	if taskID == "" {
+		taskID, _ = os.Hostname()
 	}
 
 	startupJitter := time.Duration(rand.Int63n(int64(vipStartupJitterMax)))
@@ -401,7 +442,7 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 
 	// All replicas start the consumer pipeline (RabbitMQ queue + WorkerPool).
 	// This allows every replica to consume and execute tasks from the queue.
-	pipeline := startConsumerPipeline(ctx, db, filePath, engine, ic, alerts, rate, sharedClient, myNode)
+	pipeline := startConsumerPipeline(ctx, db, filePath, engine, ic, alerts, rate, sharedClient, taskID)
 
 	// If RabbitMQ is unavailable, the fallback local ingestion loop is running.
 	if pipeline.queue == nil {
@@ -458,9 +499,7 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 					return
 				case <-ticker.C:
 					_, flushedPos := pipeline.flushTrk.GetFlushedPos(leaderCtx)
-					if flushedPos > 0 {
-						savePosition(posFile, flushedPos, filePath, sharedClient)
-					}
+					savePosition(posFile, flushedPos, filePath, sharedClient)
 				}
 			}
 		}()
@@ -752,25 +791,29 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		if filePos > 0 {
 			var checkByte [1]byte
 			if _, err := f.ReadAt(checkByte[:], filePos-1); err == nil && checkByte[0] != '\n' {
-				var seekPos int64 = filePos - 1
-				for seekPos > 0 {
-					if _, err := f.ReadAt(checkByte[:], seekPos-1); err != nil {
-						break
+				seekPos, hitLimit := safeBackseek(filePath, filePos-1)
+				if hitLimit {
+					slog.Warn("tailer: backseek hit limit, resetting to 0", "was", filePos, "limit", backseekLimit)
+					filePos = 0
+					flushedPos = 0
+					if _, err := f.Seek(0, 0); err != nil {
+						f.Close()
+						if !sleepOrDone(ctx, 1*time.Second) {
+							return
+						}
+						continue
 					}
-					if checkByte[0] == '\n' {
-						break
+				} else {
+					slog.Warn("tailer: position was mid-line, backseeking", "was", filePos, "now", seekPos)
+					filePos = seekPos
+					flushedPos = seekPos
+					if _, err := f.Seek(seekPos, 0); err != nil {
+						f.Close()
+						if !sleepOrDone(ctx, 1*time.Second) {
+							return
+						}
+						continue
 					}
-					seekPos--
-				}
-				slog.Warn("tailer: position was mid-line, backseeking", "was", filePos, "now", seekPos)
-				filePos = seekPos
-				flushedPos = seekPos
-				if _, err := f.Seek(seekPos, 0); err != nil {
-					f.Close()
-					if !sleepOrDone(ctx, 1*time.Second) {
-						return
-					}
-					continue
 				}
 			}
 		}
@@ -800,13 +843,21 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 
 			var entry model.IngestEntry
 			if err := json.Unmarshal([]byte(line), &entry); err != nil {
-				slog.Error("invalid JSON", "error", err)
+				debug := line
+				if len(debug) > 200 {
+					debug = debug[:200]
+				}
+				slog.Error("invalid JSON", "error", err, "debug", debug, "lineLen", len(line))
 				sanitizedLine := sanitizeForPostgres(line)
+				tag := "[MALFORMED JSON]"
+				if looksTruncatedAtSource(line, err) {
+					tag = "[TRUNCATED AT SOURCE]"
+				}
 				entry = model.IngestEntry{
 					Timestamp: time.Now().Format(time.RFC3339),
 					Hostname:  "unknown",
 					Severity:  "error",
-					Message:   fmt.Sprintf("[MALFORMED JSON] %s", sanitizedLine),
+					Message:   fmt.Sprintf("%s %s", tag, sanitizedLine),
 				}
 				alerts.EvaluateMalformedJSON(db, sanitizedLine)
 			}
@@ -1095,41 +1146,7 @@ func loadPosition(path string) (pos int64, fingerprint string, ok bool) {
 }
 
 func loadStartPosition(db *sql.DB, filePath, posFile string, sharedClient *sharedstate.Client) (filePos, flushedPos int64) {
-	if sharedClient != nil {
-		if pos, flushed, ok := sharedClient.LoadTailerPosition(); ok {
-			if f, err := os.Open(filePath); err == nil {
-				stat, _ := f.Stat()
-				f.Close()
-				if pos <= stat.Size() {
-					slog.Info("restored position from Redis", "pos", pos)
-					return pos, flushed
-				}
-				slog.Warn("Redis position exceeds file size", "pos", pos, "fileSize", stat.Size())
-			}
-		}
-	}
-
-	if pos, fp, ok := loadPosition(posFile); ok {
-		if f, err := os.Open(filePath); err == nil {
-			stat, _ := f.Stat()
-			f.Close()
-			if pos <= stat.Size() {
-				if curFp, fpOK := positionFingerprint(filePath, pos); fpOK && curFp == fp {
-					slog.Info("restored position from file", "pos", pos)
-					return pos, pos
-				}
-				slog.Warn("saved position content no longer matches", "pos", pos)
-			}
-		}
-		slog.Info("saved position invalid, falling back to DB")
-	}
-
-	if pos := dbFallbackPosition(db, filePath); pos > 0 {
-		slog.Info("restored position from DB fallback", "pos", pos)
-		return pos, pos
-	}
-
-	return 0, 0
+	return loadStartPositionFromReader(db, filePath, posFile, sharedClient)
 }
 
 func compactFile(f *os.File, flushedPos int64, filePath string, reopenLogFile func() error) (*os.File, error) {
@@ -1151,6 +1168,10 @@ func compactFile(f *os.File, flushedPos int64, filePath string, reopenLogFile fu
 	if err != nil {
 		return f, fmt.Errorf("read remaining: %w", err)
 	}
+
+	// Drop trailing incomplete line to prevent corrupting the compacted file
+	// with a partial write from rsyslog.
+	remaining = dropTrailingIncompleteLine(remaining)
 
 	slog.Info("compacting file", "path", filePath, "fileSize", fileSize, "remaining", len(remaining), "flushedPos", flushedPos)
 
@@ -1193,4 +1214,48 @@ func compactFile(f *os.File, flushedPos int64, filePath string, reopenLogFile fu
 
 	slog.Info("compaction done", "remaining", len(remaining))
 	return newF, nil
+}
+
+// dropTrailingIncompleteLine drops the last incomplete line from data if it
+// doesn't end with a newline. This prevents compactFile from baking a partial
+// rsyslog write into the compacted file.
+func dropTrailingIncompleteLine(data []byte) []byte {
+	if len(data) == 0 {
+		return data
+	}
+	if data[len(data)-1] == '\n' {
+		return data
+	}
+	if idx := bytes.LastIndexByte(data, '\n'); idx >= 0 {
+		return data[:idx+1]
+	}
+	return nil
+}
+
+// safeBackseek scans backward from pos looking for a newline delimiter.
+// Returns the position of the last newline (or 0 if none found). If the
+// scan exceeds backseekLimit bytes, returns (0, true) so the caller can
+// reset to the start of the file instead of scanning indefinitely.
+func safeBackseek(filePath string, pos int64) (result int64, hitLimit bool) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+
+	var checkByte [1]byte
+	limit := pos - backseekLimit
+	for cur := pos; cur > 0; cur-- {
+		if cur <= limit {
+			slog.Warn("tailer: safeBackseek exceeded limit", "filePath", filePath, "pos", pos, "limit", backseekLimit)
+			return 0, true
+		}
+		if _, err := f.ReadAt(checkByte[:], cur-1); err != nil {
+			break
+		}
+		if checkByte[0] == '\n' {
+			return cur, false
+		}
+	}
+	return 0, false
 }

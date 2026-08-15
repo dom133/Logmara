@@ -247,12 +247,14 @@ EOF
             fi
         done
 
-        # Create the Vault agent's bootstrap token and distribute it as a
-        # Docker secret (Swarm hands it to every node's vault-agent task at
-        # /run/secrets/vault_agent_token). It is NOT stored in Vault KV:
-        # the agent needs this token to authenticate to Vault in the first
-        # place, so storing it as a Vault secret would be circular.
-        echo "Creating agent bootstrap token..."
+        # Create the bootstrap token every direct-API consumer authenticates
+        # Vault calls with, and distribute it as a Docker secret (Swarm hands
+        # it to Patroni/Redis/RabbitMQ/api at /run/secrets/vault_agent_token
+        # - see patroni/entrypoint.sh, redis/entrypoint.sh,
+        # rabbitmq/entrypoint.sh, backend/vaultclient). It is NOT stored in
+        # Vault KV: it's needed to authenticate to Vault in the first place,
+        # so storing it as a Vault secret would be circular.
+        echo "Creating bootstrap token..."
         AGENT_TOKEN=$(vault_cli token create \
             -policy=logmara \
             -policy=logmara-dynamic \
@@ -261,22 +263,23 @@ EOF
             -format=json 2>/dev/null | jq -r '.auth.client_token')
 
         if [[ -z "$AGENT_TOKEN" || "$AGENT_TOKEN" == "null" ]]; then
-            echo "ERROR: Failed to create agent token" >&2
+            echo "ERROR: Failed to create bootstrap token" >&2
             exit 1
         fi
 
         if docker secret inspect vault_agent_token &>/dev/null; then
             echo "Docker secret 'vault_agent_token' already exists - leaving it as-is."
-            echo "(Vault agent tokens can't be rotated in place; to replace it, remove"
-            echo " the secret and the vault-agent service, then re-run this command.)"
+            echo "(This token can't be rotated in place; to replace it, remove the"
+            echo " secret and every service referencing it, then re-run this command.)"
         else
             printf '%s' "$AGENT_TOKEN" | docker secret create vault_agent_token -
             echo "Docker secret 'vault_agent_token' created."
         fi
 
         echo "=== Secrets migrated ==="
-        echo "Now deploy the vault-agent stack (its secret didn't exist until now):"
-        echo "  docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent"
+        echo "Now deploy postgres/redis/rabbitmq/app (each fetches its own secrets"
+        echo "from Vault directly at startup, see README 'Deploying Vault'):"
+        echo "  ./scripts/swarm-deploy.sh postgres"
         ;;
 
     setup-dynamic-secrets)

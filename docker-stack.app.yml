@@ -55,18 +55,19 @@
 #     single "role" value), so a small cluster can freely put both on the
 #     same nodes - haproxy-app needs edge=true specifically, since it must
 #     colocate with whichever node currently holds the keepalived VIP.
-#   - haproxy_app_cfg Swarm config created (`scripts/swarm-bootstrap.sh
-#     haproxy-app-config`)
+#   - haproxy_app_cfg Swarm config (auto-created by `./scripts/swarm-deploy.sh app`)
 #   - NFS export mounted at the same path on every app=true / edge=true node,
 #     e.g. /mnt/syslog-nfs, exporting what were log_data/log_spool
 #   - docker-stack.vault.yml already deployed and bootstrapped: jwt_secret,
 #     encryption_key, pg_app_password, redis_password and rabbitmq_password
 #     are all supplied by Vault - api reads them straight from Vault's API
 #     (backend/vaultclient, via VAULT_ADDR/VAULT_TOKEN_FILE below), with NO
-#     file fallback - if Vault is unreachable, api won't start. api does
-#     NOT need docker-stack.vault-agent.yml deployed anywhere (that's only
-#     for Postgres/Redis/RabbitMQ, which can't call Vault's API themselves -
-#     see that file's header). Never as plain env vars.
+#     file fallback - if Vault is unreachable, api won't start. Postgres
+#     (patroni/entrypoint.sh), Redis (redis/entrypoint.sh,
+#     redis/sentinel_entrypoint.sh) and RabbitMQ (rabbitmq/entrypoint.sh,
+#     rabbitmq/join_entrypoint.sh) all fetch their own passwords the same
+#     direct-API way, each at their own container startup - no sidecar, no
+#     locally-rendered file involved anywhere. Never as plain env vars.
 #     POSTGRES_USER/POSTGRES_DB below are optional (default syslog/
 #     syslog_db) and are not secret.
 #
@@ -202,9 +203,9 @@ services:
       # (backend/vaultclient, no file fallback - see prerequisites comment
       # above) rather than passed as a plain env var, so none of them
       # appear in `docker service inspect`, /proc, or crash dumps.
-      # VAULT_TOKEN_FILE points at the same bootstrap token vault-agent
-      # uses elsewhere (policy "logmara", read-only on
-      # secret/data/logmara/*) - see docker-stack.vault-agent.yml.
+      # VAULT_TOKEN_FILE points at the same bootstrap token Patroni/Redis/
+      # RabbitMQ use elsewhere (policy "logmara", read-only on
+      # secret/data/logmara/*) - see docker-stack.vault.yml.
       VAULT_ADDR: http://vault-1:8200
       VAULT_TOKEN_FILE: /run/secrets/vault_agent_token
       POSTGRES_HOST: haproxy
@@ -410,14 +411,13 @@ volumes:
       device: ":${NFS_PARSER_DEFS_PATH:-/srv/syslog-ha/nfs/parser_defs}"
 
 configs:
-  # Created via `scripts/swarm-bootstrap.sh haproxy-app-config`.
   haproxy_app_cfg:
-    external: true
+    file: haproxy/haproxy-app.cfg
+    name: haproxy_app_cfg_${HAPROXY_APP_CFG_HASH:-unset}
 
 secrets:
-  # Same bootstrap token vault-agent uses (docker-stack.vault-agent.yml) -
-  # api reads Vault's API directly with it (backend/vaultclient), rather
-  # than only consuming vault-agent's rendered files. Created by
+  # Same bootstrap token Patroni/Redis/RabbitMQ use elsewhere - api reads
+  # Vault's API directly with it (backend/vaultclient). Created by
   # `scripts/vault-bootstrap.sh migrate-secrets`.
   vault_agent_token:
     external: true

@@ -1,4 +1,5 @@
 import js from "@eslint/js";
+import globals from "globals";
 import tseslint from "@typescript-eslint/eslint-plugin";
 import tseslintParser from "@typescript-eslint/parser";
 import reactHooks from "eslint-plugin-react-hooks";
@@ -17,6 +18,10 @@ export default [
         ecmaVersion: 2021,
         sourceType: "module",
       },
+      globals: {
+        ...globals.browser,
+        ...globals.es2021,
+      },
     },
     plugins: {
       "@typescript-eslint": tseslint,
@@ -27,8 +32,11 @@ export default [
       ...tseslint.configs.recommended.rules,
       "react-hooks/rules-of-hooks": "error",
       "react-hooks/exhaustive-deps": "warn",
-      "react-refresh/runtime": "error",
+      "react-refresh/only-export-components": "warn",
       "no-unused-vars": "off",
+      // tsc already catches undefined references; no-undef doesn't
+      // understand TS types/DOM lib globals and produces false positives.
+      "no-undef": "off",
       "@typescript-eslint/no-unused-vars": [
         "warn",
         {
@@ -36,6 +44,14 @@ export default [
           varsIgnorePattern: "^_",
         },
       ],
+    },
+  },
+  {
+    files: ["public/sw.js"],
+    languageOptions: {
+      globals: {
+        ...globals.serviceworker,
+      },
     },
   },
 ];

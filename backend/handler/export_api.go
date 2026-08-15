@@ -288,51 +288,7 @@ func queryLogs(database *sql.DB, whereSQL string, args []interface{}, limit int,
 	return logs, hasMore, nextCursor
 }
 
-func scanLogRowsJSON(rows *sql.Rows) []gin.H {
-	var logs []gin.H
-	for rows.Next() {
-		var tsStr string
-		var id float64
-		var hostname, severity, facility, message string
-		var fromHostIP, appName, processID, msgID, rawMessage sql.NullString
-		var parsedFields json.RawMessage
-		var matchedParsers pq.StringArray
-
-		err := rows.Scan(&tsStr, &id, &hostname, &fromHostIP, &appName, &processID, &msgID, &severity, &facility, &message, &rawMessage, &parsedFields, &matchedParsers)
-		if err != nil {
-			slog.Error("export API: row scan failed", "error", err)
-			continue
-		}
-
-		l := gin.H{}
-		l["hostname"] = hostname
-		l["severity"] = severity
-		l["facility"] = facility
-		l["message"] = message
-		l["ts"] = tsStr
-		l["id"] = id
-		l["fromhost_ip"] = fromHostIP.String
-		l["app_name"] = appName.String
-		l["process_id"] = processID.String
-		l["msg_id"] = msgID.String
-		l["raw_message"] = rawMessage.String
-
-		var pf map[string]string
-		if len(parsedFields) > 0 {
-			json.Unmarshal(parsedFields, &pf)
-		}
-		l["parsed_fields"] = pf
-		l["matched_parsers"] = matchedParsers
-
-		logs = append(logs, l)
-	}
-	if logs == nil {
-		logs = []gin.H{}
-	}
-	return logs
-}
-
-// scanLogRowsJSONWithEpoch is like scanLogRowsJSON but also scans the
+// scanLogRowsJSONWithEpoch scans log rows into gin.H maps, also scanning the
 // ts_epoch column for accurate cursor encoding regardless of timezone.
 func scanLogRowsJSONWithEpoch(rows *sql.Rows) []gin.H {
 	var logs []gin.H

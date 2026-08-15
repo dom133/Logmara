@@ -1,6 +1,6 @@
 import { Form, Input, InputNumber, Select, Switch, Space, Modal, Button } from 'antd'
 import { useTranslation } from 'react-i18next'
-import { Alert, AlertRequest, AlertRuleType, DeviceStats, Parser, ParsedField, NotificationChannel, resolveDeviceDisplayName } from '../services/api'
+import { Alert, AlertRequest, AlertRuleType, AlertFieldCondition, DeviceStats, Parser, ParsedField, NotificationChannel, resolveDeviceDisplayName } from '../services/api'
 import { getRuleTypeLabels, adminOnlyRuleTypes, getOperatorLabels, getChannelTypeLabels } from '../constants/alertConstants'
 import { getSeverityLabels } from '../constants'
 
@@ -23,7 +23,7 @@ export default function AlertFormModal({ open, editing, isAdmin, devices, parser
   const fireOnEveryMatch = Form.useWatch('fire_on_every_match', form)
   const selectedParsers: string[] = Form.useWatch('parser_names', form) || []
   const selectedDevices: string[] = Form.useWatch('device_ips', form) || []
-  const fieldConditions: any[] = Form.useWatch('field_conditions', form) || []
+  const fieldConditions: AlertFieldCondition[] = Form.useWatch('field_conditions', form) || []
 
   const deviceOptions = devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))
 
