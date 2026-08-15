@@ -83,10 +83,18 @@ trap restore_app_scale_on_exit EXIT
 # Secret store detection: Vault or Docker secrets
 # ---------------------------------------------------------------------------
 
-# Returns 0 if Vault agent is deployed and serving
+# Returns 0 if Vault agent is deployed and serving. vault-agent is its own
+# stack (logmara-vault-agent, see scripts/swarm-deploy.sh's "vault-agent"
+# target and docker-stack.vault-agent.yml) separate from the 3-node Vault
+# server stack (logmara-vault) - not a service inside the server stack.
 using_vault() {
-    docker service inspect logmara-vault_vault-agent &>/dev/null 2>&1 && \
-    docker service ps --filter "desired-state=running" --filter "current-state=Running" logmara-vault_vault-agent 2>/dev/null | grep -q .
+    # "current-state" is not a real `docker service ps --filter` key (only
+    # desired-state/id/name/node are) - it silently errors and leaves
+    # stdout empty, which used to make this always report false regardless
+    # of whether vault-agent was actually running. Match "Running" in the
+    # CURRENT STATE column of the (unfiltered-by-that) output instead.
+    docker service inspect logmara-vault-agent_vault-agent >/dev/null 2>&1 && \
+    docker service ps --filter "desired-state=running" logmara-vault-agent_vault-agent 2>/dev/null | grep -q "Running"
 }
 
 # Read the plaintext value of an existing Docker (Swarm) secret. `docker
@@ -248,6 +256,19 @@ scale_app_down() {
         echo "ERROR: could not read current replica counts for logmara-app_api/logmara-app_frontend - is logmara-app deployed?" >&2
         exit 1
     fi
+    # A previous run of this script left them at 0 (e.g. interrupted, or
+    # aborted mid-batch) - restoring "back" to 0 at the end would just
+    # leave the app parked down, silently turning a resumed rotation into
+    # a permanent outage. There's no reliable way to recover the real
+    # intended count from here, so refuse rather than guess.
+    if [[ "$API_REPLICAS_SAVED" == "0" || "$FRONTEND_REPLICAS_SAVED" == "0" ]]; then
+        echo "ERROR: logmara-app_api/logmara-app_frontend are already at 0 replicas." >&2
+        echo "This looks like leftover state from an earlier interrupted run, not something" >&2
+        echo "safe to treat as the count to restore to. Fix the replica count manually first," >&2
+        echo "e.g.: docker service scale logmara-app_api=4 logmara-app_frontend=4" >&2
+        echo "then re-run this command." >&2
+        exit 1
+    fi
     echo "Current replicas: api=$API_REPLICAS_SAVED frontend=$FRONTEND_REPLICAS_SAVED"
 
     docker service scale "logmara-app_api=0" "logmara-app_frontend=0"
@@ -279,7 +300,10 @@ change_rabbitmq_password() {
         echo "ERROR: No running RabbitMQ container found" >&2
         return 1
     fi
-    docker exec "$container_id" rabbitmqctl change_password logmara "$new_pass"
+    if ! docker exec "$container_id" rabbitmqctl change_password logmara "$new_pass"; then
+        echo "ERROR: RabbitMQ password change failed" >&2
+        return 1
+    fi
     echo "RabbitMQ password changed successfully"
 }
 
@@ -309,8 +333,19 @@ change_redis_password() {
     fi
     for cid in $redis_ids; do
         echo "  Updating Redis node $cid..."
-        docker exec "$cid" redis-cli -a "$old_pass" CONFIG SET requirepass "$new_pass" 2>/dev/null || true
-        docker exec "$cid" redis-cli -a "$old_pass" CONFIG SET masterauth "$new_pass" 2>/dev/null || true
+        # Both SETs must run over the SAME connection/session: each
+        # `redis-cli -a` invocation opens a new connection and authenticates
+        # with whatever requirepass is current *at that moment* - running
+        # them as two separate `docker exec` calls means the second one
+        # tries to auth with $old_pass after the first already changed it
+        # to $new_pass, and always fails. Piping both commands into one
+        # redis-cli session keeps the connection (and its original auth)
+        # open across both, since Redis doesn't retroactively deauthenticate
+        # already-authenticated connections when requirepass changes.
+        if ! printf 'CONFIG SET requirepass %s\nCONFIG SET masterauth %s\n' "$new_pass" "$new_pass" \
+            | docker exec -i "$cid" redis-cli -a "$old_pass" >/dev/null 2>&1; then
+            echo "WARNING: failed to update Redis node $cid (auth or connection error)" >&2
+        fi
     done
 
     # Sentinels: update the password each uses to talk to mymaster/its
@@ -340,17 +375,29 @@ change_postgres_password() {
     echo "Changing Postgres '$username' user password..."
     local old_root_pass
     old_root_pass=$(read_secret pg_superuser_password)
-    # Use the first running Postgres node
+    # Any postgres1/2/3 container works as the psql client - just needs the
+    # binary, not to be the leader itself. Filter on "_postgres" specifically
+    # (not the bare "logmara-pg" stack prefix, which also matches etcd/haproxy
+    # containers that don't have psql installed at all).
     local container_id
-    container_id=$(docker ps -q --filter "name=logmara-pg" --filter "status=running" | head -1)
+    container_id=$(docker ps -q --filter "name=logmara-pg_postgres" --filter "status=running" | head -1)
     if [[ -z "$container_id" ]]; then
         echo "ERROR: No running Postgres container found" >&2
         return 1
     fi
-    # Pass PGPASSWORD for auth, connect via localhost to use md5/scram auth
-    docker exec -e PGPASSWORD="$old_root_pass" "$container_id" \
-        psql -h localhost -U postgres -c \
-        "ALTER USER $username WITH PASSWORD '$(echo "$new_pass" | sed "s/'/''/g")';"
+    # Route the actual connection through haproxy:5000, not localhost -
+    # Patroni only accepts writes (including ALTER ROLE) on the current
+    # leader, and localhost is whichever of postgres1/2/3 this container_id
+    # happened to be (frequently a replica, since docker ps only sees
+    # containers local to whichever node this script runs on). haproxy
+    # already knows how to route to the leader regardless of which node
+    # that is - same endpoint api itself uses (POSTGRES_HOST=haproxy).
+    if ! docker exec -e PGPASSWORD="$old_root_pass" "$container_id" \
+        psql -h haproxy -p 5000 -U postgres -c \
+        "ALTER USER $username WITH PASSWORD '$(echo "$new_pass" | sed "s/'/''/g")';"; then
+        echo "ERROR: Postgres password change for '$username' failed" >&2
+        return 1
+    fi
     echo "Postgres password for '$username' changed successfully"
 }
 
@@ -370,12 +417,30 @@ rotate_one() {
 
     echo "=== Rotating secret: $name ==="
 
-    # Step 1: apply password change inside the running service (if applicable)
+    # Step 1: apply password change inside the running service (if
+    # applicable). redis_password is deliberately not checked here - it
+    # applies to 3 data nodes + 3 sentinels and already tolerates individual
+    # node failures internally (see change_redis_password); the others below
+    # are single global state changes with no such partial-success case, so a
+    # failure here must stop before write_secret below makes the store
+    # disagree with what's actually live.
     case "$name" in
-        rabbitmq_password) change_rabbitmq_password "$value" ;;
+        rabbitmq_password)
+            if ! change_rabbitmq_password "$value"; then
+                return 1
+            fi
+            ;;
         redis_password) change_redis_password "$value" ;;
-        pg_app_password) change_postgres_password "syslog" "$value" ;;
-        pg_superuser_password) change_postgres_password "postgres" "$value" ;;
+        pg_app_password)
+            if ! change_postgres_password "syslog" "$value"; then
+                return 1
+            fi
+            ;;
+        pg_superuser_password)
+            if ! change_postgres_password "postgres" "$value"; then
+                return 1
+            fi
+            ;;
     esac
 
     # Step 2: special handling for encryption_key (DB re-encryption)
@@ -398,6 +463,7 @@ rotate_one() {
 
         echo "Re-encrypting database with new key..."
         docker run --rm \
+            --network syslog_net \
             -e OLD_ENCRYPTION_KEY="$old_key" \
             -e NEW_ENCRYPTION_KEY="$value" \
             -e PG_HOST=haproxy \
@@ -407,8 +473,8 @@ rotate_one() {
             -e PG_DB=syslog_db \
             -e PG_SSLMODE=disable \
             -v "$REPO_ROOT:/app" \
-            golang:1.21-alpine \
-            sh -c 'cd /app && go run backend/cmd/rotatekey/main.go' || {
+            golang:1.24-bookworm \
+            sh -c 'cd /app/backend && go run ./cmd/rotatekey' || {
                 echo "ERROR: Database re-encryption failed" >&2
                 return 1
             }

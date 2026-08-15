@@ -60,6 +60,17 @@ vault_kv_write() {
     rm -f "$tmpfile"
 }
 
+# Read a secret's value back from Vault KV v2 (same path convention as
+# vault_kv_write - display path, not the raw "data/"-prefixed API path).
+# Prints nothing (not an error) if the secret doesn't exist, so callers
+# should treat an empty result as "not set" the same way they'd treat an
+# unset env var.
+vault_kv_read() {
+    local path="$1"
+    local key="${2:-value}"
+    vault_cli kv get -field="$key" "$path" 2>/dev/null || true
+}
+
 # Read the plaintext value of an existing Docker (Swarm) secret. `docker
 # run --secret` is not a real flag - secrets are only mountable by Swarm
 # services - so this spins up a one-shot, non-restarting service to read
@@ -228,7 +239,7 @@ EOF
         vault_cli secrets enable -path=secret kv-v2 2>/dev/null || true
 
         # Read existing Docker secrets and write to Vault
-        for SECRET in jwt_secret encryption_key pg_app_password pg_superuser_password redis_password rabbitmq_password; do
+        for SECRET in jwt_secret encryption_key pg_app_password pg_superuser_password pg_replication_password redis_password rabbitmq_password; do
             VALUE=$(read_docker_secret_value "$SECRET")
             if [[ -n "$VALUE" ]]; then
                 echo "Migrating $SECRET..."
@@ -275,15 +286,30 @@ EOF
             echo "ERROR: VAULT_TOKEN not set" >&2
             exit 1
         fi
-        if [[ -z "${PG_SUPERUSER_PASSWORD:-}" ]]; then
-            echo "ERROR: PG_SUPERUSER_PASSWORD not set (password for the Patroni/Postgres 'postgres' superuser role" >&2
-            echo "       Vault uses to create/drop dynamic app roles - not a separate 'vault' account, there isn't" >&2
-            echo "       one. Read it from the pg_superuser_password Swarm secret, e.g.:" >&2
+
+        # Both passwords below were already migrated into Vault KV by
+        # `migrate-secrets` (pg_superuser_password, rabbitmq_password) - read
+        # them from there by default instead of making the operator supply
+        # them again. An explicit env var still wins if set, for the rare
+        # case they differ from what's in Vault.
+        PG_SUPERUSER_PASSWORD="${PG_SUPERUSER_PASSWORD:-$(vault_kv_read secret/logmara/pg_superuser_password)}"
+        if [[ -z "$PG_SUPERUSER_PASSWORD" ]]; then
+            echo "ERROR: pg_superuser_password not found in Vault, and PG_SUPERUSER_PASSWORD not set." >&2
+            echo "       This is the Patroni/Postgres 'postgres' superuser role's password (not a" >&2
+            echo "       separate 'vault' account - there isn't one). Run" >&2
+            echo "       './scripts/vault-bootstrap.sh migrate-secrets' first, or set it explicitly:" >&2
             echo "         export PG_SUPERUSER_PASSWORD=\$(docker exec \$(docker ps -q --filter name=logmara-pg_postgres --filter status=running | head -1) cat /run/secrets/pg_superuser_password)" >&2
             exit 1
         fi
-        if [[ -z "${RABBITMQ_DEFAULT_PASS:-}" ]]; then
-            echo "ERROR: RABBITMQ_DEFAULT_PASS not set (RabbitMQ admin password Vault uses to create/delete dynamic app users)" >&2
+
+        # RabbitMQ has no separate admin account to reuse: rabbitmq.conf.tpl
+        # creates exactly one user, "logmara" (see rabbitmq/rabbitmq.conf.tpl),
+        # whose password is the same rabbitmq_password already in Vault.
+        RABBITMQ_DEFAULT_USER="${RABBITMQ_DEFAULT_USER:-logmara}"
+        RABBITMQ_DEFAULT_PASS="${RABBITMQ_DEFAULT_PASS:-$(vault_kv_read secret/logmara/rabbitmq_password)}"
+        if [[ -z "$RABBITMQ_DEFAULT_PASS" ]]; then
+            echo "ERROR: rabbitmq_password not found in Vault, and RABBITMQ_DEFAULT_PASS not set." >&2
+            echo "       Run './scripts/vault-bootstrap.sh migrate-secrets' first, or set it explicitly." >&2
             exit 1
         fi
 
@@ -339,8 +365,8 @@ EOF
         echo "Enabling RabbitMQ dynamic secrets engine..."
         vault_cli secrets enable -path=secret-dynamic/rabbitmq rabbitmq 2>/dev/null || true
         vault_cli write secret-dynamic/rabbitmq/config/connection \
-            url="amqp://${RABBITMQ_DEFAULT_USER:-admin}:${RABBITMQ_DEFAULT_PASS}@haproxy-rabbitmq:5672" \
-            username="${RABBITMQ_DEFAULT_USER:-admin}" \
+            url="amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@haproxy-rabbitmq:5672" \
+            username="${RABBITMQ_DEFAULT_USER}" \
             password="${RABBITMQ_DEFAULT_PASS}" 2>/dev/null || true
         vault_cli write secret-dynamic/rabbitmq/roles/logmara-app \
             vhost="/" \

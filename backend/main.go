@@ -502,9 +502,13 @@ func main() {
 	}
 	util.SetEncryptionKey(encKey)
 
-	// Start secret rotation goroutine (24h interval)
+	// Start secret rotation goroutine (24h interval). StartRotation blocks
+	// in an infinite loop until ctx is cancelled - it must run in its own
+	// goroutine, or main() never reaches wg.Wait()/the tailer/the real
+	// HTTP server below, leaving /api/health stuck reporting "starting"
+	// forever.
 	vc := vaultclient.Get()
-	vc.StartRotation(ctx, vaultclient.RotationCallbacks{
+	go vc.StartRotation(ctx, vaultclient.RotationCallbacks{
 		RotateJWTSecret:     func(s string) { authCfg.RotateSecret(s) },
 		RotateEncryptionKey: util.RotateEncryptionKey,
 		RotateRabbitMQURL: func(newURL string) {

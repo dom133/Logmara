@@ -47,13 +47,6 @@ EOF
 }
 
 template {
-  destination = "/vault-agent/secrets/pg_app_password"
-  contents = <<EOF
-{{ with secret "secret/data/logmara/pg_app_password" }}{{ .Data.data.value }}{{ end }}
-EOF
-}
-
-template {
   destination = "/vault-agent/secrets/redis_password"
   contents = <<EOF
 {{ with secret "secret/data/logmara/redis_password" }}{{ .Data.data.value }}{{ end }}
