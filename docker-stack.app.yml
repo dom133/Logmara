@@ -207,6 +207,15 @@ services:
       NGINX_RELOAD_TARGETS_HOST: tasks.frontend
       NGINX_RELOAD_PORT: "8081"
       NGINX_CONF_DIR: /data/nginx
+      # haproxy-app's frontend_https listener (haproxy/haproxy-app.cfg) is a
+      # raw TCP passthrough to nginx's TLS termination, so it conveys the
+      # real client IP via a PROXY protocol header (send-proxy) instead of
+      # an X-Forwarded-For rewrite. This tells the https.conf nginx generates
+      # (backend/handler/admin.go's httpsServerBlock) to expect and trust
+      # that header - always "true" here since this stack always sits behind
+      # haproxy-app, unlike plain docker-compose.yml where nginx receives
+      # HTTPS directly and must NOT expect one.
+      NGINX_PROXY_PROTOCOL: "true"
       HTTPS_ENABLED: ${HTTPS_ENABLED:-}
       HTTPS_REDIRECT: ${HTTPS_REDIRECT:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-}

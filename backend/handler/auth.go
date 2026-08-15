@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -269,7 +270,11 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 
 		audit.LogAudit(database, user.ID, user.Username, "login_success", c.ClientIP(), "")
 
-		go db.RefreshMV(database)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			db.RefreshMV(ctx, database)
+		}()
 
 		setAuthCookies(c, token, refreshToken, accessExpiresAt, refreshExpiresAt)
 
@@ -571,7 +576,12 @@ func ChangePassword(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		uid := getUserID(database, username)
+		uid, err := getUserID(database, username)
+		if err != nil {
+			slog.Error("failed to get user ID", "username", username, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to look up user", "error_key": "auth.userLookupFailed"})
+			return
+		}
 		if exists, _ := db.CheckPasswordHistory(database, uid, newHash); exists {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Password already used recently", "error_key": "auth.passwordAlreadyUsed"})
 			return
@@ -582,10 +592,18 @@ func ChangePassword(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		_ = db.AddPasswordHistory(database, uid, newHash)
-		_ = db.TrimPasswordHistory(database, uid)
+		if err := db.AddPasswordHistory(database, uid, newHash); err != nil {
+			slog.Error("failed to add password history", "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password history", "error_key": "auth.passwordHistoryFailed"})
+			return
+		}
+		if err := db.TrimPasswordHistory(database, uid); err != nil {
+			slog.Error("failed to trim password history", "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password history", "error_key": "auth.passwordHistoryFailed"})
+			return
+		}
 
-		audit.LogAudit(database, getUserID(database, username), username, "password_changed", c.ClientIP(), "")
+		audit.LogAudit(database, uid, username, "password_changed", c.ClientIP(), "")
 		c.JSON(http.StatusOK, gin.H{"message": "Password updated"})
 	}
 }
@@ -611,8 +629,8 @@ func insertRefreshToken(db *sql.DB, p refreshTokenParams) error {
 	return err
 }
 
-func getUserID(db *sql.DB, username string) int64 {
+func getUserID(db *sql.DB, username string) (int64, error) {
 	var id int64
-	db.QueryRow("SELECT id FROM users WHERE username = $1", username).Scan(&id)
-	return id
+	err := db.QueryRow("SELECT id FROM users WHERE username = $1", username).Scan(&id)
+	return id, err
 }

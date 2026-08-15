@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -147,7 +148,7 @@ func queryFilteredAggregates(db *sql.DB, whereBase string, args []interface{}) f
 		whereBase, strings.Join(branches, " UNION ALL "),
 	)
 
-	rows, err := db.Query(query, args...)
+	rows, err := db.QueryContext(context.Background(), query, args...)
 	if err != nil {
 		slog.Error("filtered aggregates query failed", "err", err)
 		return result

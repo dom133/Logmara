@@ -159,7 +159,9 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 			args = append(args, limitInt+1, offsetInt)
 		}
 
-		rows, err := db.Query(logsQuery, args...)
+		ctx, cancel := context.WithTimeout(c.Request.Context(), filteredQueryTimeout)
+		defer cancel()
+		rows, err := db.QueryContext(ctx, logsQuery, args...)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("error.queryFailed", "Query failed", err))
 			return
@@ -210,8 +212,10 @@ func GetLogsCount(db *sql.DB) gin.HandlerFunc {
 		whereSQL := buildWhereSQL(whereClauses)
 
 		var total int64
+		ctx, cancel := context.WithTimeout(c.Request.Context(), filteredQueryTimeout)
+		defer cancel()
 		_ = timedQuery("logs_count", func() error {
-			return db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL), args...).Scan(&total)
+			return db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL), args...).Scan(&total)
 		})
 
 		c.JSON(http.StatusOK, gin.H{"total": total})

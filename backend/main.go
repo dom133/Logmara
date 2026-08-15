@@ -302,7 +302,11 @@ func main() {
 	// checkpoint and producing MALFORMED JSON as one replica seeks the file
 	// mid-line. That's silent data corruption, not just a missed
 	// optimization, so fail fast instead of letting it happen.
-	if apiReplicas, err := strconv.Atoi(os.Getenv("API_REPLICAS")); err == nil && apiReplicas > 1 && sharedClient == nil {
+	apiReplicas := 1
+	if v, err := strconv.Atoi(os.Getenv("API_REPLICAS")); err == nil && v > 0 {
+		apiReplicas = v
+	}
+	if apiReplicas > 1 && sharedClient == nil {
 		slog.Error("API_REPLICAS > 1 without Redis configured; multiple replicas would run uncoordinated tailers against the same log file and corrupt its position checkpoint - deploy docker-stack.redis.yml and set REDIS_SENTINEL_ADDRS/REDIS_ADDR, or run a single replica", "api_replicas", apiReplicas)
 		os.Exit(1)
 	}
@@ -439,7 +443,7 @@ func main() {
 				return
 			case <-ticker.C:
 				if db.HasActiveSession(database) {
-					db.RefreshMV(database)
+					db.RefreshMV(ctx, database)
 				}
 			}
 		}
@@ -543,7 +547,27 @@ func main() {
 	// everything else gated on sharedClient above.
 	logRate := sharedstate.NewRateCounter(sharedClient, "lograte")
 	handler.SetLogRateCounter(logRate)
-	go tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine, logRate, handler.ReopenRsyslogLogFile)
+	go func() {
+		// With multiple replicas, hold off starting this replica's tailer
+		// (and therefore its leader-election Acquire race) until every
+		// sibling api replica has reached this same point in its own
+		// startup - otherwise, on a cold `docker stack deploy`/rescale, the
+		// first replica to get here would immediately win leadership and
+		// start ingesting/compacting the shared log file while its siblings
+		// are still mid-startup (schema migration, DB connection retries,
+		// etc). Bounded wait, not required for correctness (leader election
+		// itself is already safe regardless of start order) - see
+		// sharedstate.WaitForReplicas' own comment for why it gives up
+		// rather than blocking forever.
+		identity := os.Getenv("SWARM_TASK_IDENTITY")
+		if identity == "" {
+			if h, err := os.Hostname(); err == nil {
+				identity = h
+			}
+		}
+		sharedstate.WaitForReplicas(ctx, sharedClient, identity, apiReplicas, 90*time.Second)
+		tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine, logRate, handler.ReopenRsyslogLogFile)
+	}()
 
 	// Device silence checks run independently on every replica: the read
 	// (mv_device_stats) is cheap and the per-rule-per-device cooldown key in
