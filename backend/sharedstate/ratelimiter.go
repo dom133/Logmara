@@ -62,7 +62,7 @@ func (rl *RedisRateLimiter) Allow(key string) bool {
 	redisKey := "ratelimit:" + rl.bucket + ":" + key
 	now := time.Now().UnixMilli()
 
-	res, err := slidingWindowScript.Run(ctx, rl.client.rdb, []string{redisKey}, now, rl.window.Milliseconds(), rl.limit).Int()
+	res, err := slidingWindowScript.Run(ctx, rl.client.Raw(), []string{redisKey}, now, rl.window.Milliseconds(), rl.limit).Int()
 	if err != nil {
 		slog.Warn("redis rate limiter error, failing open", "bucket", rl.bucket, "error", err)
 		return true

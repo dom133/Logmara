@@ -18,13 +18,6 @@ import (
 // rather than duplicating the literal values in every query below.
 var adminOnlyRuleTypesSQL = "'" + strings.Join(model.AdminOnlyRuleTypes, "', '") + "'"
 
-// encryptionKey returns the AES key used to encrypt notification-channel
-// secrets. It is sourced only from the environment (never the database), so a
-// database dump alone can't decrypt them - see util.SecretFromEnv. The *sql.DB
-// parameter is kept for call-site symmetry with the other db helpers.
-func encryptionKey(_ *sql.DB) string {
-	return util.SecretFromEnv("ENCRYPTION_KEY")
-}
 
 // ---- Alerts ----
 
@@ -385,7 +378,7 @@ func CreateNotificationChannel(database *sql.DB, req model.NotificationChannelRe
 
 	var secret sql.NullString
 	if req.Secret != "" {
-		enc, err := util.Encrypt(encryptionKey(database), req.Secret)
+		enc, err := util.Encrypt(req.Secret)
 		if err != nil {
 			return nil, fmt.Errorf("encrypt channel secret: %w", err)
 		}
@@ -420,7 +413,7 @@ func UpdateNotificationChannel(database *sql.DB, id int64, req model.Notificatio
 	}
 
 	if req.Secret != "" {
-		enc, err := util.Encrypt(encryptionKey(database), req.Secret)
+		enc, err := util.Encrypt(req.Secret)
 		if err != nil {
 			return nil, fmt.Errorf("encrypt channel secret: %w", err)
 		}
@@ -552,7 +545,7 @@ func DecryptChannelSecret(database *sql.DB, id int64) (string, error) {
 	if !secret.Valid || secret.String == "" {
 		return "", nil
 	}
-	return util.Decrypt(encryptionKey(database), secret.String)
+	return util.Decrypt(secret.String)
 }
 
 // ---- Notification log ----

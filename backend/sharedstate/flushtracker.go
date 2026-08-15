@@ -100,7 +100,7 @@ func (ft *FlushTracker) ReportFlushed(ctx context.Context, entries []QueueEntry)
 		args = append(args, strconv.FormatInt(e.Seq, 10), strconv.FormatInt(e.NextPos, 10))
 	}
 
-	res, err := ft.script.Run(ctx, ft.client.rdb, args).Result()
+	res, err := ft.script.Run(ctx, ft.client.Raw(), args).Result()
 	if err != nil {
 		slog.Error("flush tracker: report error", "error", err)
 		return 0, 0, err
@@ -119,7 +119,7 @@ func (ft *FlushTracker) ReportFlushed(ctx context.Context, entries []QueueEntry)
 
 // GetFlushedPos returns the current contiguous flushed position.
 func (ft *FlushTracker) GetFlushedPos(ctx context.Context) (int64, int64) {
-	res, err := ft.client.rdb.HMGet(ctx, flushTrackerKey, "_flushed_seq", "_flushed_pos").Result()
+	res, err := ft.client.Raw().HMGet(ctx, flushTrackerKey, "_flushed_seq", "_flushed_pos").Result()
 	if err != nil || len(res) < 2 {
 		return 0, 0
 	}
@@ -130,7 +130,7 @@ func (ft *FlushTracker) GetFlushedPos(ctx context.Context) (int64, int64) {
 
 // Reset clears the flush tracker state (used during compaction).
 func (ft *FlushTracker) Reset(ctx context.Context) {
-	ft.client.rdb.Del(ctx, flushTrackerKey)
+	ft.client.Raw().Del(ctx, flushTrackerKey)
 	ft.mu.Lock()
 	ft.seq = 0
 	ft.mu.Unlock()

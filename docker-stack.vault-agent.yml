@@ -34,7 +34,9 @@
 #     exist":
 #       sudo mkdir -p /srv/syslog-ha/vault-secrets
 #
-# Deploy with: docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent
+# Deploy with: ./scripts/swarm-deploy.sh vault-agent (not a bare
+# `docker stack deploy` - see "Content-hash name" note on the configs:
+# section below for why)
 
 version: "3.8"
 
@@ -43,7 +45,7 @@ services:
   # writes to local files. Postgres/Redis/RabbitMQ bind-mount this
   # directory read-only.
   vault-agent:
-    image: hashicorp/vault:1.15.0
+    image: hashicorp/vault:1.16.0
     # Bypasses the image's docker-entrypoint.sh, which special-cases some
     # first arguments (e.g. `server`) by rebuilding the arg list rather
     # than passing it through untouched - see docker-stack.vault.yml's
@@ -97,9 +99,13 @@ networks:
   syslog_net:
     external: true
 
+# Content-hash name (computed by scripts/swarm-deploy.sh): Swarm configs
+# are immutable even when not `external: true` - see
+# docker-stack.monitoring.yml's configs: header for the full explanation.
 configs:
   vault_agent_cfg:
     file: vault/vault-agent.hcl
+    name: vault_agent_cfg_${VAULT_AGENT_CFG_HASH:?run via scripts/swarm-deploy.sh, or export VAULT_AGENT_CFG_HASH yourself}
 
 secrets:
   # Created by `scripts/vault-bootstrap.sh migrate-secrets` (a one-time

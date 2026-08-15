@@ -1,17 +1,26 @@
 # HA monitoring stack for Docker Swarm: Prometheus + Alertmanager + node_exporter + cadvisor.
 #
 # OPTIONAL, additive stack for multi-node deployments. Deploy alongside other
-# stacks. Grafana is optional (set MONITORING_EXPOSE_GRAFANA=false to skip) -
-# useful if you already have an existing Grafana instance.
+# stacks. If you already have an existing Grafana instance and don't want
+# this one, delete/comment out the `grafana` service (and the
+# monitoring_grafana_data/grafana_dashboards volumes and grafana_datasources/
+# grafana_dashboards_cfg configs it's the only consumer of) before deploying -
+# there's no env-var toggle for it.
 #
 # Prerequisites:
 #   - Docker Swarm initialized
 #   - `syslog_net` overlay network already exists
 #   - Nodes labeled app=true and edge=true
-#   - Grafana dashboards copied to /srv/syslog-ha/monitoring/grafana-dashboards/
-#     on edge nodes (copy from monitoring/grafana-dashboards/ in repo)
+#   - NFS_SERVER reachable (same export the app tier's log_data/parser_defs
+#     use - see docker-stack.app.yml). Dashboard JSON files go on the NFS
+#     server itself, not any particular Swarm node - see the
+#     grafana_dashboards volume below.
+#   - GRAFANA_ADMIN_PASSWORD set (no default - Grafana refuses to start
+#     without one)
 #
-# Deploy with: docker stack deploy -c docker-stack.monitoring.yml logmara-monitoring
+# Deploy with: ./scripts/swarm-deploy.sh monitoring (not a bare
+# `docker stack deploy` - see "Swarm configs are immutable" note on the
+# configs: section below for why)
 
 version: "3.8"
 
@@ -23,6 +32,8 @@ services:
         target: /etc/prometheus/prometheus.yml
       - source: alertmanager_cfg
         target: /etc/prometheus/alertmanager.yml
+      - source: alert_rules_cfg
+        target: /etc/prometheus/alert_rules.yml
     volumes:
       - monitoring_data:/prometheus
     ports:
@@ -169,8 +180,15 @@ services:
         mode: 0440
     volumes:
       - monitoring_grafana_data:/var/lib/grafana
-      - type: bind
-        source: /srv/syslog-ha/monitoring/grafana-dashboards
+      # NFS-backed, not a bind mount: grafana has replicas: 1 but only a
+      # node.labels.edge == true constraint, so Swarm can (re)schedule it
+      # onto *any* edge node, not always the same one - a bind mount would
+      # need the directory to pre-exist on every one of them (and any
+      # dashboards copied there would need to be copied to all of them
+      # too, kept in sync by hand). Same reasoning as log_data/parser_defs
+      # in docker-stack.app.yml.
+      - type: volume
+        source: grafana_dashboards
         target: /var/lib/grafana/dashboards
         read_only: true
     ports:
@@ -210,13 +228,38 @@ volumes:
   monitoring_data:
   monitoring_alertmanager_data:
   monitoring_grafana_data:
+  # Same NFS export the app tier's log_data/parser_defs already use (see
+  # docker-stack.app.yml) - reuses NFS_SERVER, just a different exported
+  # subdirectory. Drop dashboard JSON files into
+  # ${NFS_GRAFANA_DASHBOARDS_PATH:-/srv/syslog-ha/nfs/grafana-dashboards}
+  # on the NFS server itself; Grafana re-scans every 30s (dashboards.yml).
+  grafana_dashboards:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_SERVER:?set NFS_SERVER to your NFS host},rw,nfsvers=4
+      device: ":${NFS_GRAFANA_DASHBOARDS_PATH:-/srv/syslog-ha/nfs/grafana-dashboards}"
 
+# Swarm configs are immutable at the API level even when not `external:
+# true` - `docker stack deploy` tries to update the existing object in
+# place on a content change and Swarm rejects it ("only updates to Labels
+# are allowed"). `name:` with a content hash (computed by
+# scripts/swarm-deploy.sh) gives each revision a distinct object name
+# instead, so a changed file becomes a new config + a normal rolling
+# service update, not a failed in-place update.
 configs:
   prometheus_cfg:
     file: monitoring/prometheus.yml
+    name: prometheus_cfg_${PROMETHEUS_CFG_HASH:?run via scripts/swarm-deploy.sh, or export PROMETHEUS_CFG_HASH yourself}
   alertmanager_cfg:
     file: monitoring/alertmanager.yml
+    name: alertmanager_cfg_${ALERTMANAGER_CFG_HASH:?run via scripts/swarm-deploy.sh, or export ALERTMANAGER_CFG_HASH yourself}
+  alert_rules_cfg:
+    file: monitoring/alert_rules.yml
+    name: alert_rules_cfg_${ALERT_RULES_CFG_HASH:?run via scripts/swarm-deploy.sh, or export ALERT_RULES_CFG_HASH yourself}
   grafana_datasources:
     file: monitoring/grafana-datasources.yml
+    name: grafana_datasources_${GRAFANA_DATASOURCES_HASH:?run via scripts/swarm-deploy.sh, or export GRAFANA_DATASOURCES_HASH yourself}
   grafana_dashboards_cfg:
     file: monitoring/grafana-dashboards.yml
+    name: grafana_dashboards_cfg_${GRAFANA_DASHBOARDS_CFG_HASH:?run via scripts/swarm-deploy.sh, or export GRAFANA_DASHBOARDS_CFG_HASH yourself}

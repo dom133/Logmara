@@ -291,12 +291,12 @@ Getting here required backend code changes (not just Docker config) — see "How
 `vault-agent` authenticates to Vault with a bootstrap token (`vault_agent_token`) that only exists once Vault itself has been initialized, unsealed, and `migrate-secrets` has run — so it's deployed as its **own stack**, [`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml), separate from the 3-node server cluster in `docker-stack.vault.yml`. This isn't just tidiness: `docker stack deploy` refuses to create *any* service in a stack if *any* service in it references a Swarm secret/config that doesn't exist yet, not just the one missing it — so if the agent were still a service inside `docker-stack.vault.yml`, the very first deploy would fail to create `vault-1`/`vault-2`/`vault-3` too, not just the agent.
 
 ```bash
-docker stack deploy -c docker-stack.vault.yml logmara-vault
+./scripts/swarm-deploy.sh vault
 ./scripts/vault-bootstrap.sh init      # unseal keys + root token -> /srv/syslog-ha/vault-token
 ./scripts/vault-bootstrap.sh unseal
 ./scripts/vault-bootstrap.sh policy
 ./scripts/vault-bootstrap.sh migrate-secrets   # migrates existing Docker secrets into Vault, creates vault_agent_token
-docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent   # only now does vault_agent_token exist
+./scripts/swarm-deploy.sh vault-agent   # only now does vault_agent_token exist
 ```
 
 #### How `api` reads secrets from Vault
@@ -357,25 +357,51 @@ export VAULT_TOKEN=$(cat /srv/syslog-ha/vault-token)
 docker run --rm --network syslog_net \
   -e VAULT_ADDR="http://vault-1:8200" \
   -e VAULT_TOKEN="$VAULT_TOKEN" \
-  vault:1.15.0 token create -policy=logmara -period=24h -ttl=24h -renewable
+   vault:1.16.0 token create -policy=logmara -period=24h -ttl=24h -renewable
 
 # 3. Disable the default token auth method (forces LDAP-only login)
 docker run --rm --network syslog_net \
   -e VAULT_ADDR="http://vault-1:8200" \
   -e VAULT_TOKEN="$VAULT_TOKEN" \
-  vault:1.15.0 auth disable token
+   vault:1.16.0 auth disable token
 
 # 4. Revoke the root token
 docker run --rm --network syslog_net \
   -e VAULT_ADDR="http://vault-1:8200" \
   -e VAULT_TOKEN="$VAULT_TOKEN" \
-  vault:1.15.0 auth revoke-self
+   vault:1.16.0 auth revoke-self
 
 # 5. Remove the token file from disk
 rm /srv/syslog-ha/vault-token
 ```
 
 After step 4, the root token is dead. After step 3, only LDAP users in the `vault-admins` group can log in. If you lock yourself out, you'll need to re-unseal with Shamir keys and re-init — keep those keys safe.
+
+### Deploying Monitoring
+
+Add `GRAFANA_ADMIN_PASSWORD` (required, no default) to `.env`, then deploy with `./scripts/swarm-deploy.sh` like the other stacks — it loads `.env` and exports everything `docker stack deploy` needs, including `NFS_GRAFANA_DASHBOARDS_PATH`/`MONITORING_*_PORT` if you've set them (see `.env.example`):
+
+```bash
+echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 24)" >> .env   # save the generated password somewhere safe too
+./scripts/swarm-deploy.sh monitoring
+```
+
+`grafana` has `replicas: 1` and only a `node.labels.edge == true` placement constraint — with more than one `edge=true` node, Swarm can (re)schedule it onto any of them, not always the same one. Its dashboards volume (`grafana_dashboards`) is therefore NFS-backed (same export as `log_data`/`parser_defs` in `docker-stack.app.yml`), not a bind mount — drop dashboard JSON files on the NFS server itself, under `${NFS_GRAFANA_DASHBOARDS_PATH:-/srv/syslog-ha/nfs/grafana-dashboards}`; Grafana re-scans every 30s.
+
+Dashboards downloaded straight from grafana.com (e.g. Node Exporter Full, cAdvisor) use a `${DS_PROMETHEUS}` template variable for their datasource, which only gets resolved by Grafana's UI-based *Import* flow — file-based provisioning (what the volume above does) skips that step, so they'll fail to load with "Datasource ${DS_PROMETHEUS} was not found" unless you replace it first. [`monitoring/grafana-datasources.yml`](monitoring/grafana-datasources.yml) gives the Prometheus datasource a stable `uid: prometheus` for exactly this: after downloading a dashboard JSON, before dropping it on the NFS export, run:
+```bash
+sed -i 's/\${DS_PROMETHEUS}/prometheus/g' dashboard.json
+```
+
+If you edited `haproxy/*.cfg` to pick up the Prometheus metrics endpoint (`http-request use-service prometheus-exporter`), Swarm configs are immutable — recreate and roll out each one:
+```bash
+./scripts/swarm-bootstrap.sh haproxy-config
+./scripts/swarm-bootstrap.sh haproxy-app-config
+./scripts/swarm-bootstrap.sh haproxy-rabbitmq-config
+```
+Each prints the `docker service update` command to actually roll the new config out — run those too.
+
+Access: Prometheus `:9090`, Alertmanager `:9093`, Grafana `:3000` (`admin` / `$GRAFANA_ADMIN_PASSWORD`) — firewall these the same as the Vault UI.
 
 ### How multi-replica safety works
 
@@ -598,7 +624,7 @@ sudo mkdir -p /srv/syslog-ha/vault-secrets
 
 Back on `pg1`:
 ```bash
-docker stack deploy -c docker-stack.vault.yml logmara-vault
+./scripts/swarm-deploy.sh vault
 watch docker service ls   # wait for vault-1/2/3 at Running before continuing
 
 ./scripts/vault-bootstrap.sh init      # unseal keys + root token -> /srv/syslog-ha/vault-token
@@ -606,7 +632,7 @@ watch docker service ls   # wait for vault-1/2/3 at Running before continuing
 ./scripts/vault-bootstrap.sh policy
 ./scripts/vault-bootstrap.sh migrate-secrets   # copies the 5 secrets above into Vault, creates vault_agent_token
 
-docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent   # only now does vault_agent_token exist
+./scripts/swarm-deploy.sh vault-agent   # only now does vault_agent_token exist
 watch docker service ls   # wait for vault-agent at Running on every vault_agent-labeled node
 ```
 

@@ -22,9 +22,11 @@ import (
 )
 
 const (
-	workerBatchSize     = 5000
-	workerBatchInterval = 500 * time.Millisecond
-	defaultWorkerCount  = 0 // 0 = auto (NumCPU/2)
+	workerBatchSize        = 5000
+	workerBatchInterval    = 500 * time.Millisecond
+	defaultWorkerCount     = 0 // 0 = auto (NumCPU/2)
+	workerReconnectDelay   = 5 * time.Second
+	workerReconnectMaxLog  = 10
 )
 
 // WorkerPool manages a pool of workers that consume messages from the
@@ -158,159 +160,193 @@ func (wp *WorkerPool) GetPublicMetrics() []WorkerMetricsPublic {
 }
 
 func (w *worker) run(ctx context.Context) {
-	deliveriesChan, err := w.queue.Consume(ctx)
-	if err != nil {
-		slog.Error("worker: failed to start consuming", "id", w.id, "error", err)
-		return
-	}
-
-	slog.Info("worker started", "id", w.id)
-	var entries []model.IngestEntry
-	var queueEntries []sharedstate.QueueEntry
-	var batchDelivries []amqp.Delivery
-	lastFlush := time.Now()
+	reconnectAttempts := 0
 
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("worker stopping", "id", w.id)
+			slog.Info("worker: shutting down (context canceled)", "id", w.id)
 			return
-		case delivery, ok := <-deliveriesChan:
-			if !ok {
-				slog.Warn("worker: delivery channel closed", "id", w.id)
+		default:
+		}
+
+		if reconnectAttempts > 0 {
+			logMsg := "worker: attempting to reconnect"
+			if reconnectAttempts <= workerReconnectMaxLog {
+				slog.Warn(logMsg, "id", w.id, "attempt", reconnectAttempts)
+			} else if reconnectAttempts == workerReconnectMaxLog+1 {
+				slog.Warn("worker: suppressing further reconnect logs (too many attempts)", "id", w.id, "attempt", reconnectAttempts)
+			}
+		}
+
+		deliveriesChan, err := w.queue.Consume(ctx)
+		if err != nil {
+			slog.Error("worker: failed to start consuming, will retry", "id", w.id, "error", err)
+			reconnectAttempts++
+			if !sleepOrDone(ctx, workerReconnectDelay) {
 				return
 			}
+			continue
+		}
 
-			if w.ic.IsPaused() {
-				delivery.Nack(false, true)
-				continue
-			}
+		reconnectAttempts = 0
+		slog.Info("worker: consume started successfully", "id", w.id)
 
-			var qe sharedstate.QueueEntry
-			if err := json.Unmarshal(delivery.Body, &qe); err != nil {
-				slog.Error("worker: unmarshal queue entry error", "id", w.id, "error", err)
-				delivery.Ack(false)
-				w.metrics.Mutex.Lock()
-				w.metrics.ParseErrors++
-				w.metrics.MsgsProcessed++
-				w.metrics.Mutex.Unlock()
-				continue
-			}
+		var entries []model.IngestEntry
+		var queueEntries []sharedstate.QueueEntry
+		var batchDelivries []amqp.Delivery
+		lastFlush := time.Now()
 
-			line := qe.Line
-			if line == "" {
-				delivery.Ack(false)
-				w.metrics.Mutex.Lock()
-				w.metrics.MsgsProcessed++
-				w.metrics.Mutex.Unlock()
-				continue
-			}
-
-			var entry model.IngestEntry
-			if err := json.Unmarshal([]byte(line), &entry); err != nil {
-				slog.Error("worker: invalid JSON", "id", w.id, "error", err)
-				sanitizedLine := sanitizeForPostgres(line)
-				entry = model.IngestEntry{
-					Timestamp: time.Now().Format(time.RFC3339),
-					Hostname:  "unknown",
-					Severity:  "error",
-					Message:   fmt.Sprintf("[MALFORMED JSON] %s", sanitizedLine),
-				}
-				w.alerts.EvaluateMalformedJSON(w.db, sanitizedLine)
-				w.metrics.Mutex.Lock()
-				w.metrics.ParseErrors++
-				w.metrics.Mutex.Unlock()
-			}
-
-			// Sanitize all fields
-			entry.Hostname = sanitizeForPostgres(entry.Hostname)
-			entry.FromHostIP = sanitizeForPostgres(entry.FromHostIP)
-			entry.AppName = sanitizeForPostgres(entry.AppName)
-			entry.ProcessID = sanitizeForPostgres(entry.ProcessID)
-			entry.MsgID = sanitizeForPostgres(entry.MsgID)
-			entry.Severity = sanitizeForPostgres(entry.Severity)
-			entry.Facility = sanitizeForPostgres(entry.Facility)
-			entry.Message = sanitizeForPostgres(entry.Message)
-			entry.RawMessage = sanitizeForPostgres(entry.RawMessage)
-			entry.ViaRelay = sanitizeForPostgres(entry.ViaRelay)
-
-			if entry.Hostname == "" {
-				delivery.Ack(false)
-				w.metrics.Mutex.Lock()
-				w.metrics.MsgsProcessed++
-				w.metrics.Mutex.Unlock()
-				continue
-			}
-
-			// Fix rsyslog mis-parse
-			if truncatedISORe.MatchString(entry.AppName) {
-				fullMsg := entry.AppName + ":" + entry.Message
-				entry.Message = fullMsg
-				entry.RawMessage = fullMsg
-				if idx := strings.Index(fullMsg, "CEF:"); idx >= 0 {
-					entry.AppName = "CEF"
-				} else {
-					entry.AppName = ""
-				}
-			}
-
-			// Parse
-			appName := entry.AppName
-			result := w.parser.Parse(entry.Hostname, appName, entry.Message)
-			if result != nil {
-				for k, v := range result.Fields {
-					result.Fields[k] = sanitizeForPostgres(v)
-				}
-				jsonData, err := json.Marshal(result.Fields)
-				if err == nil {
-					entry.ParsedFields = jsonData
-				}
-				entry.MatchedParsers = result.Parsers
-			}
-
-			entries = append(entries, entry)
-			queueEntries = append(queueEntries, qe)
-			batchDelivries = append(batchDelivries, delivery)
-
-			now := time.Now()
-			if len(entries) >= workerBatchSize || now.Sub(lastFlush) >= workerBatchInterval {
-				if w.ic != nil && w.ic.IsPaused() {
-					// Ingestion paused — NACK all pending deliveries with requeue
+		consumeLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("worker: stopping (context canceled)", "id", w.id)
+				return
+			case delivery, ok := <-deliveriesChan:
+				if !ok {
+					slog.Warn("worker: delivery channel closed, reconnecting", "id", w.id)
 					for _, d := range batchDelivries {
 						d.Nack(false, true)
 					}
+					slog.Info("worker: requeued pending deliveries before reconnect", "id", w.id, "count", len(batchDelivries))
+					break consumeLoop
+				}
+
+				if w.ic.IsPaused() {
+					delivery.Nack(false, true)
+					continue
+				}
+
+				var qe sharedstate.QueueEntry
+				if err := json.Unmarshal(delivery.Body, &qe); err != nil {
+					slog.Error("worker: unmarshal queue entry error", "id", w.id, "error", err)
+					delivery.Ack(false)
 					w.metrics.Mutex.Lock()
-					w.metrics.MsgsProcessed += int64(len(batchDelivries))
+					w.metrics.ParseErrors++
+					w.metrics.MsgsProcessed++
 					w.metrics.Mutex.Unlock()
+					continue
+				}
+
+				line := qe.Line
+				if line == "" {
+					delivery.Ack(false)
+					w.metrics.Mutex.Lock()
+					w.metrics.MsgsProcessed++
+					w.metrics.Mutex.Unlock()
+					continue
+				}
+
+				var entry model.IngestEntry
+				if err := json.Unmarshal([]byte(line), &entry); err != nil {
+					slog.Error("worker: invalid JSON", "id", w.id, "error", err)
+					sanitizedLine := sanitizeForPostgres(line)
+					entry = model.IngestEntry{
+						Timestamp: time.Now().Format(time.RFC3339),
+						Hostname:  "unknown",
+						Severity:  "error",
+						Message:   fmt.Sprintf("[MALFORMED JSON] %s", sanitizedLine),
+					}
+					w.alerts.EvaluateMalformedJSON(w.db, sanitizedLine)
+					w.metrics.Mutex.Lock()
+					w.metrics.ParseErrors++
+					w.metrics.Mutex.Unlock()
+				}
+
+				// Sanitize all fields
+				entry.Hostname = sanitizeForPostgres(entry.Hostname)
+				entry.FromHostIP = sanitizeForPostgres(entry.FromHostIP)
+				entry.AppName = sanitizeForPostgres(entry.AppName)
+				entry.ProcessID = sanitizeForPostgres(entry.ProcessID)
+				entry.MsgID = sanitizeForPostgres(entry.MsgID)
+				entry.Severity = sanitizeForPostgres(entry.Severity)
+				entry.Facility = sanitizeForPostgres(entry.Facility)
+				entry.Message = sanitizeForPostgres(entry.Message)
+				entry.RawMessage = sanitizeForPostgres(entry.RawMessage)
+				entry.ViaRelay = sanitizeForPostgres(entry.ViaRelay)
+
+				if entry.Hostname == "" {
+					delivery.Ack(false)
+					w.metrics.Mutex.Lock()
+					w.metrics.MsgsProcessed++
+					w.metrics.Mutex.Unlock()
+					continue
+				}
+
+				// Fix rsyslog mis-parse
+				if truncatedISORe.MatchString(entry.AppName) {
+					fullMsg := entry.AppName + ":" + entry.Message
+					entry.Message = fullMsg
+					entry.RawMessage = fullMsg
+					if idx := strings.Index(fullMsg, "CEF:"); idx >= 0 {
+						entry.AppName = "CEF"
+					} else {
+						entry.AppName = ""
+					}
+				}
+
+				// Parse
+				appName := entry.AppName
+				result := w.parser.Parse(entry.Hostname, appName, entry.Message)
+				if result != nil {
+					for k, v := range result.Fields {
+						result.Fields[k] = sanitizeForPostgres(v)
+					}
+					jsonData, err := json.Marshal(result.Fields)
+					if err == nil {
+						entry.ParsedFields = jsonData
+					}
+					entry.MatchedParsers = result.Parsers
+				}
+
+				entries = append(entries, entry)
+				queueEntries = append(queueEntries, qe)
+				batchDelivries = append(batchDelivries, delivery)
+
+				now := time.Now()
+				if len(entries) >= workerBatchSize || now.Sub(lastFlush) >= workerBatchInterval {
+					if w.ic != nil && w.ic.IsPaused() {
+						for _, d := range batchDelivries {
+							d.Nack(false, true)
+						}
+						w.metrics.Mutex.Lock()
+						w.metrics.MsgsProcessed += int64(len(batchDelivries))
+						w.metrics.Mutex.Unlock()
+						entries = nil
+						queueEntries = nil
+						batchDelivries = nil
+						continue
+					}
+					if err := flushBatch(w.db, entries, w.rate); err != nil {
+						slog.Error("worker: flush error", "id", w.id, "error", err)
+						for _, d := range batchDelivries {
+							d.Nack(false, true)
+						}
+					} else {
+						w.alerts.EvaluateBatch(w.db, entries)
+						w.flushTrk.ReportFlushed(ctx, queueEntries)
+						for _, d := range batchDelivries {
+							d.Ack(false)
+						}
+						w.metrics.Mutex.Lock()
+						w.metrics.DbInserts += int64(len(entries))
+						w.metrics.MsgsProcessed += int64(len(entries))
+						w.metrics.LastFlushAt = now
+						w.metrics.Mutex.Unlock()
+					}
 					entries = nil
 					queueEntries = nil
 					batchDelivries = nil
-					continue
+					lastFlush = now
 				}
-				if err := flushBatch(w.db, entries, w.rate); err != nil {
-					slog.Error("worker: flush error", "id", w.id, "error", err)
-					// NACK with requeue on flush failure so messages aren't lost
-					for _, d := range batchDelivries {
-						d.Nack(false, true)
-					}
-				} else {
-					w.alerts.EvaluateBatch(w.db, entries)
-					w.flushTrk.ReportFlushed(ctx, queueEntries)
-					// ACK only after successful flush
-					for _, d := range batchDelivries {
-						d.Ack(false)
-					}
-					w.metrics.Mutex.Lock()
-					w.metrics.DbInserts += int64(len(entries))
-					w.metrics.MsgsProcessed += int64(len(entries))
-					w.metrics.LastFlushAt = now
-					w.metrics.Mutex.Unlock()
-				}
-				entries = nil
-				queueEntries = nil
-				batchDelivries = nil
-				lastFlush = now
 			}
+		}
+
+		slog.Warn("worker: consume loop exited, reconnecting", "id", w.id)
+		reconnectAttempts++
+		if !sleepOrDone(ctx, workerReconnectDelay) {
+			return
 		}
 	}
 }

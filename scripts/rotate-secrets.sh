@@ -130,7 +130,7 @@ read_secret() {
             --network syslog_net \
             -e VAULT_ADDR="http://vault-1:8200" \
             -e VAULT_TOKEN="$vault_token" \
-            hashicorp/vault:1.15.0 kv get -field=value "secret/logmara/$name" 2>/dev/null || echo ""
+            hashicorp/vault:1.16.0 kv get -field=value "secret/logmara/$name" 2>/dev/null || echo ""
     else
         read_docker_secret_value "$name"
     fi
@@ -156,7 +156,7 @@ write_secret() {
             -e VAULT_ADDR="http://vault-1:8200" \
             -e VAULT_TOKEN="$vault_token" \
             -v "$tmpfile:/tmp/secretval:ro" \
-            hashicorp/vault:1.15.0 sh -c "
+            hashicorp/vault:1.16.0 sh -c "
                 VAL=\$(cat /tmp/secretval) && \
                 vault kv put \"secret/logmara/$name\" \"value=\$VAL\"
             " 2>/dev/null || true
@@ -455,7 +455,7 @@ case "$ACTION" in
                 --network syslog_net \
                 -e VAULT_ADDR="http://vault-1:8200" \
                 -e VAULT_TOKEN="$(cat /srv/syslog-ha/vault-token 2>/dev/null || echo '')" \
-                hashicorp/vault:1.15.0 kv list secret/logmara/ 2>/dev/null || echo "(unable to list)"
+                hashicorp/vault:1.16.0 kv list secret/logmara/ 2>/dev/null || echo "(unable to list)"
         else
             echo "=== Docker Secrets ==="
             docker secret ls
