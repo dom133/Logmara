@@ -313,7 +313,19 @@ func Login(pool *db.DynamicPool, authCfg *auth.Config) gin.HandlerFunc {
 		audit.LogAudit(database, user.ID, user.Username, "login_success", c.ClientIP(), "")
 
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			// 5 minutes, not 30s: RefreshMV refreshes all 5 views
+			// sequentially under one shared budget, and unlike
+			// mv_dashboard_summary/mv_dashboard_severity (plain COUNT(*)),
+			// mv_timeline_hourly/mv_device_stats/mv_dashboard_top_errors
+			// aggregate the full syslog_logs table (GROUP BY, array_agg) -
+			// REFRESH CONCURRENTLY on those reads the full old+new snapshot,
+			// which routinely blew past 30s on a busier deployment and left
+			// every view after whichever one hit the deadline failing with
+			// "context deadline exceeded" too. This runs off the request's
+			// critical path already, so a longer ceiling costs nothing but
+			// goroutine lifetime - it's just a safety net against a truly
+			// stuck REFRESH (e.g. blocked on a stale lock).
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
 			db.RefreshMV(ctx, database)
 		}()

@@ -120,7 +120,7 @@ func MigrateWithLock(db *sql.DB) error {
 // schema_version table already records this value, so a forgotten bump
 // means an already-deployed instance will never see the new statement
 // applied.
-const schemaVersion = 15
+const schemaVersion = 16
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -822,19 +822,41 @@ END $$`, g.name, toCharFmt)
 		          WHEN duplicate_table THEN NULL;
 		          WHEN insufficient_privilege THEN NULL;
 		END $$`,
-		`CREATE OR REPLACE FUNCTION refresh_mv(name TEXT)
-			RETURNS VOID AS $$
-			BEGIN
-				EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY %I', name);
-			EXCEPTION WHEN object_not_in_prerequisite_state THEN
-				EXECUTE format('REFRESH MATERIALIZED VIEW %I', name);
-			END;
-			$$ LANGUAGE plpgsql SECURITY DEFINER`,
+		// Wrapped in a DO block rather than a bare CREATE OR REPLACE: once
+		// vault-bootstrap.sh's setup-dynamic-secrets has run, refresh_mv is
+		// owned by postgres (so its SECURITY DEFINER body can REFRESH any
+		// materialized view regardless of which rotating Vault role owns
+		// it - see refreshMaterializedView's doc comment). A bare CREATE OR
+		// REPLACE here, run by the app's own non-superuser dynamic Vault
+		// connection, would then fail with "must be owner of function
+		// refresh_mv" (42501/insufficient_privilege) on every future
+		// schemaVersion bump - and postStmts aborts the whole migration on
+		// its first error, which main.go treats as fatal (os.Exit(1)). The
+		// EXCEPTION swallows exactly that case, leaving the postgres-owned
+		// definition alone; on a deployment that never ran vault-bootstrap.sh
+		// (dev/no-Vault), the app's own role still owns the function and the
+		// replace goes through, preserving the self-heal fallback.
+		`DO $do$ BEGIN
+			CREATE OR REPLACE FUNCTION refresh_mv(name TEXT)
+				RETURNS VOID AS $body$
+				BEGIN
+					EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY %I', name);
+				EXCEPTION WHEN object_not_in_prerequisite_state THEN
+					EXECUTE format('REFRESH MATERIALIZED VIEW %I', name);
+				END;
+				$body$ LANGUAGE plpgsql SECURITY DEFINER;
+		EXCEPTION WHEN insufficient_privilege THEN NULL;
+		END $do$`,
+		// Same rationale as the DO block above: granting on a
+		// function this connection doesn't own (and wasn't given WITH GRANT
+		// OPTION on) fails with insufficient_privilege - harmless to skip
+		// since vault-bootstrap.sh's postgres-run GRANT already covers it.
 		`DO $$ BEGIN
 			PERFORM 1 FROM pg_roles WHERE rolname = 'logmara_app_group';
 			IF FOUND THEN
 				GRANT EXECUTE ON FUNCTION refresh_mv(TEXT) TO logmara_app_group;
 			END IF;
+		EXCEPTION WHEN insufficient_privilege THEN NULL;
 		END $$`,
 	}
 	for _, stmt := range postStmts {
