@@ -32,7 +32,7 @@ func NewRateCounter(client *Client, name string) RateCounter {
 
 // ---- local: in-memory, single-process ----
 
-const rateCounterBuckets = 60 // one slot per second, covers the last minute
+const rateCounterBuckets = 300 // one slot per second, covers 5 minutes for high-throughput workloads
 
 type localRateCounter struct {
 	mu      sync.Mutex

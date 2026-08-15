@@ -35,8 +35,8 @@ func Connect(dsn string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to open db: %w", err)
 	}
 
-	maxOpen := 100
-	maxIdle := 25
+	maxOpen := 500
+	maxIdle := 100
 	maxLifeTime := 30 * time.Minute
 	maxIdleTime := 5 * time.Minute
 

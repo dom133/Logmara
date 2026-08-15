@@ -18,12 +18,16 @@
 # rate limiting/cache invalidation/ingestion control in backend/sharedstate,
 # replacing what used to be in-memory, single-process-only state - see
 # backend/control/ingestion.go, backend/tailer/tailer.go, backend/handler/
-# stats.go+logs.go+slow_query_logger.go). The tailer is gated on the
-# keepalived VIP marker file (see keepalived/notify_vip.sh) so only the API
-# on the VIP-holding node tails the log file, guaranteeing co-location with
-# rsyslog and eliminating NFS read-cache delay. Without REDIS_SENTINEL_ADDRS
-# set, all of that transparently falls back to the original single-process
-# behavior instead - safe, but only correct at replicas: 1.
+# stats.go+logs.go+slow_query_logger.go). It also requires
+# docker-stack.rabbitmq.yml: the tailer pipeline (reader -> RabbitMQ ->
+# workers) uses RabbitMQ as the in-memory message broker between the single
+# VIP-holding reader and the worker pool that inserts into Postgres. The
+# tailer is gated on the keepalived VIP marker file (see keepalived/
+# notify_vip.sh) so only the API on the VIP-holding node tails the log file,
+# guaranteeing co-location with rsyslog and eliminating NFS read-cache delay.
+# Without REDIS_SENTINEL_ADDRS set, all of that transparently falls back to
+# the original single-process behavior instead - safe, but only correct at
+# replicas: 1.
 #
 # `frontend` is not published on the host anymore - `haproxy-app` (below) is
 # what actually binds :80/:443 on every edge=true node and load-balances
@@ -45,6 +49,7 @@
 # Prerequisites (see README "High Availability Deployment"):
 #   - docker-stack.postgres.yml already deployed (provides haproxy:5000)
 #   - docker-stack.redis.yml already deployed (provides sentinel1/2/3:26379)
+#   - docker-stack.rabbitmq.yml already deployed (provides haproxy-rabbitmq:5672)
 #   - Nodes labeled app=true (api/frontend) and edge=true (rsyslog,
 #     haproxy-app, keepalived). These are independent boolean labels (not a
 #     single "role" value), so a small cluster can freely put both on the
@@ -236,6 +241,10 @@ services:
       RELAY_CENTRAL_HOST: ${RELAY_CENTRAL_HOST:-}
       # Backs Admin > Health - see the docker-proxy service above.
       DOCKER_PROXY_URL: http://docker-proxy:2375
+      RABBITMQ_HOST: haproxy-rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: logmara
+      RABBITMQ_PASS_FILE: /run/secrets/rabbitmq_password
       REDIS_SENTINEL_ADDRS: sentinel1:26379,sentinel2:26379,sentinel3:26379
       REDIS_MASTER_NAME: mymaster
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
@@ -254,6 +263,7 @@ services:
       - encryption_key
       - pg_app_password
       - redis_password
+      - rabbitmq_password
     volumes:
       - log_data:/data
       - parser_defs:/parsers
@@ -411,6 +421,8 @@ secrets:
   pg_app_password:
     external: true
   redis_password:
+    external: true
+  rabbitmq_password:
     external: true
 
 configs:

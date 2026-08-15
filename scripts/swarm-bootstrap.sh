@@ -32,12 +32,16 @@ Commands (run on the indicated node):
       so the same node can get both:
         docker node update --label-add app=true <node-name>
 
-  label-edge <node-name>
-      Run on a manager, once per node that will run rsyslog + keepalived
-      (can be the same physical nodes as label-app on small clusters):
-        docker node update --label-add edge=true <node-name>
+   label-edge <node-name>
+       Run on a manager, once per node that will run rsyslog + keepalived
+       (can be the same physical nodes as label-app on small clusters):
+         docker node update --label-add edge=true <node-name>
 
-  network
+   label-rabbitmq <node-name> <rabbitmq_id 1|2|3>
+       Run on a manager, once per RabbitMQ node, after it has joined:
+         docker node update --label-add rabbitmq_id=<id> <node-name>
+
+   network
       Run on a manager, once: creates the attachable overlay network shared
       by all three stacks.
 
@@ -47,9 +51,14 @@ Commands (run on the indicated node):
       `openssl rand -base64 32`, do not reuse these examples.
 
   redis-secret <redis-password>
-      Run on a manager, once: creates the redis_password secret consumed by
-      docker-stack.redis.yml. Its value must match REDIS_PASSWORD passed to
-      docker-stack.app.yml.
+       Run on a manager, once: creates the redis_password secret consumed by
+       docker-stack.redis.yml. Its value must match REDIS_PASSWORD passed to
+       docker-stack.app.yml.
+
+  rabbitmq-secret <rabbitmq-password>
+       Run on a manager, once: creates the rabbitmq_password and
+       rabbitmq_erlang_cookie secrets consumed by docker-stack.rabbitmq.yml.
+       Its password value must match RABBITMQ_PASS passed to docker-stack.app.yml.
 
   app-secrets <jwt-secret> <encryption-key>
       Run on a manager, once: creates the jwt_secret and encryption_key
@@ -70,8 +79,13 @@ Commands (run on the indicated node):
         docker config create haproxy_app_cfg haproxy/haproxy-app.cfg
 
   redis-sentinel-config
-      Same idea as haproxy-config, for redis/sentinel.conf.tpl:
-        docker config create redis_sentinel_cfg redis/sentinel.conf.tpl
+       Same idea as haproxy-config, for redis/sentinel.conf.tpl:
+         docker config create redis_sentinel_cfg redis/sentinel.conf.tpl
+
+  haproxy-rabbitmq-config
+       Same idea as haproxy-config, for haproxy/haproxy-rabbitmq.cfg (fronts
+       rabbitmq1/2/3 - docker-stack.rabbitmq.yml's haproxy-rabbitmq service):
+         docker config create haproxy_rabbitmq_cfg haproxy/haproxy-rabbitmq.cfg
 
 EOF
 }
@@ -111,6 +125,12 @@ case "$cmd" in
     docker node update --label-add edge=true "$node"
     ;;
 
+  label-rabbitmq)
+    node="${2:?usage: label-rabbitmq <node-name> <rabbitmq_id>}"
+    rmqid="${3:?usage: label-rabbitmq <node-name> <rabbitmq_id>}"
+    docker node update --label-add "rabbitmq_id=${rmqid}" "$node"
+    ;;
+
   network)
     docker network create -d overlay --attachable syslog_net
     ;;
@@ -131,6 +151,14 @@ case "$cmd" in
     printf '%s' "$pass" | docker secret create redis_password -
     echo "Created redis_password."
     echo "Remember: its value must match REDIS_PASSWORD used when deploying docker-stack.app.yml."
+    ;;
+
+  rabbitmq-secret)
+    pass="${2:?usage: rabbitmq-secret <rabbitmq-password>}"
+    printf '%s' "$pass" | docker secret create rabbitmq_password -
+    printf '%s' "$(openssl rand -base64 32)" | docker secret create rabbitmq_erlang_cookie -
+    echo "Created rabbitmq_password, rabbitmq_erlang_cookie."
+    echo "Remember: rabbitmq_password's value must match RABBITMQ_PASS used when deploying docker-stack.app.yml."
     ;;
 
   app-secrets)
@@ -174,6 +202,18 @@ case "$cmd" in
         echo "  docker stack deploy -c docker-stack.redis.yml logmara-redis"
     else
         docker config create redis_sentinel_cfg redis/sentinel.conf.tpl
+    fi
+    ;;
+
+  haproxy-rabbitmq-config)
+    if docker config inspect haproxy_rabbitmq_cfg >/dev/null 2>&1; then
+        ts=$(date +%s)
+        docker config create "haproxy_rabbitmq_cfg_${ts}" haproxy/haproxy-rabbitmq.cfg
+        echo "Config changed: created haproxy_rabbitmq_cfg_${ts}."
+        echo "Update docker-stack.rabbitmq.yml's haproxy config source to haproxy_rabbitmq_cfg_${ts}, then:"
+        echo "  docker stack deploy -c docker-stack.rabbitmq.yml logmara-rabbitmq"
+    else
+        docker config create haproxy_rabbitmq_cfg haproxy/haproxy-rabbitmq.cfg
     fi
     ;;
 

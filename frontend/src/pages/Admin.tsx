@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
-import { Card, Table, Button, Modal, Form, Input, Select, Switch, Checkbox, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip } from 'antd'
-import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PlusOutlined, CopyOutlined, KeyOutlined } from '@ant-design/icons'
-import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey } from '../services/api'
+import { Card, Table, Button, Modal, Form, Input, Select, Switch, Checkbox, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip, Statistic, Row, Col } from 'antd'
+import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PlusOutlined, CopyOutlined, KeyOutlined, CloudOutlined, ContainerOutlined, CheckCircleOutlined, WarningOutlined, DashOutlined, NodeIndexOutlined, ClusterOutlined, GlobalOutlined } from '@ant-design/icons'
+import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, TailerMetrics } from '../services/api'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
 import { useAuth } from '../services/auth'
 import AdminUsers from '../components/AdminUsers'
-import { containerStateColor } from '../utils/adminUtils'
+import { containerStateColor, containerStateIcon, serviceStateColor, serviceStateIcon, serviceStateLabel } from '../utils/adminUtils'
 import { SEVERITY_ORDER, SEVERITY_COLORS, getSeverityLabels } from '../constants'
 import { useTranslation } from 'react-i18next'
 import i18nInstance, { languageDisplayName, sortLanguagesEnglishFirst } from '../i18n'
@@ -82,6 +82,9 @@ export default function Admin() {
   const [apiKeys, setApiKeys] = useState<APIKey[]>([])
   const [apiKeysLoading, setApiKeysLoading] = useState(false)
   const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false)
+  const [tailerMetrics, setTailerMetrics] = useState<TailerMetrics | null>(null)
+  const [tailerPipelineActive, setTailerPipelineActive] = useState(false)
+  const [tailerLoading, setTailerLoading] = useState(false)
   const [apiKeyEditing, setApiKeyEditing] = useState<APIKey | null>(null)
   const [apiKeyForm] = Form.useForm()
   const [newKeyDisplay, setNewKeyDisplay] = useState<string | null>(null)
@@ -261,6 +264,19 @@ await testLDAPConnection({
     }
   }
 
+  const loadTailerMetrics = async () => {
+    setTailerLoading(true)
+    try {
+      const data = await getTailerMetrics()
+      setTailerPipelineActive(data.pipeline_active)
+      setTailerMetrics(data.metrics)
+    } catch {
+      message.error(t('admin.tailerMetricsLoadFailed'))
+    } finally {
+      setTailerLoading(false)
+    }
+  }
+
   const handleCreateAPIKey = async () => {
     const values = apiKeyForm.getFieldsValue()
     try {
@@ -390,6 +406,9 @@ await testLDAPConnection({
         break
       case 'api_keys':
         await Promise.all([loadAPIKeys(), devices.length === 0 ? loadDevices() : Promise.resolve()])
+        break
+      case 'tailer':
+        await loadTailerMetrics()
         break
     }
     tabCacheRef.current.set(tab, { loadedAt: Date.now() })
@@ -1055,50 +1074,161 @@ const handleCleanup = async () => {
                       subTitle={t('admin.dockerNotConfiguredSub')}
                     />
                   ) : health?.services ? (
-                    <Table
-                      rowKey="name"
-                      loading={healthLoading}
-                      dataSource={health.services}
-                      pagination={false}
-                      tableLayout="fixed"
-                      scroll={{ x: 'max-content' }}
-                      columns={[
-                        { title: t('admin.service'), dataIndex: 'name', key: 'name' },
-                        { title: t('admin.mode'), dataIndex: 'mode', key: 'mode', width: 110 },
-                        { title: t('admin.image'), dataIndex: 'image', key: 'image', ellipsis: true },
-                        {
-                          title: t('admin.replicas'),
-                          key: 'replicas',
-                          width: 140,
-                          render: (_: unknown, s) => (
-                            <Tag color={s.replicas_running >= s.replicas_desired && s.replicas_desired > 0 ? 'green' : 'orange'}>
-                              {s.replicas_running} / {s.replicas_desired}
-                            </Tag>
-                          ),
-                        },
-                      ]}
-                      expandable={{
-                        rowExpandable: (s) => s.tasks.length > 0,
-                        expandedRowRender: (s) => (
-                          <Table
-                            rowKey={(t, i) => `${s.name}-${i}`}
-                            dataSource={s.tasks}
-                            pagination={false}
-                            size="small"
-                            columns={[
-                              { title: t('admin.node'), dataIndex: 'node', key: 'node' },
-                              {
-                                title: t('admin.state'),
-                                dataIndex: 'state',
-                                key: 'state',
-                                render: (state: string) => <Tag color={containerStateColor(state)}>{state}</Tag>,
-                              },
-                              { title: t('admin.message'), dataIndex: 'status', key: 'status', ellipsis: true },
-                            ]}
+                    <>
+                      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+                        <Col span={6}>
+                          <Statistic
+                            title={t('admin.swarmClusterOverview')}
+                            value={health.services.length}
+                            suffix={t('admin.totalServices')}
+                            valueStyle={{ color: '#1890ff' }}
                           />
-                        ),
-                      }}
-                    />
+                        </Col>
+                        <Col span={6}>
+                          <Statistic
+                            title={t('admin.servicesRunning')}
+                            value={health.services.filter((s) => s.overall_state === 'running').length}
+                            prefix={<CheckCircleOutlined />}
+                            valueStyle={{ color: '#52c41a' }}
+                          />
+                        </Col>
+                        <Col span={6}>
+                          <Statistic
+                            title={t('admin.servicesPartial')}
+                            value={health.services.filter((s) => s.overall_state === 'partial').length}
+                            prefix={<WarningOutlined />}
+                            valueStyle={{ color: '#faad14' }}
+                          />
+                        </Col>
+                        <Col span={6}>
+                          <Statistic
+                            title={t('admin.servicesDegraded')}
+                            value={health.services.filter((s) => s.overall_state === 'degraded' || s.overall_state === 'none').length}
+                            prefix={<DashOutlined />}
+                            valueStyle={{ color: '#ff4d4f' }}
+                          />
+                        </Col>
+                      </Row>
+                      <Table
+                        rowKey="name"
+                        loading={healthLoading}
+                        dataSource={health.services}
+                        pagination={false}
+                        tableLayout="fixed"
+                        scroll={{ x: 'max-content' }}
+                        columns={[
+                          {
+                            title: t('admin.service'),
+                            key: 'name',
+                            render: (_: unknown, s) => (
+                              <Space>
+                                <CloudOutlined style={{ color: '#1890ff' }} />
+                                <span>{s.name}</span>
+                              </Space>
+                            ),
+                          },
+                          {
+                            title: t('admin.mode'),
+                            dataIndex: 'mode',
+                            key: 'mode',
+                            width: 110,
+                            render: (mode: string) => (
+                              <Space>
+                                {mode === 'global' ? <GlobalOutlined /> : <ClusterOutlined />}
+                                <span>{mode}</span>
+                              </Space>
+                            ),
+                          },
+                          {
+                            title: t('admin.image'),
+                            dataIndex: 'image',
+                            key: 'image',
+                            ellipsis: true,
+                            render: (image: string) => (
+                              <Space>
+                                <ContainerOutlined style={{ color: '#faad14' }} />
+                                <span>{image}</span>
+                              </Space>
+                            ),
+                          },
+                          {
+                            title: t('admin.serviceState'),
+                            key: 'overall_state',
+                            width: 130,
+                            render: (_: unknown, s) => (
+                              <Tag color={serviceStateColor(s.overall_state)}>
+                                {serviceStateIcon(s.overall_state)} {serviceStateLabel(s.overall_state)}
+                              </Tag>
+                            ),
+                          },
+                          {
+                            title: t('admin.replicas'),
+                            key: 'replicas',
+                            width: 140,
+                            render: (_: unknown, s) => (
+                              <Tag color={s.replicas_running >= s.replicas_desired && s.replicas_desired > 0 ? 'green' : 'orange'}>
+                                {s.replicas_running} / {s.replicas_desired}
+                              </Tag>
+                            ),
+                          },
+                          {
+                            title: t('admin.nodes'),
+                            key: 'node_names',
+                            width: 200,
+                            render: (_: unknown, s) => (
+                              <Space wrap>
+                                {s.node_names.map((n, i) => (
+                                  <Tag key={i} color="blue">
+                                    <NodeIndexOutlined /> {n}
+                                  </Tag>
+                                ))}
+                              </Space>
+                            ),
+                          },
+                        ]}
+                        expandable={{
+                          rowExpandable: (s) => s.tasks.length > 0,
+                          expandedRowRender: (s) => (
+                            <div style={{ width: '100%', overflow: 'hidden' }}>
+                              <Table
+                                rowKey={(t, i) => `${s.name}-${i}`}
+                                dataSource={s.tasks}
+                                pagination={false}
+                                size="small"
+                                tableLayout="fixed"
+                                scroll={{ x: 600 }}
+                                columns={[
+                                  {
+                                    title: t('admin.node'),
+                                    dataIndex: 'node',
+                                    key: 'node',
+                                    width: 200,
+                                    render: (node: string) => (
+                                      <Space>
+                                        <NodeIndexOutlined style={{ color: '#1890ff' }} />
+                                        <span>{node}</span>
+                                      </Space>
+                                    ),
+                                  },
+                                  {
+                                    title: t('admin.state'),
+                                    dataIndex: 'state',
+                                    key: 'state',
+                                    width: 120,
+                                    render: (state: string) => (
+                                      <Tag color={containerStateColor(state)}>
+                                        {containerStateIcon(state)} {state}
+                                      </Tag>
+                                    ),
+                                  },
+                                  { title: t('admin.message'), dataIndex: 'status', key: 'status', ellipsis: true },
+                                ]}
+                              />
+                            </div>
+                          ),
+                        }}
+                      />
+                    </>
                   ) : (
                     <Table
                       rowKey="name"
@@ -1108,14 +1238,38 @@ const handleCleanup = async () => {
                       tableLayout="fixed"
                       scroll={{ x: 'max-content' }}
                       columns={[
-                        { title: t('admin.container'), dataIndex: 'name', key: 'name' },
-                        { title: t('admin.image'), dataIndex: 'image', key: 'image', ellipsis: true },
+                        {
+                          title: t('admin.container'),
+                          key: 'name',
+                          render: (_: unknown, c) => (
+                            <Space>
+                              <ContainerOutlined style={{ color: '#faad14' }} />
+                              <span>{c.name}</span>
+                            </Space>
+                          ),
+                        },
+                        {
+                          title: t('admin.image'),
+                          dataIndex: 'image',
+                          key: 'image',
+                          ellipsis: true,
+                          render: (image: string) => (
+                            <Space>
+                              <ContainerOutlined style={{ color: '#faad14' }} />
+                              <span>{image}</span>
+                            </Space>
+                          ),
+                        },
                         {
                           title: t('admin.state'),
                           dataIndex: 'state',
                           key: 'state',
                           width: 120,
-                          render: (state: string) => <Tag color={containerStateColor(state)}>{state}</Tag>,
+                          render: (state: string) => (
+                            <Tag color={containerStateColor(state)}>
+                              {containerStateIcon(state)} {state}
+                            </Tag>
+                          ),
                         },
                         {
                           title: t('admin.healthStatus'),
@@ -1401,6 +1555,96 @@ const handleCleanup = async () => {
                     },
                   ]}
                 />
+              </Card>
+            ),
+          },
+          {
+            key: 'tailer',
+            label: t('admin.tailerPipeline'),
+            children: (
+              <Card
+                title={t('admin.tailerPipeline')}
+                extra={
+                  <Button icon={<ReloadOutlined />} onClick={loadTailerMetrics} loading={tailerLoading}>
+                    {t('common.refresh')}
+                  </Button>
+                }
+              >
+                {!tailerPipelineActive ? (
+                  <Result
+                    status="info"
+                    title={t('admin.pipelineInactive')}
+                    subTitle={t('admin.pipelineInactiveDesc')}
+                  />
+                ) : tailerMetrics ? (
+                  <div>
+                    <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+                      <Col xs={24} sm={6}>
+                        <Card>
+                          <Statistic title={t('admin.numWorkers')} value={tailerMetrics.NumWorkers} />
+                        </Card>
+                      </Col>
+                      <Col xs={24} sm={6}>
+                        <Card>
+                          <Statistic title={t('admin.queueDepth')} value={tailerMetrics.QueueDepth} />
+                        </Card>
+                      </Col>
+                      <Col xs={24} sm={6}>
+                        <Card>
+                          <Statistic title={t('admin.logsPerSecond')} value={tailerMetrics.LogsPerSec} precision={1} />
+                        </Card>
+                      </Col>
+                      <Col xs={24} sm={6}>
+                        <Card>
+                          <Statistic title={t('admin.flushedPosition')} value={tailerMetrics.FlushedPos} />
+                        </Card>
+                      </Col>
+                    </Row>
+                    <Table
+                      rowKey="ID"
+                      dataSource={tailerMetrics.WorkerMetrics}
+                      pagination={false}
+                      size="small"
+                      title={() => t('admin.workerStats')}
+                      columns={[
+                        {
+                          title: t('admin.workerId'),
+                          dataIndex: 'ID',
+                          key: 'ID',
+                          width: 80,
+                        },
+                        {
+                          title: t('admin.msgsProcessed'),
+                          dataIndex: 'MsgsProcessed',
+                          key: 'MsgsProcessed',
+                          width: 120,
+                          render: (v: number) => v.toLocaleString(),
+                        },
+                        {
+                          title: t('admin.parseErrors'),
+                          dataIndex: 'ParseErrors',
+                          key: 'ParseErrors',
+                          width: 120,
+                          render: (v: number) => v ? <Tag color="red">{v.toLocaleString()}</Tag> : <Tag color="green">0</Tag>,
+                        },
+                        {
+                          title: t('admin.dbInserts'),
+                          dataIndex: 'DbInserts',
+                          key: 'DbInserts',
+                          width: 120,
+                          render: (v: number) => v.toLocaleString(),
+                        },
+                        {
+                          title: t('admin.lastFlush'),
+                          dataIndex: 'LastFlushAt',
+                          key: 'LastFlushAt',
+                          width: 200,
+                          render: (v: string) => v ? new Date(v).toLocaleTimeString() : '-',
+                        },
+                      ]}
+                    />
+                  </div>
+                ) : null}
               </Card>
             ),
           },

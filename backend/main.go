@@ -388,7 +388,6 @@ func main() {
 		// auth/routes/tailer below only need the schema, not fresh views.
 		db.RefreshMaterializedViews(database)
 		db.ApplyEnvSettingOverrides(database)
-		db.SetAppStarting(false)
 		slog.Info("database migration and initialization complete")
 	}()
 
@@ -718,6 +717,7 @@ r := gin.New()
 			adminGroup.POST("/ingestion/pause", handler.PauseIngestion(ic))
 			adminGroup.POST("/ingestion/resume", handler.ResumeIngestion(ic))
 			adminGroup.GET("/ingestion/status", handler.GetIngestionStatus(ic))
+			adminGroup.GET("/tailer-metrics", handler.GetTailerMetrics())
 			adminGroup.POST("/ldap/test", handler.TestLDAP(database))
 			adminGroup.POST("/audit-log", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetAuditLog(database))
 			adminGroup.POST("/audit-logs", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetAuditLogsHandler(database))
@@ -725,8 +725,9 @@ r := gin.New()
 			adminGroup.DELETE("/slow-queries", handler.ClearSlowQueriesHandler())
 			adminGroup.GET("/health/containers", handler.GetContainersHealth(database))
 			adminGroup.PUT("/devices/:ip/alias", handler.UpdateDeviceAlias(database))
-			adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(database))
-			adminGroup.POST("/nginx-reload", handler.ReloadNginx(database))
+		adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(database))
+		adminGroup.POST("/nginx-reload", handler.ReloadNginx(database))
+		adminGroup.GET("/rabbitmq-url", handler.GetRabbitMQURL())
 
 			adminGroup.GET("/relay/whitelist", handler.ListRelayWhitelist(database))
 			adminGroup.POST("/relay/whitelist", handler.CreateRelayWhitelistEntry(database))
@@ -810,6 +811,7 @@ r := gin.New()
 	}
 
 	go func() {
+		db.SetAppStarting(false)
 		slog.Info("server starting", "port", port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server failed", "error", err)

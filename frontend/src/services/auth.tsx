@@ -67,6 +67,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const extendingRef = useRef(false)
   const rememberedRef = useRef(false)
   const earlyWarningShownRef = useRef(false)
+  // Tracks real user interaction (click, keydown, scroll) without throttling.
+  // Used to decide whether to auto-extend the session or show the expiry modal.
+  const userActiveRef = useRef(0)
+  const ACTIVITY_IDLE_THRESHOLD_MS = 3 * 60 * 1000 // 3 min
   // Bridges checkSessionExpiry -> extendSession without a circular useCallback
   // dependency (extendSession -> setupSessionWarning -> checkSessionExpiry).
   const extendSessionRef = useRef<((retryCount?: number) => Promise<void>)>(async () => {})
@@ -74,6 +78,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // on every checkSessionExpiry change, preventing loadUser/login from
   // re-firing on minor internal updates.
   const setupSessionWarningRef = useRef<((expiresAtUnix: number, noImmediateCheck?: boolean) => void)>(() => {})
+  // Stable ref for resetSessionCheckBackoff so reportUserActivity can call
+  // it without depending on it (which would cause re-renders on every event).
+  const resetSessionCheckBackoffRef = useRef<(() => void)>(() => {})
 
   const clearAllTimers = useCallback(() => {
     if (checkIntervalRef.current) {
@@ -89,6 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setLoading(false)
     clearAllTimers()
     rememberedRef.current = false
+    userActiveRef.current = 0
     setIsSessionExpiringSoon(false)
     setShowSessionWarning(false)
     setSessionWarningCountdown(0)
@@ -134,11 +142,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return
     }
 
-    if (!rememberedRef.current && msLeft <= EARLY_WARNING_LEAD_MS && !earlyWarningShownRef.current) {
-      earlyWarningShownRef.current = true
-      message.info(t('sessionWarning.earlyWarning'), 5)
-    }
-
     const extendThreshold = rememberedRef.current ? SILENT_EXTEND_LEAD_MS : WARNING_LEAD_MS
 
     if (msLeft <= extendThreshold) {
@@ -146,10 +149,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         extendSessionRef.current()
         return
       }
+      // If the user has been interacting with the page recently, auto-extend
+      // silently instead of showing the expiry modal. The modal is only for
+      // truly idle sessions that have gone without user interaction.
+      const wasActive = Date.now() - userActiveRef.current < ACTIVITY_IDLE_THRESHOLD_MS
+      if (wasActive) {
+        extendSessionRef.current()
+        return
+      }
       setIsSessionExpiringSoon(true)
       setShowSessionWarning(true)
       setSessionWarningCountdown(Math.max(1, Math.ceil(msLeft / 1000)))
       return
+    }
+
+    if (!rememberedRef.current && msLeft <= EARLY_WARNING_LEAD_MS && !earlyWarningShownRef.current) {
+      earlyWarningShownRef.current = true
+      message.info(t('sessionWarning.earlyWarning'), 5)
     }
 
     if (checkIntervalRef.current) {
@@ -264,17 +280,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (e) {
       console.error('Error extending session:', e)
       if (rememberedRef.current && retryCount < EXTEND_RETRY_MAX) {
-        // Keep extendingRef=true so checkSessionExpiry won't fire a
-        // second concurrent extend while the retry delay is pending.
         const delay = EXTEND_RETRY_BASE_MS * Math.pow(2, retryCount)
         setTimeout(() => extendSession(retryCount + 1), delay)
         return
       }
+      extendingRef.current = false
       logout()
-    } finally {
-      if (!rememberedRef.current || retryCount >= EXTEND_RETRY_MAX) {
-        extendingRef.current = false
-      }
     }
   }, [logout])
 
@@ -313,6 +324,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
+    resetSessionCheckBackoffRef.current = resetSessionCheckBackoff
+  }, [resetSessionCheckBackoff])
+
+  useEffect(() => {
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         checkSessionExpiry()
@@ -343,16 +358,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user, scheduleSessionCheck])
 
   // Track user activity (click, keydown, scroll) and report to backend
-  // so the inactivity timer is reset. Throttled to 1 call per minute.
+  // so the inactivity timer is reset. Throttled to 1 call per 10 seconds.
   const lastActivityRef = useRef(0)
-  const ACTIVITY_THROTTLE_MS = 60000
+  const ACTIVITY_THROTTLE_MS = 10000
 
   const reportUserActivity = useCallback(() => {
     if (!user) return
     const now = Date.now()
+    // Always update the activity tracker regardless of throttle
+    userActiveRef.current = now
+    // Throttled backend report and backoff reset
     if (now - lastActivityRef.current < ACTIVITY_THROTTLE_MS) return
     lastActivityRef.current = now
     localStorage.setItem(STORAGE_KEY_LAST_ACTIVE, now.toString())
+    resetSessionCheckBackoffRef.current()
     reportActivity().catch(() => { /* non-critical */ })
   }, [user])
 

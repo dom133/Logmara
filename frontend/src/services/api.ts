@@ -714,6 +714,8 @@ export interface ServiceHealth {
 	image: string
 	replicas_desired: number
 	replicas_running: number
+	overall_state: string
+	node_names: string[]
 	tasks: ContainerHealth[]
 }
 
@@ -1192,5 +1194,35 @@ export async function deleteAPIKey(id: number): Promise<void> {
 
 export async function resetAPIKey(id: number): Promise<{ key: string; keyPrefix: string }> {
   const res = await api.post(`/admin/api-keys/${id}/reset`)
+  return res.data
+}
+
+// Tailer Pipeline Metrics
+
+export interface WorkerMetrics {
+  ID: number
+  MsgsProcessed: number
+  ParseErrors: number
+  DbInserts: number
+  LastFlushAt: string
+}
+
+export interface TailerMetrics {
+  NumWorkers: number
+  QueueDepth: number
+  FlushedPos: number
+  FlushedSeq: number
+  LogsPerSec: number
+  WorkerMetrics: WorkerMetrics[]
+  UpdatedAt: string
+}
+
+export interface TailerMetricsResponse {
+  pipeline_active: boolean
+  metrics: TailerMetrics | null
+}
+
+export async function getTailerMetrics(): Promise<TailerMetricsResponse> {
+  const res = await api.get('/admin/tailer-metrics')
   return res.data
 }

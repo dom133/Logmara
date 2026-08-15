@@ -78,3 +78,35 @@ func ResolveDatabaseURL() string {
 	}
 	return u.String()
 }
+
+// ResolveRabbitMQURL returns the RabbitMQ AMQP URL to use, in priority order:
+//
+//  1. RABBITMQ_URL / RABBITMQ_URL_FILE - the full AMQP URL as-is.
+//  2. Built from RABBITMQ_HOST (required), RABBITMQ_PORT (default 5672),
+//     RABBITMQ_USER (default logmara), and RABBITMQ_PASS / RABBITMQ_PASS_FILE
+//     for the password. Lets a Swarm deployment mount the rabbitmq_password
+//     secret into the api service.
+//
+// Returns "" when neither is configured (pre-RabbitMQ case, tailer falls
+// back to local ingestion).
+func ResolveRabbitMQURL() string {
+	if dsn := SecretFromEnv("RABBITMQ_URL"); dsn != "" {
+		return dsn
+	}
+
+	host := strings.TrimSpace(os.Getenv("RABBITMQ_HOST"))
+	if host == "" {
+		return ""
+	}
+	port := strings.TrimSpace(os.Getenv("RABBITMQ_PORT"))
+	if port == "" {
+		port = "5672"
+	}
+	user := strings.TrimSpace(os.Getenv("RABBITMQ_USER"))
+	if user == "" {
+		user = "logmara"
+	}
+	password := SecretFromEnv("RABBITMQ_PASS")
+
+	return fmt.Sprintf("amqp://%s:%s@%s:%s", url.PathEscape(user), url.PathEscape(password), host, port)
+}

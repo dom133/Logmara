@@ -560,9 +560,24 @@ func Logout(database *sql.DB) gin.HandlerFunc {
 // still good; a 401 here means it's been signed out from elsewhere (Admin,
 // another device's "Sign out" in My Sessions, or this same session's
 // Logout), and the frontend's axios response interceptor already redirects
-// to /login on any 401 - so there's nothing else for this handler to do.
+// to /login on any 401.
+//
+// Unlike the async UpdateSessionActivity middleware, this handler updates
+// last_used_at synchronously to guarantee the heartbeat is persisted before
+// the response is sent. The async middleware can silently fail if the DB
+// connection pool is exhausted or the goroutine is preempted - this path
+// ensures at least one reliable update per polling cycle.
 func CheckSession(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		jti, ok := c.Get("jti")
+		if ok {
+			if jtiStr, ok := jti.(string); ok && jtiStr != "" {
+				database.Exec(
+					"UPDATE refresh_tokens SET last_used_at = NOW() WHERE jti = $1 AND used = false",
+					jtiStr,
+				)
+			}
+		}
 		c.JSON(http.StatusOK, gin.H{"active": true})
 	}
 }
