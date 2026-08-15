@@ -1,5 +1,15 @@
 # Vault agent sidecar for Docker Swarm - delivers secrets from the Vault
-# cluster (docker-stack.vault.yml) to every node as local files.
+# cluster (docker-stack.vault.yml) to every vault_agent-labeled node as
+# local files.
+#
+# Only Postgres (docker-stack.postgres.yml), Redis (docker-stack.redis.yml),
+# and RabbitMQ (docker-stack.rabbitmq.yml) still consume these files -
+# they're stock/entrypoint-scripted images that only know how to read a
+# file, unlike `api` (backend/vaultclient), which reads Vault's API
+# directly and has no file fallback. So this only needs to run on whichever
+# physical nodes host postgres1-3/redis1-3/sentinel1-3/rabbitmq1-3 - NOT on
+# app=true-only nodes, and not even on the vault_id-labeled nodes
+# themselves unless they also double as one of those.
 #
 # Kept as its OWN stack, separate from docker-stack.vault.yml: its
 # `vault_agent_token` secret only exists after that stack has been
@@ -15,14 +25,23 @@
 #   - `./scripts/vault-bootstrap.sh init/unseal/policy/migrate-secrets`
 #     already run (migrate-secrets is what creates the vault_agent_token
 #     Docker secret this stack requires)
+#   - Label every node that hosts postgres1-3/redis1-3/sentinel1-3/
+#     rabbitmq1-3 (only those - see above):
+#       docker node update --label-add vault_agent=true <node>
+#   - On each of THOSE nodes - Swarm services, unlike plain `docker run
+#     -v`, do NOT auto-create a bind mount's source directory if it's
+#     missing, they just fail the task with "bind source path does not
+#     exist":
+#       sudo mkdir -p /srv/syslog-ha/vault-secrets
 #
 # Deploy with: docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent
 
 version: "3.8"
 
 services:
-  # Runs on every node, reads secrets from Vault, writes to local files.
-  # App services bind-mount this directory read-only.
+  # Runs on every vault_agent-labeled node, reads secrets from Vault,
+  # writes to local files. Postgres/Redis/RabbitMQ bind-mount this
+  # directory read-only.
   vault-agent:
     image: hashicorp/vault:1.15.0
     # Bypasses the image's docker-entrypoint.sh, which special-cases some
@@ -44,11 +63,19 @@ services:
       - type: bind
         source: /srv/syslog-ha/vault-secrets
         target: /vault-agent/secrets
-      - /vault-agent/token:/vault-agent/token
+    # No bind mount for /vault-agent/token (the agent's own renewed-token
+    # cache, per the sink "file" block in vault-agent.hcl): it's just a
+    # convenience cache, not required for correctness - on restart the
+    # agent re-authenticates from vault_agent_token (the Docker secret)
+    # again either way - and like any other Swarm bind mount source, a
+    # host path there would have to pre-exist on every node too. Letting
+    # it live in the container's own writable layer avoids that entirely.
     networks:
       - syslog_net
     deploy:
       mode: global
+      placement:
+        constraints: [node.labels.vault_agent == true]
       restart_policy:
         condition: on-failure
         delay: 5s

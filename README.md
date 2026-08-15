@@ -277,7 +277,7 @@ Getting here required backend code changes (not just Docker config) — see "How
 | [`scripts/swarm-deploy.sh`](scripts/swarm-deploy.sh) | Wrapper that sources `.env` then runs `docker stack deploy` (Swarm doesn't read `.env` on its own) |
 | [`scripts/build-images.sh`](scripts/build-images.sh) | Builds + pushes all Docker images, reading `REGISTRY`/`TAG` from `.env` |
 | [`docker-stack.vault.yml`](docker-stack.vault.yml) | 3-node Vault server cluster (Raft storage) |
-| [`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml) | Global Vault agent sidecars for secret injection - a separate stack from the servers, see [Deploying Vault](#deploying-vault) for why |
+| [`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml) | Vault agent sidecars for secret injection into Postgres/Redis/RabbitMQ (`vault_agent`-labeled nodes only - `api` reads Vault's API directly instead) - a separate stack from the servers, see [Deploying Vault](#deploying-vault) for why |
 | [`vault/`](vault/) | Vault server and agent configuration files |
 | [`scripts/vault-bootstrap.sh`](scripts/vault-bootstrap.sh) | Vault init, unseal, policy creation, Docker→Vault secret migration, and creation of the `vault_agent_token` Docker secret the agent sidecars auto-authenticate with |
 | [`scripts/rotate-secrets.sh`](scripts/rotate-secrets.sh) | Secret rotation (auto-detects Docker secrets or Vault KV) - `rotate` for a single secret with a zero-downtime rolling restart, `rotate-batch` to rotate several secrets at once with logmara-app scaled to 0 for the duration |
@@ -298,6 +298,12 @@ docker stack deploy -c docker-stack.vault.yml logmara-vault
 ./scripts/vault-bootstrap.sh migrate-secrets   # migrates existing Docker secrets into Vault, creates vault_agent_token
 docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent   # only now does vault_agent_token exist
 ```
+
+#### How `api` reads secrets from Vault
+
+`api` (`backend/vaultclient`) reads `secret/data/logmara/<name>` straight from Vault's HTTP API — no `*_FILE`/`vault-agent` involved for `api` at all, unlike Postgres/Redis/RabbitMQ. It authenticates with the same `vault_agent_token` bootstrap token `vault-agent` uses (mounted via `VAULT_TOKEN_FILE`), and caches each secret in-process for 30s, so a `scripts/rotate-secrets.sh` rotation takes effect within that window with no `api` restart needed.
+
+There is deliberately **no fallback**: if Vault is unreachable, `api` won't start, rather than silently running on a stale value. Nothing to configure beyond what's already in `docker-stack.app.yml` (`VAULT_ADDR`, `VAULT_TOKEN_FILE`) — this applies automatically once Vault is deployed and bootstrapped per above. `vault-agent` itself doesn't need to run anywhere near `api` — see the node-labeling note in step 8 below.
 
 ### Vault UI
 
@@ -558,11 +564,11 @@ ENCRYPTION_KEY_VAL=$(openssl rand -base64 48)   # separate value; see "Security 
 ./scripts/swarm-bootstrap.sh redis-sentinel-config
 ./scripts/swarm-bootstrap.sh haproxy-rabbitmq-config
 ```
-All the passwords/keys now live only as Swarm secrets - none of them need to be exported as shell env vars again later, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later. `pg_superuser_password`, `pg_replication_password`, and `rabbitmq_erlang_cookie` stay mounted directly into their containers at `/run/secrets/*` as native Swarm secrets. The other five (`pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key`) are only the *source* values here — step 8 below migrates them into Vault, which is what postgres/redis/rabbitmq/api actually read from at `/run/secrets/*` (bind-mounted from Vault agent's local output, not the Swarm secret directly — see [`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml)).
+All the passwords/keys now live only as Swarm secrets - none of them need to be exported as shell env vars again later, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later. `pg_superuser_password`, `pg_replication_password`, and `rabbitmq_erlang_cookie` stay mounted directly into their containers at `/run/secrets/*` as native Swarm secrets. The other five (`pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key`) are only the *source* values here — step 8 below migrates them into Vault. From there, Postgres/Redis/RabbitMQ read them at `/run/secrets/*` (bind-mounted from Vault agent's local output, not the Swarm secret directly — see [`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml)); `api` reads them straight from Vault's HTTP API instead (`backend/vaultclient`), no file involved.
 
 #### 8. Deploy Vault and migrate secrets
 
-Postgres/Redis/RabbitMQ/the app tier (steps 10-11 below) all read `pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, and `encryption_key` from Vault, via a bind-mounted file `vault-agent` writes locally on every node — so Vault must be deployed and fully bootstrapped *before* those stacks, or their containers will fail to start (the bind-mount source file won't exist yet). `vault-agent` is a separate stack ([`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml)) from the Vault servers ([`docker-stack.vault.yml`](docker-stack.vault.yml)) — see [Deploying Vault](#deploying-vault) above for why. The commands, run once from `pg1`:
+Postgres/Redis/RabbitMQ (steps 10 below) read `pg_app_password`, `redis_password`, and `rabbitmq_password` from a bind-mounted file `vault-agent` writes locally on whichever nodes host them; the app tier (step 11) reads all five directly from Vault's API instead (`backend/vaultclient` - no file, no `vault-agent` dependency for `api` at all). Either way, Vault must be deployed and fully bootstrapped *before* those stacks, or their containers will fail to start. `vault-agent` is a separate stack ([`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml)) from the Vault servers ([`docker-stack.vault.yml`](docker-stack.vault.yml)) — see [Deploying Vault](#deploying-vault) above for why. The commands, run once from `pg1`:
 
 ```bash
 # 3 nodes for the Vault Raft cluster - reuse pg1-pg3/app1-app2 on a small
@@ -578,6 +584,18 @@ sudo mkdir -p /srv/syslog-ha/vault/vault<N>/data
 sudo chmod -R 777 /srv/syslog-ha/vault/vault<N>/data
 ```
 
+`vault-agent` only needs to run on nodes hosting `postgres1-3`/`redis1-3`/`sentinel1-3`/`rabbitmq1-3` - **not** on `app1`/`app2` (`api` doesn't need it at all) or even the `vault_id`-labeled nodes themselves, unless they double as one of those. In this example topology that's `pg1`/`pg2`/`pg3` (reusing `pg_id`/`cache_id`/`rabbitmq_id` per step 6):
+```bash
+docker node update --label-add vault_agent=true pg1
+docker node update --label-add vault_agent=true pg2
+docker node update --label-add vault_agent=true pg3
+```
+
+On each of those same nodes - Swarm services don't auto-create a bind mount's source directory the way plain `docker run -v` does, they just fail the task with "bind source path does not exist":
+```bash
+sudo mkdir -p /srv/syslog-ha/vault-secrets
+```
+
 Back on `pg1`:
 ```bash
 docker stack deploy -c docker-stack.vault.yml logmara-vault
@@ -589,10 +607,10 @@ watch docker service ls   # wait for vault-1/2/3 at Running before continuing
 ./scripts/vault-bootstrap.sh migrate-secrets   # copies the 5 secrets above into Vault, creates vault_agent_token
 
 docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent   # only now does vault_agent_token exist
-watch docker service ls   # wait for vault-agent (global) at Running
+watch docker service ls   # wait for vault-agent at Running on every vault_agent-labeled node
 ```
 
-Verify every node has the files before moving on: `ls /srv/syslog-ha/vault-secrets/` should show `pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key` on each of `pg1`/`pg2`/`pg3`/`app1`/`app2`.
+Verify before moving on: `ls /srv/syslog-ha/vault-secrets/` on each `vault_agent`-labeled node should show `pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key`.
 
 #### 9. Create local data directories on the Postgres nodes
 

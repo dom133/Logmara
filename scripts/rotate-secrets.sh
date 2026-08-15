@@ -107,7 +107,9 @@ read_docker_secret_value() {
         alpine cat "/run/secrets/$name" >/dev/null 2>&1 || true
     local value=""
     for _ in $(seq 1 15); do
-        value="$(docker service logs "$svc" 2>/dev/null | tr -d '\r\n')"
+        # docker service logs prefixes every line with "<service>.<slot>.<taskid>@<node> | "
+        # by default - strip it, or that prefix ends up baked into the secret value.
+        value="$(docker service logs "$svc" 2>/dev/null | sed -E 's/^[^|]*\| ?//' | tr -d '\r\n')"
         [[ -n "$value" ]] && break
         sleep 1
     done
