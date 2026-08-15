@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined } from '@ant-design/icons'
-import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, User } from '../services/api'
+import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined } from '@ant-design/icons'
+import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, User, DeviceStats } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 
 const { Option } = Select
@@ -16,6 +16,9 @@ export default function Admin() {
 
   const [settings, setSettings] = useState<Record<string, string>>({})
   const [settingsForm] = Form.useForm()
+  const [devices, setDevices] = useState<DeviceStats[]>([])
+  const [ldapEnabled, setLdapEnabled] = useState(false)
+  const [testing, setTesting] = useState(false)
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_admin',
@@ -44,14 +47,52 @@ export default function Admin() {
       const data = await getSettings()
       setSettings(data)
       settingsForm.setFieldsValue(data)
+      setLdapEnabled(data['ldap_enabled'] === 'true')
     } catch (e: any) {
       message.error('Failed to load settings')
+    }
+  }
+
+  const handleTestLDAP = async () => {
+    const values = settingsForm.getFieldsValue([
+      'ldap_server', 'ldap_port', 'ldap_use_tls',
+      'ldap_base_dn', 'ldap_bind_dn', 'ldap_bind_password',
+    ])
+    if (!values.ldap_server) {
+      message.warning('Server is required')
+      return
+    }
+    setTesting(true)
+    try {
+      await testLDAPConnection({
+        server: values.ldap_server,
+        port: values.ldap_port || 389,
+        use_tls: values.ldap_use_tls,
+        base_dn: values.ldap_base_dn,
+        bind_dn: values.ldap_bind_dn,
+        bind_password: values.ldap_bind_password,
+      })
+      message.success('LDAP connection successful')
+    } catch (e: any) {
+      message.error(e.response?.data?.error || 'LDAP connection failed')
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const loadDevices = async () => {
+    try {
+      const data = await getDeviceStats()
+      setDevices(data)
+    } catch (e: any) {
+      message.error('Failed to load devices')
     }
   }
 
   useEffect(() => {
     loadUsers()
     loadSettings()
+    loadDevices()
   }, [])
 
   const handleCreate = async () => {
@@ -110,7 +151,7 @@ export default function Admin() {
   }
 
   const handleSaveSettings = async () => {
-    const values = await settingsForm.validateFields()
+    const values = settingsForm.getFieldsValue()
     try {
       await updateSettings(values)
       message.success('Settings saved')
@@ -266,33 +307,110 @@ export default function Admin() {
               <Card title="LDAP Authentication">
                 <Form form={settingsForm} layout="vertical" onFinish={handleSaveSettings}>
                   <Form.Item label="Enable LDAP" name="ldap_enabled" valuePropName="checked">
-                    <Switch />
+                    <Switch onChange={(v) => setLdapEnabled(v)} />
                   </Form.Item>
                   <Form.Item label="Server" name="ldap_server">
-                    <Input placeholder="ldap.example.com" />
+                    <Input placeholder="ldap.example.com" disabled={!ldapEnabled} />
                   </Form.Item>
                   <Form.Item label="Port" name="ldap_port">
-                    <InputNumber min={1} max={65535} style={{ width: 200 }} />
+                    <InputNumber min={1} max={65535} style={{ width: 200 }} disabled={!ldapEnabled} />
                   </Form.Item>
                   <Form.Item label="Use TLS" name="ldap_use_tls" valuePropName="checked">
-                    <Switch />
+                    <Switch disabled={!ldapEnabled} />
                   </Form.Item>
                   <Form.Item label="Base DN" name="ldap_base_dn">
-                    <Input placeholder="dc=example,dc=com" />
+                    <Input placeholder="dc=example,dc=com" disabled={!ldapEnabled} />
                   </Form.Item>
                   <Form.Item label="Bind DN" name="ldap_bind_dn">
-                    <Input placeholder="cn=admin,dc=example,dc=com" />
+                    <Input placeholder="cn=admin,dc=example,dc=com" disabled={!ldapEnabled} />
                   </Form.Item>
                   <Form.Item label="Bind Password" name="ldap_bind_password">
-                    <Input.Password />
+                    <Input.Password disabled={!ldapEnabled} />
                   </Form.Item>
                   <Form.Item label="User Filter" name="ldap_user_filter">
-                    <Input placeholder="(uid=%s)" />
+                    <Input placeholder="(uid=%s)" disabled={!ldapEnabled} />
                   </Form.Item>
-                  <Button type="primary" htmlType="submit">
-                    Save LDAP Settings
-                  </Button>
+                  <Space>
+                    <Button type="primary" htmlType="submit" disabled={!ldapEnabled}>
+                      Save LDAP Settings
+                    </Button>
+                    <Button
+                      icon={testing ? <LoadingOutlined /> : undefined}
+                      onClick={handleTestLDAP}
+                      disabled={!ldapEnabled || testing}
+                    >
+                      Test Connection
+                    </Button>
+                  </Space>
                 </Form>
+              </Card>
+            ),
+          },
+          {
+            key: 'devices',
+            label: 'Devices',
+            children: (
+              <Card
+                title="Device Statistics"
+                extra={
+                  <Button icon={<ReloadOutlined />} onClick={loadDevices}>
+                    Refresh
+                  </Button>
+                }
+              >
+                <Table
+                  rowKey="hostname"
+                  dataSource={devices}
+                  pagination={false}
+                  columns={[
+                    {
+                      title: 'Hostname',
+                      dataIndex: 'hostname',
+                      key: 'hostname',
+                      render: (hostname: string) => (
+                        <a onClick={() => window.location.href = `/logs?hostname=${encodeURIComponent(hostname)}`}>
+                          {hostname}
+                        </a>
+                      ),
+                    },
+                    {
+                      title: 'Total Logs',
+                      dataIndex: 'total_logs',
+                      key: 'total_logs',
+                      sorter: (a: DeviceStats, b: DeviceStats) => a.total_logs - b.total_logs,
+                    },
+                    {
+                      title: 'Last Seen',
+                      dataIndex: 'last_seen',
+                      key: 'last_seen',
+                      render: (date: string) => date ? new Date(date).toLocaleString() : '-',
+                      sorter: (a: DeviceStats, b: DeviceStats) => new Date(a.last_seen).getTime() - new Date(b.last_seen).getTime(),
+                    },
+                    {
+                      title: 'Matched Parsers',
+                      dataIndex: 'matched_parsers',
+                      key: 'matched_parsers',
+                      render: (parsers: string[]) => (
+                        <Space wrap>
+                          {(parsers || []).map((p) => (
+                            <Tag key={p} color="blue">{p}</Tag>
+                          ))}
+                          {(!parsers || parsers.length === 0) && <span>-</span>}
+                        </Space>
+                      ),
+                    },
+                    {
+                      title: 'Parsed',
+                      dataIndex: 'has_parsed',
+                      key: 'has_parsed',
+                      render: (parsed: boolean) => (
+                        <Tag color={parsed ? 'green' : 'orange'}>
+                          {parsed ? 'Yes' : 'No'}
+                        </Tag>
+                      ),
+                    },
+                  ]}
+                />
               </Card>
             ),
           },

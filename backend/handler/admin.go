@@ -2,11 +2,13 @@ package handler
 
 import (
 	"database/sql"
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"syslog-gui/auth"
 	"syslog-gui/db"
+	"syslog-gui/ldap"
 
 	"github.com/gin-gonic/gin"
 )
@@ -225,5 +227,36 @@ func PurgeAllLogs(database *sql.DB) gin.HandlerFunc {
 			"message":       "All logs purged",
 			"deleted_count": count,
 		})
+	}
+}
+
+type TestLDAPRequest struct {
+	Server       string `json:"server"`
+	Port         int    `json:"port"`
+	UseTLS       bool   `json:"use_tls"`
+	BaseDN       string `json:"base_dn"`
+	BindDN       string `json:"bind_dn"`
+	BindPassword string `json:"bind_password"`
+}
+
+func TestLDAP(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req TestLDAPRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		if req.Port == 0 {
+			req.Port = 389
+		}
+
+		err := ldap.TestConnection(req.Server, req.Port, req.UseTLS, req.BaseDN, req.BindDN, req.BindPassword)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Successfully connected to %s:%d", req.Server, req.Port)})
 	}
 }

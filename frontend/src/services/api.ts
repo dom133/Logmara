@@ -48,6 +48,8 @@ export interface DeviceStats {
   total_logs: number
   last_seen: string
   severity_map: Record<string, number>
+  matched_parsers: string[]
+  has_parsed: boolean
 }
 
 export async function getLogs(params: {
@@ -325,6 +327,18 @@ export async function cleanupLogs() {
 
 export async function purgeAllLogs() {
 	const res = await api.delete('/admin/logs')
+	return res.data
+}
+
+export async function testLDAPConnection(data: {
+	server: string
+	port: number
+	use_tls: boolean
+	base_dn: string
+	bind_dn: string
+	bind_password: string
+}) {
+	const res = await api.post('/admin/ldap/test', data)
 	return res.data
 }
 

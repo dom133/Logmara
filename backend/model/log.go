@@ -1,9 +1,12 @@
 package model
 
 import (
+	"database/sql"
 	"encoding/json"
 	"time"
 )
+
+type SeverityCounts map[string]int64
 
 type SyslogLog struct {
 	ID           int64             `json:"id"`
@@ -77,10 +80,12 @@ type SeverityStats struct {
 }
 
 type DeviceStats struct {
-	Hostname    string `json:"hostname"`
-	TotalLogs   int64  `json:"total_logs"`
-	LastSeen    time.Time `json:"last_seen"`
-	SeverityMap map[string]int64 `json:"severity_map"`
+	Hostname       string         `json:"hostname"`
+	TotalLogs      int64          `json:"total_logs"`
+	LastSeen       sql.NullTime   `json:"last_seen"`
+	SeverityCount  SeverityCounts `json:"severity_count"`
+	MatchedParsers []string       `json:"matched_parsers"`
+	HasParsed      bool           `json:"has_parsed"`
 }
 
 func ParseIngestEntry(raw []byte) (*IngestEntry, error) {
