@@ -66,21 +66,23 @@ services:
     networks: [syslog_net]
     environment:
       RABBITMQ_ERLANG_COOKIE_FILE: /run/secrets/rabbitmq_erlang_cookie
-      RABBITMQ_CLUSTER_WITH: rabbitmq1
+    entrypoint: ["/docker-entrypoint-init.d/join_entrypoint.sh"]
+    configs:
+      - source: rabbitmq_conf_tpl
+        target: /etc/rabbitmq/rabbitmq.conf.tpl
+      - source: rabbitmq_join_entrypoint
+        target: /docker-entrypoint-init.d/join_entrypoint.sh
+        mode: 0755
     secrets:
+      - rabbitmq_password
       - rabbitmq_erlang_cookie
-    entrypoint: ["sh", "-c"]
-    command:
-      - |
-        rm -rf /var/lib/rabbitmq/mnesia/* && \
-        exec docker-entrypoint.sh rabbitmq-server
     depends_on: [rabbitmq1]
     healthcheck:
       test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
       interval: 15s
       timeout: 10s
       retries: 10
-      start_period: 30s
+      start_period: 60s
     logging: *rabbitmq-logging
     deploy:
       replicas: 1
@@ -95,21 +97,23 @@ services:
     networks: [syslog_net]
     environment:
       RABBITMQ_ERLANG_COOKIE_FILE: /run/secrets/rabbitmq_erlang_cookie
-      RABBITMQ_CLUSTER_WITH: rabbitmq1
+    entrypoint: ["/docker-entrypoint-init.d/join_entrypoint.sh"]
+    configs:
+      - source: rabbitmq_conf_tpl
+        target: /etc/rabbitmq/rabbitmq.conf.tpl
+      - source: rabbitmq_join_entrypoint
+        target: /docker-entrypoint-init.d/join_entrypoint.sh
+        mode: 0755
     secrets:
+      - rabbitmq_password
       - rabbitmq_erlang_cookie
-    entrypoint: ["sh", "-c"]
-    command:
-      - |
-        rm -rf /var/lib/rabbitmq/mnesia/* && \
-        exec docker-entrypoint.sh rabbitmq-server
     depends_on: [rabbitmq1]
     healthcheck:
       test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
       interval: 15s
       timeout: 10s
       retries: 10
-      start_period: 30s
+      start_period: 60s
     logging: *rabbitmq-logging
     deploy:
       replicas: 1
@@ -166,3 +170,5 @@ configs:
     file: rabbitmq/rabbitmq.conf.tpl
   rabbitmq_entrypoint:
     file: rabbitmq/entrypoint.sh
+  rabbitmq_join_entrypoint:
+    file: rabbitmq/join_entrypoint.sh

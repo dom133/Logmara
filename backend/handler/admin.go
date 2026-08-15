@@ -2,6 +2,7 @@ package handler
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -758,7 +759,9 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 		wasPaused := ic.IsPaused()
 		if req.PauseDuringPurge {
 			ic.Pause()
-			time.Sleep(500 * time.Millisecond)
+			// Give workers time to NACK in-flight deliveries back to the queue.
+			// With per-delivery pause check (worker.go) this propagates quickly.
+			time.Sleep(2 * time.Second)
 		}
 
 		row := database.QueryRow("SELECT COUNT(*) FROM syslog_logs")
@@ -777,15 +780,77 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 		InvalidateAllCaches()
 		slog.Info("database truncated", "count", count)
 
+		// Wait for the RabbitMQ queue depth to stabilise after pause.
+		// Workers NACK/requeue in-flight deliveries; the reader stops
+		// publishing. Poll until the queue stops growing or timeout.
+		if req.PauseDuringPurge {
+			initialDepth := tailer.GetTailerQueueLength()
+			stable := false
+			for i := 0; i < 10; i++ {
+				time.Sleep(200 * time.Millisecond)
+				depth := tailer.GetTailerQueueLength()
+				if depth < initialDepth-50 || depth < 50 {
+					stable = true
+					break
+				}
+			}
+			if !stable {
+				slog.Warn("purge: queue did not fully drain before purge",
+					"initial_depth", initialDepth, "final_depth", tailer.GetTailerQueueLength())
+			} else {
+				slog.Info("purge: queue stabilised before purge",
+					"initial_depth", initialDepth, "final_depth", tailer.GetTailerQueueLength())
+			}
+		}
+
+		// Purge RabbitMQ ingestion queue to drop in-flight messages.
+		queuePurged, purgeErr := tailer.PurgeTailerQueue()
+		if purgeErr != "" {
+			slog.Error("purge: tailer queue purge failed", "error", purgeErr)
+			if req.PauseDuringPurge && !wasPaused {
+				ic.Resume()
+			}
+			middleware.HandleError(c, model.NewInternalKey("admin.purgeQueueFailed", "Failed to purge RabbitMQ queue", errors.New(purgeErr)))
+			return
+		}
+		slog.Info("purge: tailer queue purged", "messages_removed", queuePurged)
+
 		logFilePath := os.Getenv("LOG_FILE_PATH")
 		if logFilePath == "" {
 			logFilePath = "/data/logs.jsonl"
 		}
-		if err := os.Truncate(logFilePath, 0); err != nil {
-			slog.Error("failed to truncate log file", "path", logFilePath, "error", err)
+		// Use atomic file swap instead of os.Truncate. Rsyslog holds a long-lived
+		// file descriptor on logs.jsonl — truncating in place while rsyslog
+		// concurrently appends can leave the file with its original size on disk
+		// because the kernel keeps the fd offset past the truncated region.
+		// Creating an empty tmp file, renaming it over logs.jsonl, then sending
+		// SIGHUP to rsyslog (ReopenRsyslogLogFile) forces rsyslog to reopen the
+		// new, empty inode — same pattern as tailer.compactFile.
+		tmpPath := logFilePath + ".purge.tmp"
+		tmpFile, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		if err != nil {
+			slog.Error("failed to create empty log file", "path", tmpPath, "error", err)
 		} else {
-			slog.Info("log file truncated", "path", logFilePath)
+			tmpFile.Close()
+			if err := os.Rename(tmpPath, logFilePath); err != nil {
+				slog.Error("failed to swap log file", "path", logFilePath, "error", err)
+				os.Remove(tmpPath)
+			} else {
+				slog.Info("log file replaced with empty file", "path", logFilePath)
+				if err := ReopenRsyslogLogFile(); err != nil {
+					slog.Error("failed to ask rsyslog to reopen log file after purge", "error", err)
+				}
+			}
 		}
+
+		// Clear tailer position checkpoint so the tailer restarts from 0
+		posFile := filepath.Join(filepath.Dir(logFilePath), ".tailer_pos")
+		if err := os.Remove(posFile); err != nil && !os.IsNotExist(err) {
+			slog.Error("failed to remove position file", "path", posFile, "error", err)
+		} else {
+			slog.Info("position file removed", "path", posFile)
+		}
+		tailer.ResetTailerPosition()
 
 		if req.PauseDuringPurge && !wasPaused {
 			ic.Resume()

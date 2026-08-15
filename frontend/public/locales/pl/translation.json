@@ -939,6 +939,7 @@
     "error.invalidCursor": "Nieprawidłowy kursor",
     "error.invalidRequest": "Nieprawidłowe żądanie",
     "error.queryFailed": "Zapytanie nieudane",
+    "error.admin.purgeQueueFailed": "Nie udało się wyczyścić kolejki RabbitMQ",
     "export.failed": "Eksport nieudany",
     "init.dbCredentialsRequired": "Dane logowania do bazy danych są wymagane",
     "init.dbSettingsInvalid": "Nieprawidłowe ustawienia bazy danych",

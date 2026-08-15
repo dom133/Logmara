@@ -149,6 +149,25 @@ func (q *Queue) IsFull(ctx context.Context) bool {
 	return q.Len(ctx) >= rabbitmqMaxLen
 }
 
+// Purge removes all messages from the RabbitMQ queue. Returns the number
+// of messages that were removed.
+func (q *Queue) Purge(_ context.Context) (uint32, error) {
+	if err := q.ensureConnected(); err != nil {
+		return 0, err
+	}
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	msgs, err := q.channel.QueuePurge(
+		rabbitmqQueue,
+		false, // no-wait
+	)
+	if err != nil {
+		return 0, err
+	}
+	slog.Info("queue purged", "messages_removed", msgs)
+	return uint32(msgs), nil
+}
+
 // Close shuts down the RabbitMQ connection.
 func (q *Queue) Close() error {
 	q.mu.Lock()

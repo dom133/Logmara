@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -80,14 +81,192 @@ const vipStartupJitterMax = 2 * time.Second
 // is running (single-server mode or RabbitMQ unavailable).
 var currentMetrics *TailerMetricsCollector
 
-// GetTailerMetrics returns the latest snapshot of tailer pipeline metrics,
-// or nil if no pipeline is currently active.
+// currentPipeline holds a reference to the active pipeline so the admin API
+// can purge the RabbitMQ queue on demand.
+var currentPipeline *pipeline
+
+// currentSharedClient is the shared Redis client (nil in single-server mode).
+// Used by GetTailerMetrics to read pipeline metrics from Redis so that
+// non-leader replicas can still serve the admin endpoint.
+var currentSharedClient *sharedstate.Client
+
+// --- purge coordination (Redis pub/sub) ---
+// When multiple api replicas are behind a load balancer, only the VIP leader
+// owns the RabbitMQ pipeline.  Purge requests arriving at a non-leader are
+// forwarded to the leader via Redis so the queue is actually purged regardless
+// of which replica handled the HTTP request.
+
+const (
+	purgeChannel   = "admin:purge:queue"
+	purgeResultKey = "admin:purge:result"
+	purgeResultTTL = 30 * time.Second
+)
+
+var purgeMu sync.Mutex
+
+type purgeRequest struct {
+	id string
+	ch chan purgeResult
+}
+
+type purgeResult struct {
+	msgs uint32
+	err  string
+}
+
+var pendingPurges = make(map[string]chan purgeResult)
+
+func purgeCoordinator(reqID string, queue *sharedstate.Queue) purgeResult {
+	msgs, err := queue.Purge(context.Background())
+	if err != nil {
+		return purgeResult{err: err.Error()}
+	}
+	slog.Info("purge coordinator: queue purged", "messages_removed", msgs)
+	if currentPipeline != nil && currentPipeline.flushTrk != nil {
+		currentPipeline.flushTrk.Reset(context.Background())
+		slog.Info("purge coordinator: flush tracker reset")
+	}
+	return purgeResult{msgs: msgs}
+}
+
+// GetTailerMetrics returns the latest snapshot of tailer pipeline metrics.
+// On the VIP leader it reads from the local metrics collector. On a
+// non-leader replica it reads the snapshot from Redis (written by the
+// leader every 2 s). Returns nil when no pipeline is active.
 func GetTailerMetrics() *TailerMetrics {
-	if currentMetrics == nil {
+	if currentMetrics != nil {
+		m := currentMetrics.Get()
+		return &m
+	}
+	if currentSharedClient != nil {
+		return readMetricsFromRedis()
+	}
+	return nil
+}
+
+func readMetricsFromRedis() *TailerMetrics {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	data, err := currentSharedClient.Raw().Get(ctx, tailerMetricsRedisKey).Bytes()
+	if err != nil || len(data) == 0 {
 		return nil
 	}
-	m := currentMetrics.Get()
-	return &m
+	var m tailerMetricsPublic
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil
+	}
+	return &TailerMetrics{
+		NumWorkers:    m.NumWorkers,
+		QueueDepth:    m.QueueDepth,
+		FlushedPos:    m.FlushedPos,
+		FlushedSeq:    m.FlushedSeq,
+		LogsPerSec:    m.LogsPerSec,
+		WorkerMetrics: metricsPublicToWorkerMetrics(m.WorkerMetrics),
+		UpdatedAt:     m.UpdatedAt,
+	}
+}
+
+func metricsPublicToWorkerMetrics(pub []WorkerMetricsPublic) []WorkerMetrics {
+	metrics := make([]WorkerMetrics, len(pub))
+	for i, p := range pub {
+		metrics[i] = WorkerMetrics{
+			ID:            p.ID,
+			MsgsProcessed: p.MsgsProcessed,
+			ParseErrors:   p.ParseErrors,
+			DbInserts:     p.DbInserts,
+			LastFlushAt:   p.LastFlushAt,
+		}
+	}
+	return metrics
+}
+
+// PurgeTailerQueue purges the RabbitMQ ingestion queue and resets the
+// flush tracker. In multi-replica mode it coordinates via Redis so the
+// request reaches the VIP leader even if a non-leader replica handled the
+// HTTP request. Returns (messages_removed, error_string). Empty error means
+// success; returns (0, "") when there's no pipeline to purge (single-server).
+func PurgeTailerQueue() (uint32, string) {
+	// Leader path: pipeline is local, purge directly.
+	if currentPipeline != nil && currentPipeline.queue != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		msgs, err := currentPipeline.queue.Purge(ctx)
+		if err != nil {
+			slog.Error("tailer: failed to purge queue", "error", err)
+			return 0, err.Error()
+		}
+		if currentPipeline.flushTrk != nil {
+			currentPipeline.flushTrk.Reset(ctx)
+			slog.Info("tailer: flush tracker reset")
+		}
+		return msgs, ""
+	}
+
+	// Non-leader path: forward purge request via Redis pub/sub, then poll
+	// Redis for the result written by the leader.
+	if currentSharedClient == nil {
+		return 0, ""
+	}
+
+	reqID := fmt.Sprintf("purge-%d-%d", time.Now().UnixNano(), rand.Intn(10000))
+
+	// Register local channel so that if this replica later becomes leader and
+	// receives its own old request, it won't hang.
+	resultCh := make(chan purgeResult, 1)
+	purgeMu.Lock()
+	pendingPurges[reqID] = resultCh
+	purgeMu.Unlock()
+
+	if err := currentSharedClient.Raw().Publish(context.Background(), purgeChannel, reqID).Err(); err != nil {
+		slog.Error("tailer: failed to publish purge request", "error", err)
+		purgeMu.Lock()
+		delete(pendingPurges, reqID)
+		purgeMu.Unlock()
+		return 0, fmt.Sprintf("failed to coordinate purge across replicas: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for {
+		select {
+		case <-ctx.Done():
+			purgeMu.Lock()
+			delete(pendingPurges, reqID)
+			purgeMu.Unlock()
+			slog.Error("tailer: purge coordination timed out waiting for leader")
+			return 0, "purge coordination timed out waiting for leader"
+		default:
+			raw, err := currentSharedClient.Raw().Get(ctx, purgeResultKey).Result()
+			if err == nil {
+				var res struct {
+					ID   string `json:"id"`
+					Msgs uint32 `json:"msgs"`
+					Err  string `json:"err"`
+				}
+				if json.Unmarshal([]byte(raw), &res) == nil && res.ID == reqID {
+					purgeMu.Lock()
+					delete(pendingPurges, reqID)
+					purgeMu.Unlock()
+					if res.Err != "" {
+						slog.Error("tailer: purge reported error from leader", "error", res.Err)
+						return 0, res.Err
+					}
+					slog.Info("tailer: purge completed via leader coordination", "messages_removed", res.Msgs)
+					return res.Msgs, ""
+				}
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+}
+
+// ResetTailerPosition clears the tailer position checkpoint in Redis.
+func ResetTailerPosition() {
+	if currentSharedClient != nil {
+		currentSharedClient.ResetTailerPosition()
+		slog.Info("tailer: Redis position reset")
+	}
 }
 
 // pipeline holds the components of the distributed tailer pipeline.
@@ -107,6 +286,7 @@ func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine
 		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, nil)
 		return
 	}
+	currentSharedClient = sharedClient
 	runWithVIPElection(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
 }
 
@@ -218,20 +398,76 @@ func startPipeline(ctx context.Context, db *sql.DB, engine *parser.Engine, ic co
 	}
 
 	flushTrk := sharedstate.NewFlushTracker(sharedClient)
-	workerPool := NewWorkerPool(0, db, alerts, rate, flushTrk, queue)
-	metricsColl := NewTailerMetricsCollector(queue, flushTrk, rate, workerPool)
+	workerPool := NewWorkerPool(0, db, alerts, rate, flushTrk, queue, ic)
+	metricsColl := NewTailerMetricsCollector(queue, flushTrk, rate, workerPool, sharedClient)
 
 	workerPool.Start(ctx)
 	metricsColl.Start(ctx)
 	currentMetrics = metricsColl
 
 	slog.Info("tailer: pipeline started", "rabbitmq", rabbitmqURL)
-	return &pipeline{
+	p := &pipeline{
 		queue:       queue,
 		flushTrk:    flushTrk,
 		workerPool:  workerPool,
 		metricsColl: metricsColl,
 	}
+	currentPipeline = p
+
+	// Subscribe to purge coordination channel so this leader can handle
+	// purge requests forwarded from non-leader replicas.
+	go handlePurgeRequests(ctx, queue)
+
+	return p
+}
+
+// handlePurgeRequests listens on the Redis purge channel and executes purge
+// commands forwarded from non-leader replicas. Only the VIP leader runs this
+// with a non-nil queue.
+func handlePurgeRequests(ctx context.Context, queue *sharedstate.Queue) {
+	if currentSharedClient == nil {
+		return
+	}
+	pubsub := currentSharedClient.Raw().Subscribe(ctx, purgeChannel)
+	defer pubsub.Close()
+	msgCh := pubsub.Channel()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-msgCh:
+			if !ok {
+				return
+			}
+			res := purgeCoordinator(msg.Payload, queue)
+
+			resultData, _ := json.Marshal(map[string]interface{}{
+				"id":   msg.Payload,
+				"msgs": res.msgs,
+				"err":  res.err,
+			})
+			if err := currentSharedClient.Raw().Set(context.Background(), purgeResultKey, string(resultData), purgeResultTTL).Err(); err != nil {
+				slog.Error("tailer: failed to store purge result", "error", err)
+			}
+
+			purgeMu.Lock()
+			resultCh, exists := pendingPurges[msg.Payload]
+			if exists {
+				delete(pendingPurges, msg.Payload)
+				resultCh <- res
+			}
+			purgeMu.Unlock()
+		}
+	}
+}
+
+// GetTailerQueueLength returns the current message count in the RabbitMQ
+// ingestion queue. Returns 0 when no pipeline is active.
+func GetTailerQueueLength() int64 {
+	if currentPipeline == nil || currentPipeline.queue == nil {
+		return 0
+	}
+	return currentPipeline.queue.Len(context.Background())
 }
 
 func stopPipeline(p *pipeline) {
@@ -243,6 +479,7 @@ func stopPipeline(p *pipeline) {
 		p.metricsColl.Stop()
 		currentMetrics = nil
 	}
+	currentPipeline = nil
 	if p.workerPool != nil {
 		p.workerPool.Cancel()
 		p.workerPool.Wait()
@@ -329,7 +566,9 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			slog.Info("file rotated, resetting position")
 		}
 
-		if (time.Since(lastCompaction) > compactionInterval || fileSize > maxFileSize) && fileSize > flushedPos*2 {
+		shouldCompact := time.Since(lastCompaction) > compactionInterval || fileSize > maxFileSize
+		enoughFlushed := fileSize > 0 && flushedPos > 0 && (fileSize-flushedPos) < fileSize/4
+		if shouldCompact && enoughFlushed {
 			newF, err := compactFile(f, flushedPos, filePath, reopenLogFile)
 			if err != nil {
 				slog.Error("compaction error", "error", err)

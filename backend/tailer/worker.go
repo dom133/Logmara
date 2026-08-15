@@ -12,7 +12,10 @@ import (
 
 	"database/sql"
 
+	amqp "github.com/rabbitmq/amqp091-go"
+
 	"logmara/alertengine"
+	"logmara/control"
 	"logmara/model"
 	"logmara/parser"
 	"logmara/sharedstate"
@@ -33,15 +36,21 @@ type WorkerPool struct {
 	cancel  context.CancelFunc
 }
 
+// NumWorkers returns the number of workers in the pool.
+func (wp *WorkerPool) NumWorkers() int {
+	return len(wp.workers)
+}
+
 type worker struct {
-	id        int
-	parser    *parser.Engine
-	db        *sql.DB
-	alerts    *alertengine.Engine
-	rate      sharedstate.RateCounter
-	flushTrk  *sharedstate.FlushTracker
-	queue     *sharedstate.Queue
-	metrics   *WorkerMetrics
+	id         int
+	parser     *parser.Engine
+	db         *sql.DB
+	alerts     *alertengine.Engine
+	rate       sharedstate.RateCounter
+	flushTrk   *sharedstate.FlushTracker
+	queue      *sharedstate.Queue
+	ic         control.IngestionController
+	metrics    *WorkerMetrics
 }
 
 // WorkerMetrics tracks per-worker statistics.
@@ -54,9 +63,18 @@ type WorkerMetrics struct {
 	LastFlushAt   time.Time
 }
 
+// WorkerMetricsPublic is a JSON-serializable snapshot of WorkerMetrics.
+type WorkerMetricsPublic struct {
+	ID            int       `json:"id"`
+	MsgsProcessed int64     `json:"msgs_processed"`
+	ParseErrors   int64     `json:"parse_errors"`
+	DbInserts     int64     `json:"db_inserts"`
+	LastFlushAt   time.Time `json:"last_flush_at"`
+}
+
 func NewWorkerPool(numWorkers int, db *sql.DB, alerts *alertengine.Engine,
 	rate sharedstate.RateCounter, flushTrk *sharedstate.FlushTracker,
-	queue *sharedstate.Queue) *WorkerPool {
+	queue *sharedstate.Queue, ic control.IngestionController) *WorkerPool {
 
 	if numWorkers <= 0 {
 		numWorkers = runtime.NumCPU()
@@ -76,6 +94,7 @@ func NewWorkerPool(numWorkers int, db *sql.DB, alerts *alertengine.Engine,
 			rate:     rate,
 			flushTrk: flushTrk,
 			queue:    queue,
+			ic:       ic,
 			metrics: &WorkerMetrics{
 				ID:    i,
 				LastFlushAt: time.Now(),
@@ -120,8 +139,25 @@ func (wp *WorkerPool) GetMetrics() []WorkerMetrics {
 	return metrics
 }
 
+// GetPublicMetrics returns a JSON-serializable snapshot of per-worker metrics.
+func (wp *WorkerPool) GetPublicMetrics() []WorkerMetricsPublic {
+	metrics := make([]WorkerMetricsPublic, len(wp.workers))
+	for i, w := range wp.workers {
+		w.metrics.Mutex.RLock()
+		metrics[i] = WorkerMetricsPublic{
+			ID:            w.metrics.ID,
+			MsgsProcessed: w.metrics.MsgsProcessed,
+			ParseErrors:   w.metrics.ParseErrors,
+			DbInserts:     w.metrics.DbInserts,
+			LastFlushAt:   w.metrics.LastFlushAt,
+		}
+		w.metrics.Mutex.RUnlock()
+	}
+	return metrics
+}
+
 func (w *worker) run(ctx context.Context) {
-	deliveries, err := w.queue.Consume(ctx)
+	deliveriesChan, err := w.queue.Consume(ctx)
 	if err != nil {
 		slog.Error("worker: failed to start consuming", "id", w.id, "error", err)
 		return
@@ -130,6 +166,7 @@ func (w *worker) run(ctx context.Context) {
 	slog.Info("worker started", "id", w.id)
 	var entries []model.IngestEntry
 	var queueEntries []sharedstate.QueueEntry
+	var batchDelivries []amqp.Delivery
 	lastFlush := time.Now()
 
 	for {
@@ -137,10 +174,15 @@ func (w *worker) run(ctx context.Context) {
 		case <-ctx.Done():
 			slog.Info("worker stopping", "id", w.id)
 			return
-		case delivery, ok := <-deliveries:
+		case delivery, ok := <-deliveriesChan:
 			if !ok {
 				slog.Warn("worker: delivery channel closed", "id", w.id)
 				return
+			}
+
+			if w.ic.IsPaused() {
+				delivery.Nack(false, true)
+				continue
 			}
 
 			var qe sharedstate.QueueEntry
@@ -149,6 +191,7 @@ func (w *worker) run(ctx context.Context) {
 				delivery.Ack(false)
 				w.metrics.Mutex.Lock()
 				w.metrics.ParseErrors++
+				w.metrics.MsgsProcessed++
 				w.metrics.Mutex.Unlock()
 				continue
 			}
@@ -156,6 +199,9 @@ func (w *worker) run(ctx context.Context) {
 			line := qe.Line
 			if line == "" {
 				delivery.Ack(false)
+				w.metrics.Mutex.Lock()
+				w.metrics.MsgsProcessed++
+				w.metrics.Mutex.Unlock()
 				continue
 			}
 
@@ -189,6 +235,9 @@ func (w *worker) run(ctx context.Context) {
 
 			if entry.Hostname == "" {
 				delivery.Ack(false)
+				w.metrics.Mutex.Lock()
+				w.metrics.MsgsProcessed++
+				w.metrics.Mutex.Unlock()
 				continue
 			}
 
@@ -220,28 +269,47 @@ func (w *worker) run(ctx context.Context) {
 
 			entries = append(entries, entry)
 			queueEntries = append(queueEntries, qe)
+			batchDelivries = append(batchDelivries, delivery)
 
 			now := time.Now()
 			if len(entries) >= workerBatchSize || now.Sub(lastFlush) >= workerBatchInterval {
+				if w.ic != nil && w.ic.IsPaused() {
+					// Ingestion paused — NACK all pending deliveries with requeue
+					for _, d := range batchDelivries {
+						d.Nack(false, true)
+					}
+					w.metrics.Mutex.Lock()
+					w.metrics.MsgsProcessed += int64(len(batchDelivries))
+					w.metrics.Mutex.Unlock()
+					entries = nil
+					queueEntries = nil
+					batchDelivries = nil
+					continue
+				}
 				if err := flushBatch(w.db, entries, w.rate); err != nil {
 					slog.Error("worker: flush error", "id", w.id, "error", err)
+					// NACK with requeue on flush failure so messages aren't lost
+					for _, d := range batchDelivries {
+						d.Nack(false, true)
+					}
 				} else {
 					w.alerts.EvaluateBatch(w.db, entries)
 					w.flushTrk.ReportFlushed(ctx, queueEntries)
+					// ACK only after successful flush
+					for _, d := range batchDelivries {
+						d.Ack(false)
+					}
 					w.metrics.Mutex.Lock()
 					w.metrics.DbInserts += int64(len(entries))
+					w.metrics.MsgsProcessed += int64(len(entries))
 					w.metrics.LastFlushAt = now
 					w.metrics.Mutex.Unlock()
 				}
-				entries = entries[:0]
-				queueEntries = queueEntries[:0]
+				entries = nil
+				queueEntries = nil
+				batchDelivries = nil
 				lastFlush = now
 			}
-
-			delivery.Ack(false)
-			w.metrics.Mutex.Lock()
-			w.metrics.MsgsProcessed++
-			w.metrics.Mutex.Unlock()
 		}
 	}
 }
