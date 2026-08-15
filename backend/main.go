@@ -440,7 +440,7 @@ func main() {
 	}()
 
 	ctx, maintCancel := context.WithCancel(context.Background())
-	stopVacuum, stopMV, stopTokenCleanup, stopJWTCleanup, stopArchiveCleanup := db.StartMaintenance(ctx, database)
+	stopVacuum, stopMV, stopTokenCleanup, stopJWTCleanup, stopArchiveCleanup, stopPartitions := db.StartMaintenance(ctx, database)
 	_ = stopJWTCleanup
 	_ = stopArchiveCleanup
 
@@ -872,6 +872,7 @@ r := gin.New()
 	stopMV()
 	stopTokenCleanup()
 	stopArchiveCleanup()
+	stopPartitions()
 	stopIfPersistent(loginLimiter)
 	stopIfPersistent(changePasswordLimiter)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

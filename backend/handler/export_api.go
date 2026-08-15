@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"logmara/db"
 	"logmara/middleware"
 	"logmara/model"
 
@@ -166,7 +167,11 @@ func ExportStats(database *sql.DB) gin.HandlerFunc {
 		if whereSQL != "" {
 			err = database.QueryRow("SELECT COUNT(*) FROM syslog_logs "+whereSQL, args...).Scan(&totalLogs)
 		} else {
-			err = database.QueryRow("SELECT COUNT(*) FROM syslog_logs").Scan(&totalLogs)
+			// No filters: an exact COUNT(*) would scan every partition, so
+			// use the reltuples-based estimate instead (see GetLogsCount).
+			var total64 int64
+			total64, err = db.EstimateSyslogLogsCount(c.Request.Context(), database)
+			totalLogs = int(total64)
 		}
 		if err != nil {
 			c.AbortWithError(http.StatusInternalServerError, model.NewInternal("Query failed", err))

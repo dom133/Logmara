@@ -107,7 +107,12 @@ func MigrateWithLock(db *sql.DB) error {
 		}
 	}()
 
-	return Migrate(db)
+	// Reuse the lock-holding connection for the DDL itself (rather than
+	// letting Migrate grab an arbitrary connection from the pool), so the
+	// SET maintenance_work_mem applied before the heavy index/materialized
+	// view builds in runSchemaMigration actually takes effect on the
+	// connection that runs them.
+	return migrate(ctx, db, conn)
 }
 
 // schemaVersion must be bumped whenever a statement is appended to
@@ -115,7 +120,7 @@ func MigrateWithLock(db *sql.DB) error {
 // schema_version table already records this value, so a forgotten bump
 // means an already-deployed instance will never see the new statement
 // applied.
-const schemaVersion = 6
+const schemaVersion = 8
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -143,6 +148,17 @@ func setSchemaVersion(db *sql.DB, version int) error {
 }
 
 func Migrate(db *sql.DB) error {
+	return migrate(context.Background(), db, nil)
+}
+
+// migrate runs the schema migration and builtin-data seeding. When conn is
+// non-nil (MigrateWithLock's case), the DDL in runSchemaMigration runs on
+// that specific connection instead of a pooled one, so a session-scoped
+// tuning statement (SET maintenance_work_mem) set on it actually applies to
+// the statements that follow. When conn is nil (e.g. the setup wizard's
+// direct Migrate call, before any concurrent replicas exist), a connection
+// is acquired from the pool just for the DDL portion.
+func migrate(ctx context.Context, db *sql.DB, conn *sql.Conn) error {
 	if err := ensureSchemaVersionTable(db); err != nil {
 		return fmt.Errorf("ensure schema_version table: %w", err)
 	}
@@ -154,9 +170,22 @@ func Migrate(db *sql.DB) error {
 	if current >= schemaVersion {
 		slog.Info("schema up to date, skipping DDL migration", "version", current)
 	} else {
-		if err := runSchemaMigration(db); err != nil {
+		migrationConn := conn
+		if migrationConn == nil {
+			acquired, err := db.Conn(ctx)
+			if err != nil {
+				return fmt.Errorf("acquire connection for schema migration: %w", err)
+			}
+			defer acquired.Close()
+			migrationConn = acquired
+		}
+		if err := runSchemaMigration(ctx, migrationConn); err != nil {
 			return err
 		}
+		if err := setSchemaVersion(db, schemaVersion); err != nil {
+			return fmt.Errorf("set schema version: %w", err)
+		}
+		slog.Info("database migration completed", "version", schemaVersion)
 	}
 
 	// Builtin parser/setting definitions (e.g. PARSER_DEFS_DIR contents) can
@@ -175,7 +204,69 @@ func Migrate(db *sql.DB) error {
 	return nil
 }
 
-func runSchemaMigration(db *sql.DB) error {
+// partitionGranularity controls how finely syslog_logs is range-partitioned
+// by timestamp. Deployments vary hugely in volume (roughly 1M logs/day up to
+// 100M+/day) - daily partitions keep a heavy deployment's individual
+// partitions (and therefore VACUUM/index-build/retention-drop costs)
+// manageable, while a light deployment can opt back into monthly via
+// PARTITION_INTERVAL to avoid accumulating hundreds of mostly-empty
+// partition tables. Used by runSchemaMigration (initial backfill) and
+// createPartitions (ongoing, ahead-of-time creation) - see maintenance.go.
+type partitionGranularity struct {
+	name       string // Postgres date_trunc/INTERVAL unit: "day" or "month"
+	nameFormat string // Go reference-time layout for the partition name suffix
+	aheadCount int    // how many future partitions to keep pre-created
+}
+
+var (
+	dayPartitionGranularity   = partitionGranularity{name: "day", nameFormat: "2006_01_02", aheadCount: 7}
+	monthPartitionGranularity = partitionGranularity{name: "month", nameFormat: "2006_01", aheadCount: 3}
+)
+
+func configuredPartitionGranularity() partitionGranularity {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("PARTITION_INTERVAL")), "month") {
+		return monthPartitionGranularity
+	}
+	return dayPartitionGranularity
+}
+
+func (g partitionGranularity) truncate(t time.Time) time.Time {
+	t = t.UTC()
+	if g.name == "month" {
+		return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
+	}
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func (g partitionGranularity) next(t time.Time) time.Time {
+	if g.name == "month" {
+		return t.AddDate(0, 1, 0)
+	}
+	return t.AddDate(0, 0, 1)
+}
+
+func (g partitionGranularity) previous(t time.Time) time.Time {
+	if g.name == "month" {
+		return t.AddDate(0, -1, 0)
+	}
+	return t.AddDate(0, 0, -1)
+}
+
+func (g partitionGranularity) partitionName(t time.Time) string {
+	return "syslog_logs_" + t.Format(g.nameFormat)
+}
+
+func runSchemaMigration(ctx context.Context, conn *sql.Conn) error {
+	// Raises the working memory available for the one-time index/materialized
+	// view builds below (GIN indexes on parsed_fields/search_vector/app_name
+	// trigram in particular are slow to build on a multi-million row table
+	// under the default ~64MB maintenance_work_mem). Best-effort: some managed
+	// Postgres setups cap this lower than requested or restrict SET entirely,
+	// in which case the build just falls back to the server default.
+	if _, err := conn.ExecContext(ctx, "SET maintenance_work_mem = '512MB'"); err != nil {
+		slog.Warn("failed to raise maintenance_work_mem for migration; index/materialized view builds may be slower", "error", err)
+	}
+
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS syslog_logs (
 			id BIGSERIAL PRIMARY KEY,
@@ -469,21 +560,28 @@ func runSchemaMigration(db *sql.DB) error {
 	}
 
 	for _, stmt := range statements {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("migration failed (%s): %w", stmt[:50], err)
 		}
 	}
 
 	var isPartitioned bool
-	db.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p')").Scan(&isPartitioned)
+	conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p')").Scan(&isPartitioned)
 	if !isPartitioned {
-		partitionStmts := []string{
-			`ALTER TABLE syslog_logs DROP CONSTRAINT IF EXISTS syslog_logs_pkey`,
-			`ALTER TABLE syslog_logs ADD PRIMARY KEY (timestamp, id)`,
-			`DROP TABLE IF EXISTS syslog_logs_new CASCADE`,
-			`CREATE TABLE syslog_logs_new (LIKE syslog_logs INCLUDING DEFAULTS INCLUDING GENERATED INCLUDING STORAGE) PARTITION BY RANGE (timestamp)`,
-			`ALTER TABLE syslog_logs_new ADD PRIMARY KEY (timestamp, id)`,
-			`DO $$
+		// Only a brand new (not-yet-partitioned) database reaches this block,
+		// so the configured granularity backfills every historical partition
+		// syslog_logs needs in one pass. An already-partitioned database
+		// (this block having already run once, at whatever granularity was
+		// configured then) never re-enters here regardless of a later
+		// PARTITION_INTERVAL change - createPartitions below picks up the new
+		// granularity for partitions going forward instead of rewriting
+		// existing ones.
+		g := configuredPartitionGranularity()
+		toCharFmt := "YYYY_MM"
+		if g.name == "day" {
+			toCharFmt = "YYYY_MM_DD"
+		}
+		initialPartitionDO := fmt.Sprintf(`DO $$
 DECLARE
 	v_min_ts TIMESTAMPTZ;
 	v_max_ts TIMESTAMPTZ;
@@ -493,19 +591,27 @@ DECLARE
 BEGIN
 	SELECT MIN(timestamp), MAX(timestamp) INTO v_min_ts, v_max_ts FROM syslog_logs;
 	IF v_min_ts IS NOT NULL THEN
-		v_start := date_trunc('month', v_min_ts)::DATE;
-		v_end := (date_trunc('month', v_max_ts) + INTERVAL '1 month')::DATE;
+		v_start := date_trunc('%[1]s', v_min_ts)::DATE;
+		v_end := (date_trunc('%[1]s', v_max_ts) + INTERVAL '1 %[1]s')::DATE;
 	ELSE
-		v_start := date_trunc('month', NOW())::DATE;
-		v_end := (date_trunc('month', NOW()) + INTERVAL '1 month')::DATE;
+		v_start := date_trunc('%[1]s', NOW())::DATE;
+		v_end := (date_trunc('%[1]s', NOW()) + INTERVAL '1 %[1]s')::DATE;
 	END IF;
 	v_curr := v_start;
 	WHILE v_curr < v_end LOOP
-		EXECUTE format('CREATE TABLE IF NOT EXISTS %I PARTITION OF syslog_logs_new FOR VALUES FROM (%L) TO (%L)', 'syslog_logs_' || to_char(v_curr, 'YYYY_MM'), v_curr, v_curr + INTERVAL '1 month');
-		v_curr := v_curr + INTERVAL '1 month';
+		EXECUTE format('CREATE TABLE IF NOT EXISTS %%I PARTITION OF syslog_logs_new FOR VALUES FROM (%%L) TO (%%L)', 'syslog_logs_' || to_char(v_curr, '%[2]s'), v_curr, v_curr + INTERVAL '1 %[1]s');
+		v_curr := v_curr + INTERVAL '1 %[1]s';
 	END LOOP;
 	EXECUTE 'CREATE TABLE IF NOT EXISTS syslog_logs_default PARTITION OF syslog_logs_new DEFAULT';
-END $$`,
+END $$`, g.name, toCharFmt)
+
+		partitionStmts := []string{
+			`ALTER TABLE syslog_logs DROP CONSTRAINT IF EXISTS syslog_logs_pkey`,
+			`ALTER TABLE syslog_logs ADD PRIMARY KEY (timestamp, id)`,
+			`DROP TABLE IF EXISTS syslog_logs_new CASCADE`,
+			`CREATE TABLE syslog_logs_new (LIKE syslog_logs INCLUDING DEFAULTS INCLUDING GENERATED INCLUDING STORAGE) PARTITION BY RANGE (timestamp)`,
+			`ALTER TABLE syslog_logs_new ADD PRIMARY KEY (timestamp, id)`,
+			initialPartitionDO,
 			`INSERT INTO syslog_logs_new (id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, created_at, matched_parsers) SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, created_at, matched_parsers FROM syslog_logs`,
 			`DROP TABLE syslog_logs CASCADE`,
 			`ALTER TABLE syslog_logs_new RENAME TO syslog_logs`,
@@ -514,7 +620,7 @@ END $$`,
 			`SELECT setval('syslog_logs_id_seq', GREATEST(1, COALESCE((SELECT MAX(id) FROM syslog_logs), 0)))`,
 		}
 		for _, stmt := range partitionStmts {
-			if _, err := db.Exec(stmt); err != nil {
+			if _, err := conn.ExecContext(ctx, stmt); err != nil {
 				truncated := stmt
 				if len(truncated) > 50 {
 					truncated = truncated[:50]
@@ -557,14 +663,14 @@ END $$`,
 				COUNT(DISTINCT hostname) as unique_devices,
 				COUNT(DISTINCT fromhost_ip) as unique_ips
 			FROM syslog_logs
-		`,
+			WITH NO DATA`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_summary_key ON mv_dashboard_summary (refreshed_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_coalesce_fromhost_ip ON syslog_logs (COALESCE(fromhost_ip, ''))`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_coalesce_dev_ts ON syslog_logs (COALESCE(fromhost_ip, ''), timestamp DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_app_ts_cover ON syslog_logs (app_name, timestamp DESC) INCLUDE (hostname, severity)`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_severity AS
 			SELECT NOW() as refreshed_at, severity, COUNT(*) as cnt FROM syslog_logs GROUP BY severity
-		`,
+			WITH NO DATA`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_severity_key ON mv_dashboard_severity (severity)`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_top_errors AS
 			SELECT NOW() as refreshed_at, LEFT(message, 100) as message,
@@ -574,7 +680,7 @@ END $$`,
 			GROUP BY LEFT(message, 100), fromhost_ip
 			ORDER BY cnt DESC
 			LIMIT 10
-		`,
+			WITH NO DATA`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_top_errors_key ON mv_dashboard_top_errors (message, fromhost_ip)`,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_app_name_trgm ON syslog_logs USING GIN (app_name gin_trgm_ops)`,
@@ -632,16 +738,16 @@ END $$`,
 				COALESCE(p.parsers, '{}'::TEXT[]) as parsers
 			FROM dev_stats d
 			LEFT JOIN dev_parsers p ON p.fromhost_ip = d.fromhost_ip
-		`,
+			WITH NO DATA`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_device_stats_key ON mv_device_stats (fromhost_ip)`,
 		`DO $$ BEGIN CREATE INDEX idx_syslog_timestamp ON syslog_logs USING BRIN (timestamp); EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_object THEN NULL; END $$`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_timeline_hourly AS
 			SELECT date_trunc('hour', timestamp) AS hour, COUNT(*) AS cnt FROM syslog_logs GROUP BY 1 ORDER BY 1
-		`,
+			WITH NO DATA`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_timeline_hourly_key ON mv_timeline_hourly (hour)`,
 	}
 	for _, stmt := range postStmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
 			truncated := stmt
 			if len(truncated) > 50 {
 				truncated = truncated[:50]
@@ -650,11 +756,6 @@ END $$`,
 		}
 	}
 
-	if err := setSchemaVersion(db, schemaVersion); err != nil {
-		return fmt.Errorf("set schema version: %w", err)
-	}
-
-	slog.Info("database migration completed", "version", schemaVersion)
 	return nil
 }
 
@@ -1039,13 +1140,41 @@ func GetAllSettings(db *sql.DB) (map[string]string, error) {
 	return settings, rows.Err()
 }
 
-var partitionNameRe = regexp.MustCompile(`^syslog_logs_\d{4}_\d{2}$`)
+// partitionNameRe matches both partition-naming schemes syslog_logs has used:
+// the original monthly syslog_logs_YYYY_MM, and the daily
+// syslog_logs_YYYY_MM_DD used since PARTITION_INTERVAL was introduced. A
+// database that switched granularity keeps both kinds side by side - old
+// monthly partitions age out normally via retention rather than being
+// rewritten - so retention/vacuum code must recognize either.
+var partitionNameRe = regexp.MustCompile(`^syslog_logs_\d{4}_\d{2}(_\d{2})?$`)
+
+// parsePartitionBounds returns the [start, end) timestamp range a partition
+// name covers, working out whether it's a monthly (syslog_logs_YYYY_MM) or
+// daily (syslog_logs_YYYY_MM_DD) partition from the name itself.
+func parsePartitionBounds(name string) (start, end time.Time, ok bool) {
+	if !partitionNameRe.MatchString(name) {
+		return time.Time{}, time.Time{}, false
+	}
+	suffix := strings.TrimPrefix(name, "syslog_logs_")
+	if len(suffix) == len("2006_01_02") {
+		start, err := time.Parse("2006_01_02", suffix)
+		if err != nil {
+			return time.Time{}, time.Time{}, false
+		}
+		return start, start.AddDate(0, 0, 1), true
+	}
+	start, err := time.Parse("2006_01", suffix)
+	if err != nil {
+		return time.Time{}, time.Time{}, false
+	}
+	return start, start.AddDate(0, 1, 0), true
+}
 
 // CleanupOldLogs deletes logs older than retentionDays. When syslog_logs is
-// partitioned by month, whole partitions that fall entirely before the
-// retention cutoff are dropped outright - this is near-instant and avoids
-// scanning/vacuuming millions of rows one by one. Only the partition
-// straddling the cutoff (plus the default partition, if any) falls back to
+// partitioned, whole partitions that fall entirely before the retention
+// cutoff are dropped outright - this is near-instant and avoids
+// scanning/vacuuming millions of rows one by one. Only the partition(s)
+// straddling the cutoff (plus the default partition, if any) fall back to
 // batched row deletes.
 func CleanupOldLogs(db *sql.DB, retentionDays int) (int64, error) {
 	var isPartitioned bool
@@ -1064,7 +1193,7 @@ func CleanupOldLogs(db *sql.DB, retentionDays int) (int64, error) {
 		FROM pg_inherits i
 		JOIN pg_class c ON c.oid = i.inhrelid
 		JOIN pg_class p ON p.oid = i.inhparent
-		WHERE p.relname = 'syslog_logs' AND c.relname ~ '^syslog_logs_\d{4}_\d{2}$'
+		WHERE p.relname = 'syslog_logs' AND c.relname ~ '^syslog_logs_\d{4}_\d{2}(_\d{2})?$'
 	`)
 	if err != nil {
 		return 0, fmt.Errorf("list partitions: %w", err)
@@ -1082,14 +1211,10 @@ func CleanupOldLogs(db *sql.DB, retentionDays int) (int64, error) {
 
 	var totalDeleted int64
 	for _, name := range partitions {
-		if !partitionNameRe.MatchString(name) {
+		_, partEnd, ok := parsePartitionBounds(name)
+		if !ok {
 			continue
 		}
-		var y, m int
-		if _, err := fmt.Sscanf(name, "syslog_logs_%d_%d", &y, &m); err != nil {
-			continue
-		}
-		partEnd := time.Date(y, time.Month(m), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
 		if partEnd.After(cutoff) {
 			continue
 		}
@@ -1488,14 +1613,62 @@ func IsUserAdmin(db *sql.DB, userID int64) bool {
 	return err == nil && isAdmin
 }
 
+// EstimateSyslogLogsCount returns an approximate total row count for
+// syslog_logs, summed from each partition's pg_class.reltuples (kept current
+// by the vacuum/ANALYZE scheduler in maintenance.go) instead of a full
+// sequential scan across every partition. syslog_logs itself is the empty
+// partitioned parent, so reltuples must be summed over its partitions via
+// pg_inherits rather than read directly off pg_class for 'syslog_logs'.
+// Intended for informational totals (sidebar/dashboard/export-preview counts)
+// shown with no filter applied - callers that filter by hostname/severity/
+// search/etc. still need an exact, filtered COUNT(*).
+func EstimateSyslogLogsCount(ctx context.Context, db *sql.DB) (int64, error) {
+	var estimate float64
+	err := db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(c.reltuples), 0)
+		FROM pg_class c
+		JOIN pg_inherits i ON i.inhrelid = c.oid
+		JOIN pg_class p ON p.oid = i.inhparent
+		WHERE p.relname = 'syslog_logs'
+	`).Scan(&estimate)
+	if err != nil {
+		return 0, err
+	}
+	if estimate < 0 {
+		estimate = 0
+	}
+	return int64(estimate), nil
+}
+
+// refreshMaterializedView refreshes a single materialized view, using the
+// cheap CONCURRENTLY form once the view holds data from a prior refresh, or
+// falling back to a plain (locking) REFRESH for its very first population -
+// CONCURRENTLY errors out on a view that was created WITH NO DATA (see
+// runSchemaMigration, which now creates all dashboard materialized views
+// that way so the initial migration doesn't have to compute them inline).
+func refreshMaterializedView(ctx context.Context, db *sql.DB, name string) error {
+	var populated bool
+	if err := db.QueryRowContext(ctx, `SELECT relispopulated FROM pg_class WHERE relname = $1`, name).Scan(&populated); err != nil {
+		return fmt.Errorf("check population state of %s: %w", name, err)
+	}
+	stmt := "REFRESH MATERIALIZED VIEW CONCURRENTLY " + name
+	if !populated {
+		stmt = "REFRESH MATERIALIZED VIEW " + name
+	}
+	_, err := db.ExecContext(ctx, stmt)
+	return err
+}
+
 func RefreshMaterializedViews(db *sql.DB) {
 	slog.Info("refreshing materialized views")
-	_, err1 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_summary")
-	_, err2 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_severity")
-	_, err3 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_device_stats")
-	_, err4 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_top_errors")
-	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
-		slog.Error("materialized view refresh failed", "err1", err1, "err2", err2, "err3", err3, "err4", err4)
+	ctx := context.Background()
+	err1 := refreshMaterializedView(ctx, db, "mv_dashboard_summary")
+	err2 := refreshMaterializedView(ctx, db, "mv_dashboard_severity")
+	err3 := refreshMaterializedView(ctx, db, "mv_device_stats")
+	err4 := refreshMaterializedView(ctx, db, "mv_dashboard_top_errors")
+	err5 := refreshMaterializedView(ctx, db, "mv_timeline_hourly")
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil {
+		slog.Error("materialized view refresh failed", "err1", err1, "err2", err2, "err3", err3, "err4", err4, "err5", err5)
 	}
 	slog.Info("materialized views refreshed")
 }

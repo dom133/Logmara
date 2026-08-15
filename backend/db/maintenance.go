@@ -10,18 +10,51 @@ import (
 	"time"
 )
 
-func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func(), func(), func()) {
+func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func(), func(), func(), func()) {
 	vacuumInterval := getIntervalHours("VACUUM_INTERVAL_HOURS", "vacuum_interval_hours", 24)
 	mvInterval := getIntervalMinutes("MV_REFRESH_INTERVAL_MIN", "mv_refresh_interval_min", 30)
+	partitionInterval := getIntervalHours("PARTITION_CREATE_INTERVAL_HOURS", "partition_create_interval_hours", 24)
 
 	createPartitions(db)
+	stopPartitions := startPartitionScheduler(ctx, db, partitionInterval)
 	stopVacuum := startVacuumScheduler(ctx, db, vacuumInterval)
 	stopMV := startMVScheduler(ctx, db, mvInterval)
 	stopTokenCleanup := startRefreshTokenCleanupScheduler(ctx, db, 1*time.Hour)
 	stopJWTCleanup := startJWTBlacklistCleanup(ctx, db, 1*time.Minute)
 	stopArchive := startArchiveCleanupScheduler(ctx, db, 12*time.Hour)
 
-	return stopVacuum, stopMV, stopTokenCleanup, stopJWTCleanup, stopArchive
+	return stopVacuum, stopMV, stopTokenCleanup, stopJWTCleanup, stopArchive, stopPartitions
+}
+
+// startPartitionScheduler periodically re-runs createPartitions so the
+// ahead-of-time partition window stays filled for the lifetime of a
+// long-running process, not just at startup. This matters far more at daily
+// granularity than the old fixed monthly scheme: 3 months of pre-created
+// monthly partitions comfortably outlasted any realistic uptime between
+// restarts, but daily partitions only look a handful of days ahead by
+// default (see partitionGranularity.aheadCount), so a process staying up
+// past that window would otherwise start spilling new logs into the
+// unpartitioned default partition.
+func startPartitionScheduler(ctx context.Context, db *sql.DB, interval time.Duration) func() {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		slog.Info("partition scheduler started", "interval_hours", interval.Hours())
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("partition scheduler stopped")
+				close(done)
+				return
+			case <-ticker.C:
+				createPartitions(db)
+			}
+		}
+	}()
+	return func() {
+		<-done
+	}
 }
 
 func startVacuumScheduler(ctx context.Context, db *sql.DB, interval time.Duration) func() {
@@ -260,11 +293,11 @@ func activePartitionNames(db *sql.DB) []string {
 		return nil
 	}
 
-	now := time.Now().UTC()
+	g := configuredPartitionGranularity()
+	current := g.truncate(time.Now().UTC())
 	names := make([]string, 0, 2)
-	for i := -1; i <= 0; i++ {
-		t := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, i, 0)
-		name := "syslog_logs_" + t.Format("2006_01")
+	for _, t := range []time.Time{g.previous(current), current} {
+		name := g.partitionName(t)
 		var exists bool
 		if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = $1)", name).Scan(&exists); err == nil && exists {
 			names = append(names, name)
@@ -307,8 +340,7 @@ func RefreshMV(ctx context.Context, db *sql.DB) {
 	}
 	slog.Info("refreshing materialized views")
 	for _, mv := range []string{"mv_dashboard_summary", "mv_dashboard_severity", "mv_timeline_hourly", "mv_device_stats", "mv_dashboard_top_errors"} {
-		_, err := db.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY " + mv)
-		if err != nil {
+		if err := refreshMaterializedView(ctx, db, mv); err != nil {
 			slog.Error("mv refresh failed", "view", mv, "err", err)
 		} else {
 			slog.Info("materialized view refreshed", "view", mv)
@@ -334,6 +366,13 @@ func getIntervalMinutes(envKey, settingKey string, defaultMinutes int) time.Dura
 	return time.Duration(defaultMinutes) * time.Minute
 }
 
+// createPartitions pre-creates syslog_logs partitions from the current
+// period through granularity.aheadCount periods ahead, so inserts never fall
+// back to the unpartitioned default partition just because nobody's created
+// tomorrow's (or next month's) table yet. Called once at startup and then on
+// a recurring schedule (see startPartitionScheduler) - the ahead window is a
+// buffer against a long-running process, not something startup alone can
+// keep filled at daily granularity.
 func createPartitions(db *sql.DB) {
 	isPartitioned := false
 	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p')`).Scan(&isPartitioned)
@@ -341,14 +380,12 @@ func createPartitions(db *sql.DB) {
 		return
 	}
 
-	now := time.Now().UTC()
-	currentMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	monthsAhead := 3
+	g := configuredPartitionGranularity()
+	partStart := g.truncate(time.Now().UTC())
 
-	for i := 0; i <= monthsAhead; i++ {
-		partStart := currentMonth.AddDate(0, i, 0)
-		partEnd := partStart.AddDate(0, 1, 0)
-		partName := "syslog_logs_" + partStart.Format("2006_01")
+	for i := 0; i <= g.aheadCount; i++ {
+		partEnd := g.next(partStart)
+		partName := g.partitionName(partStart)
 
 		_, err := db.Exec(
 			fmt.Sprintf(
@@ -363,5 +400,7 @@ func createPartitions(db *sql.DB) {
 		} else {
 			slog.Info("partition ensured", "partition", partName)
 		}
+
+		partStart = partEnd
 	}
 }
