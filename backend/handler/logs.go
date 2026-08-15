@@ -46,7 +46,7 @@ func IngestBatch(db *sql.DB, engine *parser.Engine) gin.HandlerFunc {
 		defer tx.Rollback()
 
 query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers)
-		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
+		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
 		stmt, err := tx.Prepare(query)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not prepare statement"})
