@@ -45,7 +45,7 @@ func TestBuildLogWhereClauses_FromHostIP(t *testing.T) {
 		if len(clauses) != 1 {
 			t.Errorf("expected 1 clause, got %d", len(clauses))
 		}
-		if clauses[0] != "COALESCE(fromhost_ip, '') = $1" {
+		if clauses[0] != "COALESCE(syslog_logs.fromhost_ip, '') = $1" {
 			t.Errorf("expected COALESCE clause, got %q", clauses[0])
 		}
 		if idx != 2 {
@@ -145,7 +145,7 @@ func TestBuildLogWhereClauses_Devices(t *testing.T) {
 	if len(clauses) != 1 {
 		t.Errorf("expected 1 clause, got %d", len(clauses))
 	}
-	expected := "COALESCE(fromhost_ip, '') IN ($1, $2)"
+	expected := "COALESCE(syslog_logs.fromhost_ip, '') IN ($1, $2)"
 	if clauses[0] != expected {
 		t.Errorf("expected %q, got %q", expected, clauses[0])
 	}

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"syslytics/model"
+	"logmara/model"
 
 	"github.com/lib/pq"
 )

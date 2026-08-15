@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"logmara/util"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -43,8 +45,8 @@ func (c *Client) Close() error {
 //     set, connects via Sentinel (REDIS_MASTER_NAME, default "mymaster").
 //   - REDIS_ADDR: a single host:port, used when REDIS_SENTINEL_ADDRS is
 //     unset (simple non-Sentinel setups, e.g. local dev/testing).
-//   - REDIS_PASSWORD: optional, used for both the data connection and (in
-//     Sentinel mode) sentinel auth.
+//   - REDIS_PASSWORD (or REDIS_PASSWORD_FILE): optional, used for both the
+//     data connection and (in Sentinel mode) sentinel auth.
 //
 // Returns (nil, nil) when neither REDIS_SENTINEL_ADDRS nor REDIS_ADDR is
 // set - this is the expected, silent "not configured" path for
@@ -56,7 +58,9 @@ func (c *Client) Close() error {
 func Connect() (*Client, error) {
 	sentinelAddrsRaw := strings.TrimSpace(os.Getenv("REDIS_SENTINEL_ADDRS"))
 	addr := strings.TrimSpace(os.Getenv("REDIS_ADDR"))
-	password := os.Getenv("REDIS_PASSWORD")
+	// Supports REDIS_PASSWORD_FILE (a mounted Docker/Swarm secret) as well as
+	// the plain env var - see util.SecretFromEnv.
+	password := util.SecretFromEnv("REDIS_PASSWORD")
 
 	var rdb redis.UniversalClient
 	switch {

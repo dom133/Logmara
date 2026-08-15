@@ -22,6 +22,22 @@ export const SEVERITY_LABELS: Record<string, string> = {
   debug: 'Debug',
 };
 
+// Ordered worst-to-best; drives severity sort order across the UI.
+export const SEVERITY_ORDER = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug'];
+
+// Hex equivalents of SEVERITY_COLORS for use outside antd <Tag> (e.g. chart itemStyle),
+// where antd color names like 'default' aren't valid CSS and 'magenta' collides between emerg/alert.
+export const SEVERITY_HEX: Record<string, string> = {
+  emerg: '#9254de',
+  alert: '#eb2f96',
+  crit: '#f5222d',
+  err: '#fa8c16',
+  warning: '#faad14',
+  notice: '#1890ff',
+  info: '#13c2c2',
+  debug: '#8c8c8c',
+};
+
 export const DATE_PRESETS = [
   { label: 'Last Hour', value: '1h' },
   { label: 'Last 6 Hours', value: '6h' },

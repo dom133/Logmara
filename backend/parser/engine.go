@@ -12,7 +12,7 @@ import (
 
 	"github.com/lib/pq"
 
-	"syslytics/model"
+	"logmara/model"
 )
 
 type Engine struct {
@@ -20,6 +20,28 @@ type Engine struct {
 	parsers  []model.Parser
 	mu       sync.RWMutex
 	reloadCh chan struct{}
+}
+
+// regexCache holds compiled regexes keyed by pattern source, shared across
+// all Engine instances. Match/Extract run on every single ingested log
+// line for every enabled parser - recompiling the same pattern per line
+// (regexp.Compile does a full parse + NFA build) was the dominant per-line
+// CPU cost at high ingestion rates. Keyed by pattern text rather than
+// parser ID, so a reload that leaves a pattern unchanged keeps reusing its
+// cached regex, and a changed pattern simply gets a new entry (old ones are
+// harmless, bounded by the number of distinct patterns ever seen).
+var regexCache sync.Map // map[string]*regexp.Regexp
+
+func compileCached(pattern string) (*regexp.Regexp, error) {
+	if v, ok := regexCache.Load(pattern); ok {
+		return v.(*regexp.Regexp), nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	regexCache.Store(pattern, re)
+	return re, nil
 }
 
 func NewEngine(db *sql.DB) *Engine {
@@ -112,7 +134,7 @@ func (e *Engine) Match(hostname, appName, message string) []model.Parser {
 			continue
 		}
 
-		re, err := regexp.Compile(p.Regex)
+		re, err := compileCached(p.Regex)
 		if err != nil {
 			slog.Error("regex compile error", "parser", p.Name, "error", err)
 			continue
@@ -154,9 +176,11 @@ func (e *Engine) parserMatches(p *model.Parser, hostname, appName, message strin
 }
 
 func matchGlob(pattern, value string) bool {
-	re := globToRegex(pattern)
-	matched, _ := regexp.MatchString(re, value)
-	return matched
+	re, err := compileCached(globToRegex(pattern))
+	if err != nil {
+		return false
+	}
+	return re.MatchString(value)
 }
 
 func globToRegex(pattern string) string {
@@ -183,7 +207,7 @@ func globToRegex(pattern string) string {
 func (e *Engine) Extract(parser *model.Parser, message string) map[string]string {
 	result := make(map[string]string)
 
-	re, err := regexp.Compile(parser.Regex)
+	re, err := compileCached(parser.Regex)
 	if err != nil {
 		slog.Error("regex compile error", "parser", parser.Name, "error", err)
 		return nil
@@ -338,6 +362,12 @@ func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.Parsed
 	}
 	defer fieldRows.Close()
 
+	// Dedupe only within the same parser (parsed_fields_registry already
+	// enforces UNIQUE(parser_id, field_name), so this just guards against
+	// re-scanning the same row twice) - different parsers legitimately reuse
+	// field names like "src_ip"/"mac_address", and keying on name alone would
+	// silently drop, say, Ubiquiti Firewall Log's "src_ip" whenever some
+	// other matched parser for the same device(s) also has a "src_ip" field.
 	var fields []model.ParsedField
 	seen := make(map[string]bool)
 	for fieldRows.Next() {
@@ -345,8 +375,9 @@ func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.Parsed
 		if err := fieldRows.Scan(&f.ID, &f.ParserID, &f.Name, &f.Label, &f.Type, &f.ParserName); err != nil {
 			continue
 		}
-		if !seen[f.Name] {
-			seen[f.Name] = true
+		key := f.ParserName + "\x00" + f.Name
+		if !seen[key] {
+			seen[key] = true
 			fields = append(fields, f)
 		}
 	}

@@ -1,4 +1,4 @@
-# HA application tier (api, rsyslog, frontend) for Docker Swarm.
+# HA application tier (api, rsyslog, frontend, haproxy-app) for Docker Swarm.
 #
 # OPTIONAL, additive stack for multi-node deployments — does not replace or
 # modify docker-compose.yml (the supported single-server path, see README
@@ -7,10 +7,10 @@
 # Swarm `docker stack deploy` does NOT build images (no `build:` support),
 # so images must be built and pushed to a registry every node can pull from
 # first:
-#   docker build -f Dockerfile.backend  -t ${REGISTRY:?}/syslytics-api:${TAG:-latest} .
-#   docker build -f Dockerfile.rsyslog  -t ${REGISTRY:?}/syslytics-rsyslog:${TAG:-latest} .
-#   docker build -f Dockerfile.frontend -t ${REGISTRY:?}/syslytics-frontend:${TAG:-latest} .
-#   docker push ${REGISTRY:?}/syslytics-api:${TAG:-latest}   (repeat for the other two)
+#   docker build -f Dockerfile.backend  -t ${REGISTRY:?}/logmara-api:${TAG:-latest} .
+#   docker build -f Dockerfile.rsyslog  -t ${REGISTRY:?}/logmara-rsyslog:${TAG:-latest} .
+#   docker build -f Dockerfile.frontend -t ${REGISTRY:?}/logmara-frontend:${TAG:-latest} .
+#   docker push ${REGISTRY:?}/logmara-api:${TAG:-latest}   (repeat for the other two)
 #
 # `api` and `frontend` run 2 replicas each (see API_REPLICAS/FRONTEND_
 # REPLICAS below to change that). This requires docker-stack.redis.yml to
@@ -22,6 +22,14 @@
 # REDIS_SENTINEL_ADDRS set, all of that transparently falls back to the
 # original single-process behavior instead - safe, but only correct at
 # replicas: 1.
+#
+# `frontend` is not published on the host anymore - `haproxy-app` (below) is
+# what actually binds :80/:443 on every edge=true node and load-balances
+# across every frontend/api replica cluster-wide via tasks.frontend/tasks.api.
+# This is what makes multiple replicas an actual load-balancing win behind
+# the keepalived VIP, not just a failover target (only one node's published
+# ports were ever reachable through the VIP before). :8080 (the API) is
+# never published directly - all traffic goes through nginx on :80/:443.
 #
 # `rsyslog` uses `mode: global` on role==edge nodes with `mode: host` port
 # publishing instead: this bypasses the Swarm ingress routing mesh, which
@@ -35,19 +43,24 @@
 # Prerequisites (see README "High Availability Deployment"):
 #   - docker-stack.postgres.yml already deployed (provides haproxy:5000)
 #   - docker-stack.redis.yml already deployed (provides sentinel1/2/3:26379)
-#   - Nodes labeled app=true (api/frontend/haproxy) and edge=true (rsyslog).
-#     These are independent boolean labels (not a single "role" value), so a
-#     small cluster can freely put both on the same nodes.
+#   - Nodes labeled app=true (api/frontend) and edge=true (rsyslog,
+#     haproxy-app, keepalived). These are independent boolean labels (not a
+#     single "role" value), so a small cluster can freely put both on the
+#     same nodes - haproxy-app needs edge=true specifically, since it must
+#     colocate with whichever node currently holds the keepalived VIP.
+#   - haproxy_app_cfg Swarm config created (`scripts/swarm-bootstrap.sh
+#     haproxy-app-config`)
 #   - NFS export mounted at the same path on every app=true / edge=true node,
 #     e.g. /mnt/syslog-nfs, exporting what were log_data/log_spool
-#   - JWT_SECRET, POSTGRES_USER, POSTGRES_PASSWORD,
-#     POSTGRES_DB set in your shell/.env before deploying. POSTGRES_PASSWORD
-#     here MUST equal the content of the pg_app_password secret used by
-#     docker-stack.postgres.yml — that secret is what actually sets the
-#     role's password in Postgres (see README). Likewise REDIS_PASSWORD here
-#     must equal the redis_password secret used by docker-stack.redis.yml.
+#   - jwt_secret and encryption_key secrets created (`scripts/swarm-
+#     bootstrap.sh app-secrets <jwt> <enc>`); pg_app_password and
+#     redis_password already exist from the two prerequisite stacks above
+#     and are reused here as-is - all four are mounted into the api service
+#     and read via the *_FILE env var convention (see util.SecretFromEnv),
+#     never as plain env vars. POSTGRES_USER/POSTGRES_DB below are optional
+#     (default syslog/syslog_db) and are not secret.
 #
-# Deploy with: docker stack deploy -c docker-stack.app.yml syslog-app
+# Deploy with: docker stack deploy -c docker-stack.app.yml logmara-app
 
 version: "3.8"
 
@@ -99,7 +112,7 @@ services:
         condition: on-failure
 
   rsyslog:
-    image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-rsyslog:${TAG:-latest}
+    image: ${REGISTRY:?set REGISTRY to your image registry}/logmara-rsyslog:${TAG:-latest}
     environment:
       - TZ=UTC
     volumes:
@@ -114,11 +127,17 @@ services:
         published: 514
         protocol: udp
         mode: host
-      # mTLS listener for remote syslog relays (Admin > Settings > enable
-      # relay ingestion). Safe to leave published even when unused - see the
+      # Direct TLS ingestion, no client certificate required - see the
       # matching comment in docker-compose.yml.
       - target: 6514
         published: 6514
+        protocol: tcp
+        mode: host
+      # mTLS listener for remote syslog relays (Admin > Settings > enable
+      # relay ingestion). Safe to leave published even when unused - see the
+      # matching comment in docker-compose.yml.
+      - target: 6515
+        published: 6515
         protocol: tcp
         mode: host
     networks:
@@ -144,22 +163,28 @@ services:
         condition: on-failure
 
   api:
-    image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-api:${TAG:-latest}
+    image: ${REGISTRY:?set REGISTRY to your image registry}/logmara-api:${TAG:-latest}
     environment:
       TZ: UTC
-      # api reads these from the environment, sourced from your shell/.env at
-      # `docker stack deploy` time, same as docker-compose.yml. JWT_SECRET and
-      # ENCRYPTION_KEY also support the *_FILE convention (e.g.
-      # JWT_SECRET_FILE=/run/secrets/jwt_secret) if you'd rather mount them as
-      # Docker secrets than pass them as plain env vars - see util.SecretFromEnv.
-      # POSTGRES_PASSWORD must match the pg_app_password secret content used
-      # by docker-stack.postgres.yml (see prerequisites comment above).
-      DATABASE_URL: postgres://${POSTGRES_USER:-syslog}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD, matching the pg_app_password secret}@haproxy:5000/${POSTGRES_DB:-syslog_db}?sslmode=disable
-      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET before deploying}
+      # Every credential below is mounted as a Docker Swarm secret (see the
+      # `secrets:` list below and the top-level `secrets:` section) rather
+      # than passed as a plain env var - none of them appear in `docker
+      # service inspect`, /proc, or crash dumps this way. util.SecretFromEnv
+      # reads the *_FILE-suffixed path when the plain var is unset. Create
+      # them with `scripts/swarm-bootstrap.sh app-secrets` (jwt_secret,
+      # encryption_key) - pg_app_password and redis_password are the same
+      # secrets already created for docker-stack.postgres.yml/redis.yml
+      # (see prerequisites comment above), reused here rather than
+      # duplicated as separate plain env vars.
+      POSTGRES_HOST: haproxy
+      POSTGRES_PORT: "5000"
+      POSTGRES_USER: ${POSTGRES_USER:-syslog}
+      POSTGRES_DB: ${POSTGRES_DB:-syslog_db}
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_app_password
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
       # Never stored in the database - a DB dump alone must not be able to
-      # decrypt stored SMTP/LDAP credentials. Generate with
-      # `openssl rand -base64 48`. See README "Security keys".
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY before deploying}
+      # decrypt stored SMTP/LDAP credentials. See README "Security keys".
+      ENCRYPTION_KEY_FILE: /run/secrets/encryption_key
       PORT: "8080"
       LOG_FILE_PATH: /data/logs.jsonl
       # tasks.frontend (not plain "frontend") resolves to every frontend
@@ -180,12 +205,27 @@ services:
       RELAY_CENTRAL_HOST: ${RELAY_CENTRAL_HOST:-}
       # Backs Admin > Health - see the docker-proxy service above.
       DOCKER_PROXY_URL: http://docker-proxy:2375
-      # Must match the redis_password secret used by docker-stack.redis.yml.
       REDIS_SENTINEL_ADDRS: sentinel1:26379,sentinel2:26379,sentinel3:26379
       REDIS_MASTER_NAME: mymaster
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD, matching the redis_password secret}
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      # Mirrors deploy.replicas below so main.go can refuse to start rather
+      # than silently run uncoordinated tailers if this stack is ever
+      # deployed with API_REPLICAS > 1 but without docker-stack.redis.yml.
+      API_REPLICAS: ${API_REPLICAS:-2}
+      # Directory the builtin parser JSON definitions (backend/db/parsers)
+      # are bootstrapped into and re-read from on every start, so an
+      # operator can edit/add/remove them without rebuilding the image. Must
+      # be shared storage (NFS, like log_data below) since API_REPLICAS can
+      # run on different nodes and all of them need to see the same edits.
+      PARSER_DEFS_DIR: /parsers
+    secrets:
+      - jwt_secret
+      - encryption_key
+      - pg_app_password
+      - redis_password
     volumes:
       - log_data:/data
+      - parser_defs:/parsers
     networks:
       - syslog_net
     logging:
@@ -200,8 +240,16 @@ services:
       restart_policy:
         condition: any
         delay: 5s
+      # stop-first (not start-first): each replica's tailer only guards
+      # against concurrent ingestion via Redis leader election, which still
+      # needs its lock's TTL to lapse before a new task can take over (see
+      # main.go's LeaderElector comment) - starting the new task before the
+      # old one has fully stopped means both briefly exist, and the update
+      # only really has to wait as long as the old task takes to shut down
+      # (well under the lock TTL). Trading a brief gap in serving traffic
+      # during rollout for one less thing that has to line up perfectly.
       update_config:
-        order: start-first
+        order: stop-first
         parallelism: 1
       resources:
         limits:
@@ -212,16 +260,9 @@ services:
           memory: 512M
 
   frontend:
-    image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-frontend:${TAG:-latest}
+    image: ${REGISTRY:?set REGISTRY to your image registry}/logmara-frontend:${TAG:-latest}
     volumes:
       - log_data:/data
-    ports:
-      - target: 80
-        published: ${FRONTEND_PORT:-80}
-        mode: host
-      - target: 443
-        published: ${FRONTEND_HTTPS_PORT:-443}
-        mode: host
     networks:
       - syslog_net
     depends_on:
@@ -238,8 +279,11 @@ services:
       restart_policy:
         condition: any
         delay: 5s
+      # stop-first, matching api above: old replica fully stops before the
+      # new one starts, so an update never runs old and new versions side by
+      # side even briefly.
       update_config:
-        order: start-first
+        order: stop-first
         parallelism: 1
       resources:
         limits:
@@ -248,6 +292,43 @@ services:
         reservations:
           cpus: '0.25'
           memory: 128M
+
+  # Fronts frontend/api with real load balancing across every replica
+  # cluster-wide (via tasks.frontend/tasks.api - see haproxy/haproxy-app.cfg),
+  # behind the keepalived VIP. mode: global + edge==true mirrors rsyslog: one
+  # instance per edge node, but only the node currently holding the VIP
+  # actually receives external traffic - unlike rsyslog, that one instance
+  # then load-balances across the *entire* frontend/api replica set, not
+  # just itself, which is what makes replicas > 1 an actual scale-out win
+  # for HTTP traffic instead of only a failover target.
+  haproxy-app:
+    image: haproxy:2.9-alpine
+    configs:
+      - source: haproxy_app_cfg
+        target: /usr/local/etc/haproxy/haproxy.cfg
+    ports:
+      - target: 80
+        published: ${FRONTEND_PORT:-80}
+        mode: host
+      - target: 443
+        published: ${FRONTEND_HTTPS_PORT:-443}
+        mode: host
+    networks:
+      - syslog_net
+    depends_on:
+      - frontend
+      - api
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      mode: global
+      placement:
+        constraints: [node.labels.edge == true]
+      restart_policy:
+        condition: on-failure
 
 networks:
   syslog_net:
@@ -266,3 +347,27 @@ volumes:
       type: nfs
       o: addr=${NFS_SERVER:?set NFS_SERVER to your NFS host},rw,nfsvers=4
       device: ":${NFS_LOG_SPOOL_PATH:-/srv/syslog-ha/nfs/log_spool}"
+  parser_defs:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NFS_SERVER:?set NFS_SERVER to your NFS host},rw,nfsvers=4
+      device: ":${NFS_PARSER_DEFS_PATH:-/srv/syslog-ha/nfs/parser_defs}"
+
+secrets:
+  # Created via `scripts/swarm-bootstrap.sh app-secrets <jwt> <enc>`.
+  jwt_secret:
+    external: true
+  encryption_key:
+    external: true
+  # Same secrets already created for docker-stack.postgres.yml/redis.yml
+  # (see prerequisites comment above) - reused here, not recreated.
+  pg_app_password:
+    external: true
+  redis_password:
+    external: true
+
+configs:
+  # Created via `scripts/swarm-bootstrap.sh haproxy-app-config`.
+  haproxy_app_cfg:
+    external: true

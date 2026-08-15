@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"syslytics/db"
-	"syslytics/model"
+	"logmara/db"
+	"logmara/model"
 )
 
 // BuildNotifier constructs the Sender for a channel given its decrypted
@@ -99,11 +99,24 @@ func (d *Dispatcher) DispatchAlert(alert model.Alert, payload Payload) {
 		return
 	}
 	alertID := alert.ID
+	// Callers (alertengine) don't set this themselves - filled in here so
+	// every downstream consumer (push's admin-only filter, the in_app/
+	// notification_log rows, the SSE stream) can gate on it.
+	payload.AlertRuleType = alert.RuleType
 	// One id per firing, shared by every channel's notification_log row
 	// below, so the alert history can group them back into a single
 	// "this rule fired, here's what happened per channel" entry instead of
 	// showing one row per channel per firing.
 	firingID := uuid.New().String()
+
+	// Deep link back into this firing's Details view in the alert history -
+	// used by push notifications (see notify/push.go) and any other channel
+	// that renders Payload.Link. Set here (not by callers in alertengine)
+	// because firingID doesn't exist until now. Only filled in when a caller
+	// hasn't already set a more specific link.
+	if payload.Link == "" {
+		payload.Link = fmt.Sprintf("/alerts?tab=history&firing=%s", firingID)
+	}
 
 	if len(channels) == 0 {
 		// The rule fired but has nothing to deliver to - record that it fired
@@ -111,7 +124,7 @@ func (d *Dispatcher) DispatchAlert(alert model.Alert, payload Payload) {
 		_ = db.LogNotification(d.DB, model.NotificationLogEntry{
 			AlertID: &alertID, AlertName: alert.Name, FiringID: firingID,
 			ChannelName: "(none)", Status: "no_channel", Detail: "Rule fired but has no notification channels attached",
-			TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions,
+			TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions, RuleType: payload.AlertRuleType,
 		})
 		return
 	}
@@ -207,7 +220,7 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName, firingID string, ch 
 	_ = db.LogNotification(d.DB, model.NotificationLogEntry{
 		AlertID: alertID, AlertName: alertName, FiringID: firingID, ChannelID: &ch.ID, ChannelName: ch.Name, ChannelType: ch.Type,
 		Status: status, Detail: detail,
-		TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions,
+		TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions, RuleType: payload.AlertRuleType,
 		InAppNotificationID: inAppID,
 	})
 }
@@ -238,7 +251,7 @@ func sendPushChannel(database *sql.DB, payload Payload, targetUserIds []int64) (
 func TestChannel(database *sql.DB, channel model.NotificationChannel, onInApp func(model.InAppNotification)) error {
 	payload := Payload{
 		Title:    "Test notification",
-		Message:  "This is a test notification from Syslytics.",
+		Message:  "This is a test notification from Logmara.",
 		Severity: "info",
 	}
 

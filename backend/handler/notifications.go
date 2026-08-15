@@ -7,13 +7,14 @@ import (
 	"net/http"
 	"time"
 
-	"syslytics/db"
-	"syslytics/middleware"
-	"syslytics/model"
-	"syslytics/notify"
-	"syslytics/notifyhub"
+	"logmara/db"
+	"logmara/middleware"
+	"logmara/model"
+	"logmara/notify"
+	"logmara/notifyhub"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // RequireNotificationsEnabled blocks the alert/channel/history management
@@ -49,7 +50,12 @@ func CreateNotificationChannel(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		channel, err := db.CreateNotificationChannel(database, req)
+		var createdBy int64
+		if id, ok := extractUserID(c); ok {
+			createdBy = id
+		}
+
+		channel, err := db.CreateNotificationChannel(database, req, createdBy)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to create notification channel", err))
 			return
@@ -58,11 +64,67 @@ func CreateNotificationChannel(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
+// channelOwnedByCaller loads the channel and checks that the caller may
+// modify it: either they created it, or - for a channel with no recorded
+// owner (seeded before the created_by column existed, so there's no real
+// creator to compare against) - they're an admin. That fallback is
+// deliberately admin-only, not "any editor": an unclaimed legacy channel
+// isn't fair game for whichever editor happens to click Edit first, only
+// for the role that could already manage every channel before per-channel
+// ownership existed. Returns nil and writes an error response if the check
+// fails.
+func channelOwnedByCaller(c *gin.Context, database *sql.DB, id int64) (*model.NotificationChannel, bool) {
+	channel, err := db.GetNotificationChannel(database, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			middleware.HandleError(c, model.NewNotFound("Notification channel not found", nil))
+			return nil, false
+		}
+		middleware.HandleError(c, model.NewInternal("Failed to load notification channel", err))
+		return nil, false
+	}
+
+	if !callerCanModifyChannel(c, channel) {
+		if channel.CreatedBy != nil {
+			middleware.HandleError(c, model.NewForbidden("You can only modify notification channels you created", nil))
+		} else {
+			middleware.HandleError(c, model.NewForbidden("Only an admin can modify a channel with no recorded owner", nil))
+		}
+		return nil, false
+	}
+	return channel, true
+}
+
+// callerCanModifyChannel decides, without touching the DB, whether the
+// caller may modify channel: they created it, or - for a channel with no
+// recorded owner (seeded before the created_by column existed, so there's
+// no real creator to compare against) - they're an admin. Split out from
+// channelOwnedByCaller so this decision can be unit tested against a plain
+// gin.Context without a real database connection.
+func callerCanModifyChannel(c *gin.Context, channel *model.NotificationChannel) bool {
+	if channel.CreatedBy != nil {
+		callerID, ok := extractUserID(c)
+		return ok && *channel.CreatedBy == callerID
+	}
+
+	claims, exists := c.Get("claims")
+	mapClaims, okClaims := claims.(*jwt.MapClaims)
+	if !exists || !okClaims {
+		return false
+	}
+	role, _ := (*mapClaims)["role"].(string)
+	return role == "admin"
+}
+
 func UpdateNotificationChannel(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			return
+		}
+
+		if _, ok := channelOwnedByCaller(c, database, id); !ok {
 			return
 		}
 
@@ -90,6 +152,10 @@ func DeleteNotificationChannel(database *sql.DB) gin.HandlerFunc {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
+			return
+		}
+
+		if _, ok := channelOwnedByCaller(c, database, id); !ok {
 			return
 		}
 
@@ -140,7 +206,9 @@ func GetNotificationHistory(database *sql.DB) gin.HandlerFunc {
 			limit = DefaultAdminLimit
 		}
 
-		entries, err := db.GetNotificationHistory(database, limit)
+		userID := c.GetInt64("user_id")
+		isAdmin := db.IsUserAdmin(database, userID)
+		entries, err := db.GetNotificationHistory(database, limit, isAdmin, userID)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to load notification history", err))
 			return
@@ -259,20 +327,23 @@ func StreamNotifications(hub *notifyhub.Hub, database *sql.DB) gin.HandlerFunc {
 			case <-c.Request.Context().Done():
 				return
 			case n := <-ch:
-				if !isAdmin && (n.AlertRuleType == "audit_log" || n.AlertRuleType == "relay_cert_expiring") {
-					continue
-				}
+				targeted := false
 				if len(n.TargetUserIds) > 0 {
-					found := false
 					for _, uid := range n.TargetUserIds {
 						if uid == userID {
-							found = true
+							targeted = true
 							break
 						}
 					}
-					if !found {
+					if !targeted {
 						continue
 					}
+				}
+				// Broadcast (no specific targets) admin-only notifications
+				// stay hidden from non-admins; being specifically targeted
+				// overrides that, same reasoning as db.GetInAppNotifications.
+				if !targeted && !isAdmin && model.IsAdminOnlyRuleType(n.AlertRuleType) {
+					continue
 				}
 				b, err := json.Marshal(n)
 				if err != nil {

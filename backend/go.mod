@@ -1,4 +1,4 @@
-module syslytics
+module logmara
 
 go 1.24.0
 

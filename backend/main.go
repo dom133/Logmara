@@ -14,21 +14,27 @@ import (
 	"syscall"
 	"time"
 
-	"syslytics/alertengine"
-	"syslytics/audit"
-	"syslytics/auth"
-	"syslytics/control"
-	"syslytics/db"
-	"syslytics/handler"
-	"syslytics/middleware"
-	"syslytics/notifyhub"
-	"syslytics/parser"
-	"syslytics/sharedstate"
-	"syslytics/tailer"
-	"syslytics/util"
+	"logmara/alertengine"
+	"logmara/audit"
+	"logmara/auth"
+	"logmara/control"
+	"logmara/db"
+	"logmara/handler"
+	"logmara/middleware"
+	"logmara/notifyhub"
+	"logmara/parser"
+	"logmara/sharedstate"
+	"logmara/tailer"
+	"logmara/util"
 
 	"github.com/gin-gonic/gin"
 )
+
+const appVersion = "0.0.1"
+
+func versionHandler(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"version": appVersion})
+}
 
 // RateLimiter is satisfied by both the local, in-memory limiter (default,
 // single-server/single-replica) and sharedstate.RedisRateLimiter (used
@@ -243,13 +249,32 @@ func main() {
 		slog.Info("redis shared state enabled")
 	}
 
+	// API_REPLICAS mirrors the deploy.replicas value docker-stack.app.yml
+	// passes through as an env var (see its "environment:" block) - it has
+	// no effect on the single-server docker-compose.yml path, which never
+	// sets it and defaults to 1 here. Running more than one api replica
+	// without Redis means every replica runs its own uncoordinated tailer
+	// against the same shared log file and position checkpoint (see
+	// tailer.Run / runIngestionLoop): they race on both, corrupting the
+	// checkpoint and producing MALFORMED JSON as one replica seeks the file
+	// mid-line. That's silent data corruption, not just a missed
+	// optimization, so fail fast instead of letting it happen.
+	if apiReplicas, err := strconv.Atoi(os.Getenv("API_REPLICAS")); err == nil && apiReplicas > 1 && sharedClient == nil {
+		slog.Error("API_REPLICAS > 1 without Redis configured; multiple replicas would run uncoordinated tailers against the same log file and corrupt its position checkpoint - deploy docker-stack.redis.yml and set REDIS_SENTINEL_ADDRS/REDIS_ADDR, or run a single replica", "api_replicas", apiReplicas)
+		os.Exit(1)
+	}
+
 	// Feed every slow query recorded at the driver level (db.instrumentedConn)
 	// into the same admin slow-query log that handler.timedQuery writes to,
 	// so /admin/slow-queries covers all database access, not just the
 	// call sites explicitly wrapped in timedQuery.
 	db.SetSlowQueryHook(handler.RecordSlowQuery)
 
-	dsn := os.Getenv("DATABASE_URL")
+	// Supports DATABASE_URL_FILE, or POSTGRES_HOST + POSTGRES_PASSWORD_FILE,
+	// as well as the plain DATABASE_URL env var, so a Swarm deployment can
+	// keep the DB password out of the deploy-time environment - see
+	// util.ResolveDatabaseURL.
+	dsn := util.ResolveDatabaseURL()
 
 	var database *sql.DB
 	if dsn != "" {
@@ -406,18 +431,35 @@ func main() {
 		handler.SetCacheBroadcaster(broadcaster)
 		go handler.StartCacheInvalidationSubscriber(ctx, broadcaster)
 		handler.SetSlowQueryStore(sharedClient)
-		elector = sharedstate.NewLeaderElector(sharedClient, "tailer", 15*time.Second)
+		// TTL must leave real margin over tailer.go's own failure-detection
+		// deadline (leaderRenewInterval * leaderMaxRenewFails = 5s * 3 = 15s):
+		// if the lock's Redis-side TTL lapses at the same moment the current
+		// leader notices it can't renew, a waiting replica can acquire the
+		// lock and start ingesting before the old leader's goroutine has
+		// actually stopped - two tailers briefly active on the same file and
+		// position checkpoint, corrupting it exactly like running without
+		// Redis at all. 45s (3x that 15s deadline) gives a comfortable
+		// margin through a slow Sentinel failover while still recovering
+		// well within a minute if the leader outright crashes.
+		elector = sharedstate.NewLeaderElector(sharedClient, "tailer", 45*time.Second)
 	}
 
 	logFilePath := os.Getenv("LOG_FILE_PATH")
 	if logFilePath == "" {
 		logFilePath = "/data/logs.jsonl"
 	}
-	alertEngine := alertengine.NewEngine(database, sharedClient)
+	alertEngine := alertengine.NewEngine(ctx, database, sharedClient)
 	audit.SetAlertEngine(alertEngine)
 	notifHub := notifyhub.NewHub(ctx, sharedClient)
 	alertEngine.SetOnInApp(notifHub.Publish)
-	go tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine)
+
+	// Redis-backed (shared across replicas) when sharedClient is set, so the
+	// dashboard's logs/sec figure is the same regardless of which replica
+	// answers the request - falls back to in-memory otherwise, same as
+	// everything else gated on sharedClient above.
+	logRate := sharedstate.NewRateCounter(sharedClient, "lograte")
+	handler.SetLogRateCounter(logRate)
+	go tailer.Run(ctx, database, logFilePath, engine, ic, elector, alertEngine, logRate)
 
 	// Device silence checks run independently on every replica: the read
 	// (mv_device_stats) is cheap and the per-rule-per-device cooldown key in
@@ -485,7 +527,12 @@ r := gin.New()
 	changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute, "/data/ratelimit-change-password.json")
 
 	r.GET("/api/health", handler.HealthCheck(database))
-	r.GET("/api/metrics", handler.PrometheusMetrics(database))
+	r.GET("/api/version", versionHandler)
+
+	metricsGroup := r.Group("/api")
+	metricsGroup.Use(authCfg.JWTRequired())
+	metricsGroup.GET("/metrics", handler.PrometheusMetrics(database))
+
 	r.POST("/api/auth/login", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(loginLimiter), handler.Login(database, authCfg))
 	r.POST("/api/auth/refresh", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(refreshLimiter), handler.Refresh(database, authCfg))
 	r.POST("/api/auth/logout", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.Logout(database))
@@ -505,11 +552,15 @@ r := gin.New()
 		authGroup.POST("/stats/devices", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetDeviceStats(database))
 		authGroup.POST("/stats/severity", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetSeverityStats(database))
 		authGroup.POST("/stats/timeline", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetTimelineStats(database))
+		authGroup.GET("/stats/rate", handler.GetLogsRate())
 		authGroup.GET("/devices", handler.GetDevices(database))
 		authGroup.POST("/export/csv", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportCSV(database))
 		authGroup.POST("/export/html", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportHTML(database))
 		authGroup.GET("/auth/me", handler.GetMe(database))
 		authGroup.POST("/auth/change-password", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
+		authGroup.GET("/auth/sessions", handler.ListSessions(database))
+		authGroup.DELETE("/auth/sessions/:id", handler.RevokeSession(database))
+		authGroup.GET("/auth/session-check", handler.CheckSession(database))
 
 		notificationsGate := handler.RequireNotificationsEnabled(database)
 
@@ -524,6 +575,12 @@ r := gin.New()
 		authGroup.POST("/push/subscribe", notificationsGate, handler.SubscribePush(database))
 		authGroup.POST("/push/unsubscribe", notificationsGate, handler.UnsubscribePush(database))
 
+		// Readable by every authenticated role (including viewer) - channel
+		// secrets are never included in the response, only config + a
+		// has_secret flag, so there's nothing sensitive to gate here. Creating,
+		// editing and deleting channels stays admin-only (adminGroup below).
+		authGroup.GET("/admin/notification-channels", notificationsGate, handler.ListNotificationChannels(database))
+
 		authGroup.GET("/parsers", handler.ListParsers(engine))
 		authGroup.POST("/parsers/fields", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ListParsedFields(engine))
 		authGroup.GET("/dashboards", handler.ListDashboards(database))
@@ -535,7 +592,7 @@ r := gin.New()
 		authGroup.PATCH("/dashboards/:id/pin", handler.TogglePinDashboard(database))
 
 		editorGroup := authGroup.Group("")
-		editorGroup.Use(auth.RoleRequired("admin", "editor"))
+		editorGroup.Use(authCfg.RoleRequired("admin", "editor"))
 		{
 			editorGroup.POST("/parsers", handler.CreateParser(engine))
 			editorGroup.PUT("/parsers/:id", handler.UpdateParser(engine))
@@ -550,13 +607,15 @@ r := gin.New()
 			editorGroup.PATCH("/dashboards/:id/public", handler.TogglePublicDashboard(database))
 
 			editorGroup.GET("/alerts", notificationsGate, handler.ListAlerts(database))
-			editorGroup.POST("/alerts", notificationsGate, handler.CreateAlert(database))
-			editorGroup.PUT("/alerts/:id", notificationsGate, handler.UpdateAlert(database))
-			editorGroup.DELETE("/alerts/:id", notificationsGate, handler.DeleteAlert(database))
+			editorGroup.POST("/alerts", notificationsGate, handler.CreateAlert(alertEngine))
+			editorGroup.PUT("/alerts/:id", notificationsGate, handler.UpdateAlert(alertEngine))
+			editorGroup.DELETE("/alerts/:id", notificationsGate, handler.DeleteAlert(alertEngine))
+
+			editorGroup.GET("/users/directory", handler.ListUserDirectory(database))
 		}
 
 		adminGroup := authGroup.Group("/admin")
-		adminGroup.Use(auth.AdminRequired())
+		adminGroup.Use(authCfg.AdminRequired())
 		{
 			adminGroup.GET("/users", handler.ListUsers(database))
 			adminGroup.POST("/users", handler.CreateUser(database))
@@ -590,22 +649,25 @@ r := gin.New()
 			adminGroup.DELETE("/relay/certificates/:id", handler.RevokeRelayCertificate(database))
 			adminGroup.POST("/relay/certificates/:id/regenerate", handler.RegenerateRelayCertificate(database))
 
-			adminGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))
-			adminGroup.PUT("/notification-channels/:id", notificationsGate, handler.UpdateNotificationChannel(database))
-			adminGroup.DELETE("/notification-channels/:id", notificationsGate, handler.DeleteNotificationChannel(database))
-			adminGroup.POST("/notification-channels/:id/test", notificationsGate, handler.TestNotificationChannel(database, notifHub))
 			adminGroup.DELETE("/notifications/history", notificationsGate, handler.ClearNotificationHistory(database))
 		}
 
-		// Same /admin path prefix as adminGroup above, but readable by editors
-		// too - they can already create alert rules (editorGroup), so they
-		// need to see which channels exist to assign and whether their rules
-		// actually fired. Channel secrets and mutations stay admin-only.
-		adminReadGroup := authGroup.Group("/admin")
-		adminReadGroup.Use(auth.RoleRequired("admin", "editor"))
+		// Same /admin path prefix as adminGroup above, but readable/usable by
+		// editors too - they can already create alert rules (editorGroup), so
+		// they need to see whether their rules actually fired, and to create
+		// their own notification channels to assign to those rules.
+		// Create/update/delete are further restricted to the channel's own
+		// creator at the handler level (see handler.channelOwnedByCaller) -
+		// an editor (or admin) can only ever modify a channel they made
+		// themselves, or one predating the created_by column entirely.
+		adminEditorGroup := authGroup.Group("/admin")
+		adminEditorGroup.Use(authCfg.RoleRequired("admin", "editor"))
 		{
-			adminReadGroup.GET("/notification-channels", notificationsGate, handler.ListNotificationChannels(database))
-			adminReadGroup.POST("/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
+			adminEditorGroup.POST("/notifications/history", notificationsGate, middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.GetNotificationHistory(database))
+			adminEditorGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))
+			adminEditorGroup.PUT("/notification-channels/:id", notificationsGate, handler.UpdateNotificationChannel(database))
+			adminEditorGroup.DELETE("/notification-channels/:id", notificationsGate, handler.DeleteNotificationChannel(database))
+			adminEditorGroup.POST("/notification-channels/:id/test", notificationsGate, handler.TestNotificationChannel(database, notifHub))
 		}
 	}
 
@@ -663,6 +725,7 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	initLimiter := newLimiter(sharedClient, "wizard-init", 3, time.Hour, "")
 	testDbLimiter := newLimiter(sharedClient, "wizard-test-db", 20, 10*time.Minute, "")
 	r.GET("/api/health", handler.HealthCheckStandalone())
+	r.GET("/api/version", versionHandler)
 	r.GET("/api/status/initialized", handler.CheckInitializedStandalone())
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
 	r.GET("/api/init/db-config", handler.GetDbConfig(nil))

@@ -7,8 +7,8 @@
 # `postgres1/2/3` run the image built from Dockerfile.patroni (Patroni on
 # top of the same postgres:16-alpine base as docker-compose.yml) — build and
 # push it first, `docker stack deploy` cannot build:
-#   docker build -f Dockerfile.patroni -t ${REGISTRY:?}/syslytics-patroni:${TAG:-latest} .
-#   docker push ${REGISTRY:?}/syslytics-patroni:${TAG:-latest}
+#   docker build -f Dockerfile.patroni -t ${REGISTRY:?}/logmara-patroni:${TAG:-latest} .
+#   docker push ${REGISTRY:?}/logmara-patroni:${TAG:-latest}
 #
 # Prerequisites (see README "High Availability Deployment"):
 #   - Docker Swarm initialized, 3 nodes labeled pg_id=1 / pg_id=2 / pg_id=3
@@ -19,11 +19,11 @@
 #     pg_app_password (see README)
 #   - `docker config create haproxy_pg_cfg haproxy/haproxy.cfg`
 #
-# Deploy with: docker stack deploy -c docker-stack.postgres.yml syslog-pg
+# Deploy with: docker stack deploy -c docker-stack.postgres.yml logmara-pg
 
 version: "3.8"
 
-x-patroni-image: &patroni-image ${REGISTRY:?set REGISTRY to your image registry}/syslytics-patroni:${TAG:-latest}
+x-patroni-image: &patroni-image ${REGISTRY:?set REGISTRY to your image registry}/logmara-patroni:${TAG:-latest}
 
 x-patroni-secrets: &patroni-secrets
   - pg_superuser_password
@@ -207,7 +207,7 @@ services:
     image: haproxy:2.9-alpine
     networks: [syslog_net]
     configs:
-      - source: haproxy_pg_cfg_1784921589
+      - source: haproxy_pg_cfg
         target: /usr/local/etc/haproxy/haproxy.cfg
     ports:
       # Published on every "app" node via host mode; point api's
@@ -238,5 +238,5 @@ secrets:
     external: true
 
 configs:
-  haproxy_pg_cfg_1784921589:
+  haproxy_pg_cfg:
     external: true

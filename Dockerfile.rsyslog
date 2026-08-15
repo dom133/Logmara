@@ -1,10 +1,22 @@
+FROM golang:1.24-bookworm AS builder
+WORKDIR /app
+COPY backend/ .
+RUN go mod download
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/relaybootstrap ./cmd/relaybootstrap
+
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends rsyslog rsyslog-gnutls procps openssl busybox-static && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends rsyslog rsyslog-gnutls procps busybox-static && rm -rf /var/lib/apt/lists/*
+# relaybootstrap wraps backend/relaypki.EnsureCA - the same CA/server cert
+# generation code the api service uses, invoked here as a one-shot CLI
+# instead of duplicated as raw openssl calls, so there is exactly one
+# implementation of it - see rsyslog/entrypoint.sh and
+# backend/cmd/relaybootstrap.
+COPY --from=builder /app/relaybootstrap /usr/local/bin/relaybootstrap
 COPY rsyslog/syslog.conf /etc/rsyslog.d/syslog.conf
 COPY rsyslog/entrypoint.sh /entrypoint.sh
 COPY rsyslog/reload-sidecar/cgi-bin/reload.sh /srv/reload-sidecar/cgi-bin/reload.sh
 RUN chmod +x /entrypoint.sh /srv/reload-sidecar/cgi-bin/reload.sh
-EXPOSE 514 514/udp 6514
+EXPOSE 514 514/udp 6514 6515
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD pgrep -x rsyslogd || exit 1
 ENTRYPOINT ["/entrypoint.sh"]

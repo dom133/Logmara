@@ -1,0 +1,77 @@
+[
+  {
+    "name": "MikroTik Interface Status",
+    "description": "Matches MikroTik interface up/down events",
+    "device_type": "mikrotik",
+    "match_type": "hostname",
+    "match_value": "mikrotik*",
+    "regex": "interface\\s+(\\S+)\\s+link\\s+(up|down)(?:\\s+on\\s+the\\s+(\\S+))?",
+    "fields": [
+      {
+        "name": "interface",
+        "label": "Interface",
+        "type": "string"
+      },
+      {
+        "name": "status",
+        "label": "Link Status",
+        "type": "string"
+      },
+      {
+        "name": "cause",
+        "label": "Cause",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "MikroTik DHCP Lease",
+    "description": "Matches MikroTik DHCP lease events",
+    "device_type": "mikrotik",
+    "match_type": "hostname",
+    "match_value": "mikrotik*",
+    "regex": "DHCPLease:(\\S+)\\s+address=(\\d+\\.\\d+\\.\\d+\\.\\d+)\\s+mac-address=([0-9A-Fa-f:-]+)",
+    "fields": [
+      {
+        "name": "lease_action",
+        "label": "Lease Action",
+        "type": "string"
+      },
+      {
+        "name": "ip_address",
+        "label": "IP Address",
+        "type": "string"
+      },
+      {
+        "name": "mac_address",
+        "label": "MAC Address",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "MikroTik User Login",
+    "description": "Matches MikroTik user login/logout events",
+    "device_type": "mikrotik",
+    "match_type": "hostname",
+    "match_value": "mikrotik*",
+    "regex": "User\\s+(\\S+)\\s+logged\\s+(in|out)\\s+from\\s+(\\S+)",
+    "fields": [
+      {
+        "name": "username",
+        "label": "Username",
+        "type": "string"
+      },
+      {
+        "name": "login_action",
+        "label": "Action",
+        "type": "string"
+      },
+      {
+        "name": "source_ip",
+        "label": "Source IP",
+        "type": "string"
+      }
+    ]
+  }
+]

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { useCrud } from './useCRUD'
 import { FormInstance, message } from 'antd'
 
@@ -49,6 +49,10 @@ describe('useCRUD', () => {
     expect(result.current.items).toEqual([])
     expect(result.current.modalOpen).toBe(false)
     expect(result.current.editing).toBeNull()
+
+    // flush the mount-triggered refresh() so its state update isn't left
+    // dangling outside act() once the test exits
+    await act(async () => {})
   })
 
   it('loads data on mount', async () => {
@@ -230,6 +234,37 @@ describe('useCRUD', () => {
     })
 
     expect(message.success).toHaveBeenCalledWith('Widget saved!')
+  })
+
+  it('does not refetch in a loop when caller passes a new loadData closure every render', async () => {
+    // Reproduces the Dashboards.tsx / Parsers.tsx pattern: an inline
+    // `loadData: async () => {...}` literal gets a new identity on every
+    // render. refresh()/the mount effect must not chase that identity.
+    const { result, rerender } = renderHook(
+      ({ tick }) =>
+        useCrud({
+          loadData: async () => loadData(tick),
+          createItem,
+          updateItem,
+          deleteItem,
+          entityName: 'Item',
+          form: mockForm,
+        }),
+      { initialProps: { tick: 0 } },
+    )
+
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(loadData).toHaveBeenCalledTimes(1)
+
+    // Simulate several parent re-renders (e.g. from unrelated state updates)
+    // each supplying a brand-new loadData closure.
+    rerender({ tick: 1 })
+    rerender({ tick: 2 })
+    rerender({ tick: 3 })
+
+    await act(async () => {})
+
+    expect(loadData).toHaveBeenCalledTimes(1)
   })
 
   it('setItems accepts function updater', async () => {

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form, Popconfirm, message } from 'antd'
 import { ArrowLeftOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined, ClockCircleOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
@@ -7,6 +8,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import DashboardFieldFilters from '../components/DashboardFieldFilters'
+import LogTable, { useDeviceMap, buildDefaultColumns, resolveHostname } from '../components/LogTable'
 import { SEVERITY_LABELS } from '../constants'
 import { useAuth } from '../services/auth'
 
@@ -17,6 +19,7 @@ const severities = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info'
 const INTERVAL_OPTIONS = [1, 3, 5, 10, 30]
 
 export default function DashboardViewPage() {
+  const { t } = useTranslation()
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
@@ -27,8 +30,6 @@ export default function DashboardViewPage() {
   const [tableLoading, setTableLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const [pageSize, setPageSize] = useState(50)
-  // Keyset pagination cursor for "Load more" on the timestamp sorts; sorting
-  // by severity/hostname falls back to offset (see sortSupportsCursor).
   const cursorRef = useRef('')
   const offsetRef = useRef(0)
   const [filters, setFilters] = useState({
@@ -58,21 +59,7 @@ export default function DashboardViewPage() {
     ],
   )
 
-  const deviceMap = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const d of devices) {
-      const dn = resolveDeviceDisplayName(d)
-      if (d.fromhost_ip) m.set(d.fromhost_ip, dn)
-      if (d.hostname) m.set(d.hostname, dn)
-      if (d.old_hostname) m.set(d.old_hostname, dn)
-    }
-    return m
-  }, [devices])
-
-  const resolveHostname = (hostname: string, fromhost_ip?: string, displayName?: string): string => {
-    if (displayName) return displayName
-    return deviceMap.get(fromhost_ip || hostname || '') || hostname || '-'
-  }
+  const deviceMap = useDeviceMap(devices)
 
   const loadDashboard = async () => {
     setLoading(true)
@@ -160,7 +147,7 @@ export default function DashboardViewPage() {
 
     if (format === 'csv') exportDashboardCSV(dashboardId, params)
     else exportDashboardHTML(dashboardId, params)
-    message.success(`Exporting ${format.toUpperCase()}...`)
+    message.success(t('dashboard.exporting', { format: format.toUpperCase() }))
   }
 
   useEffect(() => {
@@ -176,7 +163,6 @@ export default function DashboardViewPage() {
       }
     }, 30000)
 
-    // Check if tab is active
     const handleVisibilityChange = () => {
       setIsTabActive(!document.hidden)
     }
@@ -234,7 +220,7 @@ export default function DashboardViewPage() {
     try {
       const res = await togglePublicDashboard(dashboardId)
       setDashboard({ ...dashboard, is_public: res.is_public })
-      message.success(res.is_public ? 'Dashboard is now public' : 'Dashboard is now private')
+      message.success(res.is_public ? t('dashboard.isPublic') : t('dashboard.isPrivate'))
     } catch (e) {
       // error handled by API
     }
@@ -244,21 +230,15 @@ export default function DashboardViewPage() {
   const dashDevices = dashboard?.config?.devices || []
   const dashFixedSeverity = dashboard?.config?.filters?.severity || ''
 
-  // Device filter options limited to the dashboard's own device scope -
-  // narrowing to a device outside that scope wouldn't return anything
-  // anyway (see resolveDashboardFilters on the backend).
   const dashDeviceOptions = devices
     .filter(d => dashDevices.includes(d.fromhost_ip))
     .map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))
 
-  // Only offer sorting by a field the dashboard doesn't already pin to a
-  // single value - "By Device" is meaningless when the dashboard is scoped
-  // to exactly one device, but still useful with zero (all) or several.
   const sortOptions = [
-    { label: 'Newest First', value: 'timestamp_desc' },
-    { label: 'Oldest First', value: 'timestamp_asc' },
-    ...(dashFixedSeverity ? [] : [{ label: 'By Severity', value: 'severity' }]),
-    ...(dashDevices.length === 1 ? [] : [{ label: 'By Device', value: 'hostname' }]),
+    { label: t('dashboard.newestFirst'), value: 'timestamp_desc' },
+    { label: t('dashboard.oldestFirst'), value: 'timestamp_asc' },
+    ...(dashFixedSeverity ? [] : [{ label: t('dashboard.bySeverity'), value: 'severity' }]),
+    ...(dashDevices.length === 1 ? [] : [{ label: t('dashboard.byDevice'), value: 'hostname' }]),
   ]
 
   const buildCustomColumns = () => {
@@ -281,73 +261,20 @@ export default function DashboardViewPage() {
   }
 
   const columns = [
-    {
-      title: 'Time',
-      dataIndex: 'timestamp',
-      key: 'timestamp',
-      width: 180,
-      render: (v: string) => new Date(v).toLocaleString(),
-    },
-    {
-      title: 'Device',
-      dataIndex: 'hostname',
-      key: 'hostname',
-      width: 150,
-      render: (v: string, r: LogEntry) => <Tag color="blue">{resolveHostname(v, r.fromhost_ip, r.display_name)}</Tag>,
-    },
-    {
-      title: 'Severity',
-      dataIndex: 'severity',
-      key: 'severity',
-      width: 100,
-      render: (v: string) => <SeverityTag severity={v} />,
-    },
-    {
-      title: 'App',
-      dataIndex: 'app_name',
-      key: 'app_name',
-      width: 120,
-      render: (v?: string) => v ? <Text type="secondary">{v}</Text> : '-',
-    },
-    {
-      title: 'Message',
-      dataIndex: 'message',
-      key: 'message',
-      width: 300,
-      ellipsis: { showTitle: true },
-      render: (v: string, record: LogEntry) => {
-        const display = record.raw_message || v
-        return (
-          <pre style={{
-            margin: 0,
-            width: '100%',
-            maxWidth: '100%',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-all',
-            fontFamily: 'Consolas, Monaco, monospace',
-            fontSize: 12,
-            lineHeight: 1.4,
-            maxHeight: 100,
-            overflow: 'auto',
-          }}>
-            {display}
-          </pre>
-        )
-      },
-    },
+    ...buildDefaultColumns(deviceMap),
     ...buildCustomColumns(),
   ]
 
   const renderDetailContent = () => {
     if (!detailLog) return null
     const items: { label: string; content: React.ReactNode }[] = [
-      { label: 'Timestamp', content: new Date(detailLog.timestamp).toLocaleString() },
-      { label: 'Hostname', content: <Tag color="blue">{resolveHostname(detailLog.hostname, detailLog.fromhost_ip, detailLog.display_name)}</Tag> },
-      { label: 'Source IP', content: detailLog.fromhost_ip ? <Tag color="green">{detailLog.fromhost_ip}</Tag> : '-' },
-      { label: 'Severity', content: <SeverityTag severity={detailLog.severity} /> },
-      { label: 'Facility', content: detailLog.facility ?? '-' },
-      { label: 'App', content: detailLog.app_name ?? '-' },
-      { label: 'Process ID', content: detailLog.process_id ?? '-' },
+      { label: t('dashboard.timestamp'), content: new Date(detailLog.timestamp).toLocaleString() },
+      { label: t('dashboard.hostname'), content: <Tag color="blue">{resolveHostname(deviceMap, detailLog.hostname, detailLog.fromhost_ip, detailLog.display_name)}</Tag> },
+      { label: t('dashboard.sourceIp'), content: detailLog.fromhost_ip ? <Tag color="green">{detailLog.fromhost_ip}</Tag> : '-' },
+      { label: t('dashboard.severity'), content: <SeverityTag severity={detailLog.severity} /> },
+      { label: t('dashboard.facility'), content: detailLog.facility ?? '-' },
+      { label: t('dashboard.app'), content: detailLog.app_name ?? '-' },
+      { label: t('dashboard.processId'), content: detailLog.process_id ?? '-' },
     ]
 
     if (fields.length > 0) {
@@ -363,10 +290,10 @@ export default function DashboardViewPage() {
     }
 
     items.push({
-      label: 'Matched Parsers',
+      label: t('dashboard.matchedParsers'),
       content: detailLog.matched_parsers && detailLog.matched_parsers.length > 0
         ? detailLog.matched_parsers.map(p => <Tag key={p} color="purple">{p}</Tag>)
-        : 'None',
+        : t('common.none'),
     })
 
     return {
@@ -380,19 +307,19 @@ export default function DashboardViewPage() {
   }
 
   if (!dashboard) {
-    return <div>Dashboard not found</div>
+    return <div>{t('dashboard.notFound')}</div>
   }
 
   return (
     <>
       <Breadcrumb style={{ marginBottom: 16 }}>
-        <Breadcrumb.Item><a onClick={() => navigate('/dashboards')}>Dashboards</a></Breadcrumb.Item>
+        <Breadcrumb.Item><a onClick={() => navigate('/dashboards')}>{t('nav.dashboards')}</a></Breadcrumb.Item>
         <Breadcrumb.Item>{dashboard.name}</Breadcrumb.Item>
       </Breadcrumb>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/dashboards')}>Back</Button>
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/dashboards')}>{t('common.back')}</Button>
           <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>{dashboard.name}</Title>
           <Button
             icon={dashboard.pinned ? <PushpinFilled /> : <PushpinOutlined />}
@@ -404,21 +331,21 @@ export default function DashboardViewPage() {
             onClick={handleTogglePublic}
             type={dashboard.is_public ? 'primary' : 'default'}
           >
-            {dashboard.is_public ? 'Public' : 'Private'}
+            {dashboard.is_public ? t('dashboard.public') : t('dashboard.private')}
           </Button>}
-          {!isOwner && dashboard.owner_username && <Tag color="blue">by {dashboard.owner_username}</Tag>}
+          {!isOwner && dashboard.owner_username && <Tag color="blue">{t('dashboard.by', { username: dashboard.owner_username })}</Tag>}
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <Input
             ref={searchRef}
-            placeholder="Search... (Ctrl+K)"
+            placeholder={t('dashboard.searchPlaceholder')}
             value={filters.search}
             onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
             style={{ minWidth: 180, flex: '1 1 180px' }}
             prefix={<FilterOutlined />}
           />
           <Select
-            placeholder="Severity"
+            placeholder={t('dashboard.severity')}
             allowClear
             style={{ minWidth: 140, flex: '1 1 140px' }}
             value={filters.severity || undefined}
@@ -427,7 +354,7 @@ export default function DashboardViewPage() {
           />
           {dashDevices.length > 1 && (
             <Select
-              placeholder="Device"
+              placeholder={t('dashboard.device')}
               allowClear
               style={{ minWidth: 140, flex: '1 1 140px' }}
               value={filters.fromhost_ip || undefined}
@@ -446,17 +373,17 @@ export default function DashboardViewPage() {
             }))}
           />
           <Select
-            placeholder="Sort"
+            placeholder={t('dashboard.sort')}
             style={{ minWidth: 130, flex: '1 1 130px' }}
             value={filters.sort}
             onChange={(v) => setFilters(f => ({ ...f, sort: v }))}
             options={sortOptions}
           />
-          <Popconfirm title="Export as CSV?" onConfirm={() => handleExport('csv')}>
-            <Button>CSV</Button>
+          <Popconfirm title={t('dashboard.exportCsv')} onConfirm={() => handleExport('csv')}>
+            <Button>{t('dashboard.csv')}</Button>
           </Popconfirm>
-          <Popconfirm title="Export as HTML?" onConfirm={() => handleExport('html')}>
-            <Button>HTML</Button>
+          <Popconfirm title={t('dashboard.exportHtml')} onConfirm={() => handleExport('html')}>
+            <Button>{t('dashboard.html')}</Button>
           </Popconfirm>
           <Select
             size="small"
@@ -472,9 +399,9 @@ export default function DashboardViewPage() {
             onClick={() => setAppendMode(!appendMode)}
             style={{ color: appendMode ? '#1890ff' : undefined }}
           >
-            Live
+            {t('dashboard.live')}
           </Button>
-          {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
+          {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>{t('common.reset')}</Button>}
         </div>
       </div>
 
@@ -485,22 +412,22 @@ export default function DashboardViewPage() {
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col xs={24} sm={12} md={8} lg={6}>
           <Card>
-            <Statistic title="Total Logs" value={totalLogs} />
+            <Statistic title={t('dashboard.totalLogs')} value={totalLogs} />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={8} lg={6}>
           <Card>
-            <Statistic title="Devices" value={dashDevices.length || 'All'} />
+            <Statistic title={t('dashboard.devices')} value={dashDevices.length || t('common.all')} />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={8} lg={6}>
           <Card>
-            <Statistic title="Fields" value={fields.length || 'Default'} />
+            <Statistic title={t('dashboard.fields')} value={fields.length || t('common.default')} />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={8} lg={6}>
           <Card>
-            <Statistic title="Updated" value={new Date(dashboard.updated_at).toLocaleString()} />
+            <Statistic title={t('dashboard.updated')} value={new Date(dashboard.updated_at).toLocaleString()} />
           </Card>
         </Col>
       </Row>
@@ -508,18 +435,18 @@ export default function DashboardViewPage() {
       {(dashDevices.length > 0 || fields.length > 0) && (
         <Row gutter={16} style={{ marginBottom: 16 }}>
           <Col xs={24} md={8}>
-            <Card size="small" title="Devices">
-              {dashDevices.length ? dashDevices.map(d => <Tag key={d}>{d}</Tag>) : <Tag>All</Tag>}
+            <Card size="small" title={t('dashboard.devices')}>
+              {dashDevices.length ? dashDevices.map(d => <Tag key={d}>{d}</Tag>) : <Tag>{t('common.all')}</Tag>}
             </Card>
           </Col>
           <Col xs={24} md={8}>
-            <Card size="small" title="Active Fields">
-              {fields.length ? fields.map(f => <Tag key={f} color="green">{f}</Tag>) : <Tag>Default</Tag>}
+            <Card size="small" title={t('dashboard.activeFields')}>
+              {fields.length ? fields.map(f => <Tag key={f} color="green">{f}</Tag>) : <Tag>{t('common.default')}</Tag>}
             </Card>
           </Col>
           <Col xs={24} md={8}>
-            <Card size="small" title="Severity Filter">
-              <Tag>{dashboard.config.filters.severity || 'All'}</Tag>
+            <Card size="small" title={t('dashboard.severityFilter')}>
+              <Tag>{dashboard.config.filters.severity || t('common.all')}</Tag>
             </Card>
           </Col>
         </Row>
@@ -529,41 +456,26 @@ export default function DashboardViewPage() {
         <DashboardFieldFilters availableFields={fields} value={fieldFilters} onChange={setFieldFilters} />
       </Card>
 
-      <Table
-        dataSource={logs}
-        columns={enhanceColumns(columns)}
-        rowKey="id"
+      <LogTable
+        logs={logs}
+        devices={devices}
+        columns={columns}
         loading={tableLoading}
-        size="small"
-        tableLayout="fixed"
-        scroll={{ x: 'max-content' }}
-        onRow={(record) => ({
-          onClick: () => setDetailLog(record),
-          style: { cursor: 'pointer' },
-        })}
-        pagination={false}
+        loadingMore={loadingMore}
+        hasMore={hasMore}
+        pageSize={pageSize}
+        setPageSize={setPageSize}
+        onLoadMore={handleLoadMore}
+        onRowClick={setDetailLog}
+        enhanceColumns={enhanceColumns}
       />
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8, marginTop: 16 }}>
-        <Select
-          size="small"
-          style={{ width: 100 }}
-          value={pageSize}
-          onChange={setPageSize}
-          options={['25', '50', '100', '200'].map(v => ({ label: `${v} / page`, value: parseInt(v) }))}
-        />
-        {hasMore ? (
-          <Button onClick={handleLoadMore} loading={loadingMore}>Load more</Button>
-        ) : (
-          <Text type="secondary">No more logs</Text>
-        )}
-      </div>
 
       <Modal
-        title="Log Details"
+        title={t('dashboard.logDetails')}
         open={!!detailLog}
         onCancel={() => setDetailLog(null)}
         footer={[
-          <Button key="close" onClick={() => setDetailLog(null)} style={{ width: '100%' }}>Close</Button>
+          <Button key="close" onClick={() => setDetailLog(null)} style={{ width: '100%' }}>{t('common.close')}</Button>
         ]}
         width={{ sm: '90%', md: 720 }}
       >
@@ -571,27 +483,29 @@ export default function DashboardViewPage() {
           const detail = renderDetailContent()
           if (!detail) return null
           return (
-            <Descriptions bordered column={1} size="small">
-              {detail.metadata.map((item, i) => (
-                <Descriptions.Item key={i} label={item.label}>
-                  {item.content}
+            <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
+              <Descriptions bordered column={1} size="small">
+                {detail.metadata.map((item, i) => (
+                  <Descriptions.Item key={i} label={item.label}>
+                    {item.content}
+                  </Descriptions.Item>
+                ))}
+                <Descriptions.Item label={t('dashboard.fullMessage')}>
+                  <pre style={{
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-all',
+                    width: '100%',
+                    maxWidth: '100%',
+                    fontFamily: 'Consolas, Monaco, monospace',
+                    fontSize: 12,
+                    lineHeight: 1.4,
+                    margin: 0,
+                  }}>
+                    {detail.message}
+                  </pre>
                 </Descriptions.Item>
-              ))}
-              <Descriptions.Item label="Full Message">
-                <pre style={{
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-all',
-                  width: '100%',
-                  maxWidth: '100%',
-                  fontFamily: 'Consolas, Monaco, monospace',
-                  fontSize: 12,
-                  lineHeight: 1.4,
-                  margin: 0,
-                }}>
-                  {detail.message}
-                </pre>
-              </Descriptions.Item>
-            </Descriptions>
+              </Descriptions>
+            </div>
           )
         })()}
       </Modal>

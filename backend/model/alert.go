@@ -9,9 +9,27 @@ import (
 const (
 	RuleTypeLogThreshold      = "log_threshold"
 	RuleTypeDeviceSilence     = "device_silence"
-RuleTypeAuditLog = "audit_log"
+	RuleTypeAuditLog          = "audit_log"
 	RuleTypeRelayCertExpiring = "relay_cert_expiring"
+	RuleTypeMalformedJSON     = "malformed_json"
 )
+
+// AdminOnlyRuleTypes are rule types only an admin may create, view, or
+// receive notifications for - they surface data (audit log entries, relay
+// certificate/PKI state, raw ingestion errors) that shouldn't leak to an
+// editor/viewer regardless of who a notification channel happens to target.
+// Every place that lists alerts, delivers notifications, or serves history
+// must filter on this for non-admin callers - see IsAdminOnlyRuleType.
+var AdminOnlyRuleTypes = []string{RuleTypeAuditLog, RuleTypeRelayCertExpiring, RuleTypeMalformedJSON}
+
+func IsAdminOnlyRuleType(ruleType string) bool {
+	for _, rt := range AdminOnlyRuleTypes {
+		if ruleType == rt {
+			return true
+		}
+	}
+	return false
+}
 
 // Notification channel types.
 const (
@@ -78,7 +96,7 @@ type Alert struct {
 type AlertRequest struct {
 	Name                 string                `json:"name" binding:"required,max=255"`
 	Description          string                `json:"description"`
-	RuleType             string                `json:"rule_type" binding:"required,oneof=log_threshold device_silence audit_log relay_cert_expiring"`
+	RuleType             string                `json:"rule_type" binding:"required,oneof=log_threshold device_silence audit_log relay_cert_expiring malformed_json"`
 	Severity             string                `json:"severity"`
 	DeviceIPs            []string              `json:"device_ips"`
 	ParserNames          []string              `json:"parser_names"`
@@ -95,14 +113,16 @@ type AlertRequest struct {
 }
 
 type NotificationChannel struct {
-	ID        int64           `json:"id"`
-	Name      string          `json:"name"`
-	Type      string          `json:"type"`
-	Config    json.RawMessage `json:"config"`
-	HasSecret bool            `json:"has_secret"`
-	Enabled   bool            `json:"enabled"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	ID                int64           `json:"id"`
+	Name              string          `json:"name"`
+	Type              string          `json:"type"`
+	Config            json.RawMessage `json:"config"`
+	HasSecret         bool            `json:"has_secret"`
+	Enabled           bool            `json:"enabled"`
+	CreatedBy         *int64          `json:"created_by,omitempty"`
+	CreatedByUsername *string         `json:"created_by_username,omitempty"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
 }
 
 type NotificationChannelRequest struct {

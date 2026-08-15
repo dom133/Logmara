@@ -16,11 +16,11 @@ import (
 	"strings"
 	"time"
 
-	"syslytics/audit"
-	"syslytics/db"
-	"syslytics/middleware"
-	"syslytics/model"
-	"syslytics/relaypki"
+	"logmara/audit"
+	"logmara/db"
+	"logmara/middleware"
+	"logmara/model"
+	"logmara/relaypki"
 
 	"github.com/gin-gonic/gin"
 )
@@ -78,7 +78,7 @@ func rsyslogStringLiteral(s string) string {
 // writeRelayACL regenerates allowed-relays.conf, which is include()d at
 // the top level of rsyslog/syslog.conf and supplies BOTH the ruleset that
 // gates the mTLS relay listener by source IP AND the input() listener
-// itself (port 6514) - the latter has to live here too, not statically in
+// itself (port 6515) - the latter has to live here too, not statically in
 // syslog.conf, because pinning the TLS handshake to the exact
 // currently-issued certificate per relay (StreamDriver.AuthMode="x509/name"
 // + PermittedPeer, matched against the CommonName relaypki.IssueClientCert
@@ -147,7 +147,7 @@ func writeRelayACL(database *sql.DB) error {
 		content.WriteString(comment + "\n")
 	}
 	fmt.Fprintf(&content, "ruleset(name=%q) {\n%s}\n\n", relayListenerRuleset, rulesetBody)
-	fmt.Fprintf(&content, "input(type=\"imtcp\" port=\"6514\" ruleset=%q\n", relayListenerRuleset)
+	fmt.Fprintf(&content, "input(type=\"imtcp\" port=\"6515\" ruleset=%q\n", relayListenerRuleset)
 	content.WriteString("  StreamDriver.Name=\"gtls\"\n  StreamDriver.Mode=\"1\"\n  StreamDriver.AuthMode=\"x509/name\"\n")
 	fmt.Fprintf(&content, "  PermittedPeer=[%s]\n)\n", strings.Join(peerLiterals, ", "))
 
@@ -168,7 +168,7 @@ func writeRelayACL(database *sql.DB) error {
 // has no lightweight config reload, so the sidecar's reload.sh actually
 // kills the rsyslogd child and entrypoint.sh's supervisor loop restarts it
 // against the regenerated allowed-relays.conf, briefly interrupting syslog
-// ingestion on both 514 and 6514 while it comes back up) so the
+// ingestion on 514, 6514, and 6515 while it comes back up) so the
 // regenerated ACL takes effect. RSYSLOG_RELOAD_TARGETS_HOST mirrors
 // NGINX_RELOAD_TARGETS_HOST: unset for the single-server/single-rsyslog
 // case (docker-compose.yml), set to a DNS name resolving to every edge
@@ -652,15 +652,32 @@ func buildRelayBundle(database *sql.DB, issued *relaypki.IssuedCert, label strin
 }
 
 // relayConfSnippet is a ready-to-use rsyslog config for the relay side:
-// listens on 514/tcp+udp like the standalone single-server rsyslog
-// (rsyslog/syslog.conf), but forwards over mTLS instead of writing a local
-// file. The target host is this server's address reachable from the
-// relay's VLAN, resolved in order: the "relay_central_host" setting
-// (Admin > Syslog Relay), then the RELAY_CENTRAL_HOST env var, then
-// "127.0.0.1" - always a syntactically valid address rather than a
-// placeholder the admin might forget to replace, but 127.0.0.1 only makes
-// sense for same-host testing; a real cross-VLAN deployment needs one of
-// the first two set.
+// listens on 514/tcp+udp and 6514/tcp (direct TLS, no client cert - see
+// below) like the standalone single-server rsyslog (rsyslog/syslog.conf),
+// but forwards over mTLS instead of writing a local file. The target host
+// is this server's address reachable from the relay's VLAN, resolved in
+// order: the "relay_central_host" setting (Admin > Syslog Relay), then
+// the RELAY_CENTRAL_HOST env var, then "127.0.0.1" - always a
+// syntactically valid address rather than a placeholder the admin might
+// forget to replace, but 127.0.0.1 only makes sense for same-host
+// testing; a real cross-VLAN deployment needs one of the first two set.
+//
+// The 6514 listener's StreamDriver.CertFile/KeyFile deliberately override
+// the global DefaultNetstreamDriver* set below on a per-input basis
+// (supported since rsyslog 8.2108.0, well before the 8.2302.0 this ships
+// against) rather than relying on those globals: the globals hold this
+// relay's own CLIENT identity for the omfwd action's mTLS connection TO
+// the central server below, a completely different role from this
+// listener presenting a SERVER certificate to local devices - reusing the
+// same cert for both would be actively wrong (a config change here that
+// revokes/rotates the uplink client cert would also silently break local
+// ingestion, and vice versa). The self-signed cert it points at is
+// generated locally on the relay host by entrypoint-relay.sh, not shipped
+// in this bundle - see that file and Dockerfile.rsyslog-relay. It has to
+// be declared in THIS file (not a second file baked into the relay
+// image) so it loads after, and reuses, this file's own
+// `module(load="imtcp")` below rather than risking a second, conflicting
+// load of the same module from a separately-included file.
 func relayConfSnippet(database *sql.DB, label string) []byte {
 	host := db.GetSetting(database, "relay_central_host", "")
 	if host == "" {
@@ -693,6 +710,23 @@ module(load="imtcp")
 input(type="imtcp" port="514")
 module(load="imudp")
 input(type="imudp" port="514")
+
+# Optional: direct TLS ingestion into this relay, no client certificate
+# required - devices in this relay's own VLAN that want an encrypted
+# transport instead of plain 514/tcp can point at this relay's 6514/tcp
+# instead. Same handling as 514 above (no ruleset= param, so it goes
+# through the default ruleset and out via the *.* omfwd action below,
+# same as everything else this relay receives). AuthMode="anon" means
+# this listener presents a certificate but does not require or check one
+# from the client - see the doc comment on relayConfSnippet for why the
+# cert/key differ from this relay's own uplink identity above.
+input(type="imtcp" port="6514"
+  StreamDriver.Name="gtls"
+  StreamDriver.Mode="1"
+  StreamDriver.AuthMode="anon"
+  StreamDriver.CertFile="/etc/syslog-relay/tls-local/server.crt"
+  StreamDriver.KeyFile="/etc/syslog-relay/tls-local/server.key"
+)
 
 template(name="JsonLines" type="list") {
   constant(value="{")
@@ -727,7 +761,7 @@ template(name="JsonLines" type="list") {
 }
 
 *.* action(type="omfwd"
-  target=%q port="6514" protocol="tcp"
+  target=%q port="6515" protocol="tcp"
   template="JsonLines"
   StreamDriver="gtls"
   StreamDriverMode="1"

@@ -1,0 +1,92 @@
+<svg viewBox="0 0 920 400" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrowDash" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="920" height="400" fill="#ffffff"/>
+
+  <!-- Row 1: Client -> Nginx -> Go API -> PostgreSQL -->
+  <g>
+    <rect x="20" y="30" width="140" height="64" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+    <text x="90" y="57" text-anchor="middle" font-size="14" font-weight="600" fill="#312e81">Client</text>
+    <text x="90" y="75" text-anchor="middle" font-size="12" fill="#4338ca">(browser)</text>
+  </g>
+
+  <line x1="160" y1="62" x2="222" y2="62" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="191" y="45" text-anchor="middle" font-size="11" fill="#334155">HTTP/HTTPS</text>
+  <text x="191" y="58" text-anchor="middle" font-size="11" fill="#334155">80/443</text>
+
+  <g>
+    <rect x="224" y="30" width="140" height="64" rx="10" fill="#ecfeff" stroke="#0891b2" stroke-width="2"/>
+    <text x="294" y="66" text-anchor="middle" font-size="14" font-weight="600" fill="#164e63">Nginx</text>
+  </g>
+
+  <line x1="364" y1="62" x2="424" y2="62" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="394" y="52" text-anchor="middle" font-size="11" fill="#334155">proxy</text>
+
+  <g>
+    <rect x="426" y="30" width="160" height="64" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+    <text x="506" y="57" text-anchor="middle" font-size="14" font-weight="600" fill="#1e3a8a">Go API</text>
+    <text x="506" y="75" text-anchor="middle" font-size="12" fill="#1d4ed8">:8080</text>
+  </g>
+
+  <line x1="586" y1="62" x2="656" y2="62" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="621" y="52" text-anchor="middle" font-size="11" fill="#334155">SQL</text>
+
+  <g>
+    <rect x="658" y="30" width="160" height="64" rx="10" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+    <text x="738" y="57" text-anchor="middle" font-size="14" font-weight="600" fill="#14532d">PostgreSQL</text>
+    <text x="738" y="75" text-anchor="middle" font-size="12" fill="#15803d">:5432</text>
+  </g>
+
+  <!-- Vertical link: rsyslog/tailer feeds into Go API -->
+  <line x1="506" y1="238" x2="506" y2="96" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="516" y="150" font-size="11" fill="#334155">tails logs.jsonl</text>
+  <text x="516" y="164" font-size="11" fill="#334155">(backend/tailer)</text>
+
+  <!-- Row 2: Devices/senders -> rsyslog -> logs.jsonl -->
+  <g>
+    <rect x="20" y="240" width="140" height="64" rx="10" fill="#fff7ed" stroke="#ea580c" stroke-width="2"/>
+    <text x="90" y="267" text-anchor="middle" font-size="14" font-weight="600" fill="#7c2d12">Devices /</text>
+    <text x="90" y="284" text-anchor="middle" font-size="14" font-weight="600" fill="#7c2d12">senders</text>
+  </g>
+
+  <line x1="160" y1="272" x2="222" y2="272" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="191" y="255" text-anchor="middle" font-size="11" fill="#334155">syslog</text>
+  <text x="191" y="268" text-anchor="middle" font-size="11" fill="#334155">tcp/udp 514</text>
+
+  <g>
+    <rect x="224" y="240" width="140" height="64" rx="10" fill="#fefce8" stroke="#ca8a04" stroke-width="2"/>
+    <text x="294" y="276" text-anchor="middle" font-size="14" font-weight="600" fill="#713f12">rsyslog</text>
+  </g>
+
+  <line x1="364" y1="272" x2="424" y2="272" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="394" y="255" text-anchor="middle" font-size="11" fill="#334155">writes JSON</text>
+  <text x="394" y="268" text-anchor="middle" font-size="11" fill="#334155">lines</text>
+
+  <g>
+    <path d="M426 240 h124 a10 10 0 0 1 10 10 v44 a10 10 0 0 1 -10 10 h-124 a10 10 0 0 1 -10 -10 v-44 a10 10 0 0 1 10 -10 z" fill="#fafaf9" stroke="#78716c" stroke-width="2"/>
+    <text x="506" y="267" text-anchor="middle" font-size="14" font-weight="600" fill="#292524">logs.jsonl</text>
+    <text x="506" y="284" text-anchor="middle" font-size="11" fill="#57534e">(log_data volume)</text>
+  </g>
+
+  <!-- docker-proxy sidecar -->
+  <line x1="586" y1="272" x2="656" y2="150" stroke="#94a3b8" stroke-width="2" stroke-dasharray="5,4" marker-end="url(#arrowDash)"/>
+  <g>
+    <rect x="658" y="118" width="180" height="72" rx="10" fill="#f8fafc" stroke="#64748b" stroke-width="2" stroke-dasharray="5,4"/>
+    <text x="748" y="142" text-anchor="middle" font-size="13" font-weight="600" fill="#334155">docker-proxy</text>
+    <text x="748" y="159" text-anchor="middle" font-size="10.5" fill="#475569">read-only Docker Engine API</text>
+    <text x="748" y="174" text-anchor="middle" font-size="10.5" fill="#475569">internal-only sidecar</text>
+  </g>
+  <text x="600" y="215" font-size="10.5" fill="#475569">queried by Go API</text>
+  <text x="600" y="228" font-size="10.5" fill="#475569">for Admin &gt; Health</text>
+
+  <!-- Legend note -->
+  <text x="20" y="345" font-size="11.5" fill="#475569">rsyslog and the Go API don't talk directly: rsyslog writes JSON lines to a shared file, and the</text>
+  <text x="20" y="362" font-size="11.5" fill="#475569">API's file tailer (backend/tailer/) reads &amp; parses it, then persists parsed entries to PostgreSQL.</text>
+</svg>

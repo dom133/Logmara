@@ -51,12 +51,23 @@ Commands (run on the indicated node):
       docker-stack.redis.yml. Its value must match REDIS_PASSWORD passed to
       docker-stack.app.yml.
 
+  app-secrets <jwt-secret> <encryption-key>
+      Run on a manager, once: creates the jwt_secret and encryption_key
+      secrets consumed by the api service in docker-stack.app.yml (instead
+      of passing JWT_SECRET/ENCRYPTION_KEY as plain deploy-time env vars).
+      Generate both with `openssl rand -base64 48`, do not reuse examples.
+
   haproxy-config
       Run on a manager, once (and again any time haproxy/haproxy.cfg
       changes — configs are immutable, so this recreates it with a new
       name if it already exists and prints the docker service update
       command to roll it out):
         docker config create haproxy_pg_cfg haproxy/haproxy.cfg
+
+  haproxy-app-config
+      Same idea as haproxy-config, for haproxy/haproxy-app.cfg (fronts
+      frontend/api - docker-stack.app.yml's haproxy-app service):
+        docker config create haproxy_app_cfg haproxy/haproxy-app.cfg
 
   redis-sentinel-config
       Same idea as haproxy-config, for redis/sentinel.conf.tpl:
@@ -122,15 +133,35 @@ case "$cmd" in
     echo "Remember: its value must match REDIS_PASSWORD used when deploying docker-stack.app.yml."
     ;;
 
+  app-secrets)
+    jwt="${2:?usage: app-secrets <jwt-secret> <encryption-key>}"
+    enc="${3:?usage: app-secrets <jwt-secret> <encryption-key>}"
+    printf '%s' "$jwt" | docker secret create jwt_secret -
+    printf '%s' "$enc" | docker secret create encryption_key -
+    echo "Created jwt_secret, encryption_key."
+    ;;
+
   haproxy-config)
     if docker config inspect haproxy_pg_cfg >/dev/null 2>&1; then
         ts=$(date +%s)
         docker config create "haproxy_pg_cfg_${ts}" haproxy/haproxy.cfg
         echo "Config changed: created haproxy_pg_cfg_${ts}."
         echo "Update docker-stack.postgres.yml's haproxy config source to haproxy_pg_cfg_${ts}, then:"
-        echo "  docker stack deploy -c docker-stack.postgres.yml syslog-pg"
+        echo "  docker stack deploy -c docker-stack.postgres.yml logmara-pg"
     else
         docker config create haproxy_pg_cfg haproxy/haproxy.cfg
+    fi
+    ;;
+
+  haproxy-app-config)
+    if docker config inspect haproxy_app_cfg >/dev/null 2>&1; then
+        ts=$(date +%s)
+        docker config create "haproxy_app_cfg_${ts}" haproxy/haproxy-app.cfg
+        echo "Config changed: created haproxy_app_cfg_${ts}."
+        echo "Update docker-stack.app.yml's haproxy_app_cfg config source to haproxy_app_cfg_${ts}, then:"
+        echo "  docker stack deploy -c docker-stack.app.yml logmara-app"
+    else
+        docker config create haproxy_app_cfg haproxy/haproxy-app.cfg
     fi
     ;;
 
@@ -140,7 +171,7 @@ case "$cmd" in
         docker config create "redis_sentinel_cfg_${ts}" redis/sentinel.conf.tpl
         echo "Config changed: created redis_sentinel_cfg_${ts}."
         echo "Update docker-stack.redis.yml's sentinel config source to redis_sentinel_cfg_${ts}, then:"
-        echo "  docker stack deploy -c docker-stack.redis.yml syslog-redis"
+        echo "  docker stack deploy -c docker-stack.redis.yml logmara-redis"
     else
         docker config create redis_sentinel_cfg redis/sentinel.conf.tpl
     fi

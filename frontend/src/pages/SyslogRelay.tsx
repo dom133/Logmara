@@ -320,7 +320,7 @@ export default function SyslogRelay() {
                   style={{ marginBottom: 16 }}
                   type="info"
                   showIcon
-                  message="Only connections from an IP whose current certificate is Active are accepted on the mTLS port (6514) - everything else, including a Blocked entry's old (revoked) key, is dropped. Removing an entry here revokes its certificate too."
+                  message="Only connections from an IP whose current certificate is Active are accepted on the mTLS port (6515) - everything else, including a Blocked entry's old (revoked) key, is dropped. Removing an entry here revokes its certificate too."
                 />
                 <Table
                   rowKey="id"

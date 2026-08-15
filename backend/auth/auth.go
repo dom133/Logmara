@@ -11,8 +11,9 @@ import (
 	"strconv"
 	"time"
 
-	"syslytics/db"
-	"syslytics/util"
+	"logmara/audit"
+	"logmara/db"
+	"logmara/util"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -83,8 +84,12 @@ func (cfg *Config) getJWTExpiryMin() int {
 	return 15
 }
 
-// GenerateToken creates a signed access JWT.
-func (cfg *Config) GenerateToken(userID int64, username string, role string) (string, string, time.Time, error) {
+// GenerateToken creates a signed access JWT. remember mirrors the
+// "remember this device" flag of the refresh token this access token was
+// issued alongside, so GetMe can tell the frontend whether it's safe to
+// silently auto-renew this session instead of prompting the user (see
+// AuthProvider.checkSessionExpiry).
+func (cfg *Config) GenerateToken(userID int64, username string, role string, remember bool) (string, string, time.Time, error) {
 	expiryMin := cfg.getJWTExpiryMin()
 	jti := generateJTI()
 	exp := time.Now().Add(time.Duration(expiryMin) * time.Minute)
@@ -95,6 +100,7 @@ func (cfg *Config) GenerateToken(userID int64, username string, role string) (st
 		"jti":      jti,
 		"exp":      exp.Unix(),
 		"iat":      time.Now().Unix(),
+		"remember": remember,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenStr, err := token.SignedString(cfg.jwtSecret)
@@ -121,13 +127,31 @@ func (cfg *Config) ValidateToken(tokenString string) (*jwt.MapClaims, error) {
 	return nil, fmt.Errorf("invalid token")
 }
 
-// GenerateRefreshToken returns a random refresh token with 7-day expiry.
-func GenerateRefreshToken(userID int) (string, time.Time) {
+// RememberedRefreshTokenTTL is how long a refresh token lives when the user
+// checked "remember this device" at login, versus the normal 7 days.
+const RememberedRefreshTokenTTL = 60 * 24 * time.Hour
+const DefaultRefreshTokenTTL = 7 * 24 * time.Hour
+
+// GenerateRefreshToken returns a random refresh token. remember extends its
+// expiry from the normal 7 days to 60 days, for "remember this device" logins.
+func GenerateRefreshToken(userID int, remember bool) (string, time.Time) {
 	b := make([]byte, 32)
 	rand.Read(b)
 	token := hex.EncodeToString(b)
-	exp := time.Now().Add(7 * 24 * time.Hour)
+	ttl := DefaultRefreshTokenTTL
+	if remember {
+		ttl = RememberedRefreshTokenTTL
+	}
+	exp := time.Now().Add(ttl)
 	return token, exp
+}
+
+// GenerateDeviceID returns a random identifier for a "remember this device"
+// cookie, stable across logins/logouts on the same browser.
+func GenerateDeviceID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // HashPassword hashes a password with bcrypt (cost 14).
@@ -222,7 +246,7 @@ func (cfg *Config) JWTRequired() gin.HandlerFunc {
 }
 
 // RoleRequired returns middleware that enforces at least one of the given roles.
-func RoleRequired(roles ...string) gin.HandlerFunc {
+func (cfg *Config) RoleRequired(roles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, exists := c.Get("claims")
 		if !exists {
@@ -233,6 +257,8 @@ func RoleRequired(roles ...string) gin.HandlerFunc {
 
 		mapClaims := claims.(*jwt.MapClaims)
 		userRole := (*mapClaims)["role"].(string)
+		username, _ := (*mapClaims)["username"].(string)
+		userID, _ := (*mapClaims)["user_id"].(float64)
 
 		for _, role := range roles {
 			if userRole == role {
@@ -241,13 +267,19 @@ func RoleRequired(roles ...string) gin.HandlerFunc {
 			}
 		}
 
+		if cfg.db != nil {
+			go func() {
+				audit.LogAudit(cfg.db, int64(userID), username, "access_denied", c.ClientIP(), fmt.Sprintf("insufficient permissions; required=%v, user_role=%s", roles, userRole))
+			}()
+		}
+
 		c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions"})
 		c.Abort()
 	}
 }
 
 // AdminRequired returns middleware that enforces admin role.
-func AdminRequired() gin.HandlerFunc {
+func (cfg *Config) AdminRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, exists := c.Get("claims")
 		if !exists {
@@ -258,8 +290,16 @@ func AdminRequired() gin.HandlerFunc {
 
 		mapClaims := claims.(*jwt.MapClaims)
 		userRole := (*mapClaims)["role"].(string)
+		username, _ := (*mapClaims)["username"].(string)
+		userID, _ := (*mapClaims)["user_id"].(float64)
 
 		if userRole != "admin" {
+			if cfg.db != nil {
+				go func() {
+					audit.LogAudit(cfg.db, int64(userID), username, "access_denied", c.ClientIP(), fmt.Sprintf("admin access required; user_role=%s", userRole))
+				}()
+			}
+
 			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
 			c.Abort()
 			return

@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"syslytics/model"
+	"logmara/model"
 )
 
 // matchDevice reports whether fromHostIP is one of the rule's selected

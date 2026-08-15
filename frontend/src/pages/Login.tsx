@@ -1,9 +1,10 @@
 import { useEffect, useMemo } from 'react'
 import { useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Layout, Card, Form, Input, Button, message, Typography } from 'antd'
+import { Layout, Card, Form, Input, Button, Checkbox, message, Typography, Select } from 'antd'
 import { useAuth } from '../services/auth'
 import { useTheme } from '../App'
+import { useTranslation } from 'react-i18next'
 
 const { Title, Text } = Typography
 
@@ -11,6 +12,7 @@ export default function Login() {
   const [loading, setLoading] = useState(false)
   const { login, user } = useAuth()
   const { themeMode } = useTheme()
+  const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const redirectPath = useMemo(() => {
@@ -27,38 +29,54 @@ export default function Login() {
     }
   }, [user, navigate])
 
-  const handleLogin = async (values: { username: string; password: string }) => {
+  const handleLogin = async (values: { username: string; password: string; remember?: boolean }) => {
     setLoading(true)
-    const result = await login(values.username, values.password)
+    const result = await login(values.username, values.password, values.remember)
     setLoading(false)
     if (result.ok) {
-      message.success('Logged in successfully')
+      message.success(t('common.logged_in'))
       navigate(redirectPath)
     } else {
-      message.error(result.error || 'Invalid credentials')
+      message.error(result.error || t('login.invalid_credentials'))
     }
   }
+
+  const languages = Object.keys((i18n as any).resourceStore?.data || {})
 
   return (
     <Layout style={{ minHeight: '100vh', background: themeMode === 'dark' ? '#141414' : '#f0f2f5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <Card style={{ width: '100%', maxWidth: 400, boxShadow: '0 2px 8px rgba(0,0,0,0.1)', background: themeMode === 'dark' ? '#1f1f1f' : '#fff' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <Title level={3} style={{ margin: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-            <img src="/icons/icon-192.png" alt="Syslytics" style={{ width: 28, height: 28, borderRadius: 6 }} />
-            Syslytics
+            <img src="/icons/icon-192.png" alt="Logmara" style={{ width: 28, height: 28, borderRadius: 6 }} />
+            Logmara
           </Title>
-          <Text type="secondary">Syslog collector & analyzer</Text>
+          <Text type="secondary">{t('login.subtitle')}</Text>
         </div>
+        {languages.length > 1 && (
+          <div style={{ marginBottom: 16 }}>
+            <Select
+              value={i18n.language}
+              onChange={(val) => { localStorage.setItem('syslog_lang', val); i18n.changeLanguage(val) }}
+              options={languages.map((l: string) => ({ value: l, label: l.charAt(0).toUpperCase() + l.slice(1) }))}
+              style={{ width: '100%' }}
+              size="large"
+            />
+          </div>
+        )}
         <Form onFinish={handleLogin} layout="vertical">
-          <Form.Item name="username" label="Username" rules={[{ required: true }]}>
-            <Input size="large" placeholder="Login" />
+          <Form.Item name="username" label={t('login.username')} rules={[{ required: true }]}>
+            <Input size="large" placeholder={t('login.username')} />
           </Form.Item>
-          <Form.Item name="password" label="Password" rules={[{ required: true }]}>
-            <Input.Password size="large" placeholder="Password" />
+          <Form.Item name="password" label={t('login.password')} rules={[{ required: true }]}>
+            <Input.Password size="large" placeholder={t('login.password')} />
+          </Form.Item>
+          <Form.Item name="remember" valuePropName="checked" style={{ marginBottom: 12 }}>
+            <Checkbox>{t('login.remember_device')}</Checkbox>
           </Form.Item>
           <Form.Item>
             <Button type="primary" htmlType="submit" loading={loading} size="large" block>
-              Login
+              {t('login.login')}
             </Button>
           </Form.Item>
         </Form>

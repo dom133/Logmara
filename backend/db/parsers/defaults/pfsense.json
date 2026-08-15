@@ -1,0 +1,57 @@
+[
+  {
+    "name": "pfSense Filter Log",
+    "description": "Matches pfSense firewall filter log entries",
+    "device_type": "pfsense",
+    "match_type": "hostname",
+    "match_value": "pfsense*",
+    "regex": "filter\\+.*?(pass|block).*?(\\S+)\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+):\\d+\\s-\u003e\\s(\\d+\\.\\d+\\.\\d+\\.\\d+):\\d+",
+    "fields": [
+      {
+        "name": "action",
+        "label": "Action",
+        "type": "string"
+      },
+      {
+        "name": "interface",
+        "label": "Interface",
+        "type": "string"
+      },
+      {
+        "name": "src_ip",
+        "label": "Source IP",
+        "type": "string"
+      },
+      {
+        "name": "dst_ip",
+        "label": "Destination IP",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Suricata Alert",
+    "description": "Matches Suricata IDS/IPS alert entries",
+    "device_type": "pfsense",
+    "match_type": "hostname",
+    "match_value": "pfsense*",
+    "regex": "\\[1:\\d+:\\d+\\]\\s+(\\S+)\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+):\\d+\\s-\u003e\\s(\\d+\\.\\d+\\.\\d+\\.\\d+):\\d+",
+    "fields": [
+      {
+        "name": "alert_msg",
+        "label": "Alert Message",
+        "type": "string"
+      },
+      {
+        "name": "src_ip",
+        "label": "Source IP",
+        "type": "string"
+      },
+      {
+        "name": "dst_ip",
+        "label": "Destination IP",
+        "type": "string"
+      }
+    ]
+  }
+]

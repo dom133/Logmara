@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"syslytics/sharedstate"
+	"logmara/sharedstate"
 )
 
 // counterStore tracks, per key, how many matching events have been seen

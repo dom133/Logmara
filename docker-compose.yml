@@ -1,3 +1,5 @@
+name: logmara
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -15,7 +17,7 @@ services:
       TZ: UTC
       POSTGRES_DB: ${POSTGRES_DB:-syslog_db}
       POSTGRES_USER: ${POSTGRES_USER:-syslog}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-syslogpass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -52,11 +54,16 @@ services:
     ports:
       - "${RSYSLOG_PORT:-514}:514"
       - "${RSYSLOG_PORT:-514}:514/udp"
+      # Direct TLS ingestion, no client certificate required - same
+      # ingestion as :514 above, just wrapped in server-side TLS for
+      # senders that want an encrypted transport without going through a
+      # relay. Not gated by the relay whitelist/ACL (see rsyslog/syslog.conf).
+      - "${SYSLOG_TLS_PORT:-6514}:6514"
       # mTLS listener for remote syslog relays (Admin > Settings > enable
       # relay ingestion). Safe to leave published even when unused: with no
       # relay certificate issued and none whitelisted, every connection is
       # dropped at the ACL (see rsyslog/syslog.conf and README "Syslog Relay").
-      - "${RELAY_MTLS_PORT:-6514}:6514"
+      - "${RELAY_MTLS_PORT:-6515}:6515"
     depends_on:
       api:
         condition: service_healthy
@@ -110,7 +117,16 @@ services:
       dockerfile: Dockerfile.backend
     environment:
       TZ: UTC
-      DATABASE_URL: postgres://${POSTGRES_USER:-syslog}:${POSTGRES_PASSWORD:-syslogpass}@postgres:5432/${POSTGRES_DB:-syslog_db}?sslmode=disable
+      # Built from components (not a raw DATABASE_URL) so a password containing
+      # URL-special characters (/, +, @, :, ?, #, ...) gets percent-encoded by
+      # ResolveDatabaseURL instead of corrupting the DSN - see
+      # backend/util/secret.go.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-syslog}
+      POSTGRES_DB: ${POSTGRES_DB:-syslog_db}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_SSLMODE: disable
       # Security keys - required, and never stored in the database (a DB dump
       # alone must not be able to forge tokens or decrypt secrets). Generate
       # each with `openssl rand -base64 48` and put them in .env. See README
@@ -139,9 +155,14 @@ services:
       RELAY_CENTRAL_HOST: ${RELAY_CENTRAL_HOST:-}
       # Backs Admin > Health - see the docker-proxy service above.
       DOCKER_PROXY_URL: http://docker-proxy:2375
+      # Directory the builtin parser JSON definitions (backend/db/parsers)
+      # are bootstrapped into and re-read from on every start, so they can
+      # be edited/added/removed without rebuilding the image.
+      PARSER_DEFS_DIR: /parsers
     volumes:
       - log_data:/data
-    
+      - parser_defs:/parsers
+
     depends_on:
       postgres:
         condition: service_healthy
@@ -194,6 +215,7 @@ volumes:
   pg_data:
   log_data:
   log_spool:
+  parser_defs:
 
 networks:
   syslog_net:

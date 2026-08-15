@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 
-test.describe('Syslytics E2E', () => {
+test.describe('Logmara E2E', () => {
   test('login and view dashboard', async ({ page }) => {
     await page.goto('/login')
     await page.fill('input[name="username"]', 'admin')
