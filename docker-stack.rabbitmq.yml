@@ -185,10 +185,10 @@ configs:
     external: true
   rabbitmq_conf_tpl:
     file: rabbitmq/rabbitmq.conf.tpl
-    name: rabbitmq_conf_tpl_${RABBITMQ_CONF_TPL_HASH:?run via scripts/swarm-deploy.sh, or export RABBITMQ_CONF_TPL_HASH yourself}
+    name: rabbitmq_conf_tpl_${RABBITMQ_CONF_TPL_HASH:-unset}
   rabbitmq_entrypoint:
     file: rabbitmq/entrypoint.sh
-    name: rabbitmq_entrypoint_${RABBITMQ_ENTRYPOINT_HASH:?run via scripts/swarm-deploy.sh, or export RABBITMQ_ENTRYPOINT_HASH yourself}
+    name: rabbitmq_entrypoint_${RABBITMQ_ENTRYPOINT_HASH:-unset}
   rabbitmq_join_entrypoint:
     file: rabbitmq/join_entrypoint.sh
-    name: rabbitmq_join_entrypoint_${RABBITMQ_JOIN_ENTRYPOINT_HASH:?run via scripts/swarm-deploy.sh, or export RABBITMQ_JOIN_ENTRYPOINT_HASH yourself}
+    name: rabbitmq_join_entrypoint_${RABBITMQ_JOIN_ENTRYPOINT_HASH:-unset}

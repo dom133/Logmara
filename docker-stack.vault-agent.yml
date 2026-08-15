@@ -105,7 +105,7 @@ networks:
 configs:
   vault_agent_cfg:
     file: vault/vault-agent.hcl
-    name: vault_agent_cfg_${VAULT_AGENT_CFG_HASH:?run via scripts/swarm-deploy.sh, or export VAULT_AGENT_CFG_HASH yourself}
+    name: vault_agent_cfg_${VAULT_AGENT_CFG_HASH:-unset}
 
 secrets:
   # Created by `scripts/vault-bootstrap.sh migrate-secrets` (a one-time
