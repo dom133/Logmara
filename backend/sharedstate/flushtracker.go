@@ -63,10 +63,19 @@ return {flushedSeq, flushedPos}
 `
 
 func NewFlushTracker(client *Client) *FlushTracker {
-	return &FlushTracker{
+	ft := &FlushTracker{
 		client: client,
 		script: redis.NewScript(reportFlushedLua),
 	}
+	if client != nil {
+		// Sync ft.seq with the last flushed sequence from Redis so that
+		// newly allocated sequence numbers are contiguous with the ones
+		// already stored. This prevents a joining replica from wiping the
+		// shared tracker and breaking flush progress on the leader.
+		seq, _ := ft.GetFlushedPos(context.Background())
+		ft.seq = seq
+	}
+	return ft
 }
 
 // QueueEntry carries the metadata needed to track flush progress.

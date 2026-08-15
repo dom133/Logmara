@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 export interface ColumnDef {
   key: string;
@@ -17,10 +17,19 @@ const MIN_WIDTH = 60;
 
 export function useColumnWidths(storageKey: string, defaultCols: ColumnDef[]): UseColumnWidthsReturn {
   const [widths, setWidths] = useState<Record<string, number>>({});
+  const widthsRef = useRef(widths);
+  widthsRef.current = widths;
 
-  const defaults: Record<string, number> = {};
-  for (const col of defaultCols) {
-    if (col.width) defaults[col.key] = col.width;
+  const defaultColsRef = useRef(defaultCols);
+  defaultColsRef.current = defaultCols;
+
+  const defaultsRef = useRef<Record<string, number>>({});
+  {
+    const d: Record<string, number> = {};
+    for (const col of defaultColsRef.current) {
+      if (col.width) d[col.key] = col.width;
+    }
+    defaultsRef.current = d;
   }
 
   useEffect(() => {
@@ -31,12 +40,12 @@ export function useColumnWidths(storageKey: string, defaultCols: ColumnDef[]): U
   }, [storageKey]);
 
   useEffect(() => {
-    if (Object.keys(widths).length > 0) {
-      localStorage.setItem(storageKey, JSON.stringify(widths));
+    if (Object.keys(widthsRef.current).length > 0) {
+      localStorage.setItem(storageKey, JSON.stringify(widthsRef.current));
     }
   }, [widths, storageKey]);
 
-  const hasChanges = Object.keys(widths).some((k) => widths[k] !== defaults[k]);
+  const hasChanges = Object.keys(widthsRef.current).some((k) => widthsRef.current[k] !== defaultsRef.current[k]);
 
   const reset = useCallback(() => {
     setWidths({});
@@ -44,8 +53,8 @@ export function useColumnWidths(storageKey: string, defaultCols: ColumnDef[]): U
   }, [storageKey]);
 
   const getEffectiveWidth = useCallback(
-    (col: ColumnDef) => widths[col.key] ?? col.width ?? defaults[col.key],
-    [widths, defaults],
+    (col: ColumnDef) => widthsRef.current[col.key] ?? col.width ?? defaultsRef.current[col.key],
+    [],
   );
 
   const onMouseDown = useCallback(

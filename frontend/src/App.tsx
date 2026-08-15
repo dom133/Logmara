@@ -1,20 +1,10 @@
-import { useEffect, useState, createContext, useContext } from 'react'
+import { useEffect, useState, createContext, useContext, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link as RouterLink } from 'react-router-dom'
 import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Space, Typography, Skeleton } from 'antd'
 import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, BellOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined, LogoutOutlined, UserOutlined, NodeIndexOutlined } from '@ant-design/icons'
-import { initI18n } from './i18n'
+import { initI18n, initI18nFallback } from './i18n'
 import { useTranslation } from 'react-i18next'
 import Login from './pages/Login'
-import Dashboard from './pages/Dashboard'
-import LogsViewer from './pages/LogsViewer'
-import ParsersPage from './pages/Parsers'
-import DashboardsPage from './pages/Dashboards'
-import DashboardViewPage from './pages/DashboardView'
-import AlertsPage from './pages/Alerts'
-
-import Admin from './pages/Admin'
-import SyslogRelay from './pages/SyslogRelay'
-import SetupWizard from './pages/SetupWizard'
 import ErrorBoundary from './components/ErrorBoundary'
 import { SessionWarningModal } from './components/SessionWarningModal'
 import { PasswordExpiryWarning } from './components/PasswordExpiryWarning'
@@ -25,6 +15,27 @@ import { getDashboards, getDashboard, Dashboard as DashboardType, checkInitializ
 import { useIsMobile } from './hooks/useIsMobile'
 import { I18nextProvider } from 'react-i18next'
 import type { i18n as I18nInstance } from 'i18next'
+
+// Lazy-loaded so a fresh page load only pays for the route actually being
+// visited instead of downloading every page (incl. echarts-heavy Dashboard
+// and the rarely-used Admin/SyslogRelay pages) up front in one bundle.
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const LogsViewer = lazy(() => import('./pages/LogsViewer'))
+const ParsersPage = lazy(() => import('./pages/Parsers'))
+const DashboardsPage = lazy(() => import('./pages/Dashboards'))
+const DashboardViewPage = lazy(() => import('./pages/DashboardView'))
+const AlertsPage = lazy(() => import('./pages/Alerts'))
+const Admin = lazy(() => import('./pages/Admin'))
+const SyslogRelay = lazy(() => import('./pages/SyslogRelay'))
+const SetupWizard = lazy(() => import('./pages/SetupWizard'))
+
+function RouteFallback() {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', padding: '100px 0' }}>
+      <Spin size="large" />
+    </div>
+  )
+}
 
 const { Sider, Content, Header, Footer } = Layout
 
@@ -378,19 +389,22 @@ function NotFoundPage() {
 export default function App() {
   const [initialized, setInitialized] = useState<boolean | null>(null)
   const [starting, setStarting] = useState(false)
-  const [i18n, setI18n] = useState<I18nInstance | null>(null)
+  // Initialize a minimal i18n instance synchronously so the login page can
+  // render immediately. The full init (real locale data + backend settings)
+  // replaces these resources in the background.
+  const fallbackI18n = initI18nFallback()
+  const [i18nInstance] = useState<I18nInstance>(fallbackI18n)
 
-  // Both i18n init and backend readiness check are independent and can
-  // start their async work at the same time - the render below is gated
-  // on both, so running them sequentially would add their latencies.
+  // Full i18n init (real locale data + backend settings) runs in the
+  // background and replaces the fallback resources on the same global
+  // i18n instance. Backend readiness check is independent.
   useEffect(() => {
     let cancelled = false
 
     const initI18nPromise = (async () => {
       try {
-        const instance = await initI18n()
+        await initI18n()
         if (cancelled) return
-        setI18n(instance)
       } catch (e) {
         console.error('Failed to initialize i18n', e)
       }
@@ -421,7 +435,7 @@ export default function App() {
     return () => { cancelled = true }
   }, [])
 
-  if (starting || initialized === null || !i18n) {
+  if (starting || initialized === null) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flexDirection: 'column', gap: 16, height: '100vh' }}>
         <Spin size="large" />
@@ -431,33 +445,32 @@ export default function App() {
   }
 
   return (
-    <I18nextProvider i18n={i18n}>
+    <I18nextProvider i18n={i18nInstance}>
       <ThemeProvider>
         <BrowserRouter>
-          <AuthProvider>
-            <Routes>
+          <Suspense fallback={<RouteFallback />}>
             {!initialized ? (
-              <>
+              <Routes>
                 <Route path="/setup" element={<SetupWizard />} />
                 <Route path="*" element={<Navigate to="/setup" replace />} />
-              </>
+              </Routes>
             ) : (
-              <>
-                <Route path="/login" element={<Login />} />
-
-                <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
-                <Route path="/logs" element={<PrivateRoute><LogsViewer /></PrivateRoute>} />
-                <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />
-                <Route path="/dashboards" element={<PrivateRoute><DashboardsPage /></PrivateRoute>} />
-                <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
-                <Route path="/alerts" element={<PrivateRoute><AlertsPage /></PrivateRoute>} />
-                <Route path="/admin" element={<PrivateRoute requireAdmin><Admin /></PrivateRoute>} />
-                <Route path="/relay" element={<PrivateRoute requireAdmin><SyslogRelay /></PrivateRoute>} />
-                <Route path="*" element={<PrivateRoute><NotFoundPage /></PrivateRoute>} />
-              </>
+              <AuthProvider>
+                <Routes>
+                  <Route path="/login" element={<Login />} />
+                  <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
+                  <Route path="/logs" element={<PrivateRoute><LogsViewer /></PrivateRoute>} />
+                  <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />
+                  <Route path="/dashboards" element={<PrivateRoute><DashboardsPage /></PrivateRoute>} />
+                  <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
+                  <Route path="/alerts" element={<PrivateRoute><AlertsPage /></PrivateRoute>} />
+                  <Route path="/admin" element={<PrivateRoute requireAdmin><Admin /></PrivateRoute>} />
+                  <Route path="/relay" element={<PrivateRoute requireAdmin><SyslogRelay /></PrivateRoute>} />
+                  <Route path="*" element={<PrivateRoute><NotFoundPage /></PrivateRoute>} />
+                </Routes>
+              </AuthProvider>
             )}
-          </Routes>
-          </AuthProvider>
+          </Suspense>
         </BrowserRouter>
       </ThemeProvider>
     </I18nextProvider>

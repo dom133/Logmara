@@ -220,7 +220,7 @@ echo "JWT_SECRET=$(openssl rand -base64 48)"     >> .env
 echo "ENCRYPTION_KEY=$(openssl rand -base64 48)" >> .env
 ```
 
-**High Availability (`docker-stack.*.yml`)** — credentials are passed as Swarm secrets (step 7 of the HA guide), not as plain env vars. Non-sensitive deployment parameters (`REGISTRY`, `TAG`, `NFS_SERVER`, `API_REPLICAS`, etc.) go into `.env` and are sourced automatically by `scripts/swarm-deploy.sh`. If you call `docker stack deploy` directly instead, export them in your shell first — Swarm won't read `.env` on its own.
+**High Availability (`docker-stack.*.yml`)** — credentials are created as Swarm secrets (step 7 of the HA guide) and then migrated into Vault (step 8), which is what the containers actually read from — not as plain env vars. Non-sensitive deployment parameters (`REGISTRY`, `TAG`, `NFS_SERVER`, `API_REPLICAS`, etc.) go into `.env` and are sourced automatically by `scripts/swarm-deploy.sh`. If you call `docker stack deploy` directly instead, export them in your shell first — Swarm won't read `.env` on its own.
 
 ```bash
 export JWT_SECRET=$(openssl rand -base64 48)
@@ -276,7 +276,99 @@ Getting here required backend code changes (not just Docker config) — see "How
 | [`scripts/swarm-bootstrap.sh`](scripts/swarm-bootstrap.sh) | Guided commands for swarm init/join, node labeling, network/secret/config creation |
 | [`scripts/swarm-deploy.sh`](scripts/swarm-deploy.sh) | Wrapper that sources `.env` then runs `docker stack deploy` (Swarm doesn't read `.env` on its own) |
 | [`scripts/build-images.sh`](scripts/build-images.sh) | Builds + pushes all Docker images, reading `REGISTRY`/`TAG` from `.env` |
+| [`docker-stack.vault.yml`](docker-stack.vault.yml) | 3-node Vault cluster (Raft storage) + global Vault agent sidecars for secret injection |
+| [`vault/`](vault/) | Vault server and agent configuration files |
+| [`scripts/vault-bootstrap.sh`](scripts/vault-bootstrap.sh) | Vault init, unseal, policy creation, Docker→Vault secret migration, and creation of the `vault_agent_token` Docker secret the agent sidecars auto-authenticate with |
+| [`scripts/rotate-secrets.sh`](scripts/rotate-secrets.sh) | Secret rotation (auto-detects Docker secrets or Vault KV) - `rotate` for a single secret with a zero-downtime rolling restart, `rotate-batch` to rotate several secrets at once with logmara-app scaled to 0 for the duration |
+| [`scripts/backup-swarm.sh`](scripts/backup-swarm.sh) | Full state backup (etcd snapshot, Postgres dump, configs, join tokens) with optional S3 sync |
+| [`scripts/backup-cron.sh`](scripts/backup-cron.sh) | Cron entry point — runs `backup-swarm.sh` then prunes old backups (keeps newest 7 daily / 4 Sunday / 3 first-of-month) |
+| [`docker-stack.monitoring.yml`](docker-stack.monitoring.yml) | Prometheus, Alertmanager, node/cadvisor exporters, optional Grafana |
 | [`nfs-ha/`](nfs-ha/) | *Optional* — DRBD resource template + keepalived VIP + promote/demote hooks for a synchronously-replicated NFS pair, instead of a single NFS box |
+
+### Deploying Vault
+
+The `vault-agent` sidecar authenticates to Vault with a bootstrap token that only exists once Vault itself has been initialized and unsealed, so the stack goes out in two passes — on the first pass the `vault-agent` tasks will fail to start (the `vault_agent_token` secret doesn't exist yet); that's expected, they come up once you redeploy after `migrate-secrets`:
+
+```bash
+docker stack deploy -c docker-stack.vault.yml logmara-vault
+./scripts/vault-bootstrap.sh init      # unseal keys + root token -> /srv/syslog-ha/vault-token
+./scripts/vault-bootstrap.sh unseal
+./scripts/vault-bootstrap.sh policy
+./scripts/vault-bootstrap.sh migrate-secrets   # migrates existing Docker secrets into Vault, creates vault_agent_token
+docker stack deploy -c docker-stack.vault.yml logmara-vault   # re-run so vault-agent picks up vault_agent_token
+```
+
+### Vault UI
+
+The Vault cluster exposes a web UI on port `8200` (configurable via `VAULT_UI_PORT` env var) on the node labeled `vault_id=1`. The UI allows browsing secrets, managing auth methods, and configuring LDAP authentication.
+
+**⚠ Firewall — mandatory.** The Vault UI exposes all stored secrets. Restrict access to admin IPs only:
+
+```bash
+# On the vault-1 node — allow only your admin workstation(s):
+ufw allow from <admin-ip> to any port 8200
+# Or a subnet:
+ufw allow from 10.0.1.0/24 to any port 8200
+```
+
+Without a firewall rule, port 8200 is reachable from anywhere on the network.
+
+#### Configuring LDAP Authentication (via GUI)
+
+The Vault UI supports configuring LDAP auth natively — no CLI required.
+
+1. **Log in** with the root token from `/srv/syslog-ha/vault-token` (set during `vault-bootstrap.sh init`)
+2. Navigate to **Access → Authentication Methods** → click **Enable New Method**
+3. Select **LDAP**, set path to `ldap`, click **Enable Method**
+4. Click the newly-created `ldap` method, go to **Configuration**:
+   | Field | Value |
+   |-------|-------|
+   | LDAP URL | `ldap://<server>:389` (or `ldaps://` for LDAPS) |
+   | User DN | same as your app's `ldap_base_dn` (e.g. `ou=users,dc=example,dc=com`) |
+   | User Attribute | same as `ldap_username_attr` (default: `uid`) |
+   | Group DN | your groups container (e.g. `ou=groups,dc=example,dc=com`) |
+   | Group Attribute | `cn` |
+   | Bind DN | same as `ldap_bind_dn` (if your LDAP requires service account bind) |
+   | Bind Password | same as `ldap_bind_password` |
+   | TLS Skip Verify | disable if your LDAP server has a valid cert |
+5. Go to **Groups** tab → click **Create Group Mapping**:
+   | Field | Value |
+   |-------|-------|
+   | Group Name | `vault-admins` (or whatever group you want to grant access) |
+   | Policies | `logmara` |
+6. **Test login** — open an incognito window, log in with a user from the `vault-admins` group
+
+#### Locking down Vault after LDAP is working
+
+Once LDAP auth is verified, remove the root token and disable anonymous token auth:
+
+```bash
+# 1. Log in with root token (from file)
+export VAULT_TOKEN=$(cat /srv/syslog-ha/vault-token)
+
+# 2. Create a permanent admin token tied to the logmara policy
+docker run --rm --network syslog_net \
+  -e VAULT_ADDR="http://vault-1:8200" \
+  -e VAULT_TOKEN="$VAULT_TOKEN" \
+  vault:1.15.0 token create -policy=logmara -period=24h -ttl=24h -renewable
+
+# 3. Disable the default token auth method (forces LDAP-only login)
+docker run --rm --network syslog_net \
+  -e VAULT_ADDR="http://vault-1:8200" \
+  -e VAULT_TOKEN="$VAULT_TOKEN" \
+  vault:1.15.0 auth disable token
+
+# 4. Revoke the root token
+docker run --rm --network syslog_net \
+  -e VAULT_ADDR="http://vault-1:8200" \
+  -e VAULT_TOKEN="$VAULT_TOKEN" \
+  vault:1.15.0 auth revoke-self
+
+# 5. Remove the token file from disk
+rm /srv/syslog-ha/vault-token
+```
+
+After step 4, the root token is dead. After step 3, only LDAP users in the `vault-admins` group can log in. If you lock yourself out, you'll need to re-unseal with Shamir keys and re-init — keep those keys safe.
 
 ### How multi-replica safety works
 
@@ -465,9 +557,32 @@ ENCRYPTION_KEY_VAL=$(openssl rand -base64 48)   # separate value; see "Security 
 ./scripts/swarm-bootstrap.sh redis-sentinel-config
 ./scripts/swarm-bootstrap.sh haproxy-rabbitmq-config
 ```
-All four passwords/keys now live only as Swarm secrets (mounted into the relevant containers at `/run/secrets/*`) - none of them need to be exported as shell env vars again in step 10, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later.
+All the passwords/keys now live only as Swarm secrets - none of them need to be exported as shell env vars again later, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later. `pg_superuser_password`, `pg_replication_password`, and `rabbitmq_erlang_cookie` stay mounted directly into their containers at `/run/secrets/*` as native Swarm secrets. The other five (`pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key`) are only the *source* values here — step 8 below migrates them into Vault, which is what postgres/redis/rabbitmq/api actually read from at `/run/secrets/*` (bind-mounted from Vault agent's local output, not the Swarm secret directly — see [`docker-stack.vault.yml`](docker-stack.vault.yml)).
 
-#### 8. Create local data directories on the Postgres nodes
+#### 8. Deploy Vault and migrate secrets
+
+Postgres/Redis/RabbitMQ/the app tier (steps 10-11 below) all read `pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, and `encryption_key` from Vault, via a bind-mounted file `vault-agent` writes locally on every node — so Vault must be deployed and fully bootstrapped *before* those stacks, or their containers will fail to start (the bind-mount source file won't exist yet). See [`docker-stack.vault.yml`](docker-stack.vault.yml) and [Deploying Vault](#deploying-vault) above for the full explanation; the commands, run once from `pg1`:
+
+```bash
+# 3 nodes for the Vault Raft cluster - reuse pg1-pg3/app1-app2 on a small
+# cluster, or dedicate separate nodes on a larger one:
+docker node update --label-add vault_id=1 pg1
+docker node update --label-add vault_id=2 pg2
+docker node update --label-add vault_id=3 pg3
+
+docker stack deploy -c docker-stack.vault.yml logmara-vault
+./scripts/vault-bootstrap.sh init      # unseal keys + root token -> /srv/syslog-ha/vault-token
+./scripts/vault-bootstrap.sh unseal
+./scripts/vault-bootstrap.sh policy
+./scripts/vault-bootstrap.sh migrate-secrets   # copies the 5 secrets above into Vault, creates vault_agent_token
+docker stack deploy -c docker-stack.vault.yml logmara-vault   # re-run so vault-agent picks up vault_agent_token
+
+watch docker service ls   # wait for vault-1/2/3 and vault-agent (global) at Running
+```
+
+Verify every node has the files before moving on: `ls /srv/syslog-ha/vault-secrets/` should show `pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key` on each of `pg1`/`pg2`/`pg3`/`app1`/`app2`.
+
+#### 9. Create local data directories on the Postgres nodes
 
 On each of `pg1`, `pg2`, `pg3`:
 ```bash
@@ -475,7 +590,7 @@ sudo mkdir -p /srv/syslog-ha/pg /srv/syslog-ha/etcd
 ```
 These are node-local bind mounts, deliberately *not* on the shared NFS — Patroni replicates via WAL streaming, not a shared filesystem, and two Postgres instances sharing one data directory would corrupt it. Ownership is fixed up automatically by the Patroni container's entrypoint on first start. Redis needs no data directories at all (deliberately non-persistent — see `docker-stack.redis.yml`'s comments).
 
-#### 9. Deploy Postgres, then Redis
+#### 10. Deploy Postgres, then Redis
 
 On `pg1`:
 ```bash
@@ -515,9 +630,9 @@ Sanity-check leader election worked: `docker exec -it $(docker ps -qf name=logma
    ```
 2. **Swarm's default VIP/IPVS service load-balancing stalling large transfers.** `docker-stack.postgres.yml` already sets `endpoint_mode: dnsrr` on `postgres1/2/3` for this reason — each is a single-replica, node-pinned service, so there's nothing lost by resolving the service name straight to its one task IP instead of routing through a virtual IP. `haproxy.cfg`'s `resolvers docker` block already re-resolves those names periodically, so it isn't affected by `dnsrr` lacking a stable IP. If you've changed that setting back to the default `vip` and see this symptom, that's the first thing to revert.
 
-#### 10. Deploy the app tier
+#### 11. Deploy the app tier
 
-Still on `pg1` (or wherever you're driving `docker stack deploy` from) - the app tier's credentials (JWT signing key, encryption key, and the Postgres/Redis app passwords) all come from the Swarm secrets created in step 7, so nothing sensitive needs exporting here, only deployment parameters:
+Still on `pg1` (or wherever you're driving `docker stack deploy` from) - the app tier's credentials (JWT signing key, encryption key, and the Postgres/Redis/RabbitMQ app passwords) all come from Vault (step 8), so nothing sensitive needs exporting here, only deployment parameters:
 
 ```bash
 ./scripts/swarm-deploy.sh app   # deploys as stack "logmara-app"
@@ -526,7 +641,7 @@ watch docker service ls   # wait for api and frontend at 2/2, rsyslog and haprox
 
 `REGISTRY`, `TAG`, and `NFS_SERVER` are read from `.env` (or exported in your shell). If you put them in `.env` in step 4, they're picked up automatically — no manual `export` needed.
 
-#### 11. Set up keepalived on the edge nodes
+#### 12. Set up keepalived on the edge nodes
 
 keepalived runs on the host (outside Swarm — VRRP needs direct L2 access the overlay network doesn't provide) on both `app1` and `app2`. The config is rendered from [`keepalived/keepalived.conf.tpl`](keepalived/keepalived.conf.tpl) with `envsubst`.
 
@@ -592,7 +707,7 @@ For a third/fourth edge node, repeat the `app2` block with a unique lower `PRIOR
 
 Finally, point syslog senders at the VIP (`10.0.0.100:514`, tcp or udp) and browser/API clients/DNS at the same VIP for `80`/`443` — `haproxy-app` behind it load-balances across every `frontend` replica cluster-wide, not just whichever node currently holds the VIP, and nginx in turn proxies API requests to `haproxy-app`'s internal `:8090` listener, which load-balances across every `api` replica the same way.
 
-#### 12. First login
+#### 13. First login
 
 Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizard (creates the admin account) — same first-run flow as the single-server Quick Start. From then on, log in with the account you just created.
 

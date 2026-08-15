@@ -2,7 +2,8 @@ import { useEffect, useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Row, Col, Card, Table, Tag, Spin, Typography, Button } from 'antd'
 import { RestOutlined, FileTextOutlined, ClockCircleOutlined, CalendarOutlined, DesktopOutlined, ThunderboltOutlined } from '@ant-design/icons'
-import ReactECharts from 'echarts-for-react'
+import ReactECharts from 'echarts-for-react/esm/core'
+import echarts from '../utils/echarts-core'
 import { getDashboardStats, getTimeline, getSeverityStats, getDevices, getLogsRate, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import { DashboardStats, TimelinePoint } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
@@ -215,12 +216,12 @@ export default function Dashboard() {
       <Row gutter={16} style={{ marginBottom: 24 }}>
         <Col xs={24} lg={14}>
           <Card title={t('dashboard.logsTimeline')}>
-            <ReactECharts option={timelineOption} style={{ height: 300 }} />
+            <ReactECharts echarts={echarts} option={timelineOption} style={{ height: 300 }} />
           </Card>
         </Col>
         <Col xs={24} lg={10}>
           <Card title={t('dashboard.severityDistribution')}>
-            <ReactECharts option={severityOption} style={{ height: 340 }} />
+            <ReactECharts echarts={echarts} option={severityOption} style={{ height: 340 }} />
           </Card>
         </Col>
       </Row>

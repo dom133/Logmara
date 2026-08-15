@@ -1005,17 +1005,19 @@ func GetIngestionStatus(ic control.IngestionController) gin.HandlerFunc {
 
 func GetTailerMetrics() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		metrics := tailer.GetTailerMetrics()
-		if metrics == nil {
+		agg := tailer.GetTailerMetricsAggregated()
+		if agg == nil {
 			c.JSON(http.StatusOK, gin.H{
 				"pipeline_active": false,
 				"metrics":         nil,
+				"replicas":        nil,
 			})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{
-			"pipeline_active": true,
-			"metrics":         metrics,
+			"pipeline_active": agg.PipelineActive,
+			"metrics":         agg,
+			"replicas":        agg.Replicas,
 		})
 	}
 }

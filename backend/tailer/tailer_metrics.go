@@ -3,6 +3,7 @@ package tailer
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -10,7 +11,9 @@ import (
 )
 
 const tailerMetricsRedisKey = "tailer:metrics"
+const tailerMetricsReplicaKey = "tailer:replicas"
 const tailerMetricsTTL = 10 * time.Second
+const tailerMetricsReplicaTTL = 60 * time.Second
 
 // TailerMetrics aggregates global and per-worker tailer metrics.
 type TailerMetrics struct {
@@ -20,7 +23,7 @@ type TailerMetrics struct {
 	FlushedPos     int64
 	FlushedSeq     int64
 	LogsPerSec     float64
-	WorkerMetrics  []WorkerMetrics
+	WorkerMetrics  []WorkerMetricsPublic
 	UpdatedAt      time.Time
 }
 
@@ -36,6 +39,31 @@ type tailerMetricsPublic struct {
 	UpdatedAt     time.Time             `json:"updated_at"`
 }
 
+// AggregatedTailerMetrics holds aggregated tailer metrics from all API replicas.
+type AggregatedTailerMetrics struct {
+	PipelineActive bool
+	NumWorkers     int
+	QueueDepth     int64
+	FlushedPos     int64
+	FlushedSeq     int64
+	LogsPerSec     float64
+	WorkerMetrics  []WorkerMetricsPublic
+	Replicas       []ReplicaTailerMetrics
+	UpdatedAt      time.Time
+}
+
+// ReplicaTailerMetrics holds per-replica tailer metrics.
+type ReplicaTailerMetrics struct {
+	NodeID        string
+	NumWorkers    int
+	QueueDepth    int64
+	FlushedPos    int64
+	FlushedSeq    int64
+	LogsPerSec    float64
+	WorkerMetrics []WorkerMetricsPublic
+	UpdatedAt     time.Time
+}
+
 // TailerMetricsCollector periodically updates TailerMetrics from live sources.
 type TailerMetricsCollector struct {
 	metrics  *TailerMetrics
@@ -44,11 +72,12 @@ type TailerMetricsCollector struct {
 	rate     sharedstate.RateCounter
 	pool     *WorkerPool
 	client   *sharedstate.Client
+	nodeID   string
 	stop     chan struct{}
 }
 
 func NewTailerMetricsCollector(queue *sharedstate.Queue, flushTrk *sharedstate.FlushTracker,
-	rate sharedstate.RateCounter, pool *WorkerPool, client *sharedstate.Client) *TailerMetricsCollector {
+	rate sharedstate.RateCounter, pool *WorkerPool, client *sharedstate.Client, nodeID string) *TailerMetricsCollector {
 
 	return &TailerMetricsCollector{
 		metrics:  &TailerMetrics{},
@@ -57,15 +86,26 @@ func NewTailerMetricsCollector(queue *sharedstate.Queue, flushTrk *sharedstate.F
 		rate:     rate,
 		pool:     pool,
 		client:   client,
+		nodeID:   nodeID,
 		stop:     make(chan struct{}),
 	}
 }
 
 func (c *TailerMetricsCollector) Start(ctx context.Context) {
+	if c.client != nil {
+		_, err := c.client.Raw().SAdd(ctx, tailerMetricsReplicaKey, c.nodeID).Result()
+		if err != nil {
+			slog.Warn("tailer metrics: failed to register replica", "node", c.nodeID, "error", err)
+		}
+	}
 	go c.updateLoop(ctx)
 }
 
 func (c *TailerMetricsCollector) Stop() {
+	if c.client != nil {
+		c.client.Raw().SRem(context.Background(), tailerMetricsReplicaKey, c.nodeID)
+		c.client.Raw().Del(context.Background(), replicaMetricsKey(c.nodeID))
+	}
 	close(c.stop)
 }
 
@@ -91,12 +131,19 @@ func (c *TailerMetricsCollector) updateLoop(ctx context.Context) {
 	}
 }
 
+func replicaMetricsKey(nodeID string) string {
+	return "tailer:metrics:" + nodeID
+}
+
 func (c *TailerMetricsCollector) update(ctx context.Context) {
 	queueDepth := c.queue.Len(ctx)
 	flushedSeq, flushedPos := c.flushTrk.GetFlushedPos(ctx)
 	logsPerSec := c.rate.Rate(ctx, 60)
 
-	workerMetrics := c.pool.GetMetrics()
+	publicMetrics := c.pool.GetPublicMetrics()
+	for i := range publicMetrics {
+		publicMetrics[i].NodeID = c.nodeID
+	}
 
 	m := tailerMetricsPublic{
 		NumWorkers:    c.pool.NumWorkers(),
@@ -104,7 +151,7 @@ func (c *TailerMetricsCollector) update(ctx context.Context) {
 		FlushedPos:    flushedPos,
 		FlushedSeq:    flushedSeq,
 		LogsPerSec:    logsPerSec,
-		WorkerMetrics: c.pool.GetPublicMetrics(),
+		WorkerMetrics: publicMetrics,
 		UpdatedAt:     time.Now(),
 	}
 
@@ -113,15 +160,19 @@ func (c *TailerMetricsCollector) update(ctx context.Context) {
 	c.metrics.FlushedPos = flushedPos
 	c.metrics.FlushedSeq = flushedSeq
 	c.metrics.LogsPerSec = logsPerSec
-	c.metrics.WorkerMetrics = workerMetrics
+	c.metrics.WorkerMetrics = publicMetrics
 	c.metrics.UpdatedAt = time.Now()
 	c.metrics.mu.Unlock()
 
-	// Persist to Redis so non-leader replicas can serve the admin endpoint
+	// Persist per-replica metrics to Redis so the admin endpoint can aggregate
 	if c.client != nil {
 		data, err := json.Marshal(m)
 		if err == nil {
-			c.client.Raw().Set(ctx, tailerMetricsRedisKey, data, tailerMetricsTTL)
+			c.client.Raw().Set(ctx, replicaMetricsKey(c.nodeID), data, tailerMetricsTTL)
 		}
+		// Renew replica set TTL as heartbeat so the set doesn't expire while
+		// replicas are running. The replica set is a shared key, so every
+		// replica renews it on each update cycle.
+		c.client.Raw().Expire(ctx, tailerMetricsReplicaKey, tailerMetricsReplicaTTL)
 	}
 }

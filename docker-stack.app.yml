@@ -59,11 +59,11 @@
 #     haproxy-app-config`)
 #   - NFS export mounted at the same path on every app=true / edge=true node,
 #     e.g. /mnt/syslog-nfs, exporting what were log_data/log_spool
-#   - jwt_secret and encryption_key secrets created (`scripts/swarm-
-#     bootstrap.sh app-secrets <jwt> <enc>`); pg_app_password and
-#     redis_password already exist from the two prerequisite stacks above
-#     and are reused here as-is - all four are mounted into the api service
-#     and read via the *_FILE env var convention (see util.SecretFromEnv),
+#   - docker-stack.vault.yml already deployed and bootstrapped: jwt_secret,
+#     encryption_key, pg_app_password, redis_password and rabbitmq_password
+#     are all supplied by vault-agent's bind-mounted output (see the
+#     volumes: block below), read via the *_FILE env var convention (see
+#     util.SecretFromEnv) exactly as when they were native Swarm secrets -
 #     never as plain env vars. POSTGRES_USER/POSTGRES_DB below are optional
 #     (default syslog/syslog_db) and are not secret.
 #
@@ -102,6 +102,13 @@ services:
       NODES: 1
       INFO: 1
       POST: 0
+      AUTH: 0
+      PLUGINS: 0
+      SECRETS: 0
+      SYSTEM: 0
+      VOLUMES: 0
+      IMAGES: 0
+      EVENTS: 0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
@@ -188,16 +195,12 @@ services:
       # docker-compose.yml, which doesn't support this templating.
       SWARM_TASK_IDENTITY: "{{.Node.Hostname}}.{{.Task.Slot}}"
       MY_NODE: "{{.Node.Hostname}}"
-      # Every credential below is mounted as a Docker Swarm secret (see the
-      # `secrets:` list below and the top-level `secrets:` section) rather
-      # than passed as a plain env var - none of them appear in `docker
-      # service inspect`, /proc, or crash dumps this way. util.SecretFromEnv
-      # reads the *_FILE-suffixed path when the plain var is unset. Create
-      # them with `scripts/swarm-bootstrap.sh app-secrets` (jwt_secret,
-      # encryption_key) - pg_app_password and redis_password are the same
-      # secrets already created for docker-stack.postgres.yml/redis.yml
-      # (see prerequisites comment above), reused here rather than
-      # duplicated as separate plain env vars.
+      # Every credential below is mounted as a file (see the `volumes:`
+      # block further down - Vault-backed, see prerequisites comment above)
+      # rather than passed as a plain env var - none of them appear in
+      # `docker service inspect`, /proc, or crash dumps this way.
+      # util.SecretFromEnv reads the *_FILE-suffixed path when the plain
+      # var is unset.
       POSTGRES_HOST: haproxy
       POSTGRES_PORT: "5000"
       POSTGRES_USER: ${POSTGRES_USER:-syslog}
@@ -258,15 +261,32 @@ services:
       # be shared storage (NFS, like log_data below) since API_REPLICAS can
       # run on different nodes and all of them need to see the same edits.
       PARSER_DEFS_DIR: /parsers
-    secrets:
-      - jwt_secret
-      - encryption_key
-      - pg_app_password
-      - redis_password
-      - rabbitmq_password
     volumes:
       - log_data:/data
       - parser_defs:/parsers
+      # Vault cutover: same /run/secrets/<name> paths the *_FILE env vars
+      # above already point at, now bind-mounted files written by
+      # vault-agent (docker-stack.vault.yml) instead of native Swarm secrets.
+      - type: bind
+        source: /srv/syslog-ha/vault-secrets/jwt_secret
+        target: /run/secrets/jwt_secret
+        read_only: true
+      - type: bind
+        source: /srv/syslog-ha/vault-secrets/encryption_key
+        target: /run/secrets/encryption_key
+        read_only: true
+      - type: bind
+        source: /srv/syslog-ha/vault-secrets/pg_app_password
+        target: /run/secrets/pg_app_password
+        read_only: true
+      - type: bind
+        source: /srv/syslog-ha/vault-secrets/redis_password
+        target: /run/secrets/redis_password
+        read_only: true
+      - type: bind
+        source: /srv/syslog-ha/vault-secrets/rabbitmq_password
+        target: /run/secrets/rabbitmq_password
+        read_only: true
     networks:
       - syslog_net
     logging:
@@ -409,21 +429,6 @@ volumes:
       type: nfs
       o: addr=${NFS_SERVER:?set NFS_SERVER to your NFS host},rw,nfsvers=4
       device: ":${NFS_PARSER_DEFS_PATH:-/srv/syslog-ha/nfs/parser_defs}"
-
-secrets:
-  # Created via `scripts/swarm-bootstrap.sh app-secrets <jwt> <enc>`.
-  jwt_secret:
-    external: true
-  encryption_key:
-    external: true
-  # Same secrets already created for docker-stack.postgres.yml/redis.yml
-  # (see prerequisites comment above) - reused here, not recreated.
-  pg_app_password:
-    external: true
-  redis_password:
-    external: true
-  rabbitmq_password:
-    external: true
 
 configs:
   # Created via `scripts/swarm-bootstrap.sh haproxy-app-config`.

@@ -1,0 +1,185 @@
+# HashiCorp Vault HA stack for Docker Swarm.
+#
+# Provides a 3-node Vault cluster with Raft storage and Vault agent
+# sidecars for secret injection. Manual Shamir unseal (no cloud KMS).
+#
+# Required by docker-stack.postgres.yml, redis.yml, rabbitmq.yml, and
+# app.yml — they bind-mount vault-agent's local output for pg_app_password,
+# redis_password, rabbitmq_password, jwt_secret, and encryption_key, so
+# this stack must be deployed and bootstrapped (see below) before those.
+#
+# Architecture:
+#   - 3 Vault servers (vault-1, vault-2, vault-3) on dedicated nodes
+#   - Vault agent (mode: global) reads from Vault, writes to local files
+#   - App services bind-mount agent output as :ro, *_FILE env vars point there
+#   - Zero Go code changes required - uses existing *_FILE convention
+#
+# Prerequisites:
+#   - Docker Swarm initialized
+#   - `syslog_net` overlay network already exists
+#   - Nodes labeled vault_id=1, vault_id=2, vault_id=3
+#
+# Bootstrap order (the `vault_agent_token` secret doesn't exist yet on first
+# deploy, so the vault-agent service will fail to start until it does):
+#   1. docker stack deploy -c docker-stack.vault.yml logmara-vault
+#   2. ./scripts/vault-bootstrap.sh init      (unseal keys + root token)
+#   3. ./scripts/vault-bootstrap.sh unseal
+#   4. ./scripts/vault-bootstrap.sh policy
+#   5. ./scripts/vault-bootstrap.sh migrate-secrets   (creates vault_agent_token secret)
+#   6. docker stack deploy -c docker-stack.vault.yml logmara-vault   (re-run so vault-agent picks up the now-existing secret)
+
+version: "3.8"
+
+services:
+  vault-1:
+    image: vault:1.15.0
+    command: server -config=/vault/config/vault.hcl
+    hostname: vault-1
+    environment:
+      VAULT_CLUSTER_ADDR: http://vault-1:8201
+      VAULT_API_ADDR: http://vault-1:8200
+      VAULT_ADDR: http://vault-1:8200
+    configs:
+      - source: vault_cfg
+        target: /vault/config/vault.hcl
+    volumes:
+      - vault1_data:/vault/data
+      - vault1_tls:/vault/tls
+    networks:
+      - syslog_net
+    ports:
+      - target: 8200
+        published: ${VAULT_UI_PORT:-8200}
+        mode: host
+    deploy:
+      placement:
+        constraints: [node.labels.vault_id == "1"]
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  vault-2:
+    image: vault:1.15.0
+    command: server -config=/vault/config/vault.hcl
+    hostname: vault-2
+    environment:
+      VAULT_CLUSTER_ADDR: http://vault-2:8201
+      VAULT_API_ADDR: http://vault-2:8200
+      VAULT_ADDR: http://vault-2:8200
+    configs:
+      - source: vault_cfg
+        target: /vault/config/vault.hcl
+    volumes:
+      - vault2_data:/vault/data
+      - vault2_tls:/vault/tls
+    networks:
+      - syslog_net
+    deploy:
+      placement:
+        constraints: [node.labels.vault_id == "2"]
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  vault-3:
+    image: vault:1.15.0
+    command: server -config=/vault/config/vault.hcl
+    hostname: vault-3
+    environment:
+      VAULT_CLUSTER_ADDR: http://vault-3:8201
+      VAULT_API_ADDR: http://vault-3:8200
+      VAULT_ADDR: http://vault-3:8200
+    configs:
+      - source: vault_cfg
+        target: /vault/config/vault.hcl
+    volumes:
+      - vault3_data:/vault/data
+      - vault3_tls:/vault/tls
+    networks:
+      - syslog_net
+    deploy:
+      placement:
+        constraints: [node.labels.vault_id == "3"]
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Vault agent runs on every node, reads secrets from Vault, writes to
+  # local files. App services bind-mount this directory read-only.
+  vault-agent:
+    image: vault:1.15.0
+    command: agent -config=/vault-agent/config/vault-agent.hcl
+    configs:
+      - source: vault_agent_cfg
+        target: /vault-agent/config/vault-agent.hcl
+    secrets:
+      - source: vault_agent_token
+        target: vault_agent_token
+    volumes:
+      - type: bind
+        source: /srv/syslog-ha/vault-secrets
+        target: /vault-agent/secrets
+      - /vault-agent/token:/vault-agent/token
+    networks:
+      - syslog_net
+    deploy:
+      mode: global
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+        reservations:
+          cpus: '0.05'
+          memory: 32M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  syslog_net:
+    external: true
+
+volumes:
+  vault1_data:
+  vault1_tls:
+  vault2_data:
+  vault2_tls:
+  vault3_data:
+  vault3_tls:
+
+configs:
+  vault_cfg:
+    file: vault/vault.hcl
+  vault_agent_cfg:
+    file: vault/vault-agent.hcl
+
+secrets:
+  # Created by `scripts/vault-bootstrap.sh migrate-secrets` (a one-time
+  # Vault agent bootstrap token, policy "logmara"). Not present on the
+  # very first `docker stack deploy` — see bootstrap order above.
+  vault_agent_token:
+    external: true

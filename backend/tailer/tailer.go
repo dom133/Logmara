@@ -22,6 +22,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 	"logmara/alertengine"
 	"logmara/control"
 	"logmara/model"
@@ -130,9 +131,8 @@ func purgeCoordinator(reqID string, queue *sharedstate.Queue) purgeResult {
 }
 
 // GetTailerMetrics returns the latest snapshot of tailer pipeline metrics.
-// On the VIP leader it reads from the local metrics collector. On a
-// non-leader replica it reads the snapshot from Redis (written by the
-// leader every 2 s). Returns nil when no pipeline is active.
+// In multi-replica mode it aggregates per-replica metrics from Redis.
+// Returns nil when no pipeline is active.
 func GetTailerMetrics() *TailerMetrics {
 	if currentMetrics != nil {
 		m := currentMetrics.Get()
@@ -142,6 +142,110 @@ func GetTailerMetrics() *TailerMetrics {
 		return readMetricsFromRedis()
 	}
 	return nil
+}
+
+// GetTailerMetricsAggregated returns aggregated metrics from all registered
+// replicas. Returns nil when no pipeline is active.
+func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
+	localFallback := func() *AggregatedTailerMetrics {
+		if currentMetrics == nil {
+			return nil
+		}
+		m := currentMetrics.Get()
+		return &AggregatedTailerMetrics{
+			PipelineActive: true,
+			NumWorkers:     m.NumWorkers,
+			QueueDepth:     m.QueueDepth,
+			FlushedPos:     m.FlushedPos,
+			FlushedSeq:     m.FlushedSeq,
+			LogsPerSec:     m.LogsPerSec,
+			WorkerMetrics:  m.WorkerMetrics,
+			Replicas: []ReplicaTailerMetrics{{
+				NodeID:        "local",
+				NumWorkers:    m.NumWorkers,
+				QueueDepth:    m.QueueDepth,
+				FlushedPos:    m.FlushedPos,
+				FlushedSeq:    m.FlushedSeq,
+				LogsPerSec:    m.LogsPerSec,
+				WorkerMetrics: m.WorkerMetrics,
+				UpdatedAt:     m.UpdatedAt,
+			}},
+		}
+	}
+
+	if currentSharedClient == nil {
+		return localFallback()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	replicaIDs, err := currentSharedClient.Raw().SMembers(ctx, tailerMetricsReplicaKey).Result()
+	if err != nil || len(replicaIDs) == 0 {
+		slog.Warn("tailer metrics: replica set empty or unreachable, falling back to local metrics", "error", err, "replica_ids", replicaIDs)
+		return localFallback()
+	}
+
+	var replicas []ReplicaTailerMetrics
+	var totalWorkers int
+	var totalLogsPerSec float64
+	var allWorkerMetrics []WorkerMetricsPublic
+	var queueDepth int64
+	var flushedPos int64
+	var flushedSeq int64
+	var latestUpdate time.Time
+
+	for _, nodeID := range replicaIDs {
+		data, err := currentSharedClient.Raw().Get(ctx, replicaMetricsKey(nodeID)).Bytes()
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		var m tailerMetricsPublic
+		if err := json.Unmarshal(data, &m); err != nil {
+			continue
+		}
+
+		replicas = append(replicas, ReplicaTailerMetrics{
+			NodeID:        nodeID,
+			NumWorkers:    m.NumWorkers,
+			QueueDepth:    m.QueueDepth,
+			FlushedPos:    m.FlushedPos,
+			FlushedSeq:    m.FlushedSeq,
+			LogsPerSec:    m.LogsPerSec,
+			WorkerMetrics: m.WorkerMetrics,
+			UpdatedAt:     m.UpdatedAt,
+		})
+
+		totalWorkers += m.NumWorkers
+		totalLogsPerSec += m.LogsPerSec
+		allWorkerMetrics = append(allWorkerMetrics, m.WorkerMetrics...)
+		if m.UpdatedAt.After(latestUpdate) {
+			latestUpdate = m.UpdatedAt
+		}
+		// Queue depth, flushed pos/seq are shared state - take from first valid replica
+		if queueDepth == 0 {
+			queueDepth = m.QueueDepth
+			flushedPos = m.FlushedPos
+			flushedSeq = m.FlushedSeq
+		}
+	}
+
+	if len(replicas) == 0 {
+		slog.Warn("tailer metrics: no valid replica metrics found, falling back to local", "registered_replicas", len(replicaIDs))
+		return localFallback()
+	}
+
+	return &AggregatedTailerMetrics{
+		PipelineActive: true,
+		NumWorkers:     totalWorkers,
+		QueueDepth:     queueDepth,
+		FlushedPos:     flushedPos,
+		FlushedSeq:     flushedSeq,
+		LogsPerSec:     totalLogsPerSec,
+		WorkerMetrics:  allWorkerMetrics,
+		Replicas:       replicas,
+		UpdatedAt:      latestUpdate,
+	}
 }
 
 func readMetricsFromRedis() *TailerMetrics {
@@ -161,23 +265,9 @@ func readMetricsFromRedis() *TailerMetrics {
 		FlushedPos:    m.FlushedPos,
 		FlushedSeq:    m.FlushedSeq,
 		LogsPerSec:    m.LogsPerSec,
-		WorkerMetrics: metricsPublicToWorkerMetrics(m.WorkerMetrics),
+		WorkerMetrics: m.WorkerMetrics,
 		UpdatedAt:     m.UpdatedAt,
 	}
-}
-
-func metricsPublicToWorkerMetrics(pub []WorkerMetricsPublic) []WorkerMetrics {
-	metrics := make([]WorkerMetrics, len(pub))
-	for i, p := range pub {
-		metrics[i] = WorkerMetrics{
-			ID:            p.ID,
-			MsgsProcessed: p.MsgsProcessed,
-			ParseErrors:   p.ParseErrors,
-			DbInserts:     p.DbInserts,
-			LastFlushAt:   p.LastFlushAt,
-		}
-	}
-	return metrics
 }
 
 // PurgeTailerQueue purges the RabbitMQ ingestion queue and resets the
@@ -186,8 +276,14 @@ func metricsPublicToWorkerMetrics(pub []WorkerMetricsPublic) []WorkerMetrics {
 // HTTP request. Returns (messages_removed, error_string). Empty error means
 // success; returns (0, "") when there's no pipeline to purge (single-server).
 func PurgeTailerQueue() (uint32, string) {
+	myNode := strings.TrimSpace(os.Getenv(myNodeEnvKey))
+	if myNode == "" {
+		myNode, _ = os.Hostname()
+	}
+
 	// Leader path: pipeline is local, purge directly.
 	if currentPipeline != nil && currentPipeline.queue != nil {
+		slog.Info("purge: this replica is leader, purging directly", "node", myNode)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		msgs, err := currentPipeline.queue.Purge(ctx)
@@ -208,6 +304,7 @@ func PurgeTailerQueue() (uint32, string) {
 		return 0, ""
 	}
 
+	slog.Info("purge: this replica is not leader, forwarding to leader via Redis", "node", myNode)
 	reqID := fmt.Sprintf("purge-%d-%d", time.Now().UnixNano(), rand.Intn(10000))
 
 	// Register local channel so that if this replica later becomes leader and
@@ -225,7 +322,7 @@ func PurgeTailerQueue() (uint32, string) {
 		return 0, fmt.Sprintf("failed to coordinate purge across replicas: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	for {
@@ -234,7 +331,7 @@ func PurgeTailerQueue() (uint32, string) {
 			purgeMu.Lock()
 			delete(pendingPurges, reqID)
 			purgeMu.Unlock()
-			slog.Error("tailer: purge coordination timed out waiting for leader")
+			slog.Error("tailer: purge coordination timed out waiting for leader", "node", myNode)
 			return 0, "purge coordination timed out waiting for leader"
 		default:
 			raw, err := currentSharedClient.Raw().Get(ctx, purgeResultKey).Result()
@@ -252,7 +349,7 @@ func PurgeTailerQueue() (uint32, string) {
 						slog.Error("tailer: purge reported error from leader", "error", res.Err)
 						return 0, res.Err
 					}
-					slog.Info("tailer: purge completed via leader coordination", "messages_removed", res.Msgs)
+					slog.Info("tailer: purge completed via leader coordination", "messages_removed", res.Msgs, "node", myNode)
 					return res.Msgs, ""
 				}
 			}
@@ -275,6 +372,7 @@ type pipeline struct {
 	flushTrk    *sharedstate.FlushTracker
 	workerPool  *WorkerPool
 	metricsColl *TailerMetricsCollector
+	elector     *sharedstate.LeaderElector
 }
 
 // Run starts the log tailer. When sharedClient is nil (single-server/
@@ -286,7 +384,6 @@ func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine
 		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, nil)
 		return
 	}
-	currentSharedClient = sharedClient
 	runWithVIPElection(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
 }
 
@@ -302,43 +399,55 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 		return
 	}
 
+	// All replicas start the consumer pipeline (RabbitMQ queue + WorkerPool).
+	// This allows every replica to consume and execute tasks from the queue.
+	pipeline := startConsumerPipeline(ctx, db, filePath, engine, ic, alerts, rate, sharedClient, myNode)
+
+	// If RabbitMQ is unavailable, the fallback local ingestion loop is running.
+	if pipeline.queue == nil {
+		<-ctx.Done()
+		return
+	}
+
 	for {
 		if ctx.Err() != nil {
+			stopPipeline(pipeline)
 			return
 		}
 
 		markerNode, err := readMarkerNode()
 		if err != nil || markerNode != myNode {
 			if !sleepOrDone(ctx, vipCheckInterval) {
+				stopPipeline(pipeline)
 				return
 			}
 			continue
 		}
 
-		slog.Info("tailer: VIP marker matches this node, starting ingestion", "my_node", myNode)
+		slog.Info("tailer: VIP marker matches this node, acquiring leader lock", "my_node", myNode)
+
+		elector := sharedstate.NewLeaderElector(sharedClient, "tailer", 30*time.Second)
+		if !elector.Acquire(ctx) {
+			slog.Warn("tailer: another replica already holds leader lock, waiting", "my_node", myNode)
+			if !sleepOrDone(ctx, vipCheckInterval) {
+				stopPipeline(pipeline)
+				return
+			}
+			continue
+		}
+		slog.Info("tailer: leader lock acquired, starting FileReader", "my_node", myNode)
+
 		leaderCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
+		pipeline.elector = elector
 
-		// Start the distributed pipeline
-		pipeline := startPipeline(leaderCtx, db, engine, ic, alerts, rate, filePath, sharedClient)
+		// Only the VIP leader runs the FileReader (publisher).
+		go func() {
+			defer close(done)
+			FileReader(leaderCtx, db, filePath, pipeline.queue, pipeline.flushTrk, ic, reopenLogFile, sharedClient)
+		}()
 
-		if pipeline.queue != nil && pipeline.flushTrk != nil {
-			go func() {
-				defer close(done)
-				// Run the file reader on the VIP leader
-				FileReader(leaderCtx, filePath, pipeline.queue, pipeline.flushTrk, ic, reopenLogFile, sharedClient)
-			}()
-		} else {
-			// RabbitMQ unavailable — runIngestionLoop was started inside
-			// startPipeline as a fallback.  Keep this goroutine alive so
-			// the VIP watchdog below can trigger graceful shutdown.
-			go func() {
-				defer close(done)
-				<-leaderCtx.Done()
-			}()
-		}
-
-		// Periodic save position from flushed progress
+		// Periodic save position from flushed progress (leader-only)
 		go func() {
 			posFile := filepath.Join(filepath.Dir(filePath), positionFileName)
 			ticker := time.NewTicker(2 * time.Second)
@@ -356,8 +465,11 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 			}
 		}()
 
-		// While tailing, check that VIP marker still matches
-	vipLoop:
+		// Leader subscribes to purge coordination channel
+		purgeSub := currentSharedClient.Raw().Subscribe(leaderCtx, purgeChannel)
+		go handlePurgeRequests(leaderCtx, purgeSub, pipeline)
+
+		// While tailing, check that VIP marker still matches and renew leader lock
 		for {
 			select {
 			case <-ctx.Done():
@@ -371,16 +483,28 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 					slog.Warn("tailer: VIP marker no longer matches, stepping down", "my_node", myNode, "marker_node", markerNode)
 					cancel()
 					<-done
-					stopPipeline(pipeline)
-					break vipLoop
+					cleanupLeaderResources(pipeline)
+					goto nextElection
+				}
+				ok, lost := elector.Renew(leaderCtx)
+				if !ok && lost {
+					slog.Warn("tailer: lost leader lock, stepping down", "my_node", myNode)
+					cancel()
+					<-done
+					cleanupLeaderResources(pipeline)
+					goto nextElection
+				}
+				if !ok && !lost {
+					slog.Warn("tailer: leader lock renew error (transient)", "my_node", myNode)
 				}
 			}
 		}
+	nextElection:
 	}
 }
 
-func startPipeline(ctx context.Context, db *sql.DB, engine *parser.Engine, ic control.IngestionController,
-	alerts *alertengine.Engine, rate sharedstate.RateCounter, filePath string, sharedClient *sharedstate.Client) *pipeline {
+func startConsumerPipeline(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController,
+	alerts *alertengine.Engine, rate sharedstate.RateCounter, sharedClient *sharedstate.Client, nodeID string) *pipeline {
 
 	rabbitmqURL := util.ResolveRabbitMQURL()
 	if rabbitmqURL == "" {
@@ -390,7 +514,7 @@ func startPipeline(ctx context.Context, db *sql.DB, engine *parser.Engine, ic co
 	queue, err := sharedstate.NewQueue(rabbitmqURL)
 	if err != nil {
 		slog.Error("tailer: failed to connect to RabbitMQ, falling back to local ingestion", "error", err)
-		// Fallback to local ingestion loop
+		currentSharedClient = sharedClient
 		go func() {
 			runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate, nil, sharedClient)
 		}()
@@ -399,13 +523,18 @@ func startPipeline(ctx context.Context, db *sql.DB, engine *parser.Engine, ic co
 
 	flushTrk := sharedstate.NewFlushTracker(sharedClient)
 	workerPool := NewWorkerPool(0, db, alerts, rate, flushTrk, queue, ic)
-	metricsColl := NewTailerMetricsCollector(queue, flushTrk, rate, workerPool, sharedClient)
+	metricsColl := NewTailerMetricsCollector(queue, flushTrk, rate, workerPool, sharedClient, nodeID)
 
 	workerPool.Start(ctx)
 	metricsColl.Start(ctx)
 	currentMetrics = metricsColl
+	// Set currentSharedClient only after metricsColl.Start() has registered
+	// this replica in Redis (SAdd tailer:replicas). This eliminates a startup
+	// race where GetTailerMetricsAggregated() would enter the multi-replica
+	// path, find an empty replica set, and report "Pipeline inactive".
+	currentSharedClient = sharedClient
 
-	slog.Info("tailer: pipeline started", "rabbitmq", rabbitmqURL)
+	slog.Info("tailer: consumer pipeline started", "rabbitmq", rabbitmqURL)
 	p := &pipeline{
 		queue:       queue,
 		flushTrk:    flushTrk,
@@ -414,21 +543,16 @@ func startPipeline(ctx context.Context, db *sql.DB, engine *parser.Engine, ic co
 	}
 	currentPipeline = p
 
-	// Subscribe to purge coordination channel so this leader can handle
-	// purge requests forwarded from non-leader replicas.
-	go handlePurgeRequests(ctx, queue)
-
 	return p
 }
 
 // handlePurgeRequests listens on the Redis purge channel and executes purge
 // commands forwarded from non-leader replicas. Only the VIP leader runs this
 // with a non-nil queue.
-func handlePurgeRequests(ctx context.Context, queue *sharedstate.Queue) {
-	if currentSharedClient == nil {
+func handlePurgeRequests(ctx context.Context, pubsub *redis.PubSub, p *pipeline) {
+	if p == nil || p.queue == nil || currentSharedClient == nil {
 		return
 	}
-	pubsub := currentSharedClient.Raw().Subscribe(ctx, purgeChannel)
 	defer pubsub.Close()
 	msgCh := pubsub.Channel()
 	for {
@@ -439,7 +563,8 @@ func handlePurgeRequests(ctx context.Context, queue *sharedstate.Queue) {
 			if !ok {
 				return
 			}
-			res := purgeCoordinator(msg.Payload, queue)
+			slog.Info("purge: leader received purge request from replica", "reqID", msg.Payload)
+			res := purgeCoordinator(msg.Payload, p.queue)
 
 			resultData, _ := json.Marshal(map[string]interface{}{
 				"id":   msg.Payload,
@@ -474,7 +599,11 @@ func stopPipeline(p *pipeline) {
 	if p == nil {
 		return
 	}
-	slog.Info("tailer: stopping pipeline")
+	slog.Info("tailer: stopping pipeline (full shutdown)")
+	if p.elector != nil {
+		p.elector.Release(context.Background())
+		slog.Info("tailer: leader lock released")
+	}
 	if p.metricsColl != nil {
 		p.metricsColl.Stop()
 		currentMetrics = nil
@@ -490,6 +619,23 @@ func stopPipeline(p *pipeline) {
 		}
 	}
 	slog.Info("tailer: pipeline stopped")
+}
+
+func cleanupLeaderResources(p *pipeline) {
+	if p == nil {
+		return
+	}
+	slog.Info("tailer: cleaning up leader resources (stepping down, consumers remain active)")
+	if p.elector != nil {
+		p.elector.Release(context.Background())
+		p.elector = nil
+		slog.Info("tailer: leader lock released")
+	}
+	if p.metricsColl != nil {
+		p.metricsColl.Stop()
+		p.metricsColl = nil
+		currentMetrics = nil
+	}
 }
 
 func readMarkerNode() (string, error) {
@@ -520,7 +666,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 	var entries []model.IngestEntry
 	lastFlush := time.Now()
 	lastCompaction := time.Now()
-	batchStartPos := int64(0)
+
 
 	defer func() {
 		if len(entries) > 0 {
@@ -528,11 +674,10 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			if err := flushBatch(db, entries, rate); err != nil {
 				slog.Error("final flush error", "error", err)
 			} else {
-				flushedPos = batchStartPos
-				savePosition(posFile, flushedPos, filePath, sharedClient)
 				alerts.EvaluateBatch(db, entries)
 			}
 		}
+		savePosition(posFile, filePos, filePath, sharedClient)
 		slog.Info("file tailer stopped")
 	}()
 
@@ -625,7 +770,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		splitter := &lineSplitter{}
 		scanner.Split(splitter.split)
 
-		batchStartPos := filePos
+
 		curFilePos := filePos
 		scanned := false
 
@@ -702,13 +847,13 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 					if err := flushBatch(db, entries, rate); err != nil {
 						slog.Error("flush error", "error", err)
 					} else {
-						flushedPos = curFilePos
-						savePosition(posFile, flushedPos, filePath, sharedClient)
 						alerts.EvaluateBatch(db, entries)
 					}
 				}
+				flushedPos = curFilePos
+				savePosition(posFile, flushedPos, filePath, sharedClient)
 				entries = entries[:0]
-				batchStartPos = curFilePos
+
 				lastFlush = now
 			}
 		}
@@ -726,10 +871,10 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			if err := flushBatch(db, entries, rate); err != nil {
 				slog.Error("flush error", "error", err)
 			} else {
-				flushedPos = batchStartPos
-				savePosition(posFile, flushedPos, filePath, sharedClient)
 				alerts.EvaluateBatch(db, entries)
 			}
+			flushedPos = curFilePos
+			savePosition(posFile, flushedPos, filePath, sharedClient)
 			entries = entries[:0]
 		}
 		if len(entries) > 0 && ic.IsPaused() {
@@ -968,50 +1113,12 @@ func loadStartPosition(db *sql.DB, filePath, posFile string, sharedClient *share
 		slog.Info("saved position invalid, falling back to DB")
 	}
 
-	var lastTs *time.Time
-	if err := db.QueryRow("SELECT max(timestamp) FROM syslog_logs").Scan(&lastTs); err != nil {
-		slog.Error("db fallback query error", "error", err)
-		return 0, 0
-	}
-	if lastTs == nil {
-		slog.Info("db empty, starting from beginning")
-		return 0, 0
+	if pos := dbFallbackPosition(db, filePath); pos > 0 {
+		slog.Info("restored position from DB fallback", "pos", pos)
+		return pos, pos
 	}
 
-	f, err := os.Open(filePath)
-	if err != nil {
-		slog.Error("cannot open file for db fallback", "error", err)
-		return 0, 0
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	buf := make([]byte, 0, 1024*1024)
-	scanner.Buffer(buf, 1024*1024)
-	pos := int64(0)
-	lineLen := int64(0)
-	for scanner.Scan() {
-		line := scanner.Text()
-		lineLen = int64(len(line)) + 1
-
-		var entry model.IngestEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			pos += lineLen
-			continue
-		}
-		ts, err := parseTimestamp(entry.Timestamp)
-		if err != nil {
-			pos += lineLen
-			continue
-		}
-		if ts.After(*lastTs) {
-			break
-		}
-		pos += lineLen
-	}
-
-	slog.Info("restored position from DB", "lastTs", lastTs.Format(time.RFC3339), "pos", pos)
-	return pos, pos
+	return 0, 0
 }
 
 func compactFile(f *os.File, flushedPos int64, filePath string, reopenLogFile func() error) (*os.File, error) {

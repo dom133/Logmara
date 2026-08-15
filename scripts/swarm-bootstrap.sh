@@ -132,7 +132,7 @@ case "$cmd" in
     ;;
 
   network)
-    docker network create -d overlay --attachable syslog_net
+    docker network create -d overlay --attachable --opt encrypted syslog_net
     ;;
 
   secrets)

@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { useLocation } from 'react-router-dom'
 import { message } from 'antd'
 import { t } from 'i18next'
 import { api, checkSession, reportActivity } from './api'
@@ -55,6 +56,16 @@ const STORAGE_KEY_EXPIRY = '__session_expiry_ts__'
 const STORAGE_KEY_LAST_ACTIVE = '__session_last_active__'
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  // A single AuthProvider now covers the whole app (including /login) so
+  // that a successful login is visible to PrivateRoute immediately - it
+  // used to be a second, separate provider instance just for /login, which
+  // meant logging in there never updated the auth state PrivateRoute reads,
+  // bouncing the user straight back to /login after a successful login.
+  // Session polling / activity tracking are still skipped while on /login
+  // (checked via the route instead of a prop) since there's nothing to
+  // poll or track for a session that doesn't exist yet.
+  const location = useLocation()
+  const onLoginPage = location.pathname === '/login'
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const [sessionTimeout, setSessionTimeoutValue] = useState<number | null>(300)
@@ -204,7 +215,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return true
     } catch (e) {
       console.error('Silent refresh failed:', e)
-      if (retryCount < SILENT_REFRESH_RETRY_MAX) {
+      // A response means the server definitively said no (400: no refresh
+      // token at all - e.g. a first-time anonymous visitor; 401: token
+      // exists but isn't a "remembered" session). Neither improves on
+      // retry, so retrying just stalls the redirect to /login for ~14s
+      // (2s+4s+8s) on every logged-out page load. Only retry when there's
+      // no response (network hiccup/timeout) or the server itself errored
+      // (5xx) - those are the actually transient cases.
+      const status = (e as { response?: { status?: number } })?.response?.status
+      const isRetryable = status === undefined || status >= 500
+      if (isRetryable && retryCount < SILENT_REFRESH_RETRY_MAX) {
         const delay = SILENT_REFRESH_RETRY_BASE_MS * Math.pow(2, retryCount)
         await new Promise(r => setTimeout(r, delay))
         return trySilentRefresh(retryCount + 1)
@@ -328,6 +348,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [resetSessionCheckBackoff])
 
   useEffect(() => {
+    if (onLoginPage) return
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         checkSessionExpiry()
@@ -336,7 +357,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
-  }, [checkSessionExpiry, resetSessionCheckBackoff])
+  }, [checkSessionExpiry, resetSessionCheckBackoff, onLoginPage])
 
   // Poll GET /auth/session-check while logged in, purely to notice a
   // server-side revocation (Admin, another device's "Sign out" in My
@@ -347,7 +368,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // visibility change (tab brought to foreground). A 401 here is already
   // handled by the axios response interceptor (redirects to /login).
   useEffect(() => {
-    if (!user) return
+    if (!user || onLoginPage) return
     scheduleSessionCheck()
     return () => {
       if (sessionCheckTimerRef.current) {
@@ -355,7 +376,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         sessionCheckTimerRef.current = null
       }
     }
-  }, [user, scheduleSessionCheck])
+  }, [user, onLoginPage, scheduleSessionCheck])
 
   // Track user activity (click, keydown, scroll) and report to backend
   // so the inactivity timer is reset. Throttled to 1 call per 10 seconds.
@@ -376,14 +397,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user])
 
   useEffect(() => {
-    if (!user) return
+    if (!user || onLoginPage) return
     const opts = { capture: true, passive: true }
     const targets = ['mousedown', 'keydown', 'scroll'] as const
     targets.forEach(evt => window.addEventListener(evt, reportUserActivity, opts))
     return () => {
       targets.forEach(evt => window.removeEventListener(evt, reportUserActivity, opts))
     }
-  }, [user, reportUserActivity])
+  }, [user, reportUserActivity, onLoginPage])
 
   const isAdmin = user?.is_admin || false
   const canEdit = user?.role === 'admin' || user?.role === 'editor'

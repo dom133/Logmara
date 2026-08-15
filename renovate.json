@@ -1,0 +1,43 @@
+{
+  "extends": ["config:recommended"],
+  "enabledManagers": ["npm", "gomod", "github-actions"],
+  "minimumReleaseAge": "7 days",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": true
+  },
+  "packageRules": [
+    {
+      "description": "npm dependencies",
+      "matchManagers": ["npm"],
+      "minimumReleaseAge": "7 days",
+      "automerge": false,
+      "groupName": "npm dependencies",
+      "groupSlug": "npm-all"
+    },
+    {
+      "description": "Go dependencies",
+      "matchManagers": ["gomod"],
+      "minimumReleaseAge": "7 days",
+      "automerge": false
+    },
+    {
+      "description": "GitHub Actions",
+      "matchManagers": ["github-actions"],
+      "minimumReleaseAge": "7 days",
+      "automerge": false
+    },
+    {
+      "description": "Minor and patch updates can be automated",
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "automergeType": "branch"
+    }
+  ],
+  "schedule": ["before 6am on Monday"],
+  "prHourlyLimit": 2,
+  "prConcurrentLimit": 5,
+  "vulnerabilityAlerts": {
+    "enabled": true
+  }
+}

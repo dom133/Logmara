@@ -4,6 +4,42 @@ import LanguageDetector from 'i18next-browser-languagedetector'
 
 const LANGUAGE_PATH = '/locales'
 
+// Minimal English fallback so the login page can render immediately without
+// waiting for the full async init (locale fetch + backend call). This is
+// only used for the first frame; initI18n() replaces these resources once
+// the real locale data arrives.
+const FALLBACK_EN: Record<string, string> = {
+  'login.subtitle': 'Syslog management platform',
+  'login.username': 'Username',
+  'login.password': 'Password',
+  'login.remember': 'Remember this device',
+  'login.login': 'Log in',
+  'login.loggedIn': 'Logged in successfully',
+  'login.invalidCredentials': 'Invalid credentials',
+  'login.loginFailed': 'Login failed',
+  'login.passwordExpired': 'Password expired',
+  'login.passwordExpiredDescription': 'Your password has expired. Please change it now.',
+  'login.currentPassword': 'Current password',
+  'login.newPassword': 'New password',
+  'login.confirmPassword': 'Confirm password',
+  'login.passwordMismatch': 'Passwords do not match',
+  'login.passwordChanged': 'Password changed successfully',
+  'login.passwordChangeFailed': 'Password change failed',
+}
+
+export function initI18nFallback(): typeof i18n {
+  if ((i18n as any)._fallbackInitialized) return i18n
+  ;(i18n as any)._fallbackInitialized = true
+  i18n.use(initReactI18next).init({
+    lng: 'en',
+    fallbackLng: 'en',
+    supportedLngs: ['en'],
+    resources: { en: { translation: FALLBACK_EN } },
+    interpolation: { escapeValue: false },
+  })
+  return i18n
+}
+
 // Overrides for cases where the platform's own name for a language isn't
 // what we want to show; otherwise names come from Intl.DisplayNames so a
 // newly added locale needs no code change here.
@@ -41,24 +77,15 @@ async function detectLanguages(): Promise<string[]> {
   }
 }
 
-async function loadLanguageResources(languages: string[]): Promise<Record<string, any>> {
-  const results = await Promise.allSettled(
-    languages.map(async (lang) => {
-      const res = await fetch(`${LANGUAGE_PATH}/${lang}/translation.json`)
-      if (res.ok) {
-        const data = await res.json()
-        return { lang, data }
-      }
-      return null
-    }),
-  )
-  const resources: Record<string, any> = {}
-  for (const r of results) {
-    if (r.status === 'fulfilled' && r.value) {
-      resources[r.value.lang] = { translation: r.value.data }
+async function loadLanguage(lang: string): Promise<{ lang: string; data: any } | null> {
+  try {
+    const res = await fetch(`${LANGUAGE_PATH}/${lang}/translation.json`)
+    if (res.ok) {
+      const data = await res.json()
+      return { lang, data }
     }
-  }
-  return resources
+  } catch { /* ignore */ }
+  return null
 }
 
 async function getDefaultLanguage(): Promise<string | null> {
@@ -72,43 +99,67 @@ async function getDefaultLanguage(): Promise<string | null> {
   }
 }
 
+// Login's language switcher only shows codes that already have a loaded
+// resource bundle (see initI18n below - the non-active ones load in the
+// background after the login page has already rendered). i18next itself
+// doesn't re-render React on addResourceBundle, so listeners here are how
+// the switcher finds out those extra languages became available.
+type LanguagesListener = (languages: string[]) => void
+const languagesListeners = new Set<LanguagesListener>()
+
+export function onLanguagesChanged(listener: LanguagesListener): () => void {
+  languagesListeners.add(listener)
+  return () => { languagesListeners.delete(listener) }
+}
+
+function notifyLanguagesChanged() {
+  const languages = Object.keys((i18n as any).store?.data || {})
+  languagesListeners.forEach(l => l(languages))
+}
+
 export async function initI18n(): Promise<typeof i18n> {
   const [languages, defaultLang] = await Promise.all([
     detectLanguages(),
     getDefaultLanguage(),
   ])
-  const resources = await loadLanguageResources(languages)
 
   const savedLang = localStorage.getItem('syslog_lang')
-  if (savedLang && resources[savedLang]) {
-    const detectedLang = savedLang
-    await i18n
-      .use(LanguageDetector)
-      .use(initReactI18next)
-      .init({
-        resources,
-        lng: detectedLang,
-        fallbackLng: languages[0],
-        supportedLngs: languages,
-        detection: {
-          order: [],
-          caches: [],
-        },
-        interpolation: {
-          escapeValue: false,
-        },
-      })
-    return i18n
+  const activeLang = (savedLang && languages.includes(savedLang))
+    ? savedLang
+    : (defaultLang && languages.includes(defaultLang))
+      ? defaultLang
+      : languages[0]
+
+  // Only load the active language up-front so the login page can render
+  // immediately. The remaining languages are loaded in the background
+  // (non-blocking) so they're ready when the user switches language.
+  const activeResource = await loadLanguage(activeLang)
+  const resources: Record<string, any> = {}
+  if (activeResource) {
+    resources[activeLang] = { translation: activeResource.data }
   }
 
-  const detectedLang = defaultLang && resources[defaultLang] ? defaultLang : languages[0]
+  // Background-load every other language so the switcher works instantly.
+  // This is intentionally fire-and-forget — a failure here only means the
+  // user will see a brief delay on their first language switch.
+  const remaining = languages.filter(l => l !== activeLang)
+  if (remaining.length) {
+    Promise.allSettled(remaining.map(loadLanguage)).then((results) => {
+      for (const r of results as PromiseSettledResult<{ lang: string; data: any } | null>[]) {
+        if (r.status === 'fulfilled' && r.value) {
+          i18n.addResourceBundle(r.value.lang, 'translation', r.value.data, true, true)
+        }
+      }
+      notifyLanguagesChanged()
+    })
+  }
 
   await i18n
     .use(LanguageDetector)
     .use(initReactI18next)
     .init({
       resources,
-      lng: detectedLang,
+      lng: activeLang,
       fallbackLng: languages[0],
       supportedLngs: languages,
       detection: {
@@ -120,6 +171,7 @@ export async function initI18n(): Promise<typeof i18n> {
       },
     })
 
+  notifyLanguagesChanged()
   return i18n
 }
 
