@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Layout, Card, Form, Input, Button, message, Typography, Steps, Space, Divider, Switch, Checkbox, Spin } from 'antd'
+import { Layout, Card, Form, Input, Button, message, Typography, Steps, Space, Divider, Switch, Checkbox, Spin, Select } from 'antd'
 import { UploadOutlined, CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons'
-import { generateKeys, initialize, getDbConfig, testDbConfig, InitRequest } from '../services/api'
+import { generateKeys, initialize, getDbConfig, testDbConfig, testLDAPConnection, InitRequest } from '../services/api'
 import { getErrorMessage } from '../utils/error'
 
 const { Title, Text } = Typography
@@ -16,6 +16,8 @@ export default function SetupWizard() {
   const [dbConfigured, setDbConfigured] = useState(false)
   const [dbTestStatus, setDbTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle')
   const [dbTestMessage, setDbTestMessage] = useState('')
+  const [ldapTestStatus, setLdapTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle')
+  const [ldapTestMessage, setLdapTestMessage] = useState('')
   const [collectedData, setCollectedData] = useState({
     username: '',
     email: '',
@@ -37,6 +39,11 @@ export default function SetupWizard() {
     ldap_base_dn: '',
     ldap_bind_dn: '',
     ldap_bind_password: '',
+    ldap_user_filter: '',
+    ldap_username_attr: '',
+    ldap_email_attr: '',
+    ldap_auto_provision: false,
+    ldap_default_role: 'viewer',
   })
   const navigate = useNavigate()
 
@@ -118,6 +125,36 @@ export default function SetupWizard() {
     }
   }
 
+  const handleTestLdap = async () => {
+    try {
+      await form.validateFields(['ldap_server', 'ldap_port', 'ldap_base_dn', 'ldap_bind_dn', 'ldap_bind_password'])
+    } catch {
+      message.error('Please fill in all required LDAP fields')
+      return
+    }
+    const values = form.getFieldsValue(['ldap_server', 'ldap_port', 'ldap_use_tls', 'ldap_verify_cert', 'ldap_ca_cert', 'ldap_base_dn', 'ldap_bind_dn', 'ldap_bind_password'])
+    setLdapTestStatus('testing')
+    setLdapTestMessage('')
+    try {
+      await testLDAPConnection({
+        server: values.ldap_server,
+        port: values.ldap_port || 636,
+        use_tls: values.ldap_use_tls,
+        verify_cert: values.ldap_verify_cert,
+        ca_cert: values.ldap_ca_cert || '',
+        base_dn: values.ldap_base_dn,
+        bind_dn: values.ldap_bind_dn,
+        bind_password: values.ldap_bind_password,
+      })
+      setLdapTestStatus('success')
+      message.success('LDAP connection successful')
+    } catch (e: unknown) {
+      setLdapTestStatus('failed')
+      setLdapTestMessage(getErrorMessage(e, 'LDAP connection failed'))
+      message.error(getErrorMessage(e, 'LDAP connection failed'))
+    }
+  }
+
   const handleSubmit = async () => {
     const data: InitRequest = {
       admin: {
@@ -136,6 +173,7 @@ export default function SetupWizard() {
       encryption_key: collectedData.encryption_key,
       cors_origins: collectedData.cors_origins || undefined,
       ldap: collectedData.ldap_enabled ? {
+        enabled: collectedData.ldap_enabled,
         server: collectedData.ldap_server,
         port: collectedData.ldap_port || 636,
         use_tls: collectedData.ldap_use_tls,
@@ -144,6 +182,11 @@ export default function SetupWizard() {
         base_dn: collectedData.ldap_base_dn,
         bind_dn: collectedData.ldap_bind_dn,
         bind_password: collectedData.ldap_bind_password,
+        user_filter: collectedData.ldap_user_filter,
+        username_attr: collectedData.ldap_username_attr,
+        email_attr: collectedData.ldap_email_attr,
+        auto_provision: collectedData.ldap_auto_provision,
+        default_role: collectedData.ldap_default_role,
       } : undefined,
     }
 
@@ -195,6 +238,8 @@ export default function SetupWizard() {
         'cors_origins', 'ldap_enabled', 'ldap_server', 'ldap_port',
         'ldap_use_tls', 'ldap_verify_cert', 'ldap_ca_cert',
         'ldap_base_dn', 'ldap_bind_dn', 'ldap_bind_password',
+        'ldap_user_filter', 'ldap_username_attr', 'ldap_email_attr',
+        'ldap_auto_provision', 'ldap_default_role',
       ])
       setCollectedData(prev => ({ ...prev, ...values }))
       setCurrent(current + 1)
@@ -309,58 +354,104 @@ export default function SetupWizard() {
             <Form.Item name="ldap_enabled" label="Enable LDAP Authentication" valuePropName="checked">
               <Switch />
             </Form.Item>
-            <Form.Item name="ldap_server" label="LDAP Server">
-              <Input size="large" placeholder="ldap.example.com" />
-            </Form.Item>
-            <Form.Item name="ldap_port" label="Port">
-              <Input type="number" size="large" placeholder="636" />
-            </Form.Item>
-            <Form.Item name="ldap_use_tls" label="Use TLS" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item name="ldap_verify_cert" label="Verify Certificate" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item name="ldap_ca_cert" label="CA Certificate (PEM)">
-              <Input.TextArea rows={2} placeholder="-----BEGIN CERTIFICATE-----..." style={{ resize: 'none' }} />
-            </Form.Item>
-            <Form.Item>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <input
-                  type="file"
-                  accept=".pem,.crt,.cer"
-                  style={{ display: 'none' }}
-                  id="ca-cert-upload-wizard"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    if (!file) return
-                    const reader = new FileReader()
-                    reader.onload = (ev) => {
-                      const text = ev.target?.result
-                      if (typeof text === 'string') {
-                        form.setFieldValue('ldap_ca_cert', text)
-                        message.success('PEM file loaded')
-                      }
-                    }
-                    reader.onerror = () => message.error('Failed to read PEM file')
-                    reader.readAsText(file)
-                    e.target.value = ''
-                  }}
-                />
-                <Button icon={<UploadOutlined />} block onClick={() => { document.getElementById('ca-cert-upload-wizard')?.click() }}>
-                  Upload PEM
+            {form.getFieldValue('ldap_enabled') && (
+              <>
+                <Divider orientation="left">Connection</Divider>
+                <Form.Item name="ldap_server" label="LDAP Server">
+                  <Input size="large" placeholder="ldap.example.com" />
+                </Form.Item>
+                <Form.Item name="ldap_port" label="Port">
+                  <Input type="number" size="large" placeholder="636" />
+                </Form.Item>
+                <Form.Item name="ldap_use_tls" label="Use TLS" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+                <Form.Item name="ldap_verify_cert" label="Verify Certificate" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+                <Form.Item name="ldap_ca_cert" label="CA Certificate (PEM)">
+                  <Input.TextArea rows={2} placeholder="-----BEGIN CERTIFICATE-----..." style={{ resize: 'none' }} />
+                </Form.Item>
+                <Form.Item>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <input
+                      type="file"
+                      accept=".pem,.crt,.cer"
+                      style={{ display: 'none' }}
+                      id="ca-cert-upload-wizard"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0]
+                        if (!file) return
+                        const reader = new FileReader()
+                        reader.onload = (ev) => {
+                          const text = ev.target?.result
+                          if (typeof text === 'string') {
+                            form.setFieldValue('ldap_ca_cert', text)
+                            message.success('PEM file loaded')
+                          }
+                        }
+                        reader.onerror = () => message.error('Failed to read PEM file')
+                        reader.readAsText(file)
+                        e.target.value = ''
+                      }}
+                    />
+                    <Button icon={<UploadOutlined />} block onClick={() => { document.getElementById('ca-cert-upload-wizard')?.click() }}>
+                      Upload PEM
+                    </Button>
+                  </div>
+                </Form.Item>
+                <Divider orientation="left">Authentication</Divider>
+                <Form.Item name="ldap_base_dn" label="Base DN">
+                  <Input size="large" placeholder="dc=example,dc=com" />
+                </Form.Item>
+                <Form.Item name="ldap_bind_dn" label="Bind DN">
+                  <Input size="large" placeholder="cn=admin,dc=example,dc=com" />
+                </Form.Item>
+                <Form.Item name="ldap_bind_password" label="Bind Password">
+                  <Input.Password size="large" placeholder="LDAP bind password" />
+                </Form.Item>
+                <Divider orientation="left">User Search</Divider>
+                <Form.Item name="ldap_user_filter" label="User Filter">
+                  <Input size="large" placeholder="(uid=%s)" />
+                </Form.Item>
+                <Form.Item name="ldap_username_attr" label="Username Attribute">
+                  <Input size="large" placeholder="uid" />
+                </Form.Item>
+                <Form.Item name="ldap_email_attr" label="Email Attribute">
+                  <Input size="large" placeholder="mail" />
+                </Form.Item>
+                <Divider orientation="left">Auto-Provisioning</Divider>
+                <Form.Item name="ldap_auto_provision" label="Auto-Provision Users" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+                <Form.Item name="ldap_default_role" label="Default Role">
+                  <Select size="large" placeholder="Select role" options={[
+                    { label: 'Viewer', value: 'viewer' },
+                    { label: 'Editor', value: 'editor' },
+                    { label: 'Admin', value: 'admin' },
+                  ]} disabled={!form.getFieldValue('ldap_auto_provision')} />
+                </Form.Item>
+                <Divider orientation="left">Test</Divider>
+                <Button
+                  type="primary"
+                  onClick={handleTestLdap}
+                  loading={ldapTestStatus === 'testing'}
+                  style={{ width: '100%' }}
+                >
+                  Test LDAP Connection
                 </Button>
-              </div>
-            </Form.Item>
-            <Form.Item name="ldap_base_dn" label="Base DN">
-              <Input size="large" placeholder="dc=example,dc=com" />
-            </Form.Item>
-            <Form.Item name="ldap_bind_dn" label="Bind DN">
-              <Input size="large" placeholder="cn=admin,dc=example,dc=com" />
-            </Form.Item>
-            <Form.Item name="ldap_bind_password" label="Bind Password">
-              <Input.Password size="large" placeholder="LDAP bind password" />
-            </Form.Item>
+                {ldapTestStatus === 'success' && (
+                  <Text type="success" style={{ display: 'block' }}>
+                    <CheckCircleFilled /> LDAP connection successful
+                  </Text>
+                )}
+                {ldapTestStatus === 'failed' && (
+                  <Text type="danger" style={{ display: 'block' }}>
+                    <CloseCircleFilled /> {ldapTestMessage || 'LDAP connection failed'}
+                  </Text>
+                )}
+              </>
+            )}
           </>
         )
       case 'review':
@@ -394,7 +485,13 @@ export default function SetupWizard() {
               <>
                 <Title level={5}>LDAP</Title>
                 <Text><strong>Server:</strong> {collectedData.ldap_server}:{collectedData.ldap_port}</Text><br />
-                <Text><strong>Base DN:</strong> {collectedData.ldap_base_dn}</Text>
+                <Text><strong>Base DN:</strong> {collectedData.ldap_base_dn}</Text><br />
+                {collectedData.ldap_user_filter && <Text><strong>User Filter:</strong> {collectedData.ldap_user_filter}</Text>}
+                {collectedData.ldap_username_attr && <Text> <strong>Username Attr:</strong> {collectedData.ldap_username_attr}</Text>}
+                {collectedData.ldap_email_attr && <Text><br /><strong>Email Attr:</strong> {collectedData.ldap_email_attr}</Text>}
+                <br />
+                <Text><strong>Auto-Provision:</strong> {collectedData.ldap_auto_provision ? 'Yes' : 'No'}</Text>
+                {collectedData.ldap_auto_provision && <Text> <strong>Default Role:</strong> {collectedData.ldap_default_role}</Text>}
               </>
             )}
           </Card>
@@ -408,7 +505,10 @@ export default function SetupWizard() {
     <Layout style={{ minHeight: '100vh', background: '#f0f2f5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <Card style={{ width: '100%', maxWidth: 600, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <Title level={3} style={{ margin: 0 }}>📡 Syslytics</Title>
+          <Title level={3} style={{ margin: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            <img src="/icons/icon-192.png" alt="Syslytics" style={{ width: 28, height: 28, borderRadius: 6 }} />
+            Syslytics
+          </Title>
           <Text type="secondary">First-time setup wizard</Text>
         </div>
 
@@ -429,6 +529,9 @@ export default function SetupWizard() {
                 if (Object.keys(changed).some(k => k.startsWith('db_'))) {
                   setDbTestStatus('idle')
                 }
+                if (Object.keys(changed).some(k => k.startsWith('ldap_'))) {
+                  setLdapTestStatus('idle')
+                }
               }}
             >
               {renderStepContent()}
@@ -441,7 +544,7 @@ export default function SetupWizard() {
                   type="primary"
                   size="large"
                   loading={loading}
-                  disabled={stepKey === 'database' && dbTestStatus !== 'success'}
+                  disabled={(stepKey === 'database' && dbTestStatus !== 'success') || (stepKey === 'optional' && collectedData.ldap_enabled && ldapTestStatus !== 'success')}
                   onClick={next}
                 >
                   {current === lastStep ? 'Initialize' : current === lastStep - 1 ? 'Review' : 'Next'}

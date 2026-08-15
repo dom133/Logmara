@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
-import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
-import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, User, DeviceStats, SlowQueryRecord, ContainersHealthResponse } from '../services/api'
+import { useState, useEffect, useRef } from 'react'
+import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm, Descriptions, Result, Alert, Tooltip, Drawer } from 'antd'
+import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined } from '@ant-design/icons'
+import { getUsers, createUser, updateUser, deleteUser, resetPassword, unlockUser, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, User, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
@@ -45,6 +45,16 @@ export default function Admin() {
   const [certInfo, setCertInfo] = useState<any>(null)
   const [health, setHealth] = useState<ContainersHealthResponse | null>(null)
   const [healthLoading, setHealthLoading] = useState(false)
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
+  const [auditLogsTotal, setAuditLogsTotal] = useState(0)
+  const [auditLogsLoading, setAuditLogsLoading] = useState(false)
+  const [auditLogsOffset, setAuditLogsOffset] = useState(0)
+  const [auditLogsFilters, setAuditLogsFilters] = useState<{ username: string; action: string; from: string; to: string }>({ username: '', action: '', from: '', to: '' })
+  const [auditDetailOpen, setAuditDetailOpen] = useState(false)
+  const [auditDetailRecord, setAuditDetailRecord] = useState<AuditLog | null>(null)
+  const [activeTab, setActiveTab] = useState('users')
+  const tabCacheRef = useRef<Map<string, { loadedAt: number }>>(new Map())
+  const [, setLockoutTick] = useState(0)
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_admin',
@@ -82,6 +92,8 @@ export default function Admin() {
       if (data['ldap_port']) formValues['ldap_port'] = parseInt(data['ldap_port'], 10)
       if (data['retention_days']) formValues['retention_days'] = parseInt(data['retention_days'], 10)
       if (data['session_timeout_min'] !== undefined && data['session_timeout_min'] !== '') formValues['session_timeout_min'] = parseInt(data['session_timeout_min'], 10)
+      if (data['security_max_failed_attempts']) formValues['security_max_failed_attempts'] = parseInt(data['security_max_failed_attempts'], 10)
+      if (data['security_lockout_duration_min']) formValues['security_lockout_duration_min'] = parseInt(data['security_lockout_duration_min'], 10)
       formValues['https_enabled'] = data['https_enabled'] === 'true'
       formValues['https_redirect'] = data['https_redirect'] === 'true'
       formValues['notifications_enabled'] = data['notifications_enabled'] === 'true'
@@ -181,6 +193,27 @@ await testLDAPConnection({
     }
   }
 
+  const loadAuditLogs = async (offset: number = 0) => {
+    setAuditLogsLoading(true)
+    try {
+      const data = await getAuditLogs({
+        limit: 50,
+        offset: offset,
+        username: auditLogsFilters.username,
+        action: auditLogsFilters.action,
+        from: auditLogsFilters.from,
+        to: auditLogsFilters.to,
+      })
+      setAuditLogs(data.data)
+      setAuditLogsTotal(data.total)
+      setAuditLogsOffset(offset)
+    } catch {
+      message.error('Failed to load audit logs')
+    } finally {
+      setAuditLogsLoading(false)
+    }
+  }
+
   const handleClearSlowQueries = async () => {
     try {
       await clearSlowQueries()
@@ -213,13 +246,36 @@ await testLDAPConnection({
     }
   }
 
+  const STALE_MS = 30_000
+
+  const loadTab = async (tab: string) => {
+    const cached = tabCacheRef.current.get(tab)
+    if (cached && Date.now() - cached.loadedAt < STALE_MS) return
+    if (tab === 'ldap' && !tabCacheRef.current.has('settings')) {
+      await loadSettings()
+      tabCacheRef.current.set('settings', { loadedAt: Date.now() })
+    }
+    switch (tab) {
+      case 'users': await loadUsers(); break
+      case 'settings': await loadSettings(); break
+      case 'devices': await loadDevices(); break
+      case 'slow_queries': await loadSlowQueries(); break
+      case 'health': await loadHealth(); break
+      case 'audit_logs': await loadAuditLogs(0); break
+    }
+    tabCacheRef.current.set(tab, { loadedAt: Date.now() })
+  }
+
   useEffect(() => {
-    loadUsers()
-    loadSettings()
-    loadDevices()
-    loadSlowQueries()
-    loadHealth()
-  }, [])
+    loadTab(activeTab)
+  }, [activeTab])
+
+  // Ticks the locked-users countdown live instead of only on next fetch
+  useEffect(() => {
+    if (!users.some(u => u.locked_until && new Date(u.locked_until).getTime() > Date.now())) return
+    const id = setInterval(() => setLockoutTick(t => t + 1), 1000)
+    return () => clearInterval(id)
+  }, [users])
 
 const handleCreate = async () => {
     const values = await form.validateFields()
@@ -276,6 +332,16 @@ const handleResetPassword = async (user: User) => {
       message.success('Password reset')
     } catch (e: unknown) {
       message.error(getErrorMessage(e, 'Failed to reset password'))
+    }
+  }
+
+  const handleUnlock = async (id: number) => {
+    try {
+      await unlockUser(id)
+      message.success('User unlocked')
+      loadUsers()
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to unlock user'))
     }
   }
 
@@ -366,6 +432,27 @@ const handleCleanup = async () => {
       render: (active: boolean) => <Tag color={active ? 'green' : 'red'}>{active ? 'Active' : 'Disabled'}</Tag>,
     },
     {
+      title: 'Status',
+      dataIndex: 'locked_until',
+      key: 'locked_until',
+      render: (_v: string | null, record: User) => {
+        const remaining = record.locked_until ? new Date(record.locked_until).getTime() - Date.now() : 0
+        if (remaining > 0) {
+          const minutes = Math.floor(remaining / 60000)
+          const seconds = Math.floor((remaining % 60000) / 1000)
+          return (
+            <Tooltip title={`Locked. Fails: ${record.failed_login_attempts}. Unlocks in ${minutes}m ${seconds}s.`}>
+              <Tag color="red">Locked ({minutes}m {seconds}s)</Tag>
+            </Tooltip>
+          )
+        }
+        if (record.failed_login_attempts > 0) {
+          return <Tag color="orange">{record.failed_login_attempts} fail(s)</Tag>
+        }
+        return <Tag color="green">OK</Tag>
+      },
+    },
+    {
       title: 'Last Login',
       dataIndex: 'last_login_at',
       key: 'last_login_at',
@@ -382,6 +469,9 @@ const handleCleanup = async () => {
       key: 'actions',
       render: (_v: unknown, record: User) => (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {record.locked_until && new Date(record.locked_until).getTime() > Date.now() && <Popconfirm title="Unlock this user?" okText="Yes" cancelText="No" onConfirm={() => handleUnlock(record.id)}>
+            <Button size="small" type="primary" icon={<ReloadOutlined />} />
+          </Popconfirm>}
           <Button size="small" onClick={() => handleEdit(record)} icon={<EditOutlined />} />
           {record.auth_type !== 'ldap' && <Button size="small" onClick={() => handleResetPassword(record)} icon={<KeyOutlined />} />}
           <Popconfirm
@@ -404,7 +494,8 @@ const handleCleanup = async () => {
       </Card>
 
       <Tabs
-        defaultActiveKey="users"
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: 'users',
@@ -445,10 +536,17 @@ const handleCleanup = async () => {
                   <Form.Item label="Log Retention (days)" name="retention_days">
                     <InputNumber min={1} max={3650} style={{ width: '100%' }} />
                   </Form.Item>
-<Form.Item label="Session Timeout (minutes)" name="session_timeout_min">
-                     <InputNumber min={1} max={10080} style={{ width: '100%' }} />
-                   </Form.Item>
-                   <Divider orientation="left">CORS</Divider>
+                    <Form.Item label="Session Timeout (minutes)" name="session_timeout_min">
+                      <InputNumber min={1} max={10080} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Divider orientation="left">Security</Divider>
+                    <Form.Item label="Max Failed Login Attempts" name="security_max_failed_attempts" tooltip="Number of failed login attempts before account lockout. Leave empty to use MAX_FAILED_ATTEMPTS env var or default (5).">
+                      <InputNumber min={1} max={100} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item label="Lockout Duration (minutes)" name="security_lockout_duration_min" tooltip="How long the account stays locked after reaching max failed attempts. Leave empty to use LOCKOUT_DURATION_MIN env var or default (15).">
+                      <InputNumber min={1} max={1440} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Divider orientation="left">CORS</Divider>
                    <Form.Item
                      label="Allowed CORS Origins"
                      name="cors_origins"
@@ -762,6 +860,21 @@ const handleCleanup = async () => {
                       },
                     },
                     {
+                      title: 'Proxy',
+                      dataIndex: 'via_relay',
+                      key: 'via_relay',
+                      width: 160,
+                      filters: [
+                        { text: 'Via relay', value: true },
+                        { text: 'Direct', value: false },
+                      ],
+                      onFilter: (value, record: DeviceStats) => record.uses_proxy === value,
+                      render: (_v: unknown, record: DeviceStats) =>
+                        record.uses_proxy
+                          ? <Tag color="blue">{record.via_relay}</Tag>
+                          : <span style={{ color: '#999' }}>Direct</span>,
+                    },
+                    {
                       title: 'Total Logs',
                       dataIndex: 'total_logs',
                       key: 'total_logs',
@@ -1053,6 +1166,96 @@ const handleCleanup = async () => {
               </div>
             ),
           },
+          {
+            key: 'audit_logs',
+            label: 'Audit Logs',
+            children: (
+              <Card
+                title="Audit Logs"
+                extra={
+                  <Button icon={<ReloadOutlined />} loading={auditLogsLoading} onClick={() => loadAuditLogs(0)}>
+                    Refresh
+                  </Button>
+                }
+              >
+                <Space style={{ marginBottom: 16 }} wrap>
+                  <Select
+                    placeholder="Filter by username"
+                    value={auditLogsFilters.username || undefined}
+                    style={{ width: 180 }}
+                    allowClear
+                    showSearch
+                    onChange={(val) => { setAuditLogsFilters({ ...auditLogsFilters, username: val || '' }); loadAuditLogs(0) }}
+                    options={users.map((u) => ({ label: u.username, value: u.username }))}
+                  />
+                  <Select
+                    placeholder="Filter by action"
+                    value={auditLogsFilters.action || undefined}
+                    style={{ width: 200 }}
+                    allowClear
+                    onChange={(val) => { setAuditLogsFilters({ ...auditLogsFilters, action: val || '' }); loadAuditLogs(0) }}
+                    options={[
+                      { label: 'login', value: 'login' },
+                      { label: 'logout', value: 'logout' },
+                      { label: 'create_user', value: 'create_user' },
+                      { label: 'update_user', value: 'update_user' },
+                      { label: 'delete_user', value: 'delete_user' },
+                      { label: 'reset_password', value: 'reset_password' },
+                      { label: 'update_settings', value: 'update_settings' },
+                      { label: 'cleanup_logs', value: 'cleanup_logs' },
+                      { label: 'purge_all_logs', value: 'purge_all_logs' },
+                    ]}
+                  />
+                  <Input
+                    type="datetime-local"
+                    value={auditLogsFilters.from}
+                    onChange={(e) => setAuditLogsFilters({ ...auditLogsFilters, from: e.target.value })}
+                    style={{ width: 220 }}
+                  />
+                  <Input
+                    type="datetime-local"
+                    value={auditLogsFilters.to}
+                    onChange={(e) => setAuditLogsFilters({ ...auditLogsFilters, to: e.target.value })}
+                    style={{ width: 220 }}
+                  />
+                  <Button type="primary" onClick={() => loadAuditLogs(0)}>Apply</Button>
+                  <Button onClick={() => { setAuditLogsFilters({ username: '', action: '', from: '', to: '' }); loadAuditLogs(0) }}>Clear</Button>
+                </Space>
+                <Table
+                  rowKey="id"
+                  columns={[
+                    { title: 'Timestamp', dataIndex: 'created_at', key: 'created_at', width: 200, render: (v: string) => new Date(v).toLocaleString() },
+                    { title: 'User', dataIndex: 'username', key: 'username', width: 150 },
+                    { title: 'Action', dataIndex: 'action', key: 'action', width: 160, render: (v: string) => <Tag>{v.replace(/_/g, ' ')}</Tag> },
+                    { title: 'IP', dataIndex: 'ip', key: 'ip', width: 140, render: (v: string | null) => v || '-' },
+                    {
+                      title: 'Details',
+                      key: 'details',
+                      width: 200,
+                      ellipsis: true,
+                      render: (_: unknown, record: AuditLog) => (
+                        <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => { setAuditDetailRecord(record); setAuditDetailOpen(true) }}>
+                          {record.details || '-'}
+                        </Button>
+                      ),
+                    },
+                  ]}
+                  dataSource={auditLogs}
+                  loading={auditLogsLoading}
+                  pagination={{
+                    current: Math.floor(auditLogsOffset / 50) + 1,
+                    pageSize: 50,
+                    total: auditLogsTotal,
+                    showSizeChanger: false,
+                    showTotal: (total) => `${total} entries`,
+                  }}
+                  onChange={(pag) => { if (pag.current) loadAuditLogs((pag.current - 1) * 50) }}
+                  tableLayout="fixed"
+                  scroll={{ x: 'max-content' }}
+                />
+              </Card>
+            ),
+          },
         ]}
       />
 
@@ -1141,6 +1344,23 @@ const handleCleanup = async () => {
           </Form.Item>
         </Form>
       </Modal>
+
+      <Drawer
+        title="Audit Log Details"
+        open={auditDetailOpen}
+        onClose={() => setAuditDetailOpen(false)}
+        width={520}
+      >
+        {auditDetailRecord && (
+          <Descriptions bordered column={1} size="small">
+            <Descriptions.Item label="Timestamp">{new Date(auditDetailRecord.created_at).toLocaleString()}</Descriptions.Item>
+            <Descriptions.Item label="User">{auditDetailRecord.username}</Descriptions.Item>
+            <Descriptions.Item label="Action">{auditDetailRecord.action.replace(/_/g, ' ')}</Descriptions.Item>
+            <Descriptions.Item label="IP">{auditDetailRecord.ip || '-'}</Descriptions.Item>
+            <Descriptions.Item label="Details">{auditDetailRecord.details || '-'}</Descriptions.Item>
+          </Descriptions>
+        )}
+      </Drawer>
     </div>
   )
 }

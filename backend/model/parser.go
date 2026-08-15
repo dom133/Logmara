@@ -91,11 +91,3 @@ type ReparseResponse struct {
 func (c *DashboardConfig) IsValid() bool {
 	return len(c.Fields) > 0
 }
-
-func ParseDashboardConfig(raw json.RawMessage) (*DashboardConfig, error) {
-	var cfg DashboardConfig
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
-}

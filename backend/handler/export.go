@@ -80,10 +80,7 @@ func ExportHTML(db *sql.DB) gin.HandlerFunc {
 // resolveDashboardFilters) and whether fields carries a dashboard's custom
 // parsed-field columns (nil for the generic endpoint, which has none).
 func writeCSVExport(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int, fields []string) {
-	rows, err := db.Query(
-		fmt.Sprintf("SELECT timestamp, hostname, app_name, severity, message, parsed_fields FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d", whereSQL, len(args)+1),
-		append(args, limit)...,
-	)
+	rows, err := queryExportRows(c, db, whereSQL, args, limit)
 	if err != nil {
 		middleware.HandleError(c, model.NewInternal("Query failed", err))
 		return
@@ -123,10 +120,7 @@ func writeCSVExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfac
 // writeCSVExport for why this is shared between two callers and what fields
 // is for.
 func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int, fields []string) {
-	rows, err := db.Query(
-		fmt.Sprintf("SELECT timestamp, hostname, app_name, severity, message, parsed_fields FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d", whereSQL, len(args)+1),
-		append(args, limit)...,
-	)
+	rows, err := queryExportRows(c, db, whereSQL, args, limit)
 	if err != nil {
 		middleware.HandleError(c, model.NewInternal("Query failed", err))
 		return
@@ -173,6 +167,36 @@ func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 	c.String(http.StatusOK, sb.String())
 }
 
+// queryExportRows runs the shared export SELECT, rendering the timestamp
+// column as wall-clock time in the visitor's timezone (sent as the "tz"
+// query param, same as the dashboard timeline - see GetTimelineStats)
+// instead of the database server's timezone, so exported files show the same
+// times the visitor sees on screen. Falls back to UTC and retries once if
+// Postgres rejects the zone name (unknown zones only fail at AT TIME ZONE
+// evaluation, not query parse time).
+func queryExportRows(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int) (*sql.Rows, error) {
+	tz := c.DefaultQuery("tz", "UTC")
+	tzIdx := len(args) + 1
+	limitIdx := len(args) + 2
+	query := fmt.Sprintf(
+		"SELECT to_char(timestamp AT TIME ZONE $%d, 'YYYY-MM-DD HH24:MI:SS') as ts, hostname, app_name, severity, message, parsed_fields FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d",
+		tzIdx, whereSQL, limitIdx,
+	)
+
+	runQuery := func(tzVal string) (*sql.Rows, error) {
+		fullArgs := make([]interface{}, 0, len(args)+2)
+		fullArgs = append(fullArgs, args...)
+		fullArgs = append(fullArgs, tzVal, limit)
+		return db.Query(query, fullArgs...)
+	}
+
+	rows, err := runQuery(tz)
+	if err != nil && tz != "UTC" {
+		rows, err = runQuery("UTC")
+	}
+	return rows, err
+}
+
 // parseFieldsJSON decodes a syslog_logs.parsed_fields jsonb column into a
 // string map, tolerating NULL/empty/malformed values (best-effort - a
 // dashboard's custom-field columns just come back blank for that row).
@@ -182,11 +206,4 @@ func parseFieldsJSON(raw []byte) map[string]string {
 		_ = json.Unmarshal(raw, &parsed)
 	}
 	return parsed
-}
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "..."
 }

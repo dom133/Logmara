@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -51,7 +51,9 @@ func StartCacheInvalidationSubscriber(ctx context.Context, b *sharedstate.Broadc
 func InvalidateAllCaches() {
 	invalidateAllCachesLocal()
 	if cacheBroadcaster != nil {
-		_ = cacheBroadcaster.Publish(context.Background(), cacheInvalidateChannel, "")
+		if err := cacheBroadcaster.Publish(context.Background(), cacheInvalidateChannel, ""); err != nil {
+			slog.Warn("failed to broadcast cache invalidation", "error", err)
+		}
 	}
 }
 
@@ -246,7 +248,7 @@ func fetchDevices(db *sql.DB) []model.DeviceStats {
 	rows, err := db.Query(`
 		SELECT d.fromhost_ip, d.hostname, d.total_logs, d.last_seen,
 			d.emergency, d.alert, d.critical, d.err_count, d.warning, d.notice, d.info, d.debug,
-			d.parsers,
+			d.parsers, d.via_relay,
 			a.display_name, a.old_hostname
 		FROM mv_device_stats d
 		LEFT JOIN device_aliases a ON a.fromhost_ip = d.fromhost_ip
@@ -263,16 +265,17 @@ func fetchDevices(db *sql.DB) []model.DeviceStats {
 		var total int64
 		var emergency, alert, critical, errCount, warning, notice, info, debug int64
 		var parsersArr pq.StringArray
-		var alias, oldH sql.NullString
+		var alias, oldH, viaRelay sql.NullString
 		if err := rows.Scan(&ds.FromHostIP, &ds.Hostname, &total, &ds.LastSeen,
 			&emergency, &alert, &critical, &errCount, &warning, &notice, &info, &debug,
-			&parsersArr, &alias, &oldH); err != nil {
+			&parsersArr, &viaRelay, &alias, &oldH); err != nil {
 			continue
 		}
 		ds.TotalLogs = total
 		ds.SeverityCount = model.SeverityCounts{"emergency": emergency, "alert": alert, "critical": critical, "error": errCount, "warning": warning, "notice": notice, "info": info, "debug": debug}
 		ds.MatchedParsers = parsersArr
 		ds.HasParsed = len(parsersArr) > 0
+		ds.ViaRelay = viaRelay.String
 		if alias.Valid {
 			ds.DisplayName = alias.String
 		}
@@ -313,12 +316,4 @@ func UpdateDeviceAlias(db *sql.DB) gin.HandlerFunc {
 		InvalidateAllCaches()
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
-}
-
-func matchGlob(pattern, value string) bool {
-	if pattern == "" || pattern == "*" {
-		return true
-	}
-	matched, _ := filepath.Match(pattern, value)
-	return matched
 }

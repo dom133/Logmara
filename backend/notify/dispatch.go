@@ -116,35 +116,91 @@ func (d *Dispatcher) DispatchAlert(alert model.Alert, payload Payload) {
 		return
 	}
 
+	// Deduplicate push and in_app: merge target user IDs across all channels
+	// of the same type so each user receives at most one notification per firing.
+	type dedupInfo struct {
+		targets   map[int64]bool
+		broadcast bool
+	}
+	dedup := map[string]*dedupInfo{
+		model.ChannelTypePush:  {targets: map[int64]bool{}},
+		model.ChannelTypeInApp: {targets: map[int64]bool{}},
+	}
+	firstByType := map[string]model.NotificationChannel{}
 	for _, ch := range channels {
-		d.dispatchOne(&alertID, alert.Name, firingID, ch, payload)
+		info := dedup[ch.Type]
+		if info != nil {
+			var cfg struct{ UserIds []int64 `json:"user_ids"` }
+			_ = json.Unmarshal(ch.Config, &cfg)
+			if len(cfg.UserIds) == 0 {
+				info.broadcast = true
+			} else {
+				for _, uid := range cfg.UserIds {
+					info.targets[uid] = true
+				}
+			}
+		}
+		if _, exists := firstByType[ch.Type]; !exists {
+			firstByType[ch.Type] = ch
+		}
+	}
+
+	for _, ch := range channels {
+		info := dedup[ch.Type]
+		if info != nil && (info.broadcast || len(info.targets) > 0) {
+			if ch.ID != firstByType[ch.Type].ID {
+				continue
+			}
+			if info.broadcast {
+				d.dispatchOne(&alertID, alert.Name, firingID, ch, payload, nil)
+			} else {
+				merged := make([]int64, 0, len(info.targets))
+				for uid := range info.targets {
+					merged = append(merged, uid)
+				}
+				d.dispatchOne(&alertID, alert.Name, firingID, ch, payload, merged)
+			}
+		} else {
+			d.dispatchOne(&alertID, alert.Name, firingID, ch, payload, nil)
+		}
 	}
 }
 
-func (d *Dispatcher) dispatchOne(alertID *int64, alertName, firingID string, ch model.NotificationChannel, payload Payload) {
+func (d *Dispatcher) dispatchOne(alertID *int64, alertName, firingID string, ch model.NotificationChannel, payload Payload, overrideTargetUserIds []int64) {
+	var targetUserIds []int64
+	if overrideTargetUserIds != nil {
+		targetUserIds = overrideTargetUserIds
+	} else if len(ch.Config) > 0 {
+		var cfg struct {
+			UserIds []int64 `json:"user_ids"`
+		}
+		_ = json.Unmarshal(ch.Config, &cfg)
+		targetUserIds = cfg.UserIds
+	}
+
 	status, detail := "sent", ""
 	var inAppID *int64
 
 	if ch.Type == model.ChannelTypeInApp {
-		id, createdAt, err := db.CreateInAppNotification(d.DB, alertID, payload.Title, payload.Message, payload.Severity)
+		id, createdAt, err := db.CreateInAppNotification(d.DB, alertID, payload.Title, payload.Message, payload.Severity, payload.AlertRuleType, targetUserIds)
 		if err != nil {
-			status, detail = "failed", err.Error()
+			status, detail = "failed", "internal app notification failed"
 		} else {
 			inAppID = &id
 			if d.OnInApp != nil {
-				d.OnInApp(model.InAppNotification{ID: id, AlertID: alertID, Title: payload.Title, Message: payload.Message, Severity: payload.Severity, CreatedAt: createdAt})
+				d.OnInApp(model.InAppNotification{ID: id, AlertID: *alertID, Title: payload.Title, Message: payload.Message, Severity: payload.Severity, AlertRuleType: payload.AlertRuleType, TargetUserIds: targetUserIds, CreatedAt: createdAt})
 			}
 		}
 	} else if ch.Type == model.ChannelTypePush {
-		status, detail = sendPushChannel(d.DB, payload)
+		status, detail = sendPushChannel(d.DB, payload, targetUserIds)
 	} else {
 		secret, err := db.DecryptChannelSecret(d.DB, ch.ID)
 		if err != nil {
-			status, detail = "failed", "decrypt channel secret: "+err.Error()
+			status, detail = "failed", "decrypt channel secret failed"
 		} else if notifier, err := BuildNotifier(d.DB, ch, secret); err != nil {
-			status, detail = "failed", err.Error()
+			status, detail = "failed", "build notifier failed"
 		} else if err := notifier.Send(payload); err != nil {
-			status, detail = "failed", err.Error()
+			status, detail = "failed", "send notification failed"
 		}
 	}
 
@@ -159,8 +215,8 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName, firingID string, ch 
 // sendPushChannel fans a payload out to every subscribed browser and
 // collapses the per-device results into the single status/detail pair the
 // notification_log records for this channel.
-func sendPushChannel(database *sql.DB, payload Payload) (status, detail string) {
-	res, err := dispatchPush(database, payload)
+func sendPushChannel(database *sql.DB, payload Payload, targetUserIds []int64) (status, detail string) {
+	res, err := dispatchPush(database, payload, targetUserIds)
 	if err != nil {
 		return "failed", err.Error()
 	}
@@ -186,19 +242,28 @@ func TestChannel(database *sql.DB, channel model.NotificationChannel, onInApp fu
 		Severity: "info",
 	}
 
+	var targetUserIds []int64
+	if len(channel.Config) > 0 {
+		var cfg struct {
+			UserIds []int64 `json:"user_ids"`
+		}
+		_ = json.Unmarshal(channel.Config, &cfg)
+		targetUserIds = cfg.UserIds
+	}
+
 	if channel.Type == model.ChannelTypeInApp {
-		id, createdAt, err := db.CreateInAppNotification(database, nil, payload.Title, payload.Message, payload.Severity)
+		id, createdAt, err := db.CreateInAppNotification(database, nil, payload.Title, payload.Message, payload.Severity, "", targetUserIds)
 		if err != nil {
 			return err
 		}
 		if onInApp != nil {
-			onInApp(model.InAppNotification{ID: id, Title: payload.Title, Message: payload.Message, Severity: payload.Severity, CreatedAt: createdAt})
+			onInApp(model.InAppNotification{ID: id, Title: payload.Title, Message: payload.Message, Severity: payload.Severity, TargetUserIds: targetUserIds, CreatedAt: createdAt})
 		}
 		return nil
 	}
 
 	if channel.Type == model.ChannelTypePush {
-		res, err := dispatchPush(database, payload)
+		res, err := dispatchPush(database, payload, targetUserIds)
 		if err != nil {
 			return err
 		}

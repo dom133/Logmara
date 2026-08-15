@@ -10,11 +10,95 @@ import (
 	"syslytics/auth"
 	"syslytics/db"
 	"syslytics/ldap"
+	"syslytics/middleware"
+	"syslytics/model"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
+
+const (
+	AccessTokenCookieName  = "accessToken"
+	RefreshTokenCookieName = "refreshToken"
+	CSRFTokenCookieName    = "csrf_token"
+)
+
+func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpiry, refreshExpiry time.Time) {
+	csrf := generateCSRFToken()
+	accessMaxAge := int(time.Until(accessExpiry).Seconds())
+	refreshMaxAge := int(time.Until(refreshExpiry).Seconds())
+	secure := c.GetHeader("X-Forwarded-Proto") == "https"
+
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     CSRFTokenCookieName,
+		Value:    csrf,
+		Path:     "/",
+		Expires:  accessExpiry,
+		MaxAge:   accessMaxAge,
+		HttpOnly: false,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+	})
+
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     AccessTokenCookieName,
+		Value:    accessToken,
+		Path:     "/",
+		Expires:  accessExpiry,
+		MaxAge:   accessMaxAge,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     RefreshTokenCookieName,
+		Value:    refreshToken,
+		Path:     "/",
+		Expires:  refreshExpiry,
+		MaxAge:   refreshMaxAge,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func clearAuthCookies(c *gin.Context) {
+	secure := c.GetHeader("X-Forwarded-Proto") == "https"
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     CSRFTokenCookieName,
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		HttpOnly: false,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+	})
+
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     AccessTokenCookieName,
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     RefreshTokenCookieName,
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
 
 type LoginRequest struct {
 	Username string `json:"username" binding:"required,max=100"`
@@ -36,7 +120,7 @@ type ChangePasswordRequest struct {
 	NewPassword     string `json:"new_password" binding:"required,min=8,max=128"`
 }
 
-func Login(database *sql.DB) gin.HandlerFunc {
+func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req LoginRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -47,7 +131,19 @@ func Login(database *sql.DB) gin.HandlerFunc {
 		var user *db.User
 
 		existing, err := db.GetUserByUsername(database, req.Username)
-		if err == nil && existing.IsActive {
+		if err == nil {
+			if locked, _ := db.CheckUserLockout(database, existing.ID); locked {
+				audit.LogAudit(database, existing.ID, req.Username, "login_failed_lockout", c.ClientIP(), "account locked due to too many failed attempts")
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "Account temporarily locked due to too many failed login attempts. Try again later."})
+				return
+			}
+			if !existing.IsActive {
+				dummyHash := "$2b$14$AAAAAAAAAAAAAAAAAAAAAAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+				bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(req.Password))
+				audit.LogAudit(database, existing.ID, req.Username, "login_failed_inactive", c.ClientIP(), "account deactivated by admin")
+				c.JSON(http.StatusForbidden, gin.H{"error": "Your account has been deactivated. Contact your administrator."})
+				return
+			}
 			if err := bcrypt.CompareHashAndPassword([]byte(existing.PasswordHash), []byte(req.Password)); err == nil {
 				user = existing
 			}
@@ -95,38 +191,56 @@ func Login(database *sql.DB) gin.HandlerFunc {
 			}
 
 			if user == nil {
+if existing != nil {
+				if err := db.IncrementFailedLogins(database, existing.ID); err != nil {
+					slog.Error("failed to increment failed logins", "error", err, "user_id", existing.ID)
+				}
+			}
 				audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "invalid user or inactive")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 				return
 			}
 		}
 
+		db.ResetFailedLogins(database, user.ID)
 		db.UpdateLastLogin(database, user.Username)
 		user.LastLoginAt = ptrTime(time.Now())
 
-		token, err := auth.GenerateToken(user.ID, user.Username, user.Role)
+		token, jti, accessExpiresAt, err := authCfg.GenerateToken(user.ID, user.Username, user.Role)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
 		}
+		_ = jti
 
-		refreshToken, expiresAt := auth.GenerateRefreshToken(int(user.ID))
-		if err := insertRefreshToken(database, int(user.ID), refreshToken, expiresAt); err != nil {
+		refreshToken, refreshExpiresAt := auth.GenerateRefreshToken(int(user.ID))
+		if err := insertRefreshToken(database, int(user.ID), refreshToken, refreshExpiresAt); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
 
 		audit.LogAudit(database, user.ID, user.Username, "login_success", c.ClientIP(), "")
 
-		// Refresh dashboard MVs right away instead of waiting for the next
-		// 30s tick, so stats aren't stale the moment someone logs back in
-		// after a stretch with nobody logged in (see main.go's fast MV
-		// refresh loop, which skips ticks while HasActiveSession is false).
 		go db.RefreshMV(database)
 
-		c.JSON(http.StatusOK, LoginResponse{
-			Token:        token,
-			RefreshToken: refreshToken,
-			User:         *user,
+		setAuthCookies(c, token, refreshToken, accessExpiresAt, refreshExpiresAt)
+
+		userResp := gin.H{
+			"id":                      user.ID,
+			"username":                user.Username,
+			"email":                   user.Email,
+			"role":                    user.Role,
+			"auth_type":               user.AuthType,
+			"is_admin":                user.IsAdmin,
+			"is_active":               user.IsActive,
+			"created_at":              user.CreatedAt,
+			"last_login_at":           user.LastLoginAt,
+			"notifications_enabled":   db.GetSetting(database, "notifications_enabled", "true") == "true",
+			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "true",
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"user":       userResp,
+			"expires_at": accessExpiresAt.Unix(),
 		})
 	}
 }
@@ -143,12 +257,16 @@ func ptrTime(t time.Time) *time.Time {
 // real replay and rejected.
 const refreshReuseGraceWindow = 10 * time.Second
 
-func Refresh(database *sql.DB) gin.HandlerFunc {
+func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var req RefreshRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-			return
+		refreshToken, err := c.Cookie(RefreshTokenCookieName)
+		if err != nil || refreshToken == "" {
+			var req RefreshRequest
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+				return
+			}
+			refreshToken = req.RefreshToken
 		}
 
 		var userID int
@@ -156,13 +274,14 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 			`UPDATE refresh_tokens SET used = true, used_at = NOW()
 			 WHERE token = $1 AND used = false AND expires_at > NOW()
 			 RETURNING user_id`,
-			req.RefreshToken,
+			refreshToken,
 		).Scan(&userID)
 
 		var replacementToken string
 		if claimErr != nil {
-			recoveredUserID, recoveredToken, recovered := recoverRacedRefresh(database, req.RefreshToken)
+			recoveredUserID, recoveredToken, recovered := recoverRacedRefresh(database, refreshToken)
 			if !recovered {
+				clearAuthCookies(c)
 				audit.LogAudit(database, 0, "", "refresh_failed", c.ClientIP(), "invalid, expired, or reused refresh token")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
 				return
@@ -173,11 +292,12 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 
 		user, err := getUserByID(database, userID)
 		if err != nil {
+			clearAuthCookies(c)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
 			return
 		}
 
-		token, err := auth.GenerateToken(user.ID, user.Username, user.Role)
+		token, _, accessExpiresAt, err := authCfg.GenerateToken(user.ID, user.Username, user.Role)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
@@ -185,10 +305,9 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 
 		if replacementToken != "" {
 			audit.LogAudit(database, user.ID, user.Username, "refresh_race_recovered", c.ClientIP(), "")
-			c.JSON(http.StatusOK, gin.H{
-				"token":         token,
-				"refresh_token": replacementToken,
-			})
+			replacementExpiry := time.Now().Add(7 * 24 * time.Hour)
+			setAuthCookies(c, token, replacementToken, accessExpiresAt, replacementExpiry)
+			c.JSON(http.StatusOK, gin.H{"success": true, "expires_at": accessExpiresAt.Unix()})
 			return
 		}
 
@@ -196,16 +315,14 @@ func Refresh(database *sql.DB) gin.HandlerFunc {
 		if err := insertRefreshToken(database, userID, newRefreshToken, newExpiresAt); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
-		if _, err := database.Exec("UPDATE refresh_tokens SET replaced_by = $1 WHERE token = $2", newRefreshToken, req.RefreshToken); err != nil {
+		if _, err := database.Exec("UPDATE refresh_tokens SET replaced_by = $1 WHERE token = $2", newRefreshToken, refreshToken); err != nil {
 			slog.Error("failed to link rotated refresh token", "error", err)
 		}
 
 		audit.LogAudit(database, user.ID, user.Username, "refresh_success", c.ClientIP(), "")
 
-		c.JSON(http.StatusOK, gin.H{
-			"token":         token,
-			"refresh_token": newRefreshToken,
-		})
+		setAuthCookies(c, token, newRefreshToken, accessExpiresAt, newExpiresAt)
+		c.JSON(http.StatusOK, gin.H{"success": true, "expires_at": accessExpiresAt.Unix()})
 	}
 }
 
@@ -250,10 +367,25 @@ func getUserByID(database *sql.DB, userID int) (*db.User, error) {
 
 func Logout(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var req RefreshRequest
-		if err := c.ShouldBindJSON(&req); err == nil {
-			database.Exec("UPDATE refresh_tokens SET used = true WHERE token = $1", req.RefreshToken)
+		jti, _ := c.Get("jti")
+		if jtiStr, ok := jti.(string); ok && jtiStr != "" {
+			db.BlacklistJTI(database, jtiStr)
 		}
+
+		refreshToken, _ := c.Cookie(RefreshTokenCookieName)
+		if refreshToken == "" {
+			var req RefreshRequest
+			if err := c.ShouldBindJSON(&req); err == nil {
+				refreshToken = req.RefreshToken
+			}
+		}
+		if refreshToken != "" {
+			var userID int
+			if err := database.QueryRow("SELECT user_id FROM refresh_tokens WHERE token = $1", refreshToken).Scan(&userID); err == nil {
+				database.Exec("UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE user_id = $1 AND used = false", userID)
+			}
+		}
+		clearAuthCookies(c)
 		c.JSON(http.StatusOK, gin.H{"message": "Logged out"})
 	}
 }
@@ -276,14 +408,16 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 		if err != nil {
 			isAdmin = false
 		}
+		exp := int64((*mapClaims)["exp"].(float64))
 		c.JSON(http.StatusOK, gin.H{
-			"id":                    userID,
-			"username":              username,
-			"role":                  role,
-			"is_admin":              isAdmin,
-			"is_active":             true,
-			"notifications_enabled": db.GetSetting(database, "notifications_enabled", "true") == "true",
+			"id":                      userID,
+			"username":                username,
+			"role":                    role,
+			"is_admin":                isAdmin,
+			"is_active":               true,
+			"notifications_enabled":   db.GetSetting(database, "notifications_enabled", "true") == "true",
 			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "true",
+			"expires_at":              exp,
 		})
 	}
 }
@@ -306,7 +440,7 @@ func ChangePassword(database *sql.DB) gin.HandlerFunc {
 		}
 
 		if err := auth.ValidatePassword(req.NewPassword); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewBadRequest("Password does not meet requirements", err))
 			return
 		}
 

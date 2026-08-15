@@ -127,6 +127,7 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='parsed_fields') THEN ALTER TABLE syslog_logs ADD COLUMN parsed_fields JSONB DEFAULT '{}'; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='matched_parsers') THEN ALTER TABLE syslog_logs ADD COLUMN matched_parsers TEXT[] DEFAULT '{}'; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='fromhost_ip') THEN ALTER TABLE syslog_logs ADD COLUMN fromhost_ip VARCHAR(255); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='via_relay') THEN ALTER TABLE syslog_logs ADD COLUMN via_relay VARCHAR(255); END IF; END $$`,
 		`DO $$ BEGIN EXECUTE 'DROP INDEX IF EXISTS idx_syslog_parsed_fields'; EXCEPTION WHEN OTHERS THEN NULL; END $$`,
 		`DO $$ BEGIN EXECUTE 'DROP INDEX IF EXISTS idx_syslog_timestamp'; EXCEPTION WHEN OTHERS THEN NULL; END $$`,
 		`DO $$ BEGIN EXECUTE 'DROP INDEX IF EXISTS idx_syslog_recent_7d'; EXCEPTION WHEN OTHERS THEN NULL; END $$`,
@@ -186,6 +187,12 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='role') THEN ALTER TABLE users ADD COLUMN role VARCHAR(50) DEFAULT 'viewer'; END IF; END $$`,
 		`UPDATE users SET role = 'admin' WHERE is_admin = TRUE AND role = 'viewer'`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='is_active') THEN ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='failed_login_attempts') THEN ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER DEFAULT 0; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='locked_until') THEN ALTER TABLE users ADD COLUMN locked_until TIMESTAMPTZ; END IF; END $$`,
+		`CREATE TABLE IF NOT EXISTS jwt_blacklist (
+			jti TEXT PRIMARY KEY,
+			blacklisted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		`CREATE TABLE IF NOT EXISTS user_dashboard_pins (
 			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
 			dashboard_id INTEGER REFERENCES dashboards(id) ON DELETE CASCADE,
@@ -306,6 +313,9 @@ func Migrate(db *sql.DB) error {
 			created_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions (user_id)`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='notification_log' AND column_name='audit_log_ref') THEN ALTER TABLE notification_log ADD COLUMN audit_log_ref JSONB; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='notification_log' AND column_name='rule_type') THEN ALTER TABLE notification_log ADD COLUMN rule_type VARCHAR(50) DEFAULT ''; END IF; END $$`,
+		`UPDATE alerts SET rule_type = 'audit_log' WHERE rule_type = 'config_change'`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='fire_on_every_match') THEN ALTER TABLE alerts ADD COLUMN fire_on_every_match BOOLEAN NOT NULL DEFAULT FALSE; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='field_conditions_logic') THEN ALTER TABLE alerts ADD COLUMN field_conditions_logic VARCHAR(10) NOT NULL DEFAULT 'and'; END IF; END $$`,
 		`CREATE TABLE IF NOT EXISTS relay_certificates (
@@ -327,6 +337,8 @@ func Migrate(db *sql.DB) error {
 			created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
 		)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='relay_certificates' AND column_name='expires_at') THEN ALTER TABLE relay_certificates ADD COLUMN expires_at TIMESTAMPTZ; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='in_app_notifications' AND column_name='alert_rule_type') THEN ALTER TABLE in_app_notifications ADD COLUMN alert_rule_type VARCHAR(50) DEFAULT ''; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='in_app_notifications' AND column_name='target_user_ids') THEN ALTER TABLE in_app_notifications ADD COLUMN target_user_ids INT[]; END IF; END $$`,
 	}
 
 	for _, stmt := range statements {
@@ -439,6 +451,25 @@ END $$`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_top_errors_key ON mv_dashboard_top_errors (message, fromhost_ip)`,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_app_name_trgm ON syslog_logs USING GIN (app_name gin_trgm_ops)`,
+		// mv_device_stats predates the via_relay column: CREATE ... IF NOT
+		// EXISTS below is a no-op on any deployment where the view already
+		// exists, so an already-materialized copy needs dropping first to
+		// pick up the new column (its unique index goes with it, recreated
+		// by the CREATE UNIQUE INDEX statement further down). Also drop the
+		// older definition that took the most recent *non-blank* via_relay
+		// (so a device that had switched from relay to direct still showed
+		// "via relay" forever) in favor of the true most-recent-log value.
+		`DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mv_device_stats' AND column_name='via_relay')
+				-- pg_get_viewdef() heavily re-parenthesizes FILTER's boolean
+				-- expression (e.g. "FILTER (WHERE ((via_relay IS NOT NULL) AND
+				-- ...))"), so matching the old clause verbatim would never hit.
+				-- FILTER appears nowhere else in this view, so its mere presence
+				-- is enough to identify the pre-fix definition.
+				OR EXISTS (SELECT 1 FROM pg_matviews WHERE matviewname = 'mv_device_stats' AND definition LIKE '%FILTER%') THEN
+				DROP MATERIALIZED VIEW IF EXISTS mv_device_stats;
+			END IF;
+		END $$`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_device_stats AS
 			WITH dev_stats AS (
 				SELECT COALESCE(fromhost_ip, '') as fromhost_ip, MIN(hostname) as hostname,
@@ -450,7 +481,14 @@ END $$`,
 					SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) as warning,
 					SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END) as notice,
 					SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END) as info,
-					SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug
+					SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug,
+					-- via_relay of this device's single most recent log row, set by
+					-- rsyslog/syslog.conf's relayAccept ruleset only for entries that
+					-- arrived through a relay (see relayConfSnippet's JsonLines
+					-- template) - blank/NULL when the last log came straight to the
+					-- central listener, so "Proxy" tracks the current source, not
+					-- just whichever relay was last seen at some point in the past.
+					(array_agg(via_relay ORDER BY timestamp DESC))[1] as via_relay
 				FROM syslog_logs
 				GROUP BY fromhost_ip
 			),
@@ -463,6 +501,7 @@ END $$`,
 			)
 			SELECT d.fromhost_ip, d.hostname, d.total_logs, d.last_seen,
 				d.emergency, d.alert, d.critical, d.err_count, d.warning, d.notice, d.info, d.debug,
+				d.via_relay,
 				COALESCE(p.parsers, '{}'::TEXT[]) as parsers
 			FROM dev_stats d
 			LEFT JOIN dev_parsers p ON p.fromhost_ip = d.fromhost_ip
@@ -590,38 +629,40 @@ func nullStrPtr(s string) *string {
 // lives in the database and is managed from the admin Settings UI, not env.
 func seedSettings(db *sql.DB) error {
 	settings := map[string]string{
-		"retention_days":               "30",
-		"session_timeout_min":          "15",
-		"is_initialized":               "false",
-		"ldap_enabled":                 "false",
-		"ldap_server":                  "",
-		"ldap_port":                    "389",
-		"ldap_use_tls":                 "false",
-		"ldap_verify_cert":             "true",
-		"ldap_ca_cert":                 "",
-		"ldap_base_dn":                 "",
-		"ldap_bind_dn":                 "",
-		"ldap_bind_password":           "",
-		"ldap_user_filter":             "(uid=%s)",
-		"ldap_username_attr":           "uid",
-		"ldap_email_attr":              "mail",
-		"ldap_default_role":            "viewer",
-		"ldap_auto_provision":          "true",
-		"encryption_key":               "",
-		"cors_origins":                 strings.TrimSpace(os.Getenv("CORS_ORIGINS")),
-		"https_enabled":                "false",
-		"https_redirect":               "false",
-		"notifications_enabled":        "true",
-		"smtp_enabled":                 "false",
-		"smtp_host":                    "",
-		"smtp_port":                    "587",
-		"smtp_username":                "",
-		"smtp_password":                "",
-		"smtp_from":                    "",
-		"smtp_use_tls":                 "true",
-		"device_silence_check_minutes": "5",
-		"relay_ingestion_enabled":      "false",
-		"relay_central_host":           "",
+		"retention_days":                "30",
+		"session_timeout_min":           "15",
+		"is_initialized":                "false",
+		"ldap_enabled":                  "false",
+		"ldap_server":                   "",
+		"ldap_port":                     "389",
+		"ldap_use_tls":                  "false",
+		"ldap_verify_cert":              "true",
+		"ldap_ca_cert":                  "",
+		"ldap_base_dn":                  "",
+		"ldap_bind_dn":                  "",
+		"ldap_bind_password":            "",
+		"ldap_user_filter":              "(uid=%s)",
+		"ldap_username_attr":            "uid",
+		"ldap_email_attr":               "mail",
+		"ldap_default_role":             "viewer",
+		"ldap_auto_provision":           "true",
+		"encryption_key":                "",
+		"cors_origins":                  strings.TrimSpace(os.Getenv("CORS_ORIGINS")),
+		"https_enabled":                 "false",
+		"https_redirect":                "false",
+		"notifications_enabled":         "true",
+		"smtp_enabled":                  "false",
+		"smtp_host":                     "",
+		"smtp_port":                     "587",
+		"smtp_username":                 "",
+		"smtp_password":                 "",
+		"smtp_from":                     "",
+		"smtp_use_tls":                  "true",
+		"device_silence_check_minutes":  "5",
+		"relay_ingestion_enabled":       "false",
+		"relay_central_host":            "",
+		"security_max_failed_attempts":  "",
+		"security_lockout_duration_min": "",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -694,6 +735,10 @@ func seedSettings(db *sql.DB) error {
 			desc = "Accept syslog forwarded by remote relays over mTLS (Admin > Syslog Relay)"
 		case "relay_central_host":
 			desc = "This server's hostname/IP as reachable from a relay's VLAN, pre-filled into generated relay.conf bundles"
+		case "security_max_failed_attempts":
+			desc = "Max failed login attempts before account lockout (empty = use MAX_FAILED_ATTEMPTS env or default 5)"
+		case "security_lockout_duration_min":
+			desc = "Account lockout duration in minutes (empty = use LOCKOUT_DURATION_MIN env or default 15)"
 		}
 		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
 			return fmt.Errorf("seed setting %s: %w", k, err)
@@ -753,47 +798,58 @@ func getSettingRaw(db *sql.DB, key string) string {
 	return val
 }
 
-// envBoolSettings maps environment variables to the app_settings key they
-// override. Both default to disabled (see seedSettings); an operator can pin
-// either one via env for container/orchestrator-managed deployments.
-var envBoolSettings = map[string]string{
-	"HTTPS_ENABLED":  "https_enabled",
-	"HTTPS_REDIRECT": "https_redirect",
+type envSetting struct {
+	envVar  string
+	key     string
+	def     string
+	isBool  bool
 }
 
-// ApplyEnvSettingOverrides seeds HTTPS settings from environment variables
-// the first time each is ever present, and persists them to app_settings so
-// they show up (and stay visible) in the admin Settings UI. A var is only
-// applied once per key, ever - tracked via a "<key>_env_applied" marker -
-// not on every startup: seedSettings has already given these rows a default
-// value by the time this runs, so re-applying the env var unconditionally
-// on every restart would silently stomp any change an admin made through
-// the UI since. A var is only applied at all when explicitly set to a
-// non-empty value.
+var envSettings = []envSetting{
+	{"HTTPS_ENABLED", "https_enabled", "false", true},
+	{"HTTPS_REDIRECT", "https_redirect", "false", true},
+	{"MAX_FAILED_ATTEMPTS", "security_max_failed_attempts", "5", false},
+	{"LOCKOUT_DURATION_MIN", "security_lockout_duration_min", "15", false},
+	{"SESSION_TIMEOUT_MIN", "session_timeout_min", "15", false},
+}
+
+// ApplyEnvSettingOverrides populates app_settings rows that are still empty
+// with a value from the matching environment variable or the built-in default.
+// Each key is only filled once, tracked via a "<key>_env_applied" marker, so
+// an admin's subsequent UI edits are never silently overwritten on restart.
 func ApplyEnvSettingOverrides(db *sql.DB) {
-	for envVar, key := range envBoolSettings {
-		raw := strings.TrimSpace(os.Getenv(envVar))
-		if raw == "" {
-			continue
-		}
-		appliedMarker := key + "_env_applied"
+	for _, es := range envSettings {
+		raw := strings.TrimSpace(os.Getenv(es.envVar))
+		appliedMarker := es.key + "_env_applied"
 		if GetSetting(db, appliedMarker, "false") == "true" {
 			continue
 		}
-		enabled, err := strconv.ParseBool(raw)
-		if err != nil {
-			slog.Warn("invalid boolean value for env setting override, ignoring", "env", envVar, "value", raw)
+		current := GetSetting(db, es.key, "")
+		if current != "" {
 			continue
 		}
-		value := strconv.FormatBool(enabled)
-		if err := UpdateSetting(db, key, value); err != nil {
-			slog.Warn("failed to apply env setting override", "env", envVar, "key", key, "error", err)
+		value := es.def
+		if raw != "" {
+			if es.isBool {
+				if _, err := strconv.ParseBool(raw); err != nil {
+					slog.Warn("invalid boolean value for env setting override, ignoring", "env", es.envVar, "value", raw)
+					continue
+				}
+			}
+			value = raw
+		}
+		if err := UpdateSetting(db, es.key, value); err != nil {
+			slog.Warn("failed to apply env setting override", "env", es.envVar, "key", es.key, "error", err)
 			continue
 		}
 		if err := UpdateSetting(db, appliedMarker, "true"); err != nil {
-			slog.Warn("failed to record env setting override as applied", "env", envVar, "key", key, "error", err)
+			slog.Warn("failed to record env setting override as applied", "env", es.envVar, "key", es.key, "error", err)
 		}
-		slog.Info("applied setting from environment variable (first run only)", "env", envVar, "key", key, "value", value)
+		src := "default"
+		if raw != "" {
+			src = es.envVar
+		}
+		slog.Info("applied setting from environment variable (first run only)", "env", es.envVar, "key", es.key, "value", value, "source", src)
 	}
 
 	if GetSetting(db, "https_enabled", "false") == "true" {
@@ -910,7 +966,7 @@ func deleteOldLogsBatched(db *sql.DB, retentionDays int) (int64, error) {
 
 	for {
 		result, err := db.Exec(
-			"DELETE FROM syslog_logs WHERE ctid IN (SELECT ctid FROM syslog_logs WHERE timestamp < NOW() - INTERVAL $1 LIMIT $2)",
+			"DELETE FROM syslog_logs WHERE ctid IN (SELECT ctid FROM syslog_logs WHERE timestamp < NOW() - $1::interval LIMIT $2)",
 			fmt.Sprintf("%d days", retentionDays), batchSize,
 		)
 		if err != nil {
@@ -926,16 +982,18 @@ func deleteOldLogsBatched(db *sql.DB, retentionDays int) (int64, error) {
 }
 
 type User struct {
-	ID           int64      `json:"id"`
-	Username     string     `json:"username"`
-	Email        string     `json:"email"`
-	PasswordHash string     `json:"-"`
-	Role         string     `json:"role"`
-	AuthType     string     `json:"auth_type"`
-	IsAdmin      bool       `json:"is_admin"`
-	IsActive     bool       `json:"is_active"`
-	CreatedAt    time.Time  `json:"created_at"`
-	LastLoginAt  *time.Time `json:"last_login_at"`
+	ID                  int64      `json:"id"`
+	Username            string     `json:"username"`
+	Email               string     `json:"email"`
+	PasswordHash        string     `json:"-"`
+	Role                string     `json:"role"`
+	AuthType            string     `json:"auth_type"`
+	IsAdmin             bool       `json:"is_admin"`
+	IsActive            bool       `json:"is_active"`
+	CreatedAt           time.Time  `json:"created_at"`
+	LastLoginAt         *time.Time `json:"last_login_at"`
+	FailedLoginAttempts int        `json:"failed_login_attempts"`
+	LockedUntil         *time.Time `json:"locked_until"`
 }
 
 type AuditLog struct {
@@ -949,7 +1007,7 @@ type AuditLog struct {
 }
 
 func GetAllUsers(db *sql.DB) ([]User, error) {
-	rows, err := db.Query("SELECT id, username, email, role, auth_type, is_admin, is_active, created_at, last_login_at FROM users ORDER BY created_at DESC")
+	rows, err := db.Query("SELECT id, username, email, role, auth_type, is_admin, is_active, created_at, last_login_at, COALESCE(failed_login_attempts, 0), locked_until FROM users ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -958,7 +1016,7 @@ func GetAllUsers(db *sql.DB) ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.AuthType, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.AuthType, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.FailedLoginAttempts, &u.LockedUntil); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -1035,6 +1093,106 @@ func UpdateLastLogin(db *sql.DB, username string) error {
 	return err
 }
 
+// ---- Lockout helpers ----
+
+func CheckUserLockout(db *sql.DB, userID int64) (bool, error) {
+	var locked bool
+	err := db.QueryRow("SELECT COALESCE(locked_until, NOW()) > NOW() FROM users WHERE id = $1", userID).Scan(&locked)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return locked, err
+}
+
+func IncrementFailedLogins(db *sql.DB, userID int64) error {
+	maxFail := maxFailedAttempts(db)
+	lockoutDur := failedLockoutDuration(db)
+	// Only increment failures for users who are NOT currently locked.
+	// For already-locked users, leave both fields untouched so the admin
+	// unlock is not silently overridden by a stray failed login.
+	// When the lockout expires (locked_until < NOW), treat the user as
+	// unlocked: a single new failure can re-lock them if it reaches the threshold.
+	var curFailed int
+	var curLockedUntil sql.NullTime
+	var hasLockout bool
+	err := db.QueryRow("SELECT failed_login_attempts, locked_until, locked_until IS NOT NULL FROM users WHERE id = $1", userID).Scan(&curFailed, &curLockedUntil, &hasLockout)
+	if err != nil {
+		return err
+	}
+	// Skip if actively locked
+	if hasLockout && curLockedUntil.Valid && curLockedUntil.Time.After(time.Now()) {
+		return nil
+	}
+	newFailed := curFailed + 1
+	if newFailed >= maxFail {
+		_, err = db.Exec("UPDATE users SET failed_login_attempts = $2, locked_until = NOW() + $3::interval WHERE id = $1", userID, newFailed, fmt.Sprintf("%d minutes", int(lockoutDur.Minutes())))
+	} else {
+		_, err = db.Exec("UPDATE users SET failed_login_attempts = $2, locked_until = NULL WHERE id = $1", userID, newFailed)
+	}
+	return err
+}
+
+func ResetFailedLogins(db *sql.DB, userID int64) error {
+	_, err := db.Exec("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1", userID)
+	return err
+}
+
+func UnlockUser(db *sql.DB, userID int64) error {
+	return ResetFailedLogins(db, userID)
+}
+
+func maxFailedAttempts(db *sql.DB) int {
+	s := GetSetting(db, "security_max_failed_attempts", "")
+	if s == "" {
+		s = os.Getenv("MAX_FAILED_ATTEMPTS")
+	}
+	if s == "" {
+		return 5
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 5
+	}
+	return n
+}
+
+func failedLockoutDuration(db *sql.DB) time.Duration {
+	s := GetSetting(db, "security_lockout_duration_min", "")
+	if s == "" {
+		s = os.Getenv("LOCKOUT_DURATION_MIN")
+	}
+	if s == "" {
+		return 15 * time.Minute
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 15 * time.Minute
+	}
+	return time.Duration(n) * time.Minute
+}
+
+// ---- JWT Blacklist helpers ----
+
+func BlacklistJTI(db *sql.DB, jti string) error {
+	_, err := db.Exec("INSERT INTO jwt_blacklist (jti) VALUES ($1) ON CONFLICT DO NOTHING", jti)
+	return err
+}
+
+func IsJTIBlacklisted(db *sql.DB, jti string) (bool, error) {
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM jwt_blacklist WHERE jti = $1)", jti).Scan(&exists)
+	return exists, err
+}
+
+func CleanupExpiredBlacklist(db *sql.DB) error {
+	ttl := os.Getenv("JWT_BLACKLIST_TTL")
+	if ttl == "" {
+		ttl = "7 days"
+	}
+	_, err := db.Exec("DELETE FROM jwt_blacklist WHERE blacklisted_at < NOW() - $1::interval", ttl)
+	return err
+}
+
 func GetUserByUsername(db *sql.DB, username string) (*User, error) {
 	var u User
 	err := db.QueryRow(
@@ -1045,6 +1203,24 @@ func GetUserByUsername(db *sql.DB, username string) (*User, error) {
 		return nil, err
 	}
 	return &u, nil
+}
+
+func GetUserByID(db *sql.DB, id int64) (*User, error) {
+	var u User
+	err := db.QueryRow(
+		"SELECT id, username, email, password_hash, role, is_admin, is_active, created_at, last_login_at FROM users WHERE id = $1",
+		id,
+	).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func IsUserAdmin(db *sql.DB, userID int64) bool {
+	var isAdmin bool
+	err := db.QueryRow("SELECT is_admin FROM users WHERE id = $1", userID).Scan(&isAdmin)
+	return err == nil && isAdmin
 }
 
 func RefreshMaterializedViews(db *sql.DB) {
@@ -1059,13 +1235,77 @@ func RefreshMaterializedViews(db *sql.DB) {
 	slog.Info("materialized views refreshed")
 }
 
-func StartMVRefreshLoop(db *sql.DB, interval time.Duration) {
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for range ticker.C {
-			RefreshMaterializedViews(db)
+type AuditLogFilter struct {
+	Username string
+	Action   string
+	From     string
+	To       string
+	Limit    int
+	Offset   int
+}
+
+func GetAuditLogs(db *sql.DB, filter AuditLogFilter) ([]AuditLog, int64, error) {
+	whereConditions := []string{}
+	args := []interface{}{}
+	argIdx := 1
+
+	if filter.Username != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("username ILIKE $%s", argIdx))
+		args = append(args, "%"+filter.Username+"%")
+		argIdx++
+	}
+	if filter.Action != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("action = $%s", argIdx))
+		args = append(args, filter.Action)
+		argIdx++
+	}
+	if filter.From != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("created_at >= $%s", argIdx))
+		args = append(args, filter.From)
+		argIdx++
+	}
+	if filter.To != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("created_at <= $%s", argIdx))
+		args = append(args, filter.To)
+		argIdx++
+	}
+
+	whereClause := ""
+	if len(whereConditions) > 0 {
+		whereClause = "WHERE " + strings.Join(whereConditions, " AND ")
+	}
+
+	countArgs := make([]interface{}, len(args))
+	copy(countArgs, args)
+	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM audit_log %s", whereClause)
+	var total int64
+	if err := db.QueryRow(countSQL, countArgs...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	queryArgs := make([]interface{}, len(args)+2)
+	copy(queryArgs, args)
+	queryArgs[len(args)] = filter.Limit
+	queryArgs[len(args)+1] = filter.Offset
+	querySQL := fmt.Sprintf(
+		"SELECT id, user_id, username, action, ip, details, created_at FROM audit_log %s ORDER BY created_at DESC LIMIT $%d OFFSET $%d",
+		whereClause, argIdx, argIdx+1,
+	)
+
+	rows, err := db.Query(querySQL, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var logs []AuditLog
+	for rows.Next() {
+		var a AuditLog
+		if err := rows.Scan(&a.ID, &a.UserID, &a.Username, &a.Action, &a.IP, &a.Details, &a.CreatedAt); err != nil {
+			continue
 		}
-	}()
-	slog.Info("materialized view refresh loop started", "interval", interval)
+		logs = append(logs, a)
+	}
+
+	return logs, total, rows.Err()
 }

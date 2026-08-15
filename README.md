@@ -1,27 +1,45 @@
-# Syslytics
+<p align="center">
+  <img src="frontend/public/icons/icon-192.png" alt="Syslytics logo" width="120" />
+</p>
 
-Web-based syslog monitoring, parsing, and visualization platform with Docker Compose deployment.
+<h1 align="center">Syslytics 📡</h1>
+
+<p align="center">
+
+[![License: AGPL-3.0 with Commons Clause](https://img.shields.io/badge/License-AGPL--3.0%20%2B%20Commons%20Clause-blue.svg)](LICENSE)
+![GitHub stars](https://img.shields.io/github/stars/dom133/Syslytics?style=social)
+![GitHub forks](https://img.shields.io/github/forks/dom133/Syslytics?style=social)
+![GitHub repo size](https://img.shields.io/github/repo-size/dom133/Syslytics)
+![GitHub top language](https://img.shields.io/github/languages/top/dom133/Syslytics)
+![GitHub last commit](https://img.shields.io/github/last-commit/dom133/Syslytics?color=red)
+
+</p>
+
+**Syslytics is a self-hosted, [Docker Compose](#quick-start-single-server)-deployed platform for ingesting, parsing, and visualizing syslog data** — a live log viewer, a regex-based parser engine for structuring raw messages, custom dashboards, alerting, and an admin panel, all behind JWT auth with no external dependencies.
 
 ## Architecture
 
 ```
-┌──────────┐     ┌──────────┐     ┌──────────┐
-│  Client   │────▶│ Nginx    │────▶│ Go API   │
-│  (Browser)│     │  (:80)   │     │  (:8080) │
-└──────────┘     └──────────┘     └────┬─────┘
-                                       │
-                    ┌──────────┐       │       ┌──────────────┐
-                    │ rsyslog  │       │       │   PostgreSQL   │
-                    │  (:514)  │───────┘       │    (:5432)     │
-                    └──────────┘               └──────────────┘
+Client (browser) ──HTTP/HTTPS 80/443──▶ Nginx ──proxy──▶ Go API (:8080) ──SQL──▶ PostgreSQL (:5432)
+                                                              ▲
+                                                              │ tails logs.jsonl
+Devices/senders ──syslog tcp/udp 514──▶ rsyslog ─────────────┘
+                                            ▲
+                                            │ mTLS 6514 (optional - see "Syslog Relay")
+                                     Remote syslog relay(s)
+
+docker-proxy (read-only Docker Engine API sidecar, internal-only) ◀── queried by Go API for Admin > Health
 ```
 
-| Service | Port | Description |
-|---------|------|-------------|
-| Frontend | 80 | React SPA served via Nginx |
-| API | 8080 | Gin REST API with JWT auth |
-| rsyslog | 514 (TCP/UDP) | Syslog ingestion daemon |
+`rsyslog` and the Go API don't talk to each other directly - `rsyslog` writes ingested logs as JSON lines to a shared file (`logs.jsonl` on the `log_data` volume), and the API's file tailer (`backend/tailer/`) reads and parses that file, then persists parsed entries to PostgreSQL.
+
+| Service | Port(s) | Description |
+|---------|---------|-------------|
+| Frontend | 80 (443 if HTTPS is enabled, see Admin > Settings) | React SPA served via Nginx |
+| API | 8080 | Gin REST API with JWT auth; tails rsyslog's JSONL output into PostgreSQL |
+| rsyslog | 514 (TCP/UDP); 6514 (mTLS, optional relay ingestion - see [Syslog Relay](#syslog-relay-optional-multi-vlan)) | Syslog ingestion daemon |
 | PostgreSQL | 5432 | Persistent log storage |
+| docker-proxy | *(internal only, not published to the host)* | Read-only Docker Engine API sidecar backing [Health Monitoring](#health-monitoring) |
 
 ## Quick Start (Single Server)
 
@@ -53,12 +71,13 @@ sudo ufw allow 514/tcp
 sudo ufw allow 514/udp
 ```
 
-`8080/tcp` (the API) is also published by `docker-compose.yml`, but only needed if you want to hit the API directly instead of through nginx on 80/443 — leave it firewalled off unless you have a specific reason to open it.
+> [!NOTE]
+> `8080/tcp` (the API) is also published by `docker-compose.yml`, but only needed if you want to hit the API directly instead of through nginx on 80/443 — leave it firewalled off unless you have a specific reason to open it.
 
 ### 3. Clone the repo and configure
 
 ```bash
-git clone https://gitlab.dom133.xyz/dominik.kruszewski/syslog_gui.git
+git clone https://github.com/dom133/Syslytics.git
 cd syslog_gui
 cp .env.example .env
 ```
@@ -66,8 +85,6 @@ cp .env.example .env
 Edit `.env` and set at least these before going anywhere near production — the defaults in `.env.example` are placeholders, not secrets:
 - `POSTGRES_PASSWORD`
 - `JWT_SECRET` (e.g. `openssl rand -base64 48`)
-- `ADMIN_PASSWORD` — not actually used to create the account (see step 5), but still worth setting since it's passed to the container regardless
-- `TZ` if `Europe/Warsaw` isn't your timezone
 
 ### 4. Start it
 
@@ -232,7 +249,7 @@ Pick one manager (`pg1` here) as your "control" node — everywhere below that s
 
 ```bash
 ssh pg1
-git clone https://gitlab.dom133.xyz/dominik.kruszewski/syslog_gui.git
+git clone https://github.com/dom133/Syslytics.git
 cd syslog_gui
 
 export REGISTRY=registry.example.com/syslytics TAG=v1
@@ -333,7 +350,6 @@ Still on `pg1` (or wherever you're driving `docker stack deploy` from), export t
 export REGISTRY=registry.example.com/syslytics TAG=v1
 export NFS_SERVER=10.0.0.30
 export JWT_SECRET=$(openssl rand -base64 48)
-export ADMIN_PASSWORD=$(openssl rand -base64 16)
 export POSTGRES_PASSWORD="$PG_APP_PASS"      # from step 7
 export REDIS_PASSWORD="$REDIS_PASS"          # from step 7
 
@@ -369,6 +385,108 @@ Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizar
 - Kill the edge node currently holding the VIP → keepalived should fail over in 1-3s; confirm with `ip addr` on the new holder and by sending a test syslog message during the cutover.
 - Send syslog messages throughout each test and confirm no duplicates or gaps in the logs table, and that `/admin/slow-queries` and dashboard stats look the same regardless of which `api` replica answers the request.
 
+### Updating images (rolling update)
+
+When you change code, config, or dependencies, rebuild your images, push them under a **new tag**, then re-deploy each stack so Swarm performs a rolling update (no downtime if done in the right order).
+
+#### 1. Build and push new images
+
+```bash
+ssh pg1
+cd syslog_gui
+git pull   # or switch to the branch/commit you want
+
+export REGISTRY=registry.example.com/syslytics TAG=v2   # <-- bump the tag
+
+docker build -f Dockerfile.backend   -t $REGISTRY/syslytics-api:$TAG .
+docker build -f Dockerfile.rsyslog   -t $REGISTRY/syslytics-rsyslog:$TAG .
+docker build -f Dockerfile.frontend  -t $REGISTRY/syslytics-frontend:$TAG .
+docker build -f Dockerfile.patroni   -t $REGISTRY/syslytics-patroni:$TAG .
+docker push $REGISTRY/syslytics-api:$TAG
+docker push $REGISTRY/syslytics-rsyslog:$TAG
+docker push $REGISTRY/syslytics-frontend:$TAG
+docker push $REGISTRY/syslytics-patroni:$TAG
+```
+
+#### 2. Re-deploy stacks (rolling update)
+
+Deploy in this order so that data-tier services are current before the app tier connects to them:
+
+```bash
+# Postgres + etcd (uses stop-first: old task stops before new one starts)
+docker stack deploy \
+  --resolve-image always \
+  --with-registry-auth \
+  -c docker-stack.postgres.yml syslog-pg
+
+# Redis + Sentinel (stop-first default)
+docker stack deploy \
+  --resolve-image always \
+  --with-registry-auth \
+  -c docker-stack.redis.yml syslog-redis
+
+# App tier: api/frontend (start-first) + rsyslog (global)
+docker stack deploy \
+  --resolve-image always \
+  --with-registry-auth \
+  -c docker-stack.app.yml syslog-app
+```
+
+`--resolve-image always` forces every node to pull the latest image from the registry before starting the new task. Without it, Swarm reuses the locally cached image and your update silently does nothing.
+
+#### 3. Force an update (config/secret changes)
+
+If you only changed a Swarm secret, config, or environment variable (not the image itself), re-deploy with `--force` to trigger a rolling restart:
+
+```bash
+docker service update --force syslog-app_api
+docker service update --force syslog-app_frontend
+docker service update --force syslog-app_rsyslog
+```
+
+Or re-deploy the whole stack with both flags:
+
+```bash
+docker stack deploy --resolve-image always --with-registry-auth -c docker-stack.app.yml syslog-app
+```
+
+#### 4. Watch the rollout
+
+```bash
+watch docker service ls          # services move from "old/NEW" to "NEW/NEW" as tasks converge
+docker service ps syslog-app_api # per-task status — look for "Running" replacing the old slot
+docker service logs -f syslog-app_api   # follow logs during the update
+```
+
+Each stack's `update_config` controls the pace:
+
+| Stack | Policy | Meaning |
+|-------|--------|---------|
+| `syslog-pg` (postgres1/2/3) | `stop-first` | Old Patroni node stops, new one starts — Patroni re-elects leader on the new task |
+| `syslog-redis` (redis/sentinel) | default | One-by-one rolling restart; Sentinel quorum stays intact |
+| `syslog-app` (api/frontend) | `start-first`, parallelism 1 | New replica starts and becomes healthy before the old one is removed — zero-downtime |
+| `syslog-app` (rsyslog) | `mode: global` | Updates every `edge=true` node one at a time; only the VIP-holder receives traffic |
+
+#### 5. Roll back if something went wrong
+
+If a new image breaks, revert to the previous tag:
+
+```bash
+export TAG=v1   # previous working tag
+
+docker stack deploy \
+  --resolve-image always \
+  --with-registry-auth \
+  -c docker-stack.app.yml syslog-app
+```
+
+Swarm rolls back each replica in the same rolling fashion. For a faster emergency rollback, drain the affected node:
+
+```bash
+docker node drain app1
+```
+This forces all tasks on `app1` to reschedule onto other `app=true` nodes, giving you time to fix the image.
+
 ## Syslog Relay (Optional, Multi-VLAN)
 
 Lets one or more small, standalone rsyslog hosts sit in VLANs that don't route directly to the central server, collect syslog from local devices, and forward it over an authenticated, encrypted channel (mTLS on port 6514) to this server's normal ingestion pipeline. The central server keeps accepting direct syslog on 514 from its own VLAN exactly as in the Quick Start — relays are additive, not a replacement, and any number of them can point at the same central server. This works the same whether the central side is a single server (`docker-compose.yml`) or the [High Availability](#high-availability-deployment-multi-node-optional) multi-node stack above.
@@ -387,13 +505,17 @@ Each relay reuses the same JSON conversion the central server already does local
 
 ### How it's secured
 
-- **mTLS**: the central server runs its own internal CA (generated automatically the first time you use this feature — see `backend/relaypki`). Every relay gets a client certificate signed by that CA; the central listener rejects any connection without a valid one.
+- **mTLS**: the central server runs its own internal CA (generated automatically the first time you use this feature — see `backend/relaypki`). The CA uses RSA 4096-bit keys. Every relay gets a client certificate signed by that CA; the central listener rejects any connection without a valid one.
 - **IP whitelist**: a valid certificate alone isn't enough — the peer's IP must also be on the whitelist (Admin > Syslog Relay > Whitelist IP). Together these mean only a relay you've explicitly approved, from an IP you've explicitly approved, gets in.
-- **Revocation is a real, immediate cutoff** — there's no X.509 CRL/OCSP at the TLS layer (a revoked certificate's private key is still, on its own, perfectly capable of completing a handshake), so instead the allow-list itself is certificate-aware: `allowed-relays.conf` only ever admits an IP whose *currently linked* certificate is "issued". Revoking one (Admin > Syslog Relay > Certificates > Revoke) regenerates that file without the entry's IP and reloads rsyslog, so the relay is shut out on the next connection attempt — not just marked revoked in the database.
+- **Revocation is a real, immediate cutoff** — there's no X.509 CRL/OCSP at the TLS layer, so instead every relay certificate gets a CommonName unique to that one issuance (`label#serial`, see `backend/relaypki`), and the mTLS listener's `StreamDriver.AuthMode="x509/name"` only accepts a handshake whose CommonName is in the current `PermittedPeer` list — regenerated, alongside the IP allow-list, in the very same `allowed-relays.conf` every time a certificate is issued or revoked. Revoking one (Admin > Syslog Relay > Certificates > Revoke), or replacing it via Regenerate/Renew, drops its exact CommonName from that list, so the *old* key specifically stops working — not just "some cert signed by our CA" — even though it's still cryptographically valid and unexpired.
+  - Applying this needs a real `rsyslogd` restart, not just a config nudge: rsyslog has no lightweight reload (`SIGHUP` only reopens output files), so `entrypoint.sh` runs `rsyslogd` as a supervised child and the reload sidecar kills just that child to force a restart against the regenerated config. This briefly interrupts ingestion on **both** 514 and 6514 (one process serves both), every time a relay whitelist/certificate change is applied.
   - The whitelist entry itself is left in place either way, now shown as **Blocked** on the Whitelist IP tab, rather than deleted — generate a replacement certificate for it (from either tab) to restore access.
   - Removing an IP from the **whitelist** entirely (Whitelist IP > delete) also revokes its certificate, since a device that's no longer allowed in shouldn't leave an "issued" certificate lying around either.
-  - The old, revoked certificate row is always kept for the audit trail — "Regenerate" on a revoked row issues a fresh certificate for the same entry without deleting its history.
-- The private key for a relay's certificate is generated on the server but **never stored** there — it's handed to you exactly once, in the `.tar.gz` bundle the browser downloads when you generate it. If you lose it, revoke (or regenerate from) that certificate; there's no way to re-download the old key.
+  - The old, revoked certificate row is always kept for the audit trail — "Regenerate" on a revoked row issues a fresh certificate (with its own fresh CommonName) for the same entry without deleting its history.
+- The private key for a relay's certificate is generated on the server but never stored there — see the warning below.
+
+> [!WARNING]
+> A relay's private key is handed to you **exactly once**, in the `.tar.gz` bundle the browser downloads when you generate its certificate — save it now. If you lose it, there's no way to re-download the old key; you'll need to revoke (or regenerate from) that certificate instead.
 
 ### Certificate expiry, renewal, and CA rotation
 
@@ -441,20 +563,91 @@ A [relay](#syslog-relay-optional-multi-vlan) isn't on `syslog_net` and isn't rea
 
 ## Features
 
-- **Live Log Viewer** �?" Browse, filter, and search ingested syslog messages in real-time
-- **Parser Engine** �?" Define regex-based parsers to extract structured fields from raw log lines
-- **Custom Dashboards** �?" Create dashboards filtered by device, severity, or parsed fields
-- **Pin Dashboards** �?" Pin frequently-used dashboards to the sidebar for quick access
-- **Export** �?" Download logs as CSV or HTML reports
-- **Statistics** �?" Timeline charts, severity breakdown, and per-device metrics
-- **Secure Authentication** �?" JWT access tokens (15 min) + refresh tokens (7 days) with rotation
-- **LDAP/AD Integration** �?" Authenticate against Active Directory or OpenLDAP with TLS support
-- **Audit Logging** �?" Track login attempts, password changes, and admin actions
-- **Rate Limiting** �?" Login endpoint protected against brute-force attacks
-- **CORS Protection** �?" Configurable allowed origins
-- **Setup Wizard** �?" Guided initial configuration with admin account, database, security keys, and optional LDAP/CORS
-- **Admin Panel** �?" User management, settings, audit log viewer, LDAP connection test
-- **Health Monitoring** �?" Container/Swarm service status and syslog relay liveness in one place (see [Health Monitoring](#health-monitoring))
+- 📜 **Live Log Viewer** — Browse, filter, and search ingested syslog messages in real-time
+- 🧩 **Parser Engine** — Define regex-based parsers to extract structured fields from raw log lines
+- 📊 **Custom Dashboards** — Create dashboards filtered by device, severity, or parsed fields
+- 📌 **Pin Dashboards** — Pin frequently-used dashboards to the sidebar for quick access
+- 📤 **Export** — Download logs as CSV or HTML reports
+- 📈 **Statistics** — Timeline charts, severity breakdown, and per-device metrics
+- 🔐 **Secure Authentication** — JWT access tokens (configurable timeout) + refresh tokens (7 days) with rotation, JWT blacklisting on logout
+- 🔒 **Account Lockout** — Automatic lockout after configurable failed login attempts, admin unlock from Admin panel
+- 🛡️ **CSRF Protection** — Double-submit cookie pattern on all mutating endpoints
+- 🪪 **LDAP/AD Integration** — Authenticate against Active Directory or OpenLDAP with TLS support
+- 📝 **Audit Logging** — Track login attempts, lockouts, unlocks, password changes, and admin actions
+- ⏱️ **Rate Limiting** — Login endpoint protected against brute-force attacks (Redis-shared in HA mode)
+- 🌐 **CORS Protection** — Configurable allowed origins
+- 🧙 **Setup Wizard** — Guided initial configuration with admin account, database, security keys, and optional LDAP/CORS
+- 🛠️ **Admin Panel** — User management, settings, audit log viewer, LDAP connection test
+- 🩺 **Health Monitoring** — Container/Swarm service status and syslog relay liveness in one place (see [Health Monitoring](#health-monitoring))
+
+## GUI Configuration Guide
+
+### Admin Settings
+Navigate to **Admin > Settings** to configure application-wide options organized by category:
+
+- **General**:
+  - **Log Retention (days)**: How long logs are kept before automatic deletion (1–3650 days).
+  - **Session Timeout (minutes)**: Maximum session inactivity before tokens expire (1–10080 minutes, default 15).
+- **Security**:
+  - **Max Failed Login Attempts**: Number of failed login attempts before account lockout (1–100). Leave empty to use `MAX_FAILED_ATTEMPTS` env var or default (5).
+  - **Lockout Duration (minutes)**: How long an account stays locked after reaching max failed attempts (1–1440 minutes). Leave empty to use `LOCKOUT_DURATION_MIN` env var or default (15).
+- **CORS**:
+  - **Allowed CORS Origins**: Comma-separated list of origins allowed to call the API from a browser. Leave empty to only allow the origin the app is served from.
+- **HTTPS**:
+  - **Enable HTTPS**: Toggle to enable TLS termination on the API server.
+  - **Redirect HTTP to HTTPS**: Force all HTTP traffic to HTTPS.
+  - **Upload Certificate/Key**: Upload PEM-formatted certificate and private key files.
+
+### Alerts
+Navigate to the **Alerts** tab to create and manage alert rules. Alerts monitor incoming logs and notify you when specific conditions are met.
+
+- **Rule Types**: Choose from predefined alert types:
+  - `log_threshold`: Triggers when a specific field value exceeds a threshold.
+  - `device_silence`: Triggers when a device stops sending logs for a configured period.
+  - `config_change`: Triggers when a configuration change is detected in logs.
+  - `relay_cert_expiring`: Triggers when a syslog relay certificate is nearing expiration.
+- **Conditions**: Define the matching criteria using:
+  - **Field**: The log field to monitor (e.g., `severity`, `parsed_status`, `device`).
+  - **Operator**: Comparison method (`equals`, `contains`, `gt`, `lt`, `regex`).
+  - **Value**: The value to compare against.
+- **Cooling Period**: Set the cooldown duration (default 3600 seconds) to prevent alert fatigue.
+- **Notification Channels**: Assign one or more channels to deliver alerts:
+  - `email`, `webhook`, `slack`, `teams`, `in_app`, `push`.
+- **Testing & History**: Use the "Test Channel" button to verify connectivity. View past alerts and their resolution status in the history panel.
+
+### Parsers
+The **Parsers** tab allows you to extract structured data from raw syslog messages using regex patterns.
+
+- **Create Parser**: Click "Create Parser" to define a new rule.
+  - **Name & Description**: Identify the parser purpose.
+  - **Device Type**: Classify the source (e.g., `mikrotik`, `ubiquiti`, `cisco`).
+  - **Match Type**: Determine how logs are matched:
+    - `hostname`: Match based on the log hostname.
+    - `app_name`: Match based on the application name.
+    - `message`: Match against the full message content.
+    - `all`: Apply to all incoming logs.
+  - **Match Value**: The pattern to match (when not using `message`).
+  - **Regex**: Enter a regex with named groups (e.g., `(?P<ip>\d+\.\d+\.\d+\.\d+)`) to extract fields.
+  - **Fields**: Define each extracted field's `Name`, `Label`, and `Type` (`string`, `number`, `ip`, `datetime`).
+- **Test Parser**: Paste a sample log line into the test modal to verify your regex extracts fields correctly.
+- **Management**: Enable/disable parsers, clone existing ones, or trigger a "Reparse" to apply changes to historical unparsed logs.
+
+### Dashboards
+The **Dashboards** tab provides customizable views of your log data.
+
+- **Create/Edit Dashboard**: Set a `Name`, `Description`, and `Visibility` (`private` or `public`).
+- **Pin to Favorites**: Pin frequently used dashboards to the sidebar for instant access.
+- **Filters**: Narrow down data using:
+  - **Devices**: Select specific devices or groups.
+  - **Severities**: Filter by log level (e.g., Error, Warning, Info).
+  - **Parsed Fields**: Filter by extracted field values.
+  - **Date Range**: Set a custom time window for analysis.
+- **Data Views**: 
+  - **Log Table**: Real-time paginated log entries with sortable columns.
+  - **Statistics**: Cards showing log counts, severity distribution, and device metrics.
+  - **Charts**: Visualize trends over time.
+- **Export**: Download dashboard data as CSV or generate HTML reports.
+- **Customization**: Adjust visible columns and sort order; settings are saved to your profile.
 
 ## Parser Creation Guide
 
@@ -636,19 +829,25 @@ POST /api/parsers/test
 │   └── vite.config.ts
 └── rsyslog/
     ├── syslog.conf            # rsyslog template + output config, incl. the mTLS relay listener
-    ├── entrypoint.sh           # Generates a placeholder relay CA/cert if missing, starts the reload sidecar
-    └── reload-sidecar/         # HTTP sidecar that HUPs rsyslogd on relay config changes
+    ├── entrypoint.sh           # Generates a placeholder relay CA/cert if missing, supervises + restarts rsyslogd
+    └── reload-sidecar/         # HTTP sidecar that restarts rsyslogd on relay config changes (SIGHUP can't reload config)
 ```
 
 ## Security
 
-- **JWT Access Tokens** — Short-lived (15 minutes), HS256 signed
-- **Refresh Tokens** — 7-day expiry with rotation; invalidated on logout
+- **JWT Access Tokens** — Short-lived (configurable via `session_timeout_min` setting, default 15 minutes), HS256 signed
+- **Refresh Tokens** — 7-day expiry with rotation; all of a user's tokens invalidated on logout via bulk `used = true`
+- **JWT Blacklisting** — Access token JTI inserted into `jwt_blacklist` table on logout, checked on every request
+- **CSRF Protection** — Double-submit cookie pattern: `csrf_token` cookie (SameSite=Strict) must match `X-CSRF-Token` header on all non-GET requests
+- **Account Lockout** — After N failed login attempts (configurable via `security_max_failed_attempts`, default 5), the account is locked for a configurable duration (`security_lockout_duration_min`, default 15 minutes)
+- **Admin Unlock** — Administrators can manually unlock any locked user from Admin > Users
+- **Inactive Session Expiry** — Background job marks refresh tokens as used when inactive for longer than `session_timeout_min` (default 15 minutes)
 - **Timing-Safe Comparison** — Constant-time password verification prevents timing attacks
 - **bcrypt** — Password hashing with cost factor 14
-- **Rate Limiting** — In-memory rate limiter on login endpoint
+- **Rate Limiting** — Lua-backed sliding-window rate limiter on login endpoint (Redis-shared in HA mode, in-memory fallback)
+- **Cookie Security** — `Secure` flag respects `X-Forwarded-Proto` header, allowing correct behavior behind HTTP reverse proxies
 - **CORS** — Configurable allowed origins; disabled by default
-- **Audit Log** — All authentication events and admin actions recorded
+- **Audit Log** — All authentication events, lockouts, unlocks, and admin actions recorded
 - **Sensitive Data Masking** — JWT secret, encryption key, and LDAP password masked in API responses
 - **Certificate Verification** — LDAP TLS connections verify server certificates by default
 
@@ -691,6 +890,24 @@ Parsers can be created through the web interface or API with the following requi
 - **Regular Expression**: Named capture groups that define extracted fields
 - **Fields Configuration**: Define labels and data types for extracted fields
 
-## License
+## License 📜
 
-MIT
+[GNU Affero General Public License v3.0](LICENSE) with the [Commons Clause](https://commonsclause.com/) license condition. You're free to use, modify, self-host, and redistribute this software (source must stay available, per AGPL) — the Commons Clause only prohibits selling the software itself, or offering it as a paid product/service, without a separate commercial license from the copyright holder.
+
+## Support 💬
+
+Questions, bug reports, or feature requests? [Open an issue](https://github.com/dom133/Syslytics/issues) on GitHub.
+
+## Star History
+
+<a href="https://star-history.com/#dom133/Syslytics&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=dom133/Syslytics&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=dom133/Syslytics&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=dom133/Syslytics&type=Date" />
+  </picture>
+</a>
+
+---
+
+Created by [Dominik Kruszewski](https://github.com/dom133)

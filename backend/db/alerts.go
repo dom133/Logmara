@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -481,18 +482,21 @@ func DecryptChannelSecret(database *sql.DB, id int64) (string, error) {
 // ---- Notification log ----
 
 func LogNotification(db *sql.DB, entry model.NotificationLogEntry) error {
-	var triggerLog, matchedConditions []byte
+	var triggerLog, auditLogRef, matchedConditions []byte
 	if entry.TriggerLog != nil {
 		triggerLog, _ = json.Marshal(entry.TriggerLog)
+	}
+	if entry.AuditLogRef != nil {
+		auditLogRef, _ = json.Marshal(entry.AuditLogRef)
 	}
 	if len(entry.MatchedConditions) > 0 {
 		matchedConditions, _ = json.Marshal(entry.MatchedConditions)
 	}
 	_, err := db.Exec(
-		`INSERT INTO notification_log (alert_id, alert_name, firing_id, channel_id, channel_name, channel_type, status, detail, trigger_log, matched_conditions, in_app_notification_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		`INSERT INTO notification_log (alert_id, alert_name, firing_id, channel_id, channel_name, channel_type, status, detail, trigger_log, audit_log_ref, matched_conditions, in_app_notification_id, rule_type)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		entry.AlertID, entry.AlertName, nullableString(entry.FiringID), entry.ChannelID, entry.ChannelName, entry.ChannelType, entry.Status, entry.Detail,
-		nullableJSON(triggerLog), nullableJSON(matchedConditions), entry.InAppNotificationID,
+		nullableJSON(triggerLog), nullableJSON(auditLogRef), nullableJSON(matchedConditions), entry.InAppNotificationID, entry.RuleType,
 	)
 	return err
 }
@@ -519,7 +523,7 @@ func GetNotificationHistory(db *sql.DB, limit int) ([]model.NotificationLogEntry
 		limit = 100
 	}
 	rows, err := db.Query(
-		`SELECT id, alert_id, alert_name, firing_id, channel_id, channel_name, channel_type, status, detail, trigger_log, matched_conditions, in_app_notification_id, created_at
+		`SELECT id, alert_id, alert_name, firing_id, channel_id, channel_name, channel_type, status, detail, trigger_log, audit_log_ref, matched_conditions, in_app_notification_id, rule_type, created_at
 		 FROM notification_log ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list notification history: %w", err)
@@ -530,14 +534,17 @@ func GetNotificationHistory(db *sql.DB, limit int) ([]model.NotificationLogEntry
 	for rows.Next() {
 		var e model.NotificationLogEntry
 		var detail, firingID sql.NullString
-		var triggerLog, matchedConditions []byte
-		if err := rows.Scan(&e.ID, &e.AlertID, &e.AlertName, &firingID, &e.ChannelID, &e.ChannelName, &e.ChannelType, &e.Status, &detail, &triggerLog, &matchedConditions, &e.InAppNotificationID, &e.CreatedAt); err != nil {
+		var triggerLog, auditLogRef, matchedConditions []byte
+		if err := rows.Scan(&e.ID, &e.AlertID, &e.AlertName, &firingID, &e.ChannelID, &e.ChannelName, &e.ChannelType, &e.Status, &detail, &triggerLog, &auditLogRef, &matchedConditions, &e.InAppNotificationID, &e.RuleType, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan notification history entry: %w", err)
 		}
 		e.Detail = detail.String
 		e.FiringID = firingID.String
 		if len(triggerLog) > 0 {
 			_ = json.Unmarshal(triggerLog, &e.TriggerLog)
+		}
+		if len(auditLogRef) > 0 {
+			_ = json.Unmarshal(auditLogRef, &e.AuditLogRef)
 		}
 		if len(matchedConditions) > 0 {
 			_ = json.Unmarshal(matchedConditions, &e.MatchedConditions)
@@ -559,23 +566,35 @@ func ClearNotificationHistory(db *sql.DB) error {
 // real value, not time.Now() from the app server, so the copy fanned out
 // over SSE shows the same timestamp GetInAppNotifications later returns for
 // the same row.
-func CreateInAppNotification(db *sql.DB, alertID *int64, title, message, severity string) (int64, time.Time, error) {
+func CreateInAppNotification(db *sql.DB, alertID *int64, title, message, severity, alertRuleType string, targetUserIds []int64) (int64, time.Time, error) {
 	var id int64
 	var createdAt time.Time
+	var arrPtr interface{}
+	if len(targetUserIds) > 0 {
+		parts := make([]string, len(targetUserIds))
+		for i, uid := range targetUserIds {
+			parts[i] = fmt.Sprintf("%d", uid)
+		}
+		arrPtr = "{" + strings.Join(parts, ",") + "}"
+	}
 	err := db.QueryRow(
-		`INSERT INTO in_app_notifications (alert_id, title, message, severity) VALUES ($1, $2, $3, $4) RETURNING id, created_at`,
-		alertID, title, message, severity,
+		`INSERT INTO in_app_notifications (alert_id, title, message, severity, alert_rule_type, target_user_ids) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at`,
+		alertID, title, message, severity, alertRuleType, arrPtr,
 	).Scan(&id, &createdAt)
 	return id, createdAt, err
 }
 
-func GetInAppNotifications(db *sql.DB, sinceID int64, limit int) ([]model.InAppNotification, error) {
+func GetInAppNotifications(db *sql.DB, sinceID int64, limit int, isAdmin bool, userID int64) ([]model.InAppNotification, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := db.Query(
-		`SELECT id, alert_id, title, message, severity, created_at FROM in_app_notifications
-		 WHERE id > $1 ORDER BY id DESC LIMIT $2`, sinceID, limit)
+	query := `SELECT id, alert_id, title, message, severity, alert_rule_type, target_user_ids, created_at FROM in_app_notifications
+		WHERE id > $1 AND (target_user_ids IS NULL OR $3 = ANY(target_user_ids))`
+	if !isAdmin {
+		query += ` AND alert_rule_type NOT IN ('audit_log', 'relay_cert_expiring')`
+	}
+	query += ` ORDER BY id DESC LIMIT $2`
+	rows, err := db.Query(query, sinceID, limit, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list in-app notifications: %w", err)
 	}
@@ -584,22 +603,28 @@ func GetInAppNotifications(db *sql.DB, sinceID int64, limit int) ([]model.InAppN
 	var items []model.InAppNotification
 	for rows.Next() {
 		var n model.InAppNotification
-		if err := rows.Scan(&n.ID, &n.AlertID, &n.Title, &n.Message, &n.Severity, &n.CreatedAt); err != nil {
+		var arr pq.Int64Array
+		if err := rows.Scan(&n.ID, &n.AlertID, &n.Title, &n.Message, &n.Severity, &n.AlertRuleType, &arr, &n.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan in-app notification: %w", err)
 		}
+		n.TargetUserIds = []int64(arr)
 		items = append(items, n)
 	}
 	return items, nil
 }
 
-func GetUnreadNotificationCount(db *sql.DB, userID int64) (count int64, lastID int64, err error) {
+func GetUnreadNotificationCount(db *sql.DB, userID int64, isAdmin bool) (count int64, lastID int64, err error) {
 	var lastRead int64
 	err = db.QueryRow("SELECT last_read_id FROM user_notification_state WHERE user_id=$1", userID).Scan(&lastRead)
 	if err != nil && err != sql.ErrNoRows {
 		return 0, 0, fmt.Errorf("get notification state: %w", err)
 	}
 
-	err = db.QueryRow("SELECT COUNT(*), COALESCE(MAX(id), 0) FROM in_app_notifications WHERE id > $1", lastRead).Scan(&count, &lastID)
+	query := "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM in_app_notifications WHERE id > $1 AND (target_user_ids IS NULL OR $2 = ANY(target_user_ids))"
+	if !isAdmin {
+		query += " AND alert_rule_type NOT IN ('audit_log', 'relay_cert_expiring')"
+	}
+	err = db.QueryRow(query, lastRead, userID).Scan(&count, &lastID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("count unread notifications: %w", err)
 	}

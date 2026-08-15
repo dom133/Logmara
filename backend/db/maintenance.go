@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func()) {
+func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func(), func(), func()) {
 	vacuumInterval := getIntervalHours("VACUUM_INTERVAL_HOURS", "vacuum_interval_hours", 24)
 	mvInterval := getIntervalMinutes("MV_REFRESH_INTERVAL_MIN", "mv_refresh_interval_min", 30)
 
@@ -18,8 +18,10 @@ func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func()) 
 	stopVacuum := startVacuumScheduler(ctx, db, vacuumInterval)
 	stopMV := startMVScheduler(ctx, db, mvInterval)
 	stopTokenCleanup := startRefreshTokenCleanupScheduler(ctx, db, 1*time.Hour)
+	stopJWTCleanup := startJWTBlacklistCleanup(ctx, db, 1*time.Minute)
+	stopArchive := startArchiveCleanupScheduler(ctx, db, 12*time.Hour)
 
-	return stopVacuum, stopMV, stopTokenCleanup
+	return stopVacuum, stopMV, stopTokenCleanup, stopJWTCleanup, stopArchive
 }
 
 func startVacuumScheduler(ctx context.Context, db *sql.DB, interval time.Duration) func() {
@@ -94,6 +96,70 @@ func startRefreshTokenCleanupScheduler(ctx context.Context, db *sql.DB, interval
 // by rotation (used=true) once they're well past the race-recovery grace
 // window. Without this the refresh_tokens table grows forever, since every
 // login and every refresh only ever inserts a new row.
+func startJWTBlacklistCleanup(ctx context.Context, db *sql.DB, interval time.Duration) func() {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		slog.Info("jwt blacklist cleanup scheduler started", "interval_minutes", interval.Minutes())
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("jwt blacklist cleanup scheduler stopped")
+				close(done)
+				return
+			case <-ticker.C:
+				CleanupExpiredBlacklist(db)
+			}
+		}
+	}()
+	return func() {
+		<-done
+	}
+}
+
+// startArchiveCleanupScheduler periodically removes archived logs older than
+// the retention period configured in app_settings (default: 30 days).
+func startArchiveCleanupScheduler(ctx context.Context, db *sql.DB, interval time.Duration) func() {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		slog.Info("archive cleanup scheduler started", "interval_hours", interval.Hours())
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("archive cleanup scheduler stopped")
+				close(done)
+				return
+			case <-ticker.C:
+				cleanupArchivedLogs(db)
+			}
+		}
+	}()
+	return func() {
+		<-done
+	}
+}
+
+// cleanupArchivedLogs deletes logs older than the configured retention period.
+func cleanupArchivedLogs(db *sql.DB) {
+	var retentionDays int
+	err := db.QueryRow(`SELECT COALESCE(value, '30')::int FROM app_settings WHERE key = 'log_retention_days'`).Scan(&retentionDays)
+	if err != nil {
+		retentionDays = 30
+	}
+
+	res, err := db.Exec("DELETE FROM syslog_logs WHERE timestamp < NOW() - ($1 || ' days')::INTERVAL", retentionDays)
+	if err != nil {
+		slog.Error("archive cleanup failed", "err", err)
+		return
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		slog.Info("archive cleanup completed", "rows_deleted", n, "retention_days", retentionDays)
+	}
+}
+
 func cleanupExpiredRefreshTokens(db *sql.DB) {
 	res, err := db.Exec(
 		"DELETE FROM refresh_tokens WHERE expires_at < NOW() OR (used = true AND used_at < NOW() - INTERVAL '1 day')",
@@ -105,6 +171,28 @@ func cleanupExpiredRefreshTokens(db *sql.DB) {
 	if n, err := res.RowsAffected(); err == nil && n > 0 {
 		slog.Info("refresh token cleanup completed", "rows_deleted", n)
 	}
+
+	timeoutMin := getInactivityTimeoutMin(db)
+	res, err = db.Exec(
+		"UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE used = false AND created_at < NOW() - ($1 || ' minutes')::INTERVAL",
+		timeoutMin,
+	)
+	if err != nil {
+		slog.Error("inactive token expiry failed", "err", err)
+		return
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		slog.Info("inactive tokens expired", "rows_marked", n, "timeout_min", timeoutMin)
+	}
+}
+
+func getInactivityTimeoutMin(db *sql.DB) string {
+	var val sql.NullString
+	err := db.QueryRow("SELECT value FROM app_settings WHERE key = 'session_timeout_min'").Scan(&val)
+	if err != nil || !val.Valid {
+		return "15"
+	}
+	return val.String
 }
 
 // runVacuumAnalyze targets only the currently-active partitions (this month
@@ -162,7 +250,14 @@ func activePartitionNames(db *sql.DB) []string {
 // nobody is logged in to look at them.
 func HasActiveSession(db *sql.DB) bool {
 	var active bool
-	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM refresh_tokens WHERE used = false AND expires_at > NOW())").Scan(&active)
+	err := db.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM refresh_tokens
+			WHERE used = false
+			  AND expires_at > NOW()
+			  AND created_at > NOW() - (COALESCE((SELECT value FROM app_settings WHERE key = 'session_timeout_min'), '15')::int || ' minutes')::INTERVAL
+		)
+	`).Scan(&active)
 	if err != nil {
 		slog.Error("active session check failed", "err", err)
 		return false

@@ -5,3 +5,4 @@ backend/*.exe
 *.exe
 *.pem
 Dockerfile.frontend.local
+.opencode/

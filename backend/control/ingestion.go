@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -134,5 +135,7 @@ func (c *redisController) setPaused(paused bool) {
 	if err := c.client.Raw().Set(ctx, ingestionPauseKey, value, 0).Err(); err != nil {
 		return
 	}
-	_ = c.broadcaster.Publish(ctx, ingestionControlChannel, value)
+	if err := c.broadcaster.Publish(ctx, ingestionControlChannel, value); err != nil {
+		slog.Warn("failed to broadcast ingestion state change", "paused", paused, "error", err)
+	}
 }

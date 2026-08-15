@@ -40,22 +40,35 @@ func GetRelayWhitelist(db *sql.DB) ([]model.RelayWhitelistEntry, error) {
 	return scanRelayWhitelistRows(rows)
 }
 
-// GetActiveRelayWhitelist returns only whitelist entries whose linked
-// certificate is currently "issued" - what writeRelayACL uses to build the
-// actual allow-list rsyslog enforces. An entry with no certificate yet, or
-// whose certificate has been revoked, is excluded (a relay physically
-// can't get in either way - no cert to present, or nothing on the allow-
-// list even though it's still shown - "Blocked" - in the UI).
-func GetActiveRelayWhitelist(db *sql.DB) ([]model.RelayWhitelistEntry, error) {
-	rows, err := db.Query(`SELECT w.id, w.ip_address, w.label, w.relay_cert_id, w.created_at, w.created_by
+// GetActiveRelayACLEntries returns, for every whitelist entry whose linked
+// certificate is currently "issued", its IP address paired with the exact
+// peer name (CommonName) that certificate was issued with - what
+// writeRelayACL uses to build both the IP allow-list and the
+// PermittedPeer list that pins the mTLS handshake to that
+// one certificate (see relaypki.IssueClientCert). An entry with no
+// certificate yet, or whose certificate has been revoked or superseded, is
+// excluded - a relay physically can't get in either way, whether or not
+// it's still shown - "Blocked" - in the UI.
+func GetActiveRelayACLEntries(db *sql.DB) ([]model.RelayACLEntry, error) {
+	rows, err := db.Query(`SELECT w.ip_address, c.label, c.serial_hex
 		FROM relay_whitelist w
 		JOIN relay_certificates c ON c.id = w.relay_cert_id
 		WHERE c.status = 'issued'
 		ORDER BY w.created_at DESC`)
 	if err != nil {
-		return nil, fmt.Errorf("list active relay whitelist: %w", err)
+		return nil, fmt.Errorf("list active relay ACL entries: %w", err)
 	}
-	return scanRelayWhitelistRows(rows)
+	defer rows.Close()
+
+	var entries []model.RelayACLEntry
+	for rows.Next() {
+		var ip, label, serialHex string
+		if err := rows.Scan(&ip, &label, &serialHex); err != nil {
+			return nil, fmt.Errorf("scan relay ACL entry: %w", err)
+		}
+		entries = append(entries, model.RelayACLEntry{IPAddress: ip, PeerName: label + "#" + serialHex})
+	}
+	return entries, rows.Err()
 }
 
 // AddRelayWhitelistEntry inserts a new allowed relay IP. relayCertID is nil

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -38,66 +39,142 @@ func relayACLPath() string {
 	return filepath.Join(relayPKIDir(), "allowed-relays.conf")
 }
 
-// writeRelayACL regenerates the rsyslog snippet that gates the mTLS relay
-// listener (ruleset "relayIngest" in rsyslog/syslog.conf, which includes
-// this file): a valid client certificate alone is not enough to get in, the
+// relayHeartbeatPath returns where rsyslog/syslog.conf's RelayHeartbeatFile
+// template (ruleset "relayAccept") touches a small file every time it
+// forwards a batch from ip, or "" if ip isn't a valid address - defends
+// against building a path from a malformed relay_whitelist.ip_address value
+// (there's no format check on insert, see db.AddRelayWhitelistEntry).
+func relayHeartbeatPath(ip string) string {
+	if net.ParseIP(ip) == nil {
+		return ""
+	}
+	return filepath.Join(relayPKIDir(), "heartbeat-"+ip)
+}
+
+// relayListenerRuleset names the ruleset that gates the mTLS relay
+// listener - defined dynamically inside allowed-relays.conf (see
+// writeRelayACL) rather than statically in rsyslog/syslog.conf, same as
+// the input() below.
+const relayListenerRuleset = "relayIngest"
+
+// relaySentinelPeer is a PermittedPeer placeholder that can never equal a
+// real certificate's CommonName (see relaypki.IssueClientCert - every real
+// one contains "#" followed by a hex serial). Used instead of an empty
+// PermittedPeer array so the mTLS listener still binds - and stays
+// unambiguously fail-closed - when relay ingestion is disabled or nothing
+// currently qualifies, rather than relying on undocumented behavior for
+// what an empty list means to the gtls driver.
+const relaySentinelPeer = "no-relay-certificates-active"
+
+// rsyslogStringLiteral quotes s for use inside a RainerScript string
+// literal or array element (e.g. PermittedPeer=[...]) - backslash and
+// double-quote are the only two characters that syntax treats specially.
+func rsyslogStringLiteral(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return `"` + s + `"`
+}
+
+// writeRelayACL regenerates allowed-relays.conf, which is include()d at
+// the top level of rsyslog/syslog.conf and supplies BOTH the ruleset that
+// gates the mTLS relay listener by source IP AND the input() listener
+// itself (port 6514) - the latter has to live here too, not statically in
+// syslog.conf, because pinning the TLS handshake to the exact
+// currently-issued certificate per relay (StreamDriver.AuthMode="x509/name"
+// + PermittedPeer, matched against the CommonName relaypki.IssueClientCert
+// gives each cert - label + "#" + serial) requires PermittedPeer to be
+// regenerated every time a certificate is issued or revoked, and that
+// parameter can only be set where the listener is declared.
+//
+// A valid client certificate alone is still not enough to get in: the
 // peer's IP must also be on the current whitelist AND that whitelist
-// entry's certificate must currently be "issued" - this is what makes
-// RevokeRelayCertificate an immediate, real cutoff (not just a database
-// label): the moment a certificate is revoked, this regenerates without
-// that IP and rsyslog is reloaded, so the relay can no longer get in even
-// though it's still listed (shown as "Blocked" in the UI) and its old
-// private key still technically satisfies the TLS handshake on its own.
-// When the feature is disabled or nothing currently qualifies, every
-// connection is dropped.
+// entry's certificate must currently be "issued". Together these two
+// layers are what make RevokeRelayCertificate (and, for the case this was
+// added to fix, RegenerateRelayCertificate) an immediate, real cutoff for
+// the OLD certificate specifically - not just any CA-signed one - rather
+// than a database label alone. When the feature is disabled or nothing
+// currently qualifies, every connection is dropped.
+//
+// Regenerating this file alone does not apply it: rsyslogd has no true
+// config hot-reload (SIGHUP only reopens output files as of rsyslog
+// 4.5.1+; $HUPisRestart is deprecated upstream and never set here) - see
+// reloadRelayConfig, which asks entrypoint.sh's supervisor loop to
+// actually restart the rsyslogd child process.
 func writeRelayACL(database *sql.DB) error {
 	enabled := db.GetSetting(database, "relay_ingestion_enabled", "false") == "true"
 
-	var content string
+	var comment, rulesetBody string
+	peerNames := []string{relaySentinelPeer}
+
 	if !enabled {
-		content = "# Relay ingestion is disabled (Admin > Settings) - dropping all connections.\nstop\n"
+		comment = "# Relay ingestion is disabled (Admin > Settings) - dropping all connections."
+		rulesetBody = "    stop\n"
 	} else {
-		entries, err := db.GetActiveRelayWhitelist(database)
+		entries, err := db.GetActiveRelayACLEntries(database)
 		if err != nil {
 			return fmt.Errorf("load relay whitelist: %w", err)
 		}
 		if len(entries) == 0 {
-			content = "# Relay ingestion is enabled but no whitelisted IP currently has an active certificate - dropping all connections.\nstop\n"
+			comment = "# Relay ingestion is enabled but no whitelisted IP currently has an active certificate - dropping all connections."
+			rulesetBody = "    stop\n"
 		} else {
 			var b strings.Builder
-			b.WriteString("# Auto-generated by the API (Admin > Syslog Relay) - do not edit manually.\n")
-			b.WriteString("if ")
+			b.WriteString("    if ")
 			for i, e := range entries {
 				if i > 0 {
 					b.WriteString(" or ")
 				}
 				fmt.Fprintf(&b, "$fromhost-ip == %q", e.IPAddress)
 			}
-			b.WriteString(" then {\n    call relayAccept\n} else {\n    stop\n}\n")
-			content = b.String()
+			b.WriteString(" then {\n        call relayAccept\n    } else {\n        stop\n    }\n")
+			rulesetBody = b.String()
+
+			peerNames = make([]string, len(entries))
+			for i, e := range entries {
+				peerNames[i] = e.PeerName
+			}
 		}
 	}
+
+	peerLiterals := make([]string, len(peerNames))
+	for i, p := range peerNames {
+		peerLiterals[i] = rsyslogStringLiteral(p)
+	}
+
+	var content strings.Builder
+	content.WriteString("# Auto-generated by the API (Admin > Syslog Relay) - do not edit manually.\n")
+	if comment != "" {
+		content.WriteString(comment + "\n")
+	}
+	fmt.Fprintf(&content, "ruleset(name=%q) {\n%s}\n\n", relayListenerRuleset, rulesetBody)
+	fmt.Fprintf(&content, "input(type=\"imtcp\" port=\"6514\" ruleset=%q\n", relayListenerRuleset)
+	content.WriteString("  StreamDriver.Name=\"gtls\"\n  StreamDriver.Mode=\"1\"\n  StreamDriver.AuthMode=\"x509/name\"\n")
+	fmt.Fprintf(&content, "  PermittedPeer=[%s]\n)\n", strings.Join(peerLiterals, ", "))
 
 	dir := relayPKIDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create relay pki dir: %w", err)
 	}
 	tmpPath := relayACLPath() + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(tmpPath, []byte(content.String()), 0644); err != nil {
 		return fmt.Errorf("write relay acl: %w", err)
 	}
 	return os.Rename(tmpPath, relayACLPath())
 }
 
-// reloadRelayConfig asks the rsyslog container's reload sidecar (same
+// reloadRelayConfig asks the rsyslog container's reload sidecar (same HTTP
 // pattern as the frontend's nginx reload sidecar, see postReload in
-// admin.go) to HUP rsyslogd so the regenerated ACL takes effect without a
-// container restart. RSYSLOG_RELOAD_TARGETS_HOST mirrors
+// admin.go - but NOT the same underlying mechanism: unlike nginx, rsyslogd
+// has no lightweight config reload, so the sidecar's reload.sh actually
+// kills the rsyslogd child and entrypoint.sh's supervisor loop restarts it
+// against the regenerated allowed-relays.conf, briefly interrupting syslog
+// ingestion on both 514 and 6514 while it comes back up) so the
+// regenerated ACL takes effect. RSYSLOG_RELOAD_TARGETS_HOST mirrors
 // NGINX_RELOAD_TARGETS_HOST: unset for the single-server/single-rsyslog
 // case (docker-compose.yml), set to a DNS name resolving to every edge
 // node's task IP (e.g. Swarm's "tasks.rsyslog") when rsyslog runs
 // `mode: global` across multiple edge nodes (docker-stack.app.yml) - every
-// node needs its ACL reloaded, not just whichever one currently holds the
+// node needs its ACL applied, not just whichever one currently holds the
 // keepalived VIP.
 func reloadRelayConfig() error {
 	targetsHost := os.Getenv("RSYSLOG_RELOAD_TARGETS_HOST")
@@ -217,7 +294,7 @@ func CreateRelayWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 
 		if err := SyncRelayConfig(database); err != nil {
 			slog.Warn("relay config sync failed after whitelist add", "error", err)
-			c.JSON(http.StatusCreated, gin.H{"entry": entry, "reload_error": err.Error()})
+			c.JSON(http.StatusCreated, gin.H{"entry": entry, "reload_error": "relay config sync failed"})
 			return
 		}
 		c.JSON(http.StatusCreated, entry)
@@ -263,7 +340,7 @@ func DeleteRelayWhitelistEntry(database *sql.DB) gin.HandlerFunc {
 
 		if err := SyncRelayConfig(database); err != nil {
 			slog.Warn("relay config sync failed after whitelist delete", "error", err)
-			c.JSON(http.StatusOK, gin.H{"message": "whitelist entry deleted", "reload_error": err.Error()})
+			c.JSON(http.StatusOK, gin.H{"message": "whitelist entry deleted", "reload_error": "relay config sync failed"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "whitelist entry deleted"})
@@ -449,7 +526,7 @@ func RevokeRelayCertificate(database *sql.DB) gin.HandlerFunc {
 
 		if err := SyncRelayConfig(database); err != nil {
 			slog.Warn("relay config sync failed after certificate revoke", "error", err)
-			c.JSON(http.StatusOK, gin.H{"message": "certificate revoked", "reload_error": err.Error()})
+			c.JSON(http.StatusOK, gin.H{"message": "certificate revoked", "reload_error": "relay config sync failed"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "certificate revoked"})
@@ -593,6 +670,21 @@ func relayConfSnippet(database *sql.DB, label string) []byte {
 # bundle at /etc/syslog-relay/tls/ on the relay host, then use this file as
 # rsyslog.d/relay.conf there. See README "Syslog Relay" for the full
 # deployment steps (docker-compose.relay.yml).
+#
+# TLS material is set via the GLOBAL DefaultNetstreamDriver* params below,
+# not the omfwd action's own StreamDriverCAFile/CertFile/KeyFile params:
+# those per-action params only exist on the sender side starting in rsyslog
+# 8.2310 (https://github.com/rsyslog/rsyslog/issues/5150) - on the 8.2302.0
+# that ships in Debian bookworm (Dockerfile.rsyslog-relay's base image)
+# they're not just ignored but rejected outright as unknown parameters
+# ("typo in config file?"), so omfwd's action() below deliberately omits
+# them and relies on this global() block instead.
+global(
+  DefaultNetstreamDriverCAFile="/etc/syslog-relay/tls/ca.crt"
+  DefaultNetstreamDriverCertFile="/etc/syslog-relay/tls/client.crt"
+  DefaultNetstreamDriverKeyFile="/etc/syslog-relay/tls/client.key"
+)
+
 module(load="imtcp")
 input(type="imtcp" port="514")
 module(load="imudp")
@@ -601,7 +693,18 @@ input(type="imudp" port="514")
 template(name="JsonLines" type="list") {
   constant(value="{")
   constant(value="\"timestamp\":\"")
-  property(name="timereported" dateFormat="rfc3339" format="json")
+  # timegenerated (this relay's own receipt clock) instead of timereported
+  # (parsed from the device's message body): most devices send legacy
+  # RFC3164 timestamps with no timezone offset, which rsyslog would
+  # otherwise fill in using ITS OWN local time - wrong whenever the relay
+  # container's clock isn't in the same zone as the devices behind it, and
+  # silently wrong by that offset (e.g. a relay defaulting to UTC while its
+  # devices are in CEST reports every timestamp 2h ahead). timegenerated is
+  # stamped at receipt from the system clock, which is always a correct UTC
+  # instant regardless of the container's configured timezone - stamped
+  # before this relay's own disk-buffered retry queue, so it isn't skewed by
+  # delivery delays either. See README "Syslog Relay".
+  property(name="timegenerated" dateFormat="rfc3339" format="json")
   constant(value="\",\"hostname\":\"")
   property(name="hostname" format="json")
   constant(value="\",\"fromhost_ip\":\"")
@@ -616,7 +719,7 @@ template(name="JsonLines" type="list") {
   property(name="procid" format="json")
   constant(value="\",\"message\":\"")
   property(name="msg" format="json")
-  constant(value="\"}\n")
+  constant(value="\",\"via_relay\":\"%s\"}\n")
 }
 
 *.* action(type="omfwd"
@@ -625,9 +728,6 @@ template(name="JsonLines" type="list") {
   StreamDriver="gtls"
   StreamDriverMode="1"
   StreamDriverAuthMode="x509/certvalid"
-  StreamDriverCAFile="/etc/syslog-relay/tls/ca.crt"
-  StreamDriverCertFile="/etc/syslog-relay/tls/client.crt"
-  StreamDriverKeyFile="/etc/syslog-relay/tls/client.key"
   queue.type="LinkedList"
   queue.filename="relayqueue"
   queue.saveOnShutdown="on"
@@ -636,7 +736,24 @@ template(name="JsonLines" type="list") {
   action.resumeInterval="10"
 )
 `
-	return []byte(fmt.Sprintf(tpl, label, host))
+	return []byte(fmt.Sprintf(tpl, label, jsonEscapeForRsyslogConstant(label), host))
+}
+
+// jsonEscapeForRsyslogConstant prepares label to sit inside a JSON string
+// value that's itself embedded in an rsyslog constant(value="...") literal
+// (see the "via_relay" field in relayConfSnippet's JsonLines template) -
+// two escaping layers stacked on each other, since label ends up nested
+// inside both. JSON-encode it first (quotes/backslashes/control chars
+// become JSON escapes), then escape backslashes and quotes a second time so
+// that JSON-escaped text survives rsyslog's own string literal parsing
+// unchanged - otherwise a label containing a quote or backslash would
+// either corrupt the generated config or the JSON it's meant to produce.
+func jsonEscapeForRsyslogConstant(label string) string {
+	jsonBytes, _ := json.Marshal(label)
+	inner := string(jsonBytes[1 : len(jsonBytes)-1])
+	inner = strings.ReplaceAll(inner, `\`, `\\`)
+	inner = strings.ReplaceAll(inner, `"`, `\"`)
+	return inner
 }
 
 var filenameUnsafeRe = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)

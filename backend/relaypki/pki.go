@@ -2,26 +2,29 @@
 // remote syslog relays (see backend/handler/relay.go) over mTLS: the
 // central server signs its own CA on first use, signs a server cert for
 // its rsyslog mTLS listener with it, and signs one client cert per relay
-// on demand. There is no external PKI dependency and no CRL/OCSP - relay
-// certs are cut off by removing their IP from the whitelist ACL instead
-// (see model.RelayCertStatusRevoked).
+// on demand, giving each issuance a CommonName unique to that one cert
+// (label + serial) - see IssueClientCert. There is no external PKI
+// dependency and no CRL/OCSP - a relay cert is cut off either by its exact
+// CommonName no longer being in the mTLS listener's PermittedPeer list
+// (regenerated on every issue/revoke, see handler.writeRelayACL - this is
+// what makes a regenerated certificate's old key stop working even though
+// it's still cryptographically valid and CA-signed) or by removing its IP
+// from the whitelist ACL entirely (see model.RelayCertStatusRevoked).
 package relaypki
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"time"
-
-	"math/big"
 )
 
 const (
@@ -66,7 +69,7 @@ func EnsureCA(dir string) error {
 	caKeyPath := filepath.Join(dir, caKeyFile)
 
 	var caCert *x509.Certificate
-	var caKey *ecdsa.PrivateKey
+	var caKey *rsa.PrivateKey
 
 	if _, err := os.Stat(caCertPath); err == nil {
 		caCert, caKey, err = loadCA(dir)
@@ -87,7 +90,7 @@ func EnsureCA(dir string) error {
 		if err := writeCertPEM(caCertPath, caCert.Raw, 0644); err != nil {
 			return err
 		}
-		if err := writeECKeyPEM(caKeyPath, caKey, 0600); err != nil {
+		if err := writeRSAKeyPEM(caKeyPath, caKey, 0600); err != nil {
 			return err
 		}
 	}
@@ -104,8 +107,8 @@ func EnsureCA(dir string) error {
 	return issueServerCert(dir, caCert, caKey)
 }
 
-func generateCA() (*x509.Certificate, *ecdsa.PrivateKey, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+func generateCA() (*x509.Certificate, *rsa.PrivateKey, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -129,7 +132,7 @@ func generateCA() (*x509.Certificate, *ecdsa.PrivateKey, error) {
 // Subject. This only handles ordinary expiry; a suspected key compromise
 // needs a real rotation instead (a new key, and every relay certificate
 // reissued), which isn't automatic.
-func renewCA(dir string, oldCert *x509.Certificate, key *ecdsa.PrivateKey) (*x509.Certificate, error) {
+func renewCA(dir string, oldCert *x509.Certificate, key *rsa.PrivateKey) (*x509.Certificate, error) {
 	cert, err := selfSignCA(key, oldCert.Subject)
 	if err != nil {
 		return nil, err
@@ -140,7 +143,7 @@ func renewCA(dir string, oldCert *x509.Certificate, key *ecdsa.PrivateKey) (*x50
 	return cert, nil
 }
 
-func selfSignCA(key *ecdsa.PrivateKey, subject pkix.Name) (*x509.Certificate, error) {
+func selfSignCA(key *rsa.PrivateKey, subject pkix.Name) (*x509.Certificate, error) {
 	serial, err := newSerialNumber()
 	if err != nil {
 		return nil, err
@@ -148,11 +151,11 @@ func selfSignCA(key *ecdsa.PrivateKey, subject pkix.Name) (*x509.Certificate, er
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               subject,
-		NotBefore:              time.Now().Add(-time.Hour),
-		NotAfter:               time.Now().AddDate(caValidityYears, 0, 0),
-		KeyUsage:               x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
-		BasicConstraintsValid:  true,
-		IsCA:                   true,
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().AddDate(caValidityYears, 0, 0),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -167,8 +170,8 @@ func selfSignCA(key *ecdsa.PrivateKey, subject pkix.Name) (*x509.Certificate, er
 // it's nearing expiry. Unlike the CA, there's no reason to keep the same
 // key across reissuance: this cert is never distributed to anything that
 // pins it, relays only need to trust the CA that signs it.
-func issueServerCert(dir string, caCert *x509.Certificate, caKey *ecdsa.PrivateKey) error {
-	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+func issueServerCert(dir string, caCert *x509.Certificate, caKey *rsa.PrivateKey) error {
+	serverKey, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
 		return fmt.Errorf("generate server key: %w", err)
 	}
@@ -191,10 +194,10 @@ func issueServerCert(dir string, caCert *x509.Certificate, caKey *ecdsa.PrivateK
 	if err := writeCertPEM(filepath.Join(dir, serverCertFile), der, 0644); err != nil {
 		return err
 	}
-	return writeECKeyPEM(filepath.Join(dir, serverKeyFile), serverKey, 0600)
+	return writeRSAKeyPEM(filepath.Join(dir, serverKeyFile), serverKey, 0600)
 }
 
-func loadCA(dir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
+func loadCA(dir string) (*x509.Certificate, *rsa.PrivateKey, error) {
 	certPEM, err := os.ReadFile(filepath.Join(dir, caCertFile))
 	if err != nil {
 		return nil, nil, err
@@ -217,7 +220,7 @@ func loadCA(dir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	if keyBlock == nil {
 		return nil, nil, fmt.Errorf("invalid CA key PEM")
 	}
-	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	key, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -260,12 +263,9 @@ func writeCertPEM(path string, der []byte, mode os.FileMode) error {
 	return writeAtomic(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), mode)
 }
 
-func writeECKeyPEM(path string, key *ecdsa.PrivateKey, mode os.FileMode) error {
-	der, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return fmt.Errorf("marshal key: %w", err)
-	}
-	return writeAtomic(path, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), mode)
+func writeRSAKeyPEM(path string, key *rsa.PrivateKey, mode os.FileMode) error {
+	der := x509.MarshalPKCS1PrivateKey(key)
+	return writeAtomic(path, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}), mode)
 }
 
 // IssuedCert holds the one-time material for a newly issued relay client
@@ -295,7 +295,7 @@ func IssueClientCert(dir, label string) (*IssuedCert, error) {
 		return nil, fmt.Errorf("read CA certificate: %w", err)
 	}
 
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
 		return nil, fmt.Errorf("generate client key: %w", err)
 	}
@@ -303,10 +303,18 @@ func IssueClientCert(dir, label string) (*IssuedCert, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generate client serial: %w", err)
 	}
+	// CommonName embeds the serial so this issuance's CN can never collide
+	// with a previous (or future) one for the same label - the mTLS
+	// listener's PermittedPeer is pinned to this exact string per
+	// currently-"issued" certificate (see handler.writeRelayACL), so a
+	// regenerated or revoked certificate's old CN simply stops matching
+	// once its whitelist entry is relinked, rather than continuing to
+	// authenticate as any CA-signed cert would under x509/certvalid.
+	commonName := label + "#" + serial.Text(16)
 	notAfter := time.Now().AddDate(clientValidityYears, 0, 0)
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: label},
+		Subject:      pkix.Name{CommonName: commonName},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -316,16 +324,13 @@ func IssueClientCert(dir, label string) (*IssuedCert, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sign client cert: %w", err)
 	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return nil, fmt.Errorf("marshal client key: %w", err)
-	}
+	keyDER := x509.MarshalPKCS1PrivateKey(key)
 
 	fp := sha256.Sum256(der)
 
 	return &IssuedCert{
 		CertPEM:     pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
-		KeyPEM:      pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+		KeyPEM:      pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: keyDER}),
 		CAPEM:       caPEM,
 		SerialHex:   serial.Text(16),
 		Fingerprint: hex.EncodeToString(fp[:]),

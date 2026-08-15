@@ -3,69 +3,39 @@ import axios from 'axios'
 export const api = axios.create({
   baseURL: '/api',
   timeout: 30000,
+  withCredentials: true,
 })
 
+function getCookie(name: string): string | undefined {
+  const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'))
+  return match ? decodeURIComponent(match[2]) : undefined
+}
+
 api.interceptors.request.use(config => {
-  const token = localStorage.getItem('token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
+  if (config.method && config.method !== 'get' && config.method !== 'head' && config.method !== 'options') {
+    const csrfToken = getCookie('csrf_token')
+    if (csrfToken) {
+      config.headers['X-CSRF-Token'] = csrfToken
+    }
   }
   return config
 })
 
-let isRefreshing = false
-let retryQueue: Array<{ resolve: (value: unknown) => void; reject: () => void }> = []
-
-const processQueue = (error: unknown | null) => {
-  retryQueue.forEach(cb => {
-    if (error) cb.reject()
-    else cb.resolve(null)
-  })
-  retryQueue = []
-}
-
+// No silent refresh-and-retry here: token lifetime is tracked and extended
+// exclusively through AuthContext (SessionWarningModal's "Extend Session"),
+// so the countdown shown to the user always matches the token's real expiry.
+// A 401 here means the session already ran out - send the user to login
+// instead of quietly minting a new token behind the visible countdown.
 api.interceptors.response.use(
   response => response,
-  async error => {
+  error => {
     const originalRequest = error.config
-    if (error.response?.status === 401 && !originalRequest._retry && originalRequest.url !== '/auth/login' && originalRequest.url !== '/auth/refresh') {
-      if (isRefreshing) {
-        return new Promise((resolve, reject) => {
-          retryQueue.push({ resolve, reject })
-        }).then(() => api(originalRequest))
-      }
-      originalRequest._retry = true
-      isRefreshing = true
-      try {
-        const refreshToken = localStorage.getItem('refresh_token')
-        if (!refreshToken) throw new Error('No refresh token')
-        const res = await api.post('/auth/refresh', { refresh_token: refreshToken })
-        const newToken = res.data.token
-        const newRT = res.data.refresh_token
-        localStorage.setItem('token', newToken)
-        localStorage.setItem('refresh_token', newRT)
-        api.defaults.headers.common['Authorization'] = `Bearer ${newToken}`
-        originalRequest.headers.Authorization = `Bearer ${newToken}`
-        processQueue(null)
-        return api(originalRequest)
-      } catch (err) {
-        processQueue(err)
-        localStorage.removeItem('token')
-        localStorage.removeItem('refresh_token')
-        window.location.href = '/login'
-        return Promise.reject(err)
-      } finally {
-        isRefreshing = false
-      }
+    if (error.response?.status === 401 && originalRequest.url !== '/auth/login' && originalRequest.url !== '/auth/refresh' && window.location.pathname !== '/login') {
+      window.location.href = '/login'
     }
     return Promise.reject(error)
   }
 )
-
-export async function refreshAccessToken(refreshToken: string) {
-  const res = await api.post('/auth/refresh', { refresh_token: refreshToken })
-  return res.data
-}
 
 export interface LogEntry {
   id: number
@@ -110,6 +80,10 @@ export interface DeviceStats {
   severity_count: Record<string, number>
   matched_parsers: string[]
   has_parsed: boolean
+  // Label of the relay this device's logs are currently arriving through,
+  // or absent for a device sending straight to the central listener.
+  via_relay?: string
+  uses_proxy: boolean
 }
 
 export interface LogsPage {
@@ -162,7 +136,8 @@ export async function getDashboardStats(): Promise<DashboardStats> {
 }
 
 export async function getTimeline(interval = '1h', from?: string, to?: string) {
-  const res = await api.get('/stats/timeline', { params: { interval, from, to } })
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const res = await api.get('/stats/timeline', { params: { interval, from, to, tz } })
   return (res.data?.timeline || []) as TimelinePoint[]
 }
 
@@ -191,7 +166,8 @@ export async function getSeverityStats(from?: string, to?: string) {
 }
 
 export async function exportCSV(params: Record<string, string>) {
-  const res = await api.get('/export/csv', { params, responseType: 'blob' })
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const res = await api.get('/export/csv', { params: { ...params, tz }, responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -201,7 +177,8 @@ export async function exportCSV(params: Record<string, string>) {
 }
 
 export async function exportHTML(params: Record<string, string>) {
-  const res = await api.get('/export/html', { params, responseType: 'blob' })
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const res = await api.get('/export/html', { params: { ...params, tz }, responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -211,7 +188,8 @@ export async function exportHTML(params: Record<string, string>) {
 }
 
 export async function exportDashboardCSV(id: number, params: Record<string, string>) {
-  const res = await api.get(`/dashboards/${id}/export/csv`, { params, responseType: 'blob' })
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const res = await api.get(`/dashboards/${id}/export/csv`, { params: { ...params, tz }, responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -221,7 +199,8 @@ export async function exportDashboardCSV(id: number, params: Record<string, stri
 }
 
 export async function exportDashboardHTML(id: number, params: Record<string, string>) {
-  const res = await api.get(`/dashboards/${id}/export/html`, { params, responseType: 'blob' })
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const res = await api.get(`/dashboards/${id}/export/html`, { params: { ...params, tz }, responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
@@ -432,6 +411,8 @@ export interface User {
 	is_active: boolean
 	created_at: string
 	last_login_at: string | null
+	failed_login_attempts: number
+	locked_until: string | null
 }
 
 export async function getUsers() {
@@ -459,6 +440,45 @@ export async function resetPassword(id: number, password: string) {
 	return res.data
 }
 
+export async function unlockUser(id: number) {
+	const res = await api.post(`/admin/users/${id}/unlock`)
+	return res.data
+}
+
+export interface AuditLog {
+	id: number
+	user_id: number | null
+	username: string
+	action: string
+	ip: string | null
+	details: string | null
+	created_at: string
+}
+
+export interface AuditLogsResponse {
+	data: AuditLog[]
+	total: number
+}
+
+export async function getAuditLogs(params: {
+	limit?: number
+	offset?: number
+	username?: string
+	action?: string
+	from?: string
+	to?: string
+}) {
+	const queryParams = new URLSearchParams()
+	if (params.limit !== undefined) queryParams.set('limit', String(params.limit))
+	if (params.offset !== undefined) queryParams.set('offset', String(params.offset))
+	if (params.username) queryParams.set('username', params.username)
+	if (params.action) queryParams.set('action', params.action)
+	if (params.from) queryParams.set('from', params.from)
+	if (params.to) queryParams.set('to', params.to)
+	const res = await api.get(`/admin/audit-logs?${queryParams.toString()}`)
+	return res.data as AuditLogsResponse
+}
+
 export async function getSettings() {
 	const res = await api.get('/admin/settings')
 	return res.data as Record<string, string>
@@ -476,16 +496,6 @@ export async function cleanupLogs() {
 
 export async function purgeAllLogs(pauseDuringPurge: boolean) {
 	const res = await api.delete('/admin/logs', { data: { pause_during_purge: pauseDuringPurge } })
-	return res.data
-}
-
-export async function pauseIngestion() {
-	const res = await api.post('/admin/ingestion/pause')
-	return res.data
-}
-
-export async function resumeIngestion() {
-	const res = await api.post('/admin/ingestion/resume')
 	return res.data
 }
 
@@ -531,6 +541,7 @@ export interface InitRequest {
 	encryption_key: string
 	cors_origins?: string
 	ldap?: {
+		enabled: boolean
 		server: string
 		port: number
 		use_tls: boolean
@@ -539,6 +550,11 @@ export interface InitRequest {
 		base_dn: string
 		bind_dn: string
 		bind_password: string
+		user_filter: string
+		username_attr: string
+		email_attr: string
+		auto_provision: boolean
+		default_role: string
 	}
 }
 
@@ -765,7 +781,7 @@ export async function revokeRelayCertificate(id: number) {
 
 // --- Alerts & Notifications ---
 
-export type AlertRuleType = 'log_threshold' | 'device_silence' | 'config_change' | 'relay_cert_expiring'
+export type AlertRuleType = 'log_threshold' | 'device_silence' | 'audit_log' | 'relay_cert_expiring'
 export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app' | 'push'
 export type FieldConditionOperator = 'equals' | 'contains' | 'not_equals' | 'regex'
 
@@ -894,6 +910,14 @@ export interface TriggerLogSnapshot {
 	message: string
 }
 
+export interface AuditLogRef {
+	action: string
+	username: string
+	user_ip: string
+	details: string
+	timestamp: string
+}
+
 export interface NotificationLogEntry {
 	id: number
 	alert_id?: number
@@ -905,6 +929,8 @@ export interface NotificationLogEntry {
 	status: 'sent' | 'partial' | 'failed' | 'no_channel'
 	detail?: string
 	trigger_log?: TriggerLogSnapshot
+	audit_log_ref?: AuditLogRef
+	rule_type: string
 	in_app_notification_id?: number
 	matched_conditions?: string[]
 	created_at: string
@@ -967,11 +993,14 @@ export function streamNotifications(onNotification: (n: InAppNotification) => vo
 	const connect = async () => {
 		while (!stopped) {
 			try {
-				const token = localStorage.getItem('token')
 				const res = await fetch('/api/notifications/stream', {
-					headers: token ? { Authorization: `Bearer ${token}` } : {},
+					credentials: 'include',
 					signal: controller.signal,
 				})
+				if (res.status === 401 || res.status === 403) {
+					window.location.href = '/login'
+					return
+				}
 				if (!res.ok || !res.body) throw new Error(`stream failed: ${res.status}`)
 
 				const reader = res.body.getReader()

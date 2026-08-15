@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -38,27 +39,155 @@ type RateLimiter interface {
 // newLimiter picks the local or Redis-backed limiter based on whether
 // Redis is configured. bucket namespaces the limiter's counters in Redis
 // (irrelevant for the local implementation, which is only ever used by one
-// process anyway).
-func newLimiter(client *sharedstate.Client, bucket string, limit int, window time.Duration) RateLimiter {
+// process anyway). filePath is only honored for the local implementation
+// (Redis already persists across restarts on its own); pass "" for limiters
+// where losing counters on restart is acceptable.
+func newLimiter(client *sharedstate.Client, bucket string, limit int, window time.Duration, filePath string) RateLimiter {
 	if client != nil {
 		return sharedstate.NewRedisRateLimiter(client, bucket, limit, window)
+	}
+	if filePath != "" {
+		return newPersistentRateLimiter(limit, window, filePath)
 	}
 	return newRateLimiter(limit, window)
 }
 
+// stopIfPersistent flushes a local rate limiter's bucket state to disk
+// before shutdown, so brute-force counters (login, change-password) survive
+// a restart instead of silently resetting. It's a no-op for the Redis-backed
+// limiter, which has no local state to flush.
+func stopIfPersistent(rl RateLimiter) {
+	if s, ok := rl.(interface{ Stop() }); ok {
+		s.Stop()
+	}
+}
+
+type persistentBucketEntry struct {
+	Tokens     float64 `json:"t"`
+	LastRefill int64   `json:"lr"`
+}
+
+type tokenBucketEntry struct {
+	tokens     float64
+	lastRefill time.Time
+}
+
 type rateLimiter struct {
-	mu       sync.Mutex
-	requests map[string][]time.Time
-	limit    int
-	window   time.Duration
+	mu         sync.Mutex
+	buckets    map[string]*tokenBucketEntry
+	limit      int
+	window     time.Duration
+	refillRate float64
+	filePath   string
+	stop       chan struct{}
 }
 
 func newRateLimiter(limit int, window time.Duration) *rateLimiter {
-	return &rateLimiter{
-		requests: make(map[string][]time.Time),
-		limit:    limit,
-		window:   window,
+	rl := &rateLimiter{
+		buckets:    make(map[string]*tokenBucketEntry),
+		limit:      limit,
+		window:     window,
+		refillRate: float64(limit) / window.Seconds(),
+		stop:       make(chan struct{}),
 	}
+	go rl.saveLoop()
+	return rl
+}
+
+func newPersistentRateLimiter(limit int, window time.Duration, filePath string) *rateLimiter {
+	rl := &rateLimiter{
+		buckets:    make(map[string]*tokenBucketEntry),
+		limit:      limit,
+		window:     window,
+		refillRate: float64(limit) / window.Seconds(),
+		filePath:   filePath,
+		stop:       make(chan struct{}),
+	}
+	rl.loadState()
+	go rl.saveLoop()
+	return rl
+}
+
+func (rl *rateLimiter) loadState() {
+	if rl.filePath == "" {
+		return
+	}
+	data, err := os.ReadFile(rl.filePath)
+	if err != nil {
+		return
+	}
+	var entries map[string]persistentBucketEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return
+	}
+	now := time.Now()
+	for ip, e := range entries {
+		age := now.Sub(time.Unix(e.LastRefill, 0))
+		if age > rl.window {
+			continue
+		}
+		rl.buckets[ip] = &tokenBucketEntry{
+			tokens:     e.Tokens + age.Seconds()*rl.refillRate,
+			lastRefill: now,
+		}
+		if rl.buckets[ip].tokens > float64(rl.limit) {
+			rl.buckets[ip].tokens = float64(rl.limit)
+		}
+	}
+}
+
+func (rl *rateLimiter) saveState() {
+	if rl.filePath == "" {
+		return
+	}
+	entries := make(map[string]persistentBucketEntry)
+	for ip, e := range rl.buckets {
+		entries[ip] = persistentBucketEntry{
+			Tokens:     e.tokens,
+			LastRefill: e.lastRefill.Unix(),
+		}
+	}
+	data, err := json.Marshal(entries)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(rl.filePath, data, 0600)
+}
+
+func (rl *rateLimiter) Stop() {
+	rl.saveState()
+	close(rl.stop)
+}
+
+func (rl *rateLimiter) saveLoop() {
+	ticker := time.NewTicker(rl.window)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-rl.stop:
+			return
+		case <-ticker.C:
+			rl.mu.Lock()
+			for ip, entry := range rl.buckets {
+				if entry.tokens >= float64(rl.limit) {
+					delete(rl.buckets, ip)
+				}
+			}
+			rl.mu.Unlock()
+			if rl.filePath != "" {
+				rl.saveState()
+			}
+		}
+	}
+}
+
+func (rl *rateLimiter) refill(entry *tokenBucketEntry, now time.Time) {
+	elapsed := now.Sub(entry.lastRefill).Seconds()
+	entry.tokens += elapsed * rl.refillRate
+	if entry.tokens > float64(rl.limit) {
+		entry.tokens = float64(rl.limit)
+	}
+	entry.lastRefill = now
 }
 
 func (rl *rateLimiter) Allow(ip string) bool {
@@ -66,22 +195,21 @@ func (rl *rateLimiter) Allow(ip string) bool {
 	defer rl.mu.Unlock()
 
 	now := time.Now()
-	cutoff := now.Add(-rl.window)
-
-	times := rl.requests[ip]
-	valid := make([]time.Time, 0, len(times))
-	for _, t := range times {
-		if t.After(cutoff) {
-			valid = append(valid, t)
+	entry, exists := rl.buckets[ip]
+	if !exists {
+		entry = &tokenBucketEntry{
+			tokens:     float64(rl.limit) - 1,
+			lastRefill: now,
 		}
+		rl.buckets[ip] = entry
+		return true
 	}
 
-	if len(valid) >= rl.limit {
-		rl.requests[ip] = valid
+	rl.refill(entry, now)
+	if entry.tokens < 1 {
 		return false
 	}
-
-	rl.requests[ip] = append(valid, now)
+	entry.tokens--
 	return true
 }
 
@@ -136,6 +264,7 @@ func main() {
 	defer database.Close()
 
 	db.SetAppStarting(true)
+	schemaReady := make(chan struct{})
 	migrationDone := make(chan struct{})
 	go func() {
 		defer close(migrationDone)
@@ -143,6 +272,14 @@ func main() {
 			slog.Error("failed to migrate database", "error", err)
 			os.Exit(1)
 		}
+		close(schemaReady)
+
+		// RefreshMaterializedViews scans the full syslog_logs table and its
+		// runtime grows with log volume, unlike MigrateWithLock above (a fast
+		// no-op once the schema exists). It must not gate the HTTP listener
+		// (and therefore /api/health) from coming up, or every restart's
+		// health-check window scales with how much data has accumulated -
+		// auth/routes/tailer below only need the schema, not fresh views.
 		db.RefreshMaterializedViews(database)
 		db.ApplyEnvSettingOverrides(database)
 		db.SetAppStarting(false)
@@ -181,7 +318,9 @@ func main() {
 	}()
 
 	ctx, maintCancel := context.WithCancel(context.Background())
-	stopVacuum, stopMV, stopTokenCleanup := db.StartMaintenance(ctx, database)
+	stopVacuum, stopMV, stopTokenCleanup, stopJWTCleanup, stopArchiveCleanup := db.StartMaintenance(ctx, database)
+	_ = stopJWTCleanup
+	_ = stopArchiveCleanup
 
 	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive
 	// while someone is actually logged in to look at them. With nobody logged
@@ -211,11 +350,33 @@ func main() {
 	// auth.Init/parser.NewEngine/the tailer all query tables that only exist
 	// once db.Migrate has run (users, parsers, syslog_logs) - on a brand new
 	// database these queries can otherwise race ahead of table creation and
-	// fail. Everything below this point already ran sequentially after
-	// auth.Init anyway, so waiting here doesn't add any new startup latency.
-	<-migrationDone
+	// fail. They don't need RefreshMaterializedViews/ApplyEnvSettingOverrides
+	// to have finished too, so this waits on schemaReady (closed right after
+	// the schema migration) rather than the fuller migrationDone - keeping
+	// the HTTP listener off the critical path of the materialized-view
+	// refresh below.
+	<-schemaReady
 
-	if err := auth.Init(database); err != nil {
+	// Validate TLS configuration: warn if HTTPS is enabled but certificates are missing
+	if tlsEnabled := db.GetSetting(database, "https_enabled", "false"); tlsEnabled == "true" {
+		certPath := os.Getenv("TLS_CERT_PATH")
+		if certPath == "" {
+			certPath = "/data/ssl/server.crt"
+		}
+		keyPath := os.Getenv("TLS_KEY_PATH")
+		if keyPath == "" {
+			keyPath = "/data/ssl/server.key"
+		}
+		if _, err := os.Stat(certPath); err != nil {
+			slog.Warn("https_enabled is true but TLS certificate not found", "path", certPath)
+		}
+		if _, err := os.Stat(keyPath); err != nil {
+			slog.Warn("https_enabled is true but TLS key not found", "path", keyPath)
+		}
+	}
+
+	authCfg, err := auth.Init(database)
+	if err != nil {
 		slog.Error("auth initialization failed", "error", err)
 		os.Exit(1)
 	}
@@ -291,8 +452,9 @@ func main() {
 		}
 	}()
 
-	r := gin.New()
+r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID())
 	r.Use(middleware.ErrorHandler())
 	r.Use(middleware.SecurityHeaders())
 	r.Use(middleware.GzipCompress())
@@ -301,21 +463,28 @@ func main() {
 	// frontend/nginx.conf and handler.reloadNginx) - clients only ever reach
 	// this API through it, so there's no CORS handling here.
 
-	loginLimiter := newLimiter(sharedClient, "login", 5, time.Minute)
-	refreshLimiter := newLimiter(sharedClient, "refresh", 10, time.Minute)
-	initLimiter := newLimiter(sharedClient, "init", 3, time.Hour)
+	// login and change-password guard against credential brute-forcing, so
+	// their counters are persisted to the /data volume and survive an api
+	// restart; the rest are low-stakes enough that losing counters on
+	// restart is an acceptable tradeoff for the extra complexity.
+	loginLimiter := newLimiter(sharedClient, "login", 5, time.Minute, "/data/ratelimit-login.json")
+	refreshLimiter := newLimiter(sharedClient, "refresh", 10, time.Minute, "")
+	initLimiter := newLimiter(sharedClient, "init", 3, time.Hour, "")
+	changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute, "/data/ratelimit-change-password.json")
 
 	r.GET("/api/health", handler.HealthCheck(database))
-	r.POST("/api/auth/login", rateLimitMiddleware(loginLimiter), handler.Login(database))
-	r.POST("/api/auth/refresh", rateLimitMiddleware(refreshLimiter), handler.Refresh(database))
-	r.POST("/api/auth/logout", handler.Logout(database))
+	r.GET("/api/metrics", handler.PrometheusMetrics(database))
+	r.POST("/api/auth/login", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(loginLimiter), handler.Login(database, authCfg))
+	r.POST("/api/auth/refresh", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(refreshLimiter), handler.Refresh(database, authCfg))
+	r.POST("/api/auth/logout", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.Logout(database))
 	r.GET("/api/status/initialized", handler.CheckInitialized(database))
-	r.POST("/api/init", rateLimitMiddleware(initLimiter), handler.Initialize(database))
+	r.POST("/api/init", middleware.RequireJSON(), middleware.MaxRequestBodySize(8*1024), rateLimitMiddleware(initLimiter), handler.Initialize(database))
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
 	r.GET("/api/init/db-config", handler.GetDbConfig())
 
 	authGroup := r.Group("/api")
-	authGroup.Use(auth.JWTRequired())
+	authGroup.Use(authCfg.JWTRequired())
+	authGroup.Use(handler.CSRFRequired())
 	{
 		authGroup.POST("/logs", handler.GetLogs(database))
 		authGroup.POST("/logs/count", handler.GetLogsCount(database))
@@ -328,8 +497,7 @@ func main() {
 		authGroup.GET("/export/csv", handler.ExportCSV(database))
 		authGroup.GET("/export/html", handler.ExportHTML(database))
 		authGroup.GET("/auth/me", handler.GetMe(database))
-		changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute)
-		authGroup.POST("/auth/change-password", rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
+		authGroup.POST("/auth/change-password", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
 
 		notificationsGate := handler.RequireNotificationsEnabled(database)
 
@@ -338,7 +506,7 @@ func main() {
 		// hides itself. mark-read is harmless either way.
 		authGroup.GET("/notifications", handler.GetNotifications(database))
 		authGroup.POST("/notifications/mark-read", handler.MarkNotificationsRead(database))
-		authGroup.GET("/notifications/stream", notificationsGate, handler.StreamNotifications(notifHub))
+		authGroup.GET("/notifications/stream", notificationsGate, handler.StreamNotifications(notifHub, database))
 
 		authGroup.GET("/push/vapid-public-key", notificationsGate, handler.GetVAPIDPublicKey(database))
 		authGroup.POST("/push/subscribe", notificationsGate, handler.SubscribePush(database))
@@ -383,6 +551,7 @@ func main() {
 			adminGroup.PUT("/users/:id", handler.UpdateUser(database))
 			adminGroup.DELETE("/users/:id", handler.DeleteUser(database))
 			adminGroup.PUT("/users/:id/reset-password", handler.ResetPassword(database))
+			adminGroup.POST("/users/:id/unlock", handler.UnlockUserHandler(database))
 			adminGroup.GET("/settings", handler.GetSettings(database))
 			adminGroup.PUT("/settings", handler.UpdateSettings(database))
 			adminGroup.POST("/settings/cleanup", handler.CleanupLogs(database))
@@ -392,6 +561,7 @@ func main() {
 			adminGroup.GET("/ingestion/status", handler.GetIngestionStatus(ic))
 			adminGroup.POST("/ldap/test", handler.TestLDAP(database))
 			adminGroup.GET("/audit-log", handler.GetAuditLog(database))
+			adminGroup.GET("/audit-logs", handler.GetAuditLogsHandler(database))
 			adminGroup.GET("/slow-queries", handler.GetSlowQueries())
 			adminGroup.DELETE("/slow-queries", handler.ClearSlowQueriesHandler())
 			adminGroup.GET("/health/containers", handler.GetContainersHealth(database))
@@ -452,6 +622,9 @@ func main() {
 	stopVacuum()
 	stopMV()
 	stopTokenCleanup()
+	stopArchiveCleanup()
+	stopIfPersistent(loginLimiter)
+	stopIfPersistent(changePasswordLimiter)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -474,14 +647,14 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	r.Use(middleware.SecurityHeaders())
 	r.Use(middleware.GzipCompress())
 
-	initLimiter := newLimiter(sharedClient, "wizard-init", 3, time.Hour)
-	testDbLimiter := newLimiter(sharedClient, "wizard-test-db", 20, 10*time.Minute)
+	initLimiter := newLimiter(sharedClient, "wizard-init", 3, time.Hour, "")
+	testDbLimiter := newLimiter(sharedClient, "wizard-test-db", 20, 10*time.Minute, "")
 	r.GET("/api/health", handler.HealthCheckStandalone())
 	r.GET("/api/status/initialized", handler.CheckInitializedStandalone())
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
 	r.GET("/api/init/db-config", handler.GetDbConfig())
-	r.POST("/api/init/test-db", rateLimitMiddleware(testDbLimiter), handler.TestDatabaseConfig())
-	r.POST("/api/init", rateLimitMiddleware(initLimiter), handler.InitializeStandalone(ready))
+	r.POST("/api/init/test-db", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), rateLimitMiddleware(testDbLimiter), handler.TestDatabaseConfig())
+	r.POST("/api/init", middleware.RequireJSON(), middleware.MaxRequestBodySize(8*1024), rateLimitMiddleware(initLimiter), handler.InitializeStandalone(ready))
 
 	srv := &http.Server{
 		Addr:         ":" + port,

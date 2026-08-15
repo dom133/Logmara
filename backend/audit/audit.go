@@ -1,10 +1,11 @@
 // Package audit centralizes writes to the audit_log table so that every
-// audited action can also be checked against active config_change alert
+// audited action can also be checked against active audit_log alert
 // rules in one place, rather than wiring that check into each handler.
 package audit
 
 import (
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 
@@ -20,7 +21,7 @@ func SetAlertEngine(e *alertengine.Engine) {
 	engine.Store(e)
 }
 
-// LogAudit records an entry in audit_log and, if a config_change alert rule
+// LogAudit records an entry in audit_log and, if an audit_log alert rule
 // matches action, fires it. Failures are logged, not returned - audit
 // logging must never block or fail the request that triggered it.
 func LogAudit(db *sql.DB, userID int64, username, action, ip, details string) {
@@ -34,6 +35,20 @@ func LogAudit(db *sql.DB, userID int64, username, action, ip, details string) {
 	}
 
 	if e := engine.Load(); e != nil {
-		e.EvaluateConfigChange(db, action, details)
+		e.EvaluateAuditLog(db, action, userID, username, ip, details)
 	}
+}
+
+// LogSlowQuery logs slow queries to audit_log with action="slow_query" and
+// details containing the duration and query text.
+func LogSlowQuery(db *sql.DB, durationMs int, query string) {
+	details := fmt.Sprintf("duration_ms=%d, query=%s", durationMs, query)
+	LogAudit(db, 0, "", "slow_query", "", details)
+}
+
+// LogBulkOperation logs bulk operations like bulk delete/export with
+// action="bulk_operation" and details containing operation name and count.
+func LogBulkOperation(db *sql.DB, userID int64, username, operation string, count int) {
+	details := fmt.Sprintf("operation=%s, count=%d", operation, count)
+	LogAudit(db, userID, username, "bulk_operation", "", details)
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState, createContext, useContext } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link as RouterLink } from 'react-router-dom'
-import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Space, Typography } from 'antd'
+import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Space, Typography, Skeleton } from 'antd'
 import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, BellOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined, LogoutOutlined, UserOutlined, NodeIndexOutlined } from '@ant-design/icons'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
@@ -22,12 +22,13 @@ import { useIsMobile } from './hooks/useIsMobile'
 
 const { Sider, Content, Header } = Layout
 
-function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collapsed, onClose }: {
+function NavContent({ location, user, logout, isAdmin, pinnedDashboards, loadingDashboards, collapsed, onClose }: {
   location: ReturnType<typeof useLocation>
   user: { username?: string; notifications_enabled?: boolean; relay_ingestion_enabled?: boolean } | undefined
   logout: () => void
   isAdmin: boolean
   pinnedDashboards: DashboardType[]
+  loadingDashboards: boolean
   collapsed?: boolean
   onClose?: () => void
 }) {
@@ -63,7 +64,12 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collaps
             {!collapsed && item.label}
           </RouterLink>
         ))}
-        {pinnedDashboards.length > 0 && (
+        {loadingDashboards ? (
+          <div style={{ padding: '8px 16px' }}>
+            <Skeleton.Input size="small" style={{ marginBottom: 8 }} />
+            <Skeleton.Input size="small" style={{ marginBottom: 8 }} />
+          </div>
+        ) : pinnedDashboards.length > 0 && (
           <>
             {!collapsed && (
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: token.colorTextTertiary, textTransform: 'uppercase', letterSpacing: 1 }}>
@@ -166,6 +172,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
   const { themeMode, toggleTheme } = useTheme()
   const location = useLocation()
   const [pinnedDashboards, setPinnedDashboards] = useState<DashboardType[]>([])
+  const [loadingDashboards, setLoadingDashboards] = useState(true)
   const [collapsed, setCollapsed] = useState(false)
   const [drawerVisible, setDrawerVisible] = useState(false)
   const isMobile = useIsMobile()
@@ -173,10 +180,13 @@ function AppLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!user) return
     const load = async () => {
+      setLoadingDashboards(true)
       try {
         const dashboards = await getDashboards()
         setPinnedDashboards(dashboards.filter((d: DashboardType) => d.pinned))
-      } catch { /* ignore */ }
+      } catch { /* ignore */ } finally {
+        setLoadingDashboards(false)
+      }
     }
     load()
     const handler = () => load()
@@ -219,7 +229,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           style={{ background: token.colorBgContainer }}
           theme={themeMode === 'dark' ? 'dark' : 'light'}
         >
-          <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} collapsed={collapsed} />
+          <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} loadingDashboards={loadingDashboards} collapsed={collapsed} />
         </Sider>
       )}
       {isMobile && (
@@ -232,7 +242,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           styles={{ body: { padding: 0 } }}
         >
           <div style={{ background: token.colorBgContainer, height: '100%' }}>
-            <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} onClose={() => setDrawerVisible(false)} />
+            <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} loadingDashboards={loadingDashboards} onClose={() => setDrawerVisible(false)} />
           </div>
         </Drawer>
       )}
@@ -300,8 +310,10 @@ function AppLayout({ children }: { children: React.ReactNode }) {
 }
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
-  const { token } = useAuth()
-  if (!token) return <Navigate to="/login" replace />
+  const { user, loading } = useAuth()
+  const location = useLocation()
+  if (loading) return null
+  if (!user) return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />
   return <AppLayout>{children}</AppLayout>
 }
 
@@ -312,14 +324,23 @@ export default function App() {
   useEffect(() => {
     let cancelled = false
     const check = async () => {
-      const res = await checkInitialized()
-      if (cancelled) return
-      if (res.starting) {
+      try {
+        const res = await checkInitialized()
+        if (cancelled) return
+        if (res.starting) {
+          setStarting(true)
+          setTimeout(() => check(), 2000)
+        } else {
+          setStarting(false)
+          setInitialized(res.initialized)
+        }
+      } catch {
+        // API unreachable (e.g. 502 while the backend container is still
+        // coming up) - treat the same as "starting" and keep polling
+        // instead of leaving the app stuck on a bare spinner forever.
+        if (cancelled) return
         setStarting(true)
         setTimeout(() => check(), 2000)
-      } else {
-        setStarting(false)
-        setInitialized(res.initialized)
       }
     }
     check()

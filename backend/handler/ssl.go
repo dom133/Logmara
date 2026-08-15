@@ -108,7 +108,7 @@ func parseCertMetadata(path string) map[string]interface{} {
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		result["error"] = "failed to parse certificate: " + err.Error()
+		result["error"] = "failed to parse certificate"
 		return result
 	}
 	result["subject"] = cert.Subject.CommonName

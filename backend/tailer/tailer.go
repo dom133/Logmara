@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -20,6 +21,11 @@ import (
 	"syslytics/parser"
 	"syslytics/sharedstate"
 )
+
+// truncatedISORe matches app_name values that are actually truncated ISO 8601
+// timestamps (e.g. "2026-07-23T20") caused by rsyslog mis-parsing non-RFC3164
+// syslog headers from certain UniFi devices.
+var truncatedISORe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}$`)
 
 const (
 	compactionInterval = 30 * time.Minute
@@ -109,6 +115,22 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 	var entries []model.IngestEntry
 	lastFlush := time.Now()
 	lastCompaction := time.Now()
+	batchStartPos := int64(0)
+
+	defer func() {
+		// Flush any remaining entries on shutdown
+		if len(entries) > 0 {
+			slog.Info("flushing remaining entries on shutdown", "count", len(entries))
+			if err := flushBatch(db, entries); err != nil {
+				slog.Error("final flush error", "error", err)
+			} else {
+				flushedPos = batchStartPos
+				savePosition(posFile, flushedPos)
+				alerts.EvaluateBatch(db, entries)
+			}
+		}
+		slog.Info("file tailer stopped")
+	}()
 
 	for {
 		if ctx.Err() != nil {
@@ -148,8 +170,6 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 				filePos = 0
 				flushedPos = 0
 				savePosition(posFile, 0)
-				stat, _ = f.Stat()
-				fileSize = stat.Size()
 				lastCompaction = time.Now()
 			}
 		}
@@ -191,11 +211,20 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 				}
 			}
 
-			if entry.Hostname == "" {
-				continue
-			}
+if entry.Hostname == "" {
+			continue
+		}
 
-			appName := entry.AppName
+		// Fix rsyslog mis-parse: when a device sends an ISO 8601 timestamp in its
+		// syslog header (non-RFC3164), rsyslog treats the truncated date part
+		// (e.g. "2026-07-23T20") as programname and the rest ("11:40.246Z ...")
+		// as the message. Restore the original message by merging them back.
+		if truncatedISORe.MatchString(entry.AppName) {
+			entry.Message = entry.AppName + ":" + entry.Message
+			entry.AppName = ""
+		}
+
+		appName := entry.AppName
 			result := engine.Parse(entry.Hostname, appName, entry.Message)
 			if result != nil {
 				jsonData, err := json.Marshal(result.Fields)
@@ -303,8 +332,8 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 	}
 	defer tx.Rollback()
 
-	query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers)
-		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
+	query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, via_relay)
+		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
 	stmt, err := tx.Prepare(query)
 	if err != nil {
 		return fmt.Errorf("prepare: %w", err)
@@ -324,13 +353,14 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 		msgID := nullStr(entry.MsgID)
 		facility := nullStr(entry.Facility)
 		rawMsg := nullStr(entry.RawMessage)
+		viaRelay := nullStr(entry.ViaRelay)
 		parsedFields := json.RawMessage("{}")
 		if len(entry.ParsedFields) > 0 {
 			parsedFields = entry.ParsedFields
 		}
 
 		_, err = stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
-			entry.Severity, facility, entry.Message, rawMsg, parsedFields, pq.StringArray(entry.MatchedParsers))
+			entry.Severity, facility, entry.Message, rawMsg, parsedFields, pq.StringArray(entry.MatchedParsers), viaRelay)
 		if err != nil {
 			slog.Error("insert error", "error", err)
 			continue

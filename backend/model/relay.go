@@ -3,9 +3,11 @@ package model
 import "time"
 
 // Relay certificate lifecycle states. There is no real X.509 CRL/OCSP in
-// v1 - "revoked" just means the matching relay_whitelist IP entry has been
-// removed, so the cert (even though still cryptographically valid) is cut
-// off at the transport ACL. See handler.RevokeRelayCertificate.
+// v1 - "revoked" cuts a cert off at the transport layer instead, by
+// dropping its CommonName from the mTLS listener's PermittedPeer list
+// (see handler.writeRelayACL) and, if its whitelist entry hasn't since
+// been relinked to a replacement certificate, also from the IP allow-list.
+// See handler.RevokeRelayCertificate.
 const (
 	RelayCertStatusIssued  = "issued"
 	RelayCertStatusRevoked = "revoked"
@@ -57,4 +59,14 @@ type RelayCertificate struct {
 type RelayCertificateRequest struct {
 	Label     string `json:"label" binding:"required,max=255"`
 	IPAddress string `json:"ip_address" binding:"required,ip"`
+}
+
+// RelayACLEntry pairs an active whitelist entry's IP with the exact peer
+// name (CommonName) its currently-linked certificate was issued with - see
+// db.GetActiveRelayACLEntries and handler.writeRelayACL, which uses both
+// halves to build the IP allow-list and the mTLS listener's
+// PermittedPeer list.
+type RelayACLEntry struct {
+	IPAddress string
+	PeerName  string
 }
