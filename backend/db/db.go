@@ -120,7 +120,12 @@ func MigrateWithLock(db *sql.DB) error {
 // schema_version table already records this value, so a forgotten bump
 // means an already-deployed instance will never see the new statement
 // applied.
-const schemaVersion = 16
+// Bumped to 17 even though no statement/partitionStmts/postStmts content
+// changed - runSchemaMigration now does a SET ROLE logmara_app_group before
+// its DDL (see the comment there), and that only takes effect on an
+// already-migrated database if runSchemaMigration runs again, which only
+// happens when schemaVersion advances past what's recorded.
+const schemaVersion = 17
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -316,6 +321,31 @@ func runSchemaMigration(ctx context.Context, conn *sql.Conn) error {
 	// in which case the build just falls back to the server default.
 	if _, err := conn.ExecContext(ctx, "SET maintenance_work_mem = '512MB'"); err != nil {
 		slog.Warn("failed to raise maintenance_work_mem for migration; index/materialized view builds may be slower", "error", err)
+	}
+
+	// Switch to logmara_app_group (if this connection is a member of it -
+	// true for every Vault dynamic credential, since its creation_statements
+	// GRANT logmara_app_group TO "{{name}}") before running any DDL below.
+	// Object ownership in Postgres always goes to the exact connecting role
+	// that ran CREATE, never to a role it merely inherits from - so without
+	// this, every table/index/materialized view/function this migration
+	// creates or recreates (e.g. mv_device_stats's DROP+CREATE further down)
+	// ends up owned by whichever rotating Vault credential happened to run
+	// it, orphaned from every other replica's credential. That's what forced
+	// re-running vault-bootstrap.sh's ALTER ... OWNER TO logmara_app_group
+	// after every migration that touched an existing object. Running DDL as
+	// logmara_app_group instead means every object this migration
+	// creates/recreates is owned by that one stable, non-rotating role from
+	// the start - no reconciliation step needed afterward, ever again. A
+	// one-time vault-bootstrap.sh run is still needed to fix objects already
+	// mis-owned from before this existed.
+	if _, err := conn.ExecContext(ctx, `DO $$ BEGIN
+		IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'logmara_app_group') THEN
+			EXECUTE 'SET ROLE logmara_app_group';
+		END IF;
+	EXCEPTION WHEN insufficient_privilege THEN NULL;
+	END $$`); err != nil {
+		slog.Warn("failed to switch migration connection to logmara_app_group; objects created by this migration will be owned by the connecting Vault credential instead", "error", err)
 	}
 
 	statements := []string{

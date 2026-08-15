@@ -389,7 +389,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT ALL PRIVILEGES ON SEQUENCES TO logmara_app_group;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
-    GRANT ALL PRIVILEGES ON MATERIALIZED VIEWS TO logmara_app_group;" 2>/dev/null || true
+    GRANT ALL PRIVILEGES ON MATERIALIZED VIEWS TO logmara_app_group;"
 
         # SECURITY DEFINER function so any app user (even after Vault rotates
         # the dynamic credentials) can refresh the dashboard materialized
@@ -405,10 +405,10 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
                 RETURNS VOID AS \$\$
                 BEGIN
                   EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY %I', name);
-                EXCEPTION WHEN invalid_object_state THEN
+                EXCEPTION WHEN object_not_in_prerequisite_state THEN
                   EXECUTE format('REFRESH MATERIALIZED VIEW %I', name);
                 END;
-                \$\$ LANGUAGE plpgsql SECURITY DEFINER;" 2>/dev/null || true
+                \$\$ LANGUAGE plpgsql SECURITY DEFINER;"
 
         docker run --rm \
           --network syslog_net \
@@ -416,7 +416,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
           postgres:16-alpine psql -h haproxy -p 5000 \
             -U "${PG_SUPERUSER:-postgres}" \
             -d "${PG_DB:-syslog_db}" \
-            -c "GRANT EXECUTE ON FUNCTION refresh_mv(TEXT) TO logmara_app_group;" 2>/dev/null || true
+            -c "GRANT EXECUTE ON FUNCTION refresh_mv(TEXT) TO logmara_app_group;"
 
         # Create role for application user
         vault_cli write secret-dynamic/database/roles/logmara-app \
