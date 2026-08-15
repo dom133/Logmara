@@ -61,11 +61,11 @@ type InitRequest struct {
 func bindInitRequest(c *gin.Context) (*InitRequest, bool) {
 	var req InitRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", err))
+		middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", "Invalid request", err))
 		return nil, false
 	}
 	if err := auth.ValidatePassword(req.Admin.Password); err != nil {
-		middleware.HandleError(c, model.NewBadRequestKey("auth.passwordRequirements", err))
+		middleware.HandleError(c, model.NewBadRequestKey("auth.passwordRequirements", "Password does not meet requirements", err))
 		return nil, false
 	}
 	// The JWT and encryption keys are configured via the environment
@@ -245,17 +245,17 @@ func TestDatabaseConfig() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var d DatabaseConfig
 		if err := c.ShouldBindJSON(&d); err != nil {
-		middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", err))
+		middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", "Invalid request", err))
 		return
 	}
 	if d.Host == "" || d.Port == 0 || d.Name == "" || d.User == "" || d.Password == "" {
-		middleware.HandleError(c, model.NewBadRequestKey("init.dbCredentialsRequired", nil))
+		middleware.HandleError(c, model.NewBadRequestKey("init.dbCredentialsRequired", "Database credentials are required", nil))
 		return
 	}
 
 	conn, err := sql.Open("postgres", buildDSN(d))
 	if err != nil {
-		middleware.HandleError(c, model.NewBadRequestKey("init.dbSettingsInvalid", err))
+		middleware.HandleError(c, model.NewBadRequestKey("init.dbSettingsInvalid", "Invalid database settings", err))
 		return
 	}
 	defer conn.Close()
@@ -263,7 +263,7 @@ func TestDatabaseConfig() gin.HandlerFunc {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 	if err := conn.PingContext(ctx); err != nil {
-		middleware.HandleError(c, model.NewServiceUnavailableKey("init.dbConnectionFailed", err))
+		middleware.HandleError(c, model.NewServiceUnavailableKey("init.dbConnectionFailed", "Database connection failed", err))
 			return
 		}
 
@@ -285,19 +285,19 @@ func InitializeStandalone(ready chan<- *sql.DB) gin.HandlerFunc {
 
 		d := req.Database
 		if d.Host == "" || d.Port == 0 || d.Name == "" || d.User == "" || d.Password == "" {
-		middleware.HandleError(c, model.NewBadRequestKey("init.dbCredentialsRequired", nil))
+		middleware.HandleError(c, model.NewBadRequestKey("init.dbCredentialsRequired", "Database credentials are required", nil))
 		return
 	}
 
 	database, err := db.Connect(buildDSN(d))
 	if err != nil {
-		middleware.HandleError(c, model.NewServiceUnavailableKey("init.dbConnectionFailed", err))
+		middleware.HandleError(c, model.NewServiceUnavailableKey("init.dbConnectionFailed", "Database connection failed", err))
 		return
 	}
 
 	if err := db.Migrate(database); err != nil {
 		database.Close()
-		middleware.HandleError(c, model.NewInternalKey("init.dbMigrationFailed", err))
+		middleware.HandleError(c, model.NewInternalKey("init.dbMigrationFailed", "Database migration failed", err))
 			return
 		}
 

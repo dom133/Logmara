@@ -188,12 +188,13 @@ export default function Dashboard() {
     { title: t('dashboard.count'), dataIndex: 'count', key: 'count', width: 70 },
   ]
 
+  const fmt = (n: number) => n.toLocaleString('pl-PL')
   const statTiles = [
-    { title: t('dashboard.totalLogs'), value: stats?.total_logs || 0, icon: <FileTextOutlined />, color: '#1890ff' },
-    { title: t('dashboard.lastHour'), value: stats?.logs_last_hour || 0, icon: <ClockCircleOutlined />, color: '#3f8600' },
-    { title: t('dashboard.last24h'), value: stats?.logs_last_day || 0, icon: <CalendarOutlined />, color: '#cf1322' },
-    { title: t('dashboard.logsPerSec'), value: logsPerSec.toFixed(1), subtitle: t('dashboard.avgLast10s'), icon: <ThunderboltOutlined />, color: '#13c2c2' },
-    { title: t('dashboard.devices'), value: stats?.unique_devices || 0, icon: <DesktopOutlined />, color: '#722ed1' },
+    { title: t('dashboard.totalLogs'), value: fmt(stats?.total_logs || 0), icon: <FileTextOutlined />, color: '#1890ff' },
+    { title: t('dashboard.lastHour'), value: fmt(stats?.logs_last_hour || 0), icon: <ClockCircleOutlined />, color: '#3f8600' },
+    { title: t('dashboard.last24h'), value: fmt(stats?.logs_last_day || 0), icon: <CalendarOutlined />, color: '#cf1322' },
+    { title: t('dashboard.logsPerSec'), value: Math.round(logsPerSec), subtitle: t('dashboard.avgLast10s'), icon: <ThunderboltOutlined />, color: '#13c2c2' },
+    { title: t('dashboard.devices'), value: fmt(stats?.unique_devices || 0), icon: <DesktopOutlined />, color: '#722ed1' },
   ]
 
   return (

@@ -108,7 +108,7 @@ func CreateDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		if req.Name == "" {
-			middleware.HandleError(c, model.NewBadRequestKey("dashboard.nameRequired", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("dashboard.nameRequired", "Dashboard name is required", nil))
 			return
 		}
 
@@ -122,7 +122,7 @@ func CreateDashboard(db *sql.DB) gin.HandlerFunc {
 			VALUES ($1, $2, $3, $4, $5) RETURNING id
 		`, req.Name, req.Description, userID, req.Config, userID).Scan(&id)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternalKey("dashboard.createFailed", err))
+			middleware.HandleError(c, model.NewInternalKey("dashboard.createFailed", "Failed to create dashboard", err))
 			return
 		}
 
@@ -232,7 +232,7 @@ func UpdateDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		if len(setClauses) == 0 {
-			middleware.HandleError(c, model.NewBadRequestKey("dashboard.noFieldsToUpdate", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("dashboard.noFieldsToUpdate", "No fields to update", nil))
 			return
 		}
 
@@ -272,7 +272,7 @@ func DeleteDashboard(db *sql.DB) gin.HandlerFunc {
 			result, err = db.Exec("DELETE FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID)
 		}
 		if err != nil {
-			middleware.HandleError(c, model.NewInternalKey("dashboard.deleteFailed", err))
+			middleware.HandleError(c, model.NewInternalKey("dashboard.deleteFailed", "Failed to delete dashboard", err))
 			return
 		}
 
@@ -448,7 +448,7 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 		if useCursor && cursor != "" {
 			ts, id, err := decodeLogCursor(cursor)
 			if err != nil {
-				middleware.HandleError(c, model.NewBadRequestKey("error.invalidCursor", err))
+				middleware.HandleError(c, model.NewBadRequestKey("error.invalidCursor", "Invalid cursor", err))
 				return
 			}
 			whereClauses = append(whereClauses, fmt.Sprintf("(timestamp, id) %s ($%d, $%d)", cursorOp, argIdx, argIdx+1))

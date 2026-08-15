@@ -31,7 +31,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const appVersion = "0.0.1"
+const appVersion = "0.0.2"
 
 func versionHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"version": appVersion})
@@ -705,6 +705,13 @@ r := gin.New()
 			adminGroup.POST("/relay/certificates/:id/regenerate", handler.RegenerateRelayCertificate(database))
 
 			adminGroup.DELETE("/notifications/history", notificationsGate, handler.ClearNotificationHistory(database))
+
+			// API Key management
+			adminGroup.GET("/api-keys", handler.ListAPIKeys(database))
+			adminGroup.POST("/api-keys", handler.CreateAPIKey(database))
+			adminGroup.PUT("/api-keys/:id", handler.UpdateAPIKey(database))
+			adminGroup.DELETE("/api-keys/:id", handler.DeleteAPIKey(database))
+			adminGroup.POST("/api-keys/:id/reset", handler.ResetAPIKey(database))
 		}
 
 		// Same /admin path prefix as adminGroup above, but readable/usable by
@@ -725,6 +732,15 @@ r := gin.New()
 			adminEditorGroup.DELETE("/notification-channels/:id", notificationsGate, handler.DeleteNotificationChannel(database))
 			adminEditorGroup.POST("/notification-channels/:id/test", notificationsGate, handler.TestNotificationChannel(database, notifHub))
 		}
+	}
+
+	// Public API routes (API key authentication)
+	publicAPI := r.Group("/api/v1")
+	publicAPI.Use(middleware.APIKeyAuth(database))
+	{
+		publicAPI.POST("/logs/export", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportJSON(database))
+		publicAPI.POST("/logs/export-parsed", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportParsedJSON(database))
+		publicAPI.GET("/stats", handler.ExportStats(database))
 	}
 
 	srv := &http.Server{

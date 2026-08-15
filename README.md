@@ -1248,6 +1248,59 @@ Parsers can be created through the web interface or API with the following requi
 - **Regular Expression**: Named capture groups that define extracted fields
 - **Fields Configuration**: Define labels and data types for extracted fields
 
+## External API
+
+Generate API keys from the Admin panel to programmatically export logs and view statistics. Keys support permission scoping, host/severity filters, rate limiting, and optional TTL expiration.
+
+### Endpoints
+
+All endpoints require the header `Authorization: Bearer <api-key>`.
+
+#### Export Raw Logs (JSON)
+
+```
+POST /api/v1/logs/export
+```
+
+Query params: `from`, `to`, `hostname`, `severity`, `message`, `offset`, `limit`
+
+Returns paginated raw log entries as JSON.
+
+#### Export Parsed Logs (JSON)
+
+```
+POST /api/v1/logs/export-parsed
+```
+
+Same query params as above. Returns logs enriched with parsed fields from the parser engine.
+
+#### View Statistics
+
+```
+GET /api/v1/stats
+```
+
+Query params: `from`, `to`
+
+Returns aggregate statistics: total logs, logs per severity, top hosts, etc.
+
+### Example
+
+```bash
+curl -H "Authorization: Bearer sk_live_xxxxx" \
+  "https://logmara.example.com/api/v1/logs/export?from=2025-01-01T00:00:00Z&to=2025-01-02T00:00:00Z&limit=100"
+```
+
+### Rate Limits
+
+Each API key has a configurable per-minute request limit (default 60 req/min). Exceeding the limit returns `429 Too Many Requests`.
+
+### Scope Filters
+
+When creating a key, you can restrict it to specific hostnames and/or severities. These filters are applied as AND conditions on top of any query parameters.
+
+---
+
 ## License 📜
 
 [GNU Affero General Public License v3.0](LICENSE) with the [Commons Clause](https://commonsclause.com/) license condition. You're free to use, modify, self-host, and redistribute this software (source must stay available, per AGPL) — the Commons Clause only prohibits selling the software itself, or offering it as a paid product/service, without a separate commercial license from the copyright holder.

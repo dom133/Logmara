@@ -128,7 +128,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 		if useCursor && req.Cursor != "" {
 			ts, id, err := decodeLogCursor(req.Cursor)
 			if err != nil {
-				middleware.HandleError(c, model.NewBadRequestKey("error.invalidCursor", err))
+				middleware.HandleError(c, model.NewBadRequestKey("error.invalidCursor", "Invalid cursor", err))
 				return
 			}
 			whereClauses = append(whereClauses, fmt.Sprintf("(syslog_logs.timestamp, syslog_logs.id) %s ($%d, $%d)", cursorOp, argIdx, argIdx+1))
@@ -161,7 +161,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 
 		rows, err := db.Query(logsQuery, args...)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternalKey("error.queryFailed", err))
+			middleware.HandleError(c, model.NewInternalKey("error.queryFailed", "Query failed", err))
 			return
 		}
 		defer rows.Close()
@@ -298,7 +298,7 @@ func UpdateDeviceAlias(db *sql.DB) gin.HandlerFunc {
 			DisplayName string `json:"display_name" binding:"required"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", "Invalid request", err))
 			return
 		}
 		var curHostname sql.NullString
@@ -310,7 +310,7 @@ func UpdateDeviceAlias(db *sql.DB) gin.HandlerFunc {
 			ip, body.DisplayName, oldhn,
 		)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternalKey("logs.aliasUpdateFailed", err))
+			middleware.HandleError(c, model.NewInternalKey("logs.aliasUpdateFailed", "Failed to update device alias", err))
 			return
 		}
 		InvalidateAllCaches()

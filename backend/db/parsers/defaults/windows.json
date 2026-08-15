@@ -113,5 +113,55 @@
         "type": "number"
       }
     ]
+  },
+  {
+    "name": "Windows Group Membership (4627)",
+    "description": "Extracts subject and new-logon fields from Microsoft-Windows-Security-Auditing group membership events (eventId 4627)",
+    "device_type": "windows",
+    "match_type": "message",
+    "match_value": "\"eventId\":4627,\"providerName\":\"Microsoft-Windows-Security-Auditing\"",
+    "regex": "Podmiot:.*?Identyfikator zabezpieczeń:[ ]+(S-[^ ]+)[ ]+Nazwa konta:[ ]+([^ ]+)[ ]+Domena konta:[ ]+([^ ]+)[ ]+Identyfikator logowania:[ ]+([^ ]+).*?Typ logowania:[ ]+([^ ]+).*?Nowe logowanie:.*?Identyfikator zabezpieczeń:[ ]+(S-[^ ]+)[ ]+Nazwa konta:[ ]+([^ ]+)[ ]+Domena konta:[ ]+([^ ]+)",
+    "fields": [
+      {
+        "name": "subject_sid",
+        "label": "Subject SID",
+        "type": "string"
+      },
+      {
+        "name": "subject_account",
+        "label": "Subject Account",
+        "type": "string"
+      },
+      {
+        "name": "subject_domain",
+        "label": "Subject Domain",
+        "type": "string"
+      },
+      {
+        "name": "subject_logon_id",
+        "label": "Subject Logon ID",
+        "type": "string"
+      },
+      {
+        "name": "logon_type",
+        "label": "Logon Type",
+        "type": "string"
+      },
+      {
+        "name": "newlogon_sid",
+        "label": "New Logon SID",
+        "type": "string"
+      },
+      {
+        "name": "newlogon_account",
+        "label": "New Logon Account",
+        "type": "string"
+      },
+      {
+        "name": "newlogon_domain",
+        "label": "New Logon Domain",
+        "type": "string"
+      }
+    ]
   }
 ]
