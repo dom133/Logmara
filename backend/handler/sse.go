@@ -2,6 +2,7 @@ package handler
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"syslog-gui/model"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lib/pq"
 )
 
 func StreamLogs(db *sql.DB) gin.HandlerFunc {
@@ -42,8 +44,8 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 			idx := 2
 
 			if hostname != "" {
-				clauses = append(clauses, fmt.Sprintf("hostname ILIKE $%d", idx))
-				args = append(args, "%"+hostname+"%")
+				clauses = append(clauses, fmt.Sprintf("hostname = $%d", idx))
+				args = append(args, hostname)
 				idx++
 			}
 			if severity != "" {
@@ -80,7 +82,7 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 			case <-ticker.C:
 				whereSQL, args := buildWhere()
 				query := fmt.Sprintf(
-					"SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, created_at "+
+					"SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at "+
 						"FROM syslog_logs %s ORDER BY timestamp ASC LIMIT 100",
 					whereSQL,
 				)
@@ -93,12 +95,18 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 				var logs []model.SyslogLog
 				for rows.Next() {
 					var l model.SyslogLog
+					var rawParsed json.RawMessage
+					var parsers pq.StringArray
 					if err := rows.Scan(
 						&l.ID, &l.Timestamp, &l.Hostname, &l.AppName,
 						&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
-						&l.Message, &l.RawMessage, &l.CreatedAt,
+						&l.Message, &l.RawMessage, &rawParsed, &parsers, &l.CreatedAt,
 					); err != nil {
 						continue
+					}
+					l.MatchedParsers = parsers
+					if len(rawParsed) > 0 {
+						json.Unmarshal(rawParsed, &l.ParsedFields)
 					}
 					logs = append(logs, l)
 				}
@@ -112,8 +120,9 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 				if err != nil {
 					continue
 				}
+				encoded := base64.StdEncoding.EncodeToString(data)
 
-				fmt.Fprintf(c.Writer, "event: log\ndata: %s\n\n", string(data))
+				fmt.Fprintf(c.Writer, "event: log\ndata: %s\n\n", encoded)
 				flusher.Flush()
 
 				since = logs[len(logs)-1].Timestamp.Format(time.RFC3339)

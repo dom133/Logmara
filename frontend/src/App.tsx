@@ -8,6 +8,7 @@ import LogsViewer from './pages/LogsViewer'
 import ParsersPage from './pages/Parsers'
 import DashboardsPage from './pages/Dashboards'
 import DashboardViewPage from './pages/DashboardView'
+
 import Admin from './pages/Admin'
 import SetupWizard from './pages/SetupWizard'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -30,12 +31,13 @@ function useIsMobile() {
   return isMobile
 }
 
-function NavContent({ location, user, logout, isAdmin, pinnedDashboards, onClose }: {
+function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collapsed, onClose }: {
   location: ReturnType<typeof useLocation>
   user: { username?: string } | undefined
   logout: () => void
   isAdmin: boolean
   pinnedDashboards: DashboardType[]
+  collapsed?: boolean
   onClose?: () => void
 }) {
   const { token } = theme.useToken()
@@ -61,14 +63,16 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, onClose
             }}
           >
             <span style={{ fontSize: 18 }}>{item.icon}</span>
-            {item.label}
+            {!collapsed && item.label}
           </RouterLink>
         ))}
         {pinnedDashboards.length > 0 && (
           <>
+            {!collapsed && (
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: '#999', textTransform: 'uppercase', letterSpacing: 1 }}>
               Pinned
             </div>
+          )}
             {pinnedDashboards.map(d => (
               <RouterLink
                 key={`pin-${d.id}`}
@@ -88,7 +92,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, onClose
                 }}
               >
                 <span style={{ fontSize: 18 }}><PushpinOutlined /></span>
-                {d.name}
+                {!collapsed && d.name}
               </RouterLink>
             ))}
           </>
@@ -111,14 +115,16 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, onClose
             }}
           >
             <span style={{ fontSize: 18 }}><SafetyOutlined /></span>
-            Admin
+            {!collapsed && 'Admin'}
           </RouterLink>
         )}
       </nav>
       <div style={{ position: 'absolute', bottom: 16, left: 16, right: 16 }}>
-        <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
-          {user?.username}
-        </div>
+        {!collapsed && (
+          <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+            {user?.username}
+          </div>
+        )}
         <button
           onClick={() => { logout(); onClose?.() }}
           style={{
@@ -140,7 +146,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, onClose
   return (
     <>
       <div style={{ padding: '20px 16px', fontSize: 20, fontWeight: 700, color: '#1890ff', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <DashboardOutlined style={{ fontSize: 24 }} /> SysLog GUI
+        <DashboardOutlined style={{ fontSize: 24 }} /> {!collapsed && 'SysLog GUI'}
       </div>
       {renderLinks()}
     </>
@@ -171,7 +177,15 @@ function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <ThemeContext.Provider value={{ themeMode, toggleTheme }}>
-      <ConfigProvider theme={{ algorithm: themeMode === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm }}>
+      <ConfigProvider theme={{
+        algorithm: themeMode === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm,
+        token: { colorError: '#ff4d4f' },
+      }}>
+        <style>{`
+          .ant-message-error .anticon { color: #ff4d4f !important; }
+          .ant-message-error .ant-message-notice-content { border-color: #ff4d4f !important; background: #fff2f0 !important; }
+          .ant-message-error { color: #ff4d4f !important; }
+        `}</style>
         {children}
       </ConfigProvider>
     </ThemeContext.Provider>
@@ -204,6 +218,9 @@ function AppLayout({ children }: { children: React.ReactNode }) {
       } catch { /* ignore */ }
     }
     load()
+    const handler = () => load()
+    window.addEventListener('dashboards-pinned-changed', handler)
+    return () => window.removeEventListener('dashboards-pinned-changed', handler)
   }, [user])
 
   useEffect(() => {
@@ -223,7 +240,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           style={{ background: token.colorBgContainer }}
           theme={themeMode === 'dark' ? 'dark' : 'light'}
         >
-          <NavContent location={location} user={user} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} />
+          <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} collapsed={collapsed} />
         </Sider>
       )}
       {isMobile && (
@@ -236,7 +253,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           styles={{ body: { padding: 0 } }}
         >
           <div style={{ background: token.colorBgContainer, height: '100%' }}>
-            <NavContent location={location} user={user} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} onClose={() => setDrawerVisible(false)} />
+            <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} onClose={() => setDrawerVisible(false)} />
           </div>
         </Drawer>
       )}
@@ -292,8 +309,6 @@ export default function App() {
       setInitialized(res.initialized)
     }
     check()
-    const interval = setInterval(check, 2000)
-    return () => clearInterval(interval)
   }, [])
 
   if (initialized === null) {
@@ -317,6 +332,7 @@ export default function App() {
           ) : (
             <>
               <Route path="/login" element={<Login />} />
+              
               <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
               <Route path="/logs" element={<PrivateRoute><LogsViewer /></PrivateRoute>} />
               <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />

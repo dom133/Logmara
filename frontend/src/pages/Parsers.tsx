@@ -1,15 +1,18 @@
 import { useEffect, useState } from 'react'
 import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, Switch, message, Popconfirm, Tooltip, Typography, Divider, Descriptions } from 'antd'
-import { PlusOutlined, PlayCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, RestOutlined } from '@ant-design/icons'
-import { getParsers, createParser, updateParser, deleteParser, testParser, reparseUnparsed, getParsedFields, Parser, ParsedField } from '../services/api'
+import { PlusOutlined, PlayCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, RestOutlined, CopyOutlined } from '@ant-design/icons'
+import { getParsers, createParser, updateParser, deleteParser, cloneParser, testParser, reparseUnparsed, getParsedFields, Parser, ParsedField } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
+import { useAuth } from '../services/auth'
 
 const { Title, Text } = Typography
 
 const deviceTypes = ['all', 'mikrotik', 'ubiquiti', 'cisco', 'palo_alto', 'pfsense', 'linux', 'generic']
-const matchTypes = ['hostname', 'app_name', 'message']
+const matchTypes = ['hostname', 'app_name', 'message', 'all']
 
 export default function ParsersPage() {
+  const { user } = useAuth()
+  const canEdit = user?.role === 'admin' || user?.role === 'editor'
   const [parsers, setParsers] = useState<Parser[]>([])
   const [fields, setFields] = useState<ParsedField[]>([])
   const [loading, setLoading] = useState(true)
@@ -31,7 +34,7 @@ export default function ParsersPage() {
       { key: 'regex', width: 250 },
       { key: 'fields', width: 180 },
       { key: 'enabled', width: 100 },
-      { key: 'actions', width: 140 },
+      { key: 'actions', width: 180 },
     ],
   )
 
@@ -83,6 +86,16 @@ export default function ParsersPage() {
       loadData()
     } catch (e: any) {
       message.error(e.response?.data?.error || 'Failed to delete parser')
+    }
+  }
+
+  const handleClone = async (id: number) => {
+    try {
+      await cloneParser(id)
+      message.success('Parser cloned')
+      loadData()
+    } catch (e: any) {
+      message.error(e.response?.data?.error || 'Failed to clone parser')
     }
   }
 
@@ -184,12 +197,15 @@ export default function ParsersPage() {
       key: 'actions',
       render: (_: any, r: Parser) => (
         <Space>
-          <Tooltip title="Edit">
+          {canEdit && <Tooltip title="Edit">
             <Button size="small" icon={<EditOutlined />} disabled={r.is_builtin} onClick={() => openEdit(r)} />
-          </Tooltip>
-          <Popconfirm title="Delete parser?" onConfirm={() => handleDelete(r.id)} disabled={r.is_builtin}>
+          </Tooltip>}
+          {canEdit && <Tooltip title="Clone">
+            <Button size="small" icon={<CopyOutlined />} onClick={() => handleClone(r.id)} />
+          </Tooltip>}
+          {canEdit && <Popconfirm title="Delete parser?" onConfirm={() => handleDelete(r.id)} disabled={r.is_builtin}>
             <Button size="small" danger icon={<DeleteOutlined />} disabled={r.is_builtin} />
-          </Popconfirm>
+          </Popconfirm>}
         </Space>
       ),
     },
@@ -201,9 +217,9 @@ export default function ParsersPage() {
         <Title level={3}>Parser Engine</Title>
         <Space>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
-          <Button icon={<ReloadOutlined />} onClick={handleReparse}>Reparse Unparsed</Button>
-          <Button icon={<PlayCircleOutlined />} onClick={() => setTestModalOpen(true)}>Test Regex</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Parser</Button>
+          {canEdit && <Button icon={<ReloadOutlined />} onClick={handleReparse}>Reparse Unparsed</Button>}
+          {canEdit && <Button icon={<PlayCircleOutlined />} onClick={() => setTestModalOpen(true)}>Test Regex</Button>}
+          {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Parser</Button>}
         </Space>
       </Space>
 

@@ -3,6 +3,7 @@ import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, me
 import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined } from '@ant-design/icons'
 import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, User, DeviceStats } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
+import SeverityTag from '../components/SeverityTag'
 
 const { Option } = Select
 
@@ -24,8 +25,10 @@ export default function Admin() {
     'col_widths_admin',
     [
       { key: 'username', width: 150 },
+      { key: 'email', width: 250 },
       { key: 'role', width: 100 },
       { key: 'is_active', width: 100 },
+      { key: 'last_login_at', width: 200 },
       { key: 'created_at', width: 200 },
       { key: 'actions', width: 200 },
     ],
@@ -46,7 +49,14 @@ export default function Admin() {
     try {
       const data = await getSettings()
       setSettings(data)
-      settingsForm.setFieldsValue(data)
+      const formValues: Record<string, any> = { ...data }
+      formValues['ldap_enabled'] = data['ldap_enabled'] === 'true'
+      formValues['ldap_use_tls'] = data['ldap_use_tls'] === 'true'
+      formValues['ldap_auto_provision'] = data['ldap_auto_provision'] === 'true'
+      if (data['ldap_port']) formValues['ldap_port'] = parseInt(data['ldap_port'], 10)
+      if (data['retention_days']) formValues['retention_days'] = parseInt(data['retention_days'], 10)
+      if (data['jwt_expiry']) formValues['jwt_expiry'] = parseInt(data['jwt_expiry'], 10)
+      settingsForm.setFieldsValue(formValues)
       setLdapEnabled(data['ldap_enabled'] === 'true')
     } catch (e: any) {
       message.error('Failed to load settings')
@@ -66,8 +76,8 @@ export default function Admin() {
     try {
       await testLDAPConnection({
         server: values.ldap_server,
-        port: values.ldap_port || 389,
-        use_tls: values.ldap_use_tls,
+        port: Number(values.ldap_port) || 389,
+        use_tls: getLdapBool('ldap_use_tls'),
         base_dn: values.ldap_base_dn,
         bind_dn: values.ldap_bind_dn,
         bind_password: values.ldap_bind_password,
@@ -165,6 +175,11 @@ export default function Admin() {
     }
   }
 
+  const getLdapBool = (key: string) => {
+    const v = settingsForm.getFieldValue(key)
+    return v === true || v === 'true' || v === 1
+  }
+
   const handleCleanup = async () => {
     try {
       const result = await cleanupLogs()
@@ -190,6 +205,18 @@ export default function Admin() {
       key: 'username',
     },
     {
+      title: 'Email',
+      dataIndex: 'email',
+      key: 'email',
+      render: (email: string) => email || '-',
+    },
+    {
+      title: 'Type',
+      dataIndex: 'auth_type',
+      key: 'auth_type',
+      render: (t: string) => <Tag color={t === 'ldap' ? 'orange' : 'default'}>{t === 'ldap' ? 'LDAP' : 'Local'}</Tag>,
+    },
+    {
       title: 'Role',
       dataIndex: 'role',
       key: 'role',
@@ -203,6 +230,12 @@ export default function Admin() {
       dataIndex: 'is_active',
       key: 'is_active',
       render: (active: boolean) => <Tag color={active ? 'green' : 'red'}>{active ? 'Active' : 'Disabled'}</Tag>,
+    },
+    {
+      title: 'Last Login',
+      dataIndex: 'last_login_at',
+      key: 'last_login_at',
+      render: (date: string | null) => date ? new Date(date).toLocaleString() : '-',
     },
     {
       title: 'Created',
@@ -311,7 +344,7 @@ export default function Admin() {
               <Card title="LDAP Authentication">
                 <Form form={settingsForm} layout="vertical" onFinish={handleSaveSettings}>
                   <Form.Item label="Enable LDAP" name="ldap_enabled" valuePropName="checked">
-                    <Switch onChange={(v) => setLdapEnabled(v)} />
+                    <Switch checked={ldapEnabled} onChange={(v) => { setLdapEnabled(v); settingsForm.setFieldValue('ldap_enabled', v); }} />
                   </Form.Item>
                   <Form.Item label="Server" name="ldap_server">
                     <Input placeholder="ldap.example.com" disabled={!ldapEnabled} />
@@ -333,6 +366,23 @@ export default function Admin() {
                   </Form.Item>
                   <Form.Item label="User Filter" name="ldap_user_filter">
                     <Input placeholder="(uid=%s)" disabled={!ldapEnabled} />
+                  </Form.Item>
+                  <Divider orientation="left">Attribute Mapping</Divider>
+                  <Form.Item label="Username Attribute" name="ldap_username_attr">
+                    <Input placeholder="uid" disabled={!ldapEnabled} />
+                  </Form.Item>
+                  <Form.Item label="Email Attribute" name="ldap_email_attr">
+                    <Input placeholder="mail" disabled={!ldapEnabled} />
+                  </Form.Item>
+                  <Form.Item label="Auto-Provision LDAP Users" name="ldap_auto_provision" valuePropName="checked">
+                    <Switch disabled={!ldapEnabled} />
+                  </Form.Item>
+                  <Form.Item label="Default Role (auto-provisioned)" name="ldap_default_role">
+                    <Select style={{ width: 200 }} disabled={!ldapEnabled}>
+                      <Option value="viewer">Viewer</Option>
+                      <Option value="editor">Editor</Option>
+                      <Option value="admin">Admin</Option>
+                    </Select>
                   </Form.Item>
                   <Space>
                     <Button type="primary" htmlType="submit" disabled={!ldapEnabled}>
@@ -371,17 +421,21 @@ export default function Admin() {
                       title: 'Hostname',
                       dataIndex: 'hostname',
                       key: 'hostname',
-                      render: (hostname: string) => (
-                        <a onClick={() => window.location.href = `/logs?hostname=${encodeURIComponent(hostname)}`}>
-                          {hostname}
-                        </a>
-                      ),
+                      render: (hostname: string, record: DeviceStats) => {
+                        const name = hostname || record.hostname || '-';
+                        return (
+                          <a onClick={() => window.location.href = `/logs?hostname=${encodeURIComponent(name)}`}>
+                            {name}
+                          </a>
+                        );
+                      },
                     },
                     {
                       title: 'Total Logs',
                       dataIndex: 'total_logs',
                       key: 'total_logs',
                       sorter: (a: DeviceStats, b: DeviceStats) => a.total_logs - b.total_logs,
+                      render: (v: number) => typeof v === 'number' ? v : 0,
                     },
                     {
                       title: 'Last Seen',
@@ -391,17 +445,38 @@ export default function Admin() {
                       sorter: (a: DeviceStats, b: DeviceStats) => new Date(a.last_seen).getTime() - new Date(b.last_seen).getTime(),
                     },
                     {
+                      title: 'Severity',
+                      dataIndex: 'severity_count',
+                      key: 'severity_count',
+                      render: (sc: Record<string, number>) => {
+                        if (!sc || typeof sc !== 'object') return '-';
+                        const entries = Object.entries(sc).filter(([, count]) => count > 0);
+                        if (entries.length === 0) return '-';
+                        return (
+                          <Space wrap>
+                            {entries.map(([severity, count]) => (
+                              <Tag key={severity}>
+                                <SeverityTag severity={severity} /> {count}
+                              </Tag>
+                            ))}
+                          </Space>
+                        );
+                      },
+                    },
+                    {
                       title: 'Matched Parsers',
                       dataIndex: 'matched_parsers',
                       key: 'matched_parsers',
-                      render: (parsers: string[]) => (
-                        <Space wrap>
-                          {(parsers || []).map((p) => (
-                            <Tag key={p} color="blue">{p}</Tag>
-                          ))}
-                          {(!parsers || parsers.length === 0) && <span>-</span>}
-                        </Space>
-                      ),
+                      render: (parsers: string[]) => {
+                        if (!Array.isArray(parsers) || parsers.length === 0) return <span>-</span>;
+                        return (
+                          <Space wrap>
+                            {parsers.map((p) => (
+                              <Tag key={p} color="blue">{p}</Tag>
+                            ))}
+                          </Space>
+                        );
+                      },
                     },
                     {
                       title: 'Parsed',
@@ -433,7 +508,10 @@ export default function Admin() {
           <Form.Item name="username" label="Username" rules={[{ required: true, message: 'Required' }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="password" label="Password" rules={[{ required: true, min: 4, message: 'Min 4 characters' }]}>
+          <Form.Item name="email" label="Email" rules={[{ required: true, message: 'Required' }, { type: 'email' }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="password" label="Password" rules={[{ required: true, min: 8, message: 'Min 8 characters' }]}>
             <Input.Password />
           </Form.Item>
           <Form.Item name="role" label="Role" rules={[{ required: true }]}>

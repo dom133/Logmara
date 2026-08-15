@@ -1,12 +1,17 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, Select, Row, Col, Statistic, Descriptions } from 'antd'
-import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined } from '@ant-design/icons'
+import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form, message } from 'antd'
+import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
-import { getDashboard, getDashboardData, togglePinDashboard, Dashboard, DashboardDataResponse, LogEntry } from '../services/api'
+import { getDashboard, getDashboardData, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardDataResponse, LogEntry } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
+import { SEVERITY_LABELS } from '../constants'
+import { useAuth } from '../services/auth'
 
-const { Title } = Typography
+const { Title, Text } = Typography
+const { RangePicker } = DatePicker
+
+const severities = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug']
 
 export default function DashboardViewPage() {
   const { id } = useParams<{ id: string }>()
@@ -19,7 +24,12 @@ export default function DashboardViewPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [searchOverride, setSearchOverride] = useState('')
-  const searchRef = useRef<Input>(null)
+  const [severityFilter, setSeverityFilter] = useState('')
+  const [dateRange, setDateRange] = useState<[any, any] | null>(null)
+  const [detailLog, setDetailLog] = useState<LogEntry | null>(null)
+  const { user } = useAuth()
+  const isOwner = dashboard?.owner_id === user?.id
+  const searchRef = useRef<InputRef>(null)
 
   const dashboardId = parseInt(id || '0')
 
@@ -47,8 +57,11 @@ export default function DashboardViewPage() {
 
   const loadLogs = useCallback(async () => {
     setTableLoading(true)
+    setPage(1)
     try {
-      const data = await getDashboardData(dashboardId, pageSize, (page - 1) * pageSize, searchOverride)
+      const from = dateRange?.[0]?.toISOString() || ''
+      const to = dateRange?.[1]?.toISOString() || ''
+      const data = await getDashboardData(dashboardId, pageSize, 0, searchOverride, severityFilter, from, to)
       setLogs(data.logs)
       setTotal(data.total)
     } catch (e) {
@@ -56,7 +69,7 @@ export default function DashboardViewPage() {
     } finally {
       setTableLoading(false)
     }
-  }, [dashboardId, page, pageSize, searchOverride])
+  }, [dashboardId, pageSize, searchOverride, severityFilter, dateRange])
 
   useEffect(() => {
     loadDashboard()
@@ -66,7 +79,7 @@ export default function DashboardViewPage() {
     if (dashboard) {
       loadLogs()
     }
-  }, [dashboard, page, pageSize, loadLogs])
+  }, [dashboard, loadLogs])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -84,6 +97,18 @@ export default function DashboardViewPage() {
     try {
       const res = await togglePinDashboard(dashboardId)
       setDashboard({ ...dashboard, pinned: res.pinned })
+      window.dispatchEvent(new CustomEvent('dashboards-pinned-changed'))
+    } catch (e) {
+      // error handled by API
+    }
+  }
+
+  const handleTogglePublic = async () => {
+    if (!dashboard) return
+    try {
+      const res = await togglePublicDashboard(dashboardId)
+      setDashboard({ ...dashboard, is_public: res.is_public })
+      message.success(res.is_public ? 'Dashboard is now public' : 'Dashboard is now private')
     } catch (e) {
       // error handled by API
     }
@@ -91,6 +116,25 @@ export default function DashboardViewPage() {
 
   const fields = dashboard?.config?.fields || []
   const devices = dashboard?.config?.devices || []
+
+  const buildCustomColumns = (): any[] => {
+    const cols: any[] = []
+    if (fields.length > 0) {
+      for (const field of fields) {
+        cols.push({
+          title: field,
+          key: `pf_${field}`,
+          width: 120,
+          ellipsis: true,
+          render: (_: any, r: LogEntry) => {
+            const val = r.parsed_fields?.[field]
+            return val ? <Tag color="geekblue" style={{ maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis' }}>{val}</Tag> : <Tag>-</Tag>
+          },
+        })
+      }
+    }
+    return cols
+  }
 
   const columns: any[] = [
     {
@@ -108,6 +152,8 @@ export default function DashboardViewPage() {
       key: 'hostname',
       width: 150,
       render: (v: string) => <Tag color="blue">{v}</Tag>,
+      filters: Array.from(new Set(logs.map(l => l.hostname))).map(h => ({ text: h, value: h })),
+      onFilter: (v: any, record: LogEntry) => record.hostname === String(v),
     },
     {
       title: 'Severity',
@@ -115,28 +161,84 @@ export default function DashboardViewPage() {
       key: 'severity',
       width: 100,
       render: (v: string) => <SeverityTag severity={v} />,
+      filters: severities.map(s => ({ text: (SEVERITY_LABELS[s] || s).toUpperCase(), value: s })),
+      onFilter: (v: any, record: LogEntry) => record.severity === String(v),
+    },
+    {
+      title: 'App',
+      dataIndex: 'app_name',
+      key: 'app_name',
+      width: 120,
+      render: (v?: string) => v ? <Text type="secondary">{v}</Text> : '-',
     },
     {
       title: 'Message',
       dataIndex: 'message',
       key: 'message',
-      ellipsis: true,
-      render: (v: string) => <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 12 }}>{v}</pre>,
+      ellipsis: { showTitle: true },
+      render: (v: string, record: LogEntry) => {
+        const display = record.raw_message || v
+        return (
+          <pre style={{
+            margin: 0,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            fontFamily: 'Consolas, Monaco, monospace',
+            fontSize: 12,
+            lineHeight: 1.4,
+            maxHeight: 100,
+            overflow: 'auto',
+          }}>
+            {display}
+          </pre>
+        )
+      },
     },
+    ...buildCustomColumns(),
   ]
 
-  if (fields.length > 0) {
-    for (const field of fields) {
-      columns.push({
-        title: field,
-        key: `pf_${field}`,
-        width: 120,
-        render: (_: any, r: LogEntry) => {
-          const val = r.parsed_fields?.[field]
-          return val ? <Tag color="geekblue">{val}</Tag> : <Tag>-</Tag>
-        },
-      })
+  const renderDetailContent = () => {
+    if (!detailLog) return null
+    const items: { label: string; content: React.ReactNode; span?: number }[] = [
+      { label: 'Timestamp', content: new Date(detailLog.timestamp).toLocaleString() },
+      { label: 'Hostname', content: <Tag color="blue">{detailLog.hostname}</Tag> },
+      { label: 'Severity', content: <SeverityTag severity={detailLog.severity} /> },
+      { label: 'Facility', content: detailLog.facility ?? '-' },
+      { label: 'App', content: detailLog.app_name ?? '-' },
+      { label: 'Process ID', content: detailLog.process_id ?? '-' },
+    ]
+
+    if (fields.length > 0) {
+      for (const field of fields) {
+        const val = detailLog.parsed_fields?.[field]
+        items.push({ label: field, content: val ? <Tag color="geekblue">{val}</Tag> : '-', span: 1 })
+      }
     }
+
+    items.push({
+      label: 'Matched Parsers',
+      content: detailLog.matched_parsers && detailLog.matched_parsers.length > 0
+        ? detailLog.matched_parsers.map(p => <Tag key={p} color="purple">{p}</Tag>)
+        : 'None',
+    })
+
+    items.push({
+      label: 'Full Message',
+      content: (
+        <pre style={{
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          fontFamily: 'Consolas, Monaco, monospace',
+          fontSize: 12,
+          lineHeight: 1.4,
+          margin: 0,
+        }}>
+          {detailLog.raw_message || detailLog.message}
+        </pre>
+      ),
+    })
+
+    return items
   }
 
   if (loading) {
@@ -163,18 +265,40 @@ export default function DashboardViewPage() {
             onClick={handleTogglePin}
             style={{ color: dashboard.pinned ? '#faad14' : undefined }}
           />
+          {isOwner && <Button
+            icon={<GlobalOutlined />}
+            onClick={handleTogglePublic}
+            type={dashboard.is_public ? 'primary' : 'default'}
+          >
+            {dashboard.is_public ? 'Public' : 'Private'}
+          </Button>}
+          {!isOwner && dashboard.owner_username && <Tag color="blue">by {dashboard.owner_username}</Tag>}
         </Space>
         <Space>
           <Input
             ref={searchRef}
-            placeholder="Search override... (Ctrl+K)"
+            placeholder="Search... (Ctrl+K)"
             value={searchOverride}
             onChange={e => setSearchOverride(e.target.value)}
             onPressEnter={loadLogs}
-            style={{ width: 200 }}
+            style={{ width: 180 }}
             prefix={<FilterOutlined />}
           />
-          <Button icon={<ReloadOutlined />} onClick={loadLogs} loading={tableLoading}>Refresh</Button>
+          <Select
+            placeholder="Severity"
+            allowClear
+            style={{ width: 140 }}
+            value={severityFilter || undefined}
+            onChange={(v) => setSeverityFilter(v || '')}
+            options={severities.map(s => ({ label: SEVERITY_LABELS[s] || s, value: s }))}
+          />
+          <RangePicker
+            style={{ width: 260 }}
+            showTime
+            value={dateRange}
+            onChange={(dates) => setDateRange(dates as [any, any] | null)}
+          />
+          <Button icon={<ReloadOutlined />} onClick={loadLogs} loading={tableLoading}>Apply</Button>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
         </Space>
       </Space>
@@ -226,7 +350,11 @@ export default function DashboardViewPage() {
         rowKey="id"
         loading={tableLoading}
         size="small"
-        scroll={{ x: 1200 }}
+        scroll={{ x: 'max-content' }}
+        onRow={(record) => ({
+          onClick: () => setDetailLog(record),
+          style: { cursor: 'pointer' },
+        })}
         pagination={{
           current: page,
           pageSize: pageSize,
@@ -236,6 +364,26 @@ export default function DashboardViewPage() {
           onChange: (p, ps) => { setPage(p); setPageSize(ps) },
         }}
       />
+
+      <Modal
+        title="Log Details"
+        open={!!detailLog}
+        onCancel={() => setDetailLog(null)}
+        footer={[
+          <Button key="close" onClick={() => setDetailLog(null)}>Close</Button>
+        ]}
+        width={720}
+      >
+        {detailLog && (
+          <Descriptions column={2} size="small" bordered>
+            {(renderDetailContent() ?? []).map((item, i) => (
+              <Descriptions.Item key={i} label={item.label} span={item.span || 1}>
+                {item.content}
+              </Descriptions.Item>
+            ))}
+          </Descriptions>
+        )}
+      </Modal>
     </>
   )
 }

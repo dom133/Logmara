@@ -16,9 +16,10 @@ import (
 	"syslog-gui/parser"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lib/pq"
 )
 
-func IngestBatch(db *sql.DB) gin.HandlerFunc {
+func IngestBatch(db *sql.DB, engine *parser.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		body, err := io.ReadAll(c.Request.Body)
 		if err != nil {
@@ -44,8 +45,8 @@ func IngestBatch(db *sql.DB) gin.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		query := `INSERT INTO syslog_logs (timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message)
-		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+query := `INSERT INTO syslog_logs (timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers)
+	          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 		stmt, err := tx.Prepare(query)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not prepare statement"})
@@ -67,8 +68,24 @@ func IngestBatch(db *sql.DB) gin.HandlerFunc {
 			facility := nullStr(entry.Facility)
 			rawMsg := nullStr(entry.RawMessage)
 
+			result := engine.Parse(entry.Hostname, entry.AppName, entry.Message)
+			if result == nil {
+				parsedJSON := []byte("null")
+				_, err = stmt.Exec(ts, entry.Hostname, appName, processID, msgID,
+					entry.Severity, facility, entry.Message, rawMsg, parsedJSON, pq.StringArray(nil))
+				if err != nil {
+					log.Printf("Insert error: %v", err)
+				}
+				ingested++
+				continue
+			}
+			parsedJSON, marshalErr := json.Marshal(result.Fields)
+			if marshalErr != nil {
+				parsedJSON = []byte("null")
+			}
+
 			_, err = stmt.Exec(ts, entry.Hostname, appName, processID, msgID,
-				entry.Severity, facility, entry.Message, rawMsg)
+				entry.Severity, facility, entry.Message, rawMsg, parsedJSON, pq.StringArray(result.Parsers))
 			if err != nil {
 				log.Printf("Insert error: %v", err)
 				continue
@@ -110,8 +127,8 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 		argIdx := 1
 
 		if hostname != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("hostname ILIKE $%d", argIdx))
-			args = append(args, "%"+hostname+"%")
+			whereClauses = append(whereClauses, fmt.Sprintf("hostname = $%d", argIdx))
+			args = append(args, hostname)
 			argIdx++
 		}
 
@@ -170,7 +187,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 
 		// Fetch logs
 		logsQuery := fmt.Sprintf(
-			"SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, created_at "+
+			"SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at "+
 				"FROM syslog_logs %s ORDER BY %s LIMIT $%d OFFSET $%d",
 			whereSQL, orderClause, argIdx, argIdx+1,
 		)
@@ -186,14 +203,20 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 		var logs []model.SyslogLog
 		for rows.Next() {
 			var l model.SyslogLog
+			var rawParsed json.RawMessage
+			var parsers pq.StringArray
 			err := rows.Scan(
 				&l.ID, &l.Timestamp, &l.Hostname, &l.AppName,
 				&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
-				&l.Message, &l.RawMessage, &l.CreatedAt,
+				&l.Message, &l.RawMessage, &rawParsed, &parsers, &l.CreatedAt,
 			)
 			if err != nil {
 				log.Printf("Scan error: %v", err)
 				continue
+			}
+			l.MatchedParsers = parsers
+			if len(rawParsed) > 0 {
+				json.Unmarshal(rawParsed, &l.ParsedFields)
 			}
 			logs = append(logs, l)
 		}
@@ -252,7 +275,19 @@ func GetDevices(db *sql.DB, engine *parser.Engine) gin.HandlerFunc {
 						continue
 					}
 					for _, p := range parsers {
-						if p.Enabled && p.MatchType == "app_name" && p.MatchValue != nil && matchGlob(*p.MatchValue, appName) {
+						if !p.Enabled {
+							continue
+						}
+						switch p.MatchType {
+						case "app_name":
+							if p.MatchValue != nil && matchGlob(*p.MatchValue, appName) {
+								matched[p.Name] = true
+							}
+						case "hostname":
+							if p.MatchValue != nil && matchGlob(*p.MatchValue, ds.Hostname) {
+								matched[p.Name] = true
+							}
+						case "all":
 							matched[p.Name] = true
 						}
 					}

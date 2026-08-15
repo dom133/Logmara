@@ -15,6 +15,7 @@ import (
 
 type CreateUserRequest struct {
 	Username string `json:"username" binding:"required"`
+	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required,min=8"`
 	Role     string `json:"role" binding:"required"`
 }
@@ -67,7 +68,7 @@ func CreateUser(database *sql.DB) gin.HandlerFunc {
 		}
 
 		isAdmin := req.Role == "admin"
-		user, err := db.CreateUser(database, req.Username, hash, isAdmin, req.Role)
+		user, err := db.CreateUser(database, req.Username, hash, req.Email, isAdmin, req.Role)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return

@@ -23,7 +23,7 @@ export default function Dashboard() {
 
   const { enhanceColumns: enhanceErrors, hasChanges: errChanged, reset: resetErrors } = useColumnWidths(
     'col_widths_dashboard_errs',
-    [{ key: 'message', width: 300 }, { key: 'hostname', width: 160 }, { key: 'count', width: 80 }],
+    [{ key: 'message', width: 140 }, { key: 'hostname', width: 120 }, { key: 'count', width: 70 }],
   )
 
   useEffect(() => {
@@ -91,9 +91,9 @@ export default function Dashboard() {
   ]
 
   const topErrorsColumns = [
-    { title: 'Message', dataIndex: 'message', key: 'message', width: 300, ellipsis: true },
-    { title: 'Source', dataIndex: 'hostname', key: 'hostname', width: 160, render: (v: string) => <Tag>{v}</Tag> },
-    { title: 'Count', dataIndex: 'count', key: 'count', width: 80 },
+    { title: 'Message', dataIndex: 'message', key: 'message', width: 140, ellipsis: true },
+    { title: 'Source', dataIndex: 'hostname', key: 'hostname', width: 120, render: (v: string) => <Tag>{v}</Tag> },
+    { title: 'Count', dataIndex: 'count', key: 'count', width: 70 },
   ]
 
   return (
@@ -139,6 +139,7 @@ export default function Dashboard() {
               rowKey="hostname"
               pagination={false}
               size="small"
+              scroll={{ x: 'max-content' }}
             />
           </Card>
         </Col>

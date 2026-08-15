@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"syslog-gui/model"
 	"syslog-gui/parser"
@@ -210,6 +211,65 @@ func DeleteParser(engine *parser.Engine) gin.HandlerFunc {
 	}
 }
 
+func CloneParser(engine *parser.Engine) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+			return
+		}
+
+		db := engine.GetDB()
+
+		var name, deviceType, matchType, regex string
+		var description, matchValue *string
+		var enabled bool
+		err = db.QueryRow(
+			"SELECT name, description, device_type, match_type, match_value, regex, enabled FROM parsers WHERE id = $1", id,
+		).Scan(&name, &description, &deviceType, &matchType, &matchValue, &regex, &enabled)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "parser not found"})
+			return
+		}
+
+		tx, err := db.Begin()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		defer tx.Rollback()
+
+		cloneName := name + " (Copy)"
+		var newID int64
+		err = tx.QueryRow(`
+			INSERT INTO parsers (name, description, device_type, match_type, match_value, regex, enabled, is_builtin)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id
+		`, cloneName, description, deviceType, matchType, matchValue, regex, enabled, false).
+			Scan(&newID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		_, err = tx.Exec(`
+			INSERT INTO parsed_fields_registry (parser_id, field_name, field_label, field_type)
+			SELECT $1, field_name, field_label, field_type FROM parsed_fields_registry WHERE parser_id = $2
+		`, newID, id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		if err := tx.Commit(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		engine.Reload()
+		c.JSON(http.StatusCreated, gin.H{"id": newID, "name": cloneName, "message": "parser cloned"})
+	}
+}
+
 func TestParser(engine *parser.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req model.ParserTestRequest
@@ -251,6 +311,20 @@ func ReparseUnparsed(engine *parser.Engine) gin.HandlerFunc {
 
 func ListParsedFields(engine *parser.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		hostnamesRaw := c.Query("hostnames")
+		if hostnamesRaw != "" {
+			hostnames := strings.Split(hostnamesRaw, ",")
+			for i, h := range hostnames {
+				hostnames[i] = strings.TrimSpace(h)
+			}
+			fields, err := engine.GetParsedFieldsForHostnames(hostnames)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, fields)
+			return
+		}
 		fields, err := engine.GetParsedFieldRegistry()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

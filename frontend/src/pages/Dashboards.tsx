@@ -1,20 +1,25 @@
 import { useEffect, useState } from 'react'
 import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, message, Popconfirm, Typography, List } from 'antd'
-import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PushpinOutlined, PushpinFilled, RestOutlined } from '@ant-design/icons'
+import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
-import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, Dashboard, DashboardConfig } from '../services/api'
-import { getDevices } from '../services/api'
+import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardConfig, ParsedField } from '../services/api'
+import { getDevices, getParsedFields } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
+import { useAuth } from '../services/auth'
 
 const { Title } = Typography
 
 export default function DashboardsPage() {
+  const { user } = useAuth()
+  const canEdit = user?.role === 'admin' || user?.role === 'editor'
+  const isAdmin = user?.role === 'admin'
   const [dashboards, setDashboards] = useState<Dashboard[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Dashboard | null>(null)
   const [form] = Form.useForm()
   const [devices, setDevices] = useState<string[]>([])
+  const [parsedFields, setParsedFields] = useState<ParsedField[]>([])
   const navigate = useNavigate()
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
@@ -24,9 +29,20 @@ export default function DashboardsPage() {
       { key: 'devices', width: 200 },
       { key: 'fields', width: 200 },
       { key: 'created_at', width: 160 },
+      { key: 'last_modified', width: 180 },
       { key: 'actions', width: 250 },
     ],
   )
+
+  const loadAllFields = async () => {
+    const pf = await getParsedFields()
+    setParsedFields(pf)
+  }
+
+  const loadFieldsForDevices = async (devices: string[]) => {
+    const pf = await getParsedFields(devices.length > 0 ? devices : undefined)
+    setParsedFields(pf)
+  }
 
   const loadData = async () => {
     setLoading(true)
@@ -34,10 +50,16 @@ export default function DashboardsPage() {
       const [d, dv] = await Promise.all([getDashboards(), getDevices()])
       setDashboards(d)
       setDevices(dv)
+      await loadAllFields()
     } finally {
       setLoading(false)
     }
   }
+
+  const fieldOptions = Array.from(new Map(parsedFields.map(f => [f.field_name, f])).values()).map(f => ({
+    label: f.field_label || f.field_name,
+    value: f.field_name,
+  }))
 
   useEffect(() => {
     loadData()
@@ -84,8 +106,19 @@ export default function DashboardsPage() {
       const res = await togglePinDashboard(id)
       message.success(res.pinned ? 'Dashboard pinned' : 'Dashboard unpinned')
       loadData()
+      window.dispatchEvent(new CustomEvent('dashboards-pinned-changed'))
     } catch (e: any) {
       message.error(e.response?.data?.error || 'Failed to toggle pin')
+    }
+  }
+
+  const handleTogglePublic = async (id: number) => {
+    try {
+      const res = await togglePublicDashboard(id)
+      message.success(res.is_public ? 'Dashboard is now public' : 'Dashboard is now private')
+      loadData()
+    } catch (e: any) {
+      message.error(e.response?.data?.error || 'Failed to toggle visibility')
     }
   }
 
@@ -99,6 +132,7 @@ export default function DashboardsPage() {
         filters: { severity: '', from: '', to: '', search: '' },
       },
     })
+    loadAllFields()
     setModalOpen(true)
   }
 
@@ -109,6 +143,8 @@ export default function DashboardsPage() {
       description: d.description,
       config: d.config,
     })
+    const devs = d.config?.devices || []
+    loadFieldsForDevices(devs)
     setModalOpen(true)
   }
 
@@ -121,6 +157,7 @@ export default function DashboardsPage() {
         <Space>
           <Tag color="cyan">{v}</Tag>
           {r.pinned && <Tag color="gold">📌 Pinned</Tag>}
+          {r.is_public && <Tag color="green">Public</Tag>}
           {r.description && <Tag>{r.description}</Tag>}
         </Space>
       ),
@@ -144,29 +181,57 @@ export default function DashboardsPage() {
       },
     },
     {
+      title: 'Owner',
+      dataIndex: 'owner_username',
+      key: 'owner_username',
+      render: (v: string) => v || '-',
+    },
+    {
       title: 'Created',
       dataIndex: 'created_at',
       key: 'created_at',
       render: (v: string) => new Date(v).toLocaleDateString(),
     },
     {
+      title: 'Last Modified',
+      key: 'last_modified',
+      render: (_: any, r: Dashboard) => {
+        if (!r.updated_at) return '-'
+        const date = new Date(r.updated_at).toLocaleDateString()
+        const by = r.updated_by_username || r.owner_username
+        return `${date} by ${by}`
+      },
+    },
+    {
       title: 'Actions',
       key: 'actions',
-      render: (_: any, r: Dashboard) => (
-        <Space>
-          <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/dashboards/${r.id}`)}>View</Button>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>Edit</Button>
-          <Button
-            size="small"
-            icon={r.pinned ? <PushpinFilled /> : <PushpinOutlined />}
-            onClick={() => handleTogglePin(r.id)}
-            style={{ color: r.pinned ? '#faad14' : undefined }}
-          />
-          <Popconfirm title="Delete dashboard?" onConfirm={() => handleDelete(r.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        </Space>
-      ),
+      render: (_: any, r: Dashboard) => {
+        const isOwner = r.owner_id === user?.id
+        const canManage = isOwner && canEdit || isAdmin
+        return (
+          <Space>
+            <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/dashboards/${r.id}`)}>View</Button>
+            {canManage && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>Edit</Button>}
+            <Button
+              size="small"
+              icon={r.pinned ? <PushpinFilled /> : <PushpinOutlined />}
+              onClick={() => handleTogglePin(r.id)}
+              style={{ color: r.pinned ? '#faad14' : undefined }}
+            />
+            {(isOwner || isAdmin) && <Button
+              size="small"
+              icon={<GlobalOutlined />}
+              onClick={() => handleTogglePublic(r.id)}
+              type={r.is_public ? 'primary' : 'default'}
+            >
+              {r.is_public ? 'Public' : 'Private'}
+            </Button>}
+            {canManage && <Popconfirm title="Delete dashboard?" onConfirm={() => handleDelete(r.id)}>
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Popconfirm>}
+          </Space>
+        )
+      },
     },
   ]
 
@@ -176,7 +241,7 @@ export default function DashboardsPage() {
         <Title level={3}>Custom Dashboards</Title>
         <Space>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Dashboard</Button>
+          {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Dashboard</Button>}
         </Space>
       </Space>
 
@@ -188,13 +253,54 @@ export default function DashboardsPage() {
         </Card>
       )}
 
-      <Table
-        dataSource={dashboards}
-        columns={enhanceColumns(columns)}
-        rowKey="id"
-        loading={loading}
-        size="small"
-      />
+      {(() => {
+        if (dashboards.length === 0) return null
+        if (isAdmin) {
+          return (
+            <div>
+              <Title level={5}>All Dashboards</Title>
+              <Table
+                dataSource={dashboards}
+                columns={enhanceColumns(columns)}
+                rowKey="id"
+                loading={loading}
+                size="small"
+              />
+            </div>
+          )
+        }
+        const myDashboards = dashboards.filter(d => d.owner_id === user?.id)
+        const publicDashboards = dashboards.filter(d => d.owner_id !== user?.id)
+        if (myDashboards.length === 0 && publicDashboards.length === 0) return null
+        return (
+          <>
+            {myDashboards.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <Title level={5}>My Dashboards</Title>
+                <Table
+                  dataSource={myDashboards}
+                  columns={enhanceColumns(columns)}
+                  rowKey="id"
+                  loading={loading}
+                  size="small"
+                />
+              </div>
+            )}
+            {publicDashboards.length > 0 && (
+              <div>
+                <Title level={5}>Public Dashboards</Title>
+                <Table
+                  dataSource={publicDashboards}
+                  columns={enhanceColumns(columns)}
+                  rowKey="id"
+                  loading={loading}
+                  size="small"
+                />
+              </div>
+            )}
+          </>
+        )
+      })()}
 
       <Modal
         title={editing ? 'Edit Dashboard' : 'New Dashboard'}
@@ -203,7 +309,12 @@ export default function DashboardsPage() {
         onOk={() => { form.validateFields().then(values => editing ? handleUpdate(values) : handleCreate(values)) }}
         width={700}
       >
-        <Form form={form} layout="vertical">
+        <Form form={form} layout="vertical" onValuesChange={(changed) => {
+      if (changed.config?.devices !== undefined) {
+        const devs = changed.config.devices || []
+        loadFieldsForDevices(devs)
+      }
+    }}>
           <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Name is required' }]}>
             <Input placeholder="e.g. Firewall Monitoring" />
           </Form.Item>
@@ -228,24 +339,7 @@ export default function DashboardsPage() {
                 mode="multiple"
                 placeholder="Select fields from parsed data (leave empty for default)"
                 style={{ width: '100%' }}
-                options={[
-                  { label: 'action', value: 'action' },
-                  { label: 'src_ip', value: 'src_ip' },
-                  { label: 'dst_ip', value: 'dst_ip' },
-                  { label: 'user', value: 'user' },
-                  { label: 'port', value: 'port' },
-                  { label: 'protocol', value: 'protocol' },
-                  { label: 'bytes', value: 'bytes' },
-                  { label: 'status', value: 'status' },
-                  { label: 'reason', value: 'reason' },
-                  { label: 'rule', value: 'rule' },
-                  { label: 'interface', value: 'interface' },
-                  { label: 'mac_address', value: 'mac_address' },
-                  { label: 'duration', value: 'duration' },
-                  { label: 'cpu_usage', value: 'cpu_usage' },
-                  { label: 'memory_usage', value: 'memory_usage' },
-                  { label: 'temperature', value: 'temperature' },
-                ]}
+                options={fieldOptions}
               />
             </Form.Item>
           </Form.Item>

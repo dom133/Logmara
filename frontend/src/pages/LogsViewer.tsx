@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Table, Input, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Dropdown, Modal, Descriptions } from 'antd'
-import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined, SignalOutlined } from '@ant-design/icons'
+import { useSearchParams } from 'react-router-dom'
+import { Table, Input, InputRef, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Dropdown, Modal, Descriptions } from 'antd'
+import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { getLogs, getDevices, exportCSV, exportHTML, LogEntry } from '../services/api'
 import dayjs from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
@@ -15,12 +16,14 @@ const { RangePicker } = DatePicker
 const severities = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug']
 
 export default function LogsViewer() {
+  const [searchParams] = useSearchParams()
+  const urlHostname = searchParams.get('hostname') || ''
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [devices, setDevices] = useState<string[]>([])
   const [filters, setFilters] = useState({
-    hostname: '',
+    hostname: urlHostname,
     severity: '',
     search: '',
     from: '',
@@ -29,7 +32,7 @@ export default function LogsViewer() {
   })
   const [pagination, setPagination] = useState({ current: 1, pageSize: 50 })
   const [visibleColumns, setVisibleColumns] = useState<string[]>(['timestamp', 'severity', 'hostname', 'app_name', 'message'])
-  const searchRef = useRef<Input>(null)
+  const searchRef = useRef<InputRef>(null)
   const [detailModalOpen, setDetailModalOpen] = useState(false)
   const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null)
   const [groupByDevice, setGroupByDevice] = useState(false)
@@ -184,11 +187,11 @@ export default function LogsViewer() {
       dataIndex: 'hostname',
       key: 'hostname',
       width: 160,
-      render: (v: string, _record: LogEntry, index: number) => {
+      render: (v: string | null | undefined, _record: LogEntry, index: number) => {
         const rowSpans = getRowSpans(logs)
         return {
           props: { rowSpan: rowSpans.get(index) },
-          children: <Tag color="blue">{v}</Tag>,
+          children: v ? <Tag color="blue">{v}</Tag> : '-',
         }
       },
     },
@@ -233,15 +236,16 @@ export default function LogsViewer() {
         <Dropdown
           menu={{
             items: [
-              { key: 'timestamp', label: 'Time', checked: visibleColumns.includes('timestamp') },
-              { key: 'severity', label: 'Severity', checked: visibleColumns.includes('severity') },
-              { key: 'hostname', label: 'Device', checked: visibleColumns.includes('hostname') },
-              { key: 'app_name', label: 'App', checked: visibleColumns.includes('app_name') },
-              { key: 'message', label: 'Message', checked: visibleColumns.includes('message') },
+              { key: 'timestamp', label: 'Time' },
+              { key: 'severity', label: 'Severity' },
+              { key: 'hostname', label: 'Device' },
+              { key: 'app_name', label: 'App' },
+              { key: 'message', label: 'Message' },
             ],
             selectable: true,
             selectedKeys: visibleColumns,
-            onSelect: (key: string) => {
+            onSelect: (keyOrInfo) => {
+              const key = typeof keyOrInfo === 'string' ? keyOrInfo : keyOrInfo.key
               setVisibleColumns(prev =>
                 prev.includes(key) ? prev.filter(c => c !== key) : [...prev, key],
               )
@@ -261,7 +265,7 @@ export default function LogsViewer() {
         </Button>
         <Button
           size="small"
-          icon={<SignalOutlined />}
+          icon={<ThunderboltOutlined />}
           type={streaming ? 'primary' : 'default'}
           onClick={() => setStreaming(!streaming)}
           style={{ color: streaming && connected ? '#52c41a' : undefined }}
@@ -392,6 +396,11 @@ export default function LogsViewer() {
                     </pre>
                   </Descriptions.Item>
                 )}
+                <Descriptions.Item label="Matched Parsers">
+                  {selectedLog.matched_parsers && selectedLog.matched_parsers.length > 0
+                    ? selectedLog.matched_parsers.map(p => <Tag key={p} color="purple">{p}</Tag>)
+                    : 'None'}
+                </Descriptions.Item>
               </Descriptions>
             )}
           </Modal>

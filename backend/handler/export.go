@@ -33,8 +33,8 @@ func ExportCSV(db *sql.DB) gin.HandlerFunc {
 		argIdx := 1
 
 		if hostname != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("hostname ILIKE $%d", argIdx))
-			args = append(args, "%"+hostname+"%")
+			whereClauses = append(whereClauses, fmt.Sprintf("hostname = $%d", argIdx))
+			args = append(args, hostname)
 			argIdx++
 		}
 		if severity != "" {
@@ -108,8 +108,8 @@ func ExportHTML(db *sql.DB) gin.HandlerFunc {
 		argIdx := 1
 
 		if hostname != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("hostname ILIKE $%d", argIdx))
-			args = append(args, "%"+hostname+"%")
+			whereClauses = append(whereClauses, fmt.Sprintf("hostname = $%d", argIdx))
+			args = append(args, hostname)
 			argIdx++
 		}
 		if severity != "" {

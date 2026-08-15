@@ -1,6 +1,7 @@
 package parsers
 
-var CiscoParsers = []ParserSeed{
+func init() {
+	AllParsers = append(AllParsers, []ParserSeed{
 	{
 		Name:        "Cisco IOS Interface",
 		Description: "Matches Cisco IOS interface up/down %LINK messages",
@@ -40,4 +41,5 @@ var CiscoParsers = []ParserSeed{
 			{Name: "info", Label: "Info", Type: "string"},
 		},
 	},
+	}...)
 }

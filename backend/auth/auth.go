@@ -36,8 +36,9 @@ func generateRandomKey() string {
 	return hex.EncodeToString(b)
 }
 
-func GenerateToken(username string, role string) (string, error) {
+func GenerateToken(userID int64, username string, role string) (string, error) {
 	claims := jwt.MapClaims{
+		"user_id":  userID,
 		"username": username,
 		"role":     role,
 		"exp":      time.Now().Add(15 * time.Minute).Unix(),
@@ -103,6 +104,9 @@ func JWTRequired() gin.HandlerFunc {
 		}
 
 		c.Set("claims", claims)
+		if uid, ok := (*claims)["user_id"].(float64); ok {
+			c.Set("user_id", int64(uid))
+		}
 		c.Next()
 	}
 }

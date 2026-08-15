@@ -112,11 +112,12 @@ export default function SetupWizard() {
     setLoading(true)
     try {
       await initialize(data)
-      message.success('Application initialized!')
+      message.success('Application initialized! Redirecting...')
+      setTimeout(() => { window.location.href = '/login' }, 1000)
     } catch (e: any) {
       message.error(e?.response?.data?.error || 'Initialization failed')
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   const next = async () => {

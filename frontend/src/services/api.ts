@@ -79,6 +79,7 @@ export interface LogEntry {
   message: string
   raw_message?: string
   parsed_fields?: Record<string, string>
+  matched_parsers?: string[]
   created_at: string
 }
 
@@ -101,7 +102,7 @@ export interface DeviceStats {
   hostname: string
   total_logs: number
   last_seen: string
-  severity_map: Record<string, number>
+  severity_count: Record<string, number>
   matched_parsers: string[]
   has_parsed: boolean
 }
@@ -133,11 +134,11 @@ export async function getTimeline(interval = '1h', from?: string, to?: string) {
 
 export async function getDevices() {
   const res = await api.get('/devices')
-  return (res.data?.devices || []) as string[]
+  return ((res.data?.devices || []) as DeviceStats[]).map(d => d.hostname)
 }
 
 export async function getDeviceStats() {
-  const res = await api.get('/stats/devices')
+  const res = await api.get('/devices')
   return (res.data?.devices || []) as DeviceStats[]
 }
 
@@ -217,10 +218,14 @@ export interface Dashboard {
 	name: string
 	description: string | null
 	owner_id: number
+	owner_username: string
 	pinned: boolean
+	is_public: boolean
 	config: DashboardConfig
 	created_at: string
 	updated_at: string
+	updated_by_user_id: number
+	updated_by_username: string
 }
 
 export interface DashboardDataResponse {
@@ -268,6 +273,11 @@ export async function deleteParser(id: number) {
   return res.data
 }
 
+export async function cloneParser(id: number) {
+  const res = await api.post(`/parsers/${id}/clone`)
+  return res.data
+}
+
 export async function testParser(pattern: string, sampleLog: string): Promise<ParserTestResponse> {
   const res = await api.post('/parsers/test', { pattern, sample_log: sampleLog })
   return res.data as ParserTestResponse
@@ -278,8 +288,12 @@ export async function reparseUnparsed(hostname?: string, from?: string, to?: str
   return res.data
 }
 
-export async function getParsedFields() {
-  const res = await api.get('/parsers/fields')
+export async function getParsedFields(hostnames?: string[]) {
+  const params: Record<string, string> = {}
+  if (hostnames && hostnames.length > 0) {
+    params.hostnames = hostnames.join(',')
+  }
+  const res = await api.get('/parsers/fields', { params })
   return (res.data || []) as ParsedField[]
 }
 
@@ -317,8 +331,8 @@ export async function deleteDashboard(id: number) {
   return res.data
 }
 
-export async function getDashboardData(id: number, limit = 100, offset = 0, search = '') {
-	const res = await api.get(`/dashboards/${id}/data`, { params: { limit, offset, search: search || undefined } })
+export async function getDashboardData(id: number, limit = 100, offset = 0, search = '', severity = '', from = '', to = '') {
+	const res = await api.get(`/dashboards/${id}/data`, { params: { limit, offset, search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined } })
 	const d = res.data || {}
 	return { logs: d.logs || [], total: d.total || 0, fields: d.fields || [], devices: d.devices || [] } as DashboardDataResponse
 }
@@ -328,15 +342,22 @@ export async function togglePinDashboard(id: number) {
 	return res.data as { pinned: boolean }
 }
 
+export async function togglePublicDashboard(id: number) {
+	const res = await api.patch(`/dashboards/${id}/public`)
+	return res.data as { is_public: boolean }
+}
+
 // --- User / Admin types ---
 export interface User {
 	id: number
 	username: string
+	email: string
 	role: string
+	auth_type: string
 	is_admin: boolean
 	is_active: boolean
-	is_ldap: boolean
 	created_at: string
+	last_login_at: string | null
 }
 
 export async function getUsers() {
@@ -344,7 +365,7 @@ export async function getUsers() {
 	return (res.data || []) as User[]
 }
 
-export async function createUser(data: { username: string; password: string; role: string }) {
+export async function createUser(data: { username: string; email: string; password: string; role: string }) {
 	const res = await api.post('/admin/users', data)
 	return res.data as User
 }

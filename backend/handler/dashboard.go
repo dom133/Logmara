@@ -3,6 +3,7 @@ package handler
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,16 +11,56 @@ import (
 	"syslog-gui/model"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/lib/pq"
 )
+
+func getUserRole(c *gin.Context) string {
+	claims, exists := c.Get("claims")
+	if !exists {
+		return ""
+	}
+	if mc, ok := claims.(*jwt.MapClaims); ok {
+		if r, ok := (*mc)["role"].(string); ok {
+			return r
+		}
+	}
+	return ""
+}
 
 func ListDashboards(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetInt64("user_id")
+		isAdmin := getUserRole(c) == "admin"
 
-		rows, err := db.Query(`
-			SELECT id, name, description, owner_id, pinned, config, created_at, updated_at
-			FROM dashboards WHERE owner_id = $1 ORDER BY pinned DESC, created_at DESC
-		`, userID)
+		var rows *sql.Rows
+		var err error
+		if isAdmin {
+			rows, err = db.Query(`
+				SELECT d.id, d.name, d.description, d.owner_id, u.username,
+					COALESCE(up.dashboard_id IS NOT NULL, FALSE),
+					d.is_public, d.config, d.created_at, d.updated_at,
+					d.updated_by, ub.username
+				FROM dashboards d
+				JOIN users u ON d.owner_id = u.id
+				LEFT JOIN user_dashboard_pins up ON d.id = up.dashboard_id AND up.user_id = $1
+				LEFT JOIN users ub ON d.updated_by = ub.id
+				ORDER BY up.dashboard_id IS NOT NULL DESC, d.created_at DESC
+			`, userID)
+		} else {
+			rows, err = db.Query(`
+				SELECT d.id, d.name, d.description, d.owner_id, u.username,
+					COALESCE(up.dashboard_id IS NOT NULL, FALSE),
+					d.is_public, d.config, d.created_at, d.updated_at,
+					d.updated_by, ub.username
+				FROM dashboards d
+				JOIN users u ON d.owner_id = u.id
+				LEFT JOIN user_dashboard_pins up ON d.id = up.dashboard_id AND up.user_id = $1
+				LEFT JOIN users ub ON d.updated_by = ub.id
+				WHERE d.owner_id = $1 OR d.is_public = TRUE
+				ORDER BY up.dashboard_id IS NOT NULL DESC, d.created_at DESC
+			`, userID)
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -29,10 +70,19 @@ func ListDashboards(db *sql.DB) gin.HandlerFunc {
 		var dashboards []model.Dashboard
 		for rows.Next() {
 			var d model.Dashboard
+			var updatedBy sql.NullInt64
+			var updatedByUsername sql.NullString
 			err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.OwnerID,
-				&d.Pinned, &d.Config, &d.CreatedAt, &d.UpdatedAt)
+				&d.OwnerUsername, &d.Pinned, &d.IsPublic, &d.Config, &d.CreatedAt, &d.UpdatedAt,
+				&updatedBy, &updatedByUsername)
 			if err != nil {
 				continue
+			}
+			if updatedBy.Valid {
+				d.UpdatedByUserID = updatedBy.Int64
+			}
+			if updatedByUsername.Valid {
+				d.UpdatedByUsername = updatedByUsername.String
 			}
 			dashboards = append(dashboards, d)
 		}
@@ -48,7 +98,6 @@ func CreateDashboard(db *sql.DB) gin.HandlerFunc {
 		var req struct {
 			Name        string          `json:"name"`
 			Description *string         `json:"description"`
-			Pinned      bool            `json:"pinned"`
 			Config      json.RawMessage `json:"config"`
 		}
 
@@ -68,9 +117,9 @@ func CreateDashboard(db *sql.DB) gin.HandlerFunc {
 
 		var id int64
 		err := db.QueryRow(`
-			INSERT INTO dashboards (name, description, owner_id, pinned, config)
+			INSERT INTO dashboards (name, description, owner_id, config, updated_by)
 			VALUES ($1, $2, $3, $4, $5) RETURNING id
-		`, req.Name, req.Description, userID, req.Pinned, req.Config).Scan(&id)
+		`, req.Name, req.Description, userID, req.Config, userID).Scan(&id)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -89,13 +138,36 @@ func GetDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		userID := c.GetInt64("user_id")
+		isAdmin := getUserRole(c) == "admin"
 
 		var d model.Dashboard
-		err = db.QueryRow(`
-			SELECT id, name, description, owner_id, pinned, config, created_at, updated_at
-			FROM dashboards WHERE id = $1 AND owner_id = $2
-		`, id, userID).Scan(&d.ID, &d.Name, &d.Description, &d.OwnerID,
-			&d.Pinned, &d.Config, &d.CreatedAt, &d.UpdatedAt)
+		var pinned sql.NullBool
+		var updatedBy sql.NullInt64
+		var updatedByUsername sql.NullString
+		whereClause := "d.id = $1 AND (d.owner_id = $2 OR d.is_public = TRUE)"
+		if isAdmin {
+			whereClause = "d.id = $1"
+		}
+		err = db.QueryRow(fmt.Sprintf(`
+			SELECT d.id, d.name, d.description, d.owner_id, u.username,
+				up.dashboard_id IS NOT NULL,
+				d.is_public, d.config, d.created_at, d.updated_at,
+				d.updated_by, ub.username
+			FROM dashboards d
+			JOIN users u ON d.owner_id = u.id
+			LEFT JOIN user_dashboard_pins up ON d.id = up.dashboard_id AND up.user_id = $2
+			LEFT JOIN users ub ON d.updated_by = ub.id
+			WHERE %s
+		`, whereClause), id, userID).Scan(&d.ID, &d.Name, &d.Description, &d.OwnerID,
+			&d.OwnerUsername, &pinned, &d.IsPublic, &d.Config, &d.CreatedAt, &d.UpdatedAt,
+			&updatedBy, &updatedByUsername)
+		d.Pinned = pinned.Valid && pinned.Bool
+		if updatedBy.Valid {
+			d.UpdatedByUserID = updatedBy.Int64
+		}
+		if updatedByUsername.Valid {
+			d.UpdatedByUsername = updatedByUsername.String
+		}
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
 			return
@@ -114,11 +186,11 @@ func UpdateDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		userID := c.GetInt64("user_id")
+		isAdmin := getUserRole(c) == "admin"
 
 		var req struct {
 			Name        *string         `json:"name"`
 			Description *string         `json:"description"`
-			Pinned      *bool           `json:"pinned"`
 			Config      json.RawMessage `json:"config"`
 		}
 
@@ -128,7 +200,11 @@ func UpdateDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		exists := false
-		db.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1 AND owner_id = $2)", id, userID).Scan(&exists)
+		if isAdmin {
+			db.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1)", id).Scan(&exists)
+		} else {
+			db.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1 AND owner_id = $2)", id, userID).Scan(&exists)
+		}
 		if !exists {
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
 			return
@@ -148,11 +224,6 @@ func UpdateDashboard(db *sql.DB) gin.HandlerFunc {
 			args = append(args, *req.Description)
 			argIdx++
 		}
-		if req.Pinned != nil {
-			setClauses = append(setClauses, "pinned = $"+strconv.Itoa(argIdx))
-			args = append(args, *req.Pinned)
-			argIdx++
-		}
 		if req.Config != nil {
 			setClauses = append(setClauses, "config = $"+strconv.Itoa(argIdx))
 			args = append(args, req.Config)
@@ -165,6 +236,9 @@ func UpdateDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		setClauses = append(setClauses, "updated_at = NOW()")
+		setClauses = append(setClauses, "updated_by = $"+strconv.Itoa(argIdx))
+		args = append(args, userID)
+		argIdx++
 		args = append(args, id)
 
 		query := "UPDATE dashboards SET " + joinStrings(setClauses, ", ") + " WHERE id = $" + strconv.Itoa(argIdx)
@@ -188,8 +262,14 @@ func DeleteDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		userID := c.GetInt64("user_id")
+		isAdmin := getUserRole(c) == "admin"
 
-		result, err := db.Exec("DELETE FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID)
+		var result sql.Result
+		if isAdmin {
+			result, err = db.Exec("DELETE FROM dashboards WHERE id = $1", id)
+		} else {
+			result, err = db.Exec("DELETE FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID)
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -214,10 +294,14 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 		}
 
 		userID := c.GetInt64("user_id")
+		isAdmin := getUserRole(c) == "admin"
 
 		var configRaw json.RawMessage
-		err = db.QueryRow("SELECT config FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID).
-			Scan(&configRaw)
+		if isAdmin {
+			err = db.QueryRow("SELECT config FROM dashboards WHERE id = $1", id).Scan(&configRaw)
+		} else {
+			err = db.QueryRow("SELECT config FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE)", id, userID).Scan(&configRaw)
+		}
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
 			return
@@ -238,7 +322,7 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			limitInt = 100
 		}
 
-		query := "SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, created_at FROM syslog_logs WHERE 1=1"
+		query := "SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at FROM syslog_logs WHERE 1=1"
 		args := []interface{}{}
 		argIdx := 1
 
@@ -252,21 +336,33 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			query += " AND hostname IN (" + strings.Join(placeholders, ", ") + ")"
 		}
 
-		if cfg.Filters.Severity != "" {
+		severityFilter := c.DefaultQuery("severity", "")
+		if severityFilter == "" {
+			severityFilter = cfg.Filters.Severity
+		}
+		if severityFilter != "" {
 			query += " AND severity = $" + strconv.Itoa(argIdx)
-			args = append(args, cfg.Filters.Severity)
+			args = append(args, severityFilter)
 			argIdx++
 		}
 
-		if cfg.Filters.From != "" {
+		fromFilter := c.DefaultQuery("from", "")
+		if fromFilter == "" {
+			fromFilter = cfg.Filters.From
+		}
+		if fromFilter != "" {
 			query += " AND timestamp >= $" + strconv.Itoa(argIdx)
-			args = append(args, cfg.Filters.From)
+			args = append(args, fromFilter)
 			argIdx++
 		}
 
-		if cfg.Filters.To != "" {
+		toFilter := c.DefaultQuery("to", "")
+		if toFilter == "" {
+			toFilter = cfg.Filters.To
+		}
+		if toFilter != "" {
 			query += " AND timestamp <= $" + strconv.Itoa(argIdx)
-			args = append(args, cfg.Filters.To)
+			args = append(args, toFilter)
 			argIdx++
 		}
 
@@ -299,12 +395,14 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 		for rows.Next() {
 			var l model.SyslogLog
 			var rawParsed json.RawMessage
+			var parsers pq.StringArray
 			err := rows.Scan(&l.ID, &l.Timestamp, &l.Hostname, &l.AppName,
 				&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
-				&l.Message, &l.RawMessage, &rawParsed, &l.CreatedAt)
+				&l.Message, &l.RawMessage, &rawParsed, &parsers, &l.CreatedAt)
 			if err != nil {
 				continue
 			}
+			l.MatchedParsers = parsers
 
 			if len(rawParsed) > 0 {
 				json.Unmarshal(rawParsed, &l.ParsedFields)
@@ -374,22 +472,70 @@ func TogglePinDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		userID := c.GetInt64("user_id")
+		isAdmin := getUserRole(c) == "admin"
 
-		var pinned bool
-		err = db.QueryRow("SELECT pinned FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID).Scan(&pinned)
-		if err != nil {
+		exists := false
+		if isAdmin {
+			err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1)", id).Scan(&exists)
+		} else {
+			err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE))", id, userID).Scan(&exists)
+		}
+		if err != nil || !exists {
 			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
 			return
 		}
 
-		newPinned := !pinned
-		_, err = db.Exec("UPDATE dashboards SET pinned = $1, updated_at = NOW() WHERE id = $2 AND owner_id = $3",
-			newPinned, id, userID)
+		var pinned bool
+		err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM user_dashboard_pins WHERE user_id = $1 AND dashboard_id = $2)", userID, id).Scan(&pinned)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"pinned": newPinned})
+		if pinned {
+			db.Exec("DELETE FROM user_dashboard_pins WHERE user_id = $1 AND dashboard_id = $2", userID, id)
+		} else {
+			db.Exec("INSERT INTO user_dashboard_pins (user_id, dashboard_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", userID, id)
+		}
+
+		c.JSON(http.StatusOK, gin.H{"pinned": !pinned})
 	}
 }
+
+func TogglePublicDashboard(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+			return
+		}
+
+		userID := c.GetInt64("user_id")
+		isAdmin := getUserRole(c) == "admin"
+
+		var isPublic bool
+		if isAdmin {
+			err = db.QueryRow("SELECT is_public FROM dashboards WHERE id = $1", id).Scan(&isPublic)
+		} else {
+			err = db.QueryRow("SELECT is_public FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID).Scan(&isPublic)
+		}
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "dashboard not found"})
+			return
+		}
+
+		newPublic := !isPublic
+		if isAdmin {
+			_, err = db.Exec("UPDATE dashboards SET is_public = $1, updated_at = NOW() WHERE id = $2", newPublic, id)
+		} else {
+			_, err = db.Exec("UPDATE dashboards SET is_public = $1, updated_at = NOW() WHERE id = $2 AND owner_id = $3", newPublic, id, userID)
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"is_public": newPublic})
+	}
+}
+
