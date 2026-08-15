@@ -220,12 +220,8 @@ export default function LogsViewer() {
     setDetailModalOpen(true)
   }
 
-  const Wrapper = isMobile
-    ? ({ children }: { children: React.ReactNode }) => <PullToRefresh onRefresh={() => loadLogs(true)}>{children}</PullToRefresh>
-    : ({ children }: { children: React.ReactNode }) => <>{children}</>
-
-  return (
-    <Wrapper>
+  const content = (
+    <>
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: tokens.spacing.md }}>
         <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>{t('nav.logs')}</Title>
         <Text type="secondary">({totalLogs.toLocaleString()} {t('logs.total')})</Text>
@@ -378,6 +374,8 @@ export default function LogsViewer() {
           />
         </>
       )}
-      </Wrapper>
+    </>
   )
+
+  return isMobile ? <PullToRefresh onRefresh={() => loadLogs(true)}>{content}</PullToRefresh> : content
 }
