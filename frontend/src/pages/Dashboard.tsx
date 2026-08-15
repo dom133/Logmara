@@ -1,23 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Row, Col, Card, Statistic, Table, Tag, Spin, Typography, Space, Button } from 'antd'
-import { RestOutlined } from '@ant-design/icons'
+import { Row, Col, Card, Table, Tag, Spin, Typography, Button } from 'antd'
+import { RestOutlined, FileTextOutlined, ClockCircleOutlined, CalendarOutlined, DesktopOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import { getDashboardStats, getTimeline, getSeverityStats } from '../services/api'
 import { DashboardStats, TimelinePoint } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
+import StatCard from '../components/StatCard'
+import { SEVERITY_COLORS } from '../constants'
 
 const { Title } = Typography
-
-const severityColors: Record<string, string> = {
-  emerg: '#f5222d',
-  alert: '#ff4d4f',
-  crit: '#ff7a45',
-  err: '#faad14',
-  warning: '#fadb14',
-  notice: '#1890ff',
-  info: '#52c41a',
-  debug: '#bfbfbf',
-}
 
 export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null)
@@ -84,7 +75,7 @@ export default function Dashboard() {
       data: severityData.map(s => ({
         name: s.severity.toUpperCase(),
         value: s.count,
-        itemStyle: { color: severityColors[s.severity] || '#bfbfbf' },
+        itemStyle: { color: SEVERITY_COLORS[s.severity] || '#bfbfbf' },
       })),
       label: { show: true, formatter: '{b}: {c}' },
     }],
@@ -109,25 +100,17 @@ export default function Dashboard() {
     <>
       <Title level={3}>Dashboard</Title>
       <Row gutter={16} style={{ marginBottom: 24 }}>
-        <Col span={6}>
-          <Card>
-            <Statistic title="Total Logs" value={stats?.total_logs || 0} prefix="📄" />
-          </Card>
+        <Col xs={24} sm={12} md={6}>
+          <StatCard title="Total Logs" value={stats?.total_logs || 0} icon={<FileTextOutlined />} color="#1890ff" />
         </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic title="Last Hour" value={stats?.logs_last_hour || 0} valueStyle={{ color: '#3f8600' }} />
-          </Card>
+        <Col xs={24} sm={12} md={6}>
+          <StatCard title="Last Hour" value={stats?.logs_last_hour || 0} icon={<ClockCircleOutlined />} color="#3f8600" />
         </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic title="Last 24h" value={stats?.logs_last_day || 0} valueStyle={{ color: '#cf1322' }} />
-          </Card>
+        <Col xs={24} sm={12} md={6}>
+          <StatCard title="Last 24h" value={stats?.logs_last_day || 0} icon={<CalendarOutlined />} color="#cf1322" />
         </Col>
-        <Col span={6}>
-          <Card>
-            <Statistic title="Devices" value={stats?.unique_devices || 0} prefix="🖥️" />
-          </Card>
+        <Col xs={24} sm={12} md={6}>
+          <StatCard title="Devices" value={stats?.unique_devices || 0} icon={<DesktopOutlined />} color="#722ed1" />
         </Col>
       </Row>
 

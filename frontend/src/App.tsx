@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, createContext, useContext } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link as RouterLink } from 'react-router-dom'
-import { Layout, theme, Spin } from 'antd'
+import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer } from 'antd'
+import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined } from '@ant-design/icons'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import LogsViewer from './pages/LogsViewer'
@@ -9,23 +10,190 @@ import DashboardsPage from './pages/Dashboards'
 import DashboardViewPage from './pages/DashboardView'
 import Admin from './pages/Admin'
 import SetupWizard from './pages/SetupWizard'
+import ErrorBoundary from './components/ErrorBoundary'
 import { AuthProvider, useAuth } from './services/auth'
 import { getDashboards, Dashboard as DashboardType, checkInitialized } from './services/api'
 
-const { Sider, Content } = Layout
+const { Sider, Content, Header } = Layout
+
+const MOBILE_BREAKPOINT = 768
+
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(false)
+  useEffect(() => {
+    const m = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT}px)`)
+    setIsMobile(m.matches)
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches)
+    m.addEventListener('change', handler)
+    return () => m.removeEventListener('change', handler)
+  }, [])
+  return isMobile
+}
+
+function NavContent({ location, user, logout, isAdmin, pinnedDashboards, onClose }: {
+  location: ReturnType<typeof useLocation>
+  user: { username?: string } | undefined
+  logout: () => void
+  isAdmin: boolean
+  pinnedDashboards: DashboardType[]
+  onClose?: () => void
+}) {
+  const { token } = theme.useToken()
+  const renderLinks = () => (
+    <>
+      <nav>
+        {navItems.map(item => (
+          <RouterLink
+            key={item.key}
+            to={item.key}
+            onClick={onClose}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '12px 16px',
+              textDecoration: 'none',
+              color: location.pathname === item.key ? '#1890ff' : token.colorText,
+              background: location.pathname === item.key ? '#e6f7ff' : 'transparent',
+              borderRadius: 4,
+              margin: '2px 8px',
+              fontSize: 14,
+            }}
+          >
+            <span style={{ fontSize: 18 }}>{item.icon}</span>
+            {item.label}
+          </RouterLink>
+        ))}
+        {pinnedDashboards.length > 0 && (
+          <>
+            <div style={{ padding: '12px 16px 4px', fontSize: 11, color: '#999', textTransform: 'uppercase', letterSpacing: 1 }}>
+              Pinned
+            </div>
+            {pinnedDashboards.map(d => (
+              <RouterLink
+                key={`pin-${d.id}`}
+                to={`/dashboards/${d.id}`}
+                onClick={onClose}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '12px 16px',
+                  textDecoration: 'none',
+                  color: location.pathname === `/dashboards/${d.id}` ? '#1890ff' : token.colorText,
+                  background: location.pathname === `/dashboards/${d.id}` ? '#e6f7ff' : 'transparent',
+                  borderRadius: 4,
+                  margin: '2px 8px',
+                  fontSize: 14,
+                }}
+              >
+                <span style={{ fontSize: 18 }}><PushpinOutlined /></span>
+                {d.name}
+              </RouterLink>
+            ))}
+          </>
+        )}
+        {isAdmin && (
+          <RouterLink
+            to="/admin"
+            onClick={onClose}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '12px 16px',
+              textDecoration: 'none',
+              color: location.pathname === '/admin' ? '#1890ff' : token.colorText,
+              background: location.pathname === '/admin' ? '#e6f7ff' : 'transparent',
+              borderRadius: 4,
+              margin: '2px 8px',
+              fontSize: 14,
+            }}
+          >
+            <span style={{ fontSize: 18 }}><SafetyOutlined /></span>
+            Admin
+          </RouterLink>
+        )}
+      </nav>
+      <div style={{ position: 'absolute', bottom: 16, left: 16, right: 16 }}>
+        <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+          {user?.username}
+        </div>
+        <button
+          onClick={() => { logout(); onClose?.() }}
+          style={{
+            width: '100%',
+            padding: '6px 0',
+            border: '1px solid #d9d9d9',
+            borderRadius: 4,
+            background: 'white',
+            cursor: 'pointer',
+            fontSize: 12,
+          }}
+        >
+          Logout
+        </button>
+      </div>
+    </>
+  )
+
+  return (
+    <>
+      <div style={{ padding: '20px 16px', fontSize: 20, fontWeight: 700, color: '#1890ff', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <DashboardOutlined style={{ fontSize: 24 }} /> SysLog GUI
+      </div>
+      {renderLinks()}
+    </>
+  )
+}
+
+type ThemeMode = 'light' | 'dark'
+
+const ThemeContext = createContext<{ themeMode: ThemeMode; toggleTheme: () => void }>({ themeMode: 'light', toggleTheme: () => {} })
+
+export function useTheme() {
+  return useContext(ThemeContext)
+}
+
+function ThemeProvider({ children }: { children: React.ReactNode }) {
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+    const saved = localStorage.getItem('syslog_theme')
+    return (saved === 'dark' || saved === 'light') ? saved : 'light'
+  })
+
+  const toggleTheme = () => {
+    setThemeMode(prev => {
+      const next = prev === 'light' ? 'dark' : 'light'
+      localStorage.setItem('syslog_theme', next)
+      return next
+    })
+  }
+
+  return (
+    <ThemeContext.Provider value={{ themeMode, toggleTheme }}>
+      <ConfigProvider theme={{ algorithm: themeMode === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm }}>
+        {children}
+      </ConfigProvider>
+    </ThemeContext.Provider>
+  )
+}
 
 const navItems = [
-  { key: '/', label: 'Main', icon: '📊' },
-  { key: '/logs', label: 'Logs', icon: '📋' },
-  { key: '/parsers', label: 'Parsers', icon: '⚙️' },
-  { key: '/dashboards', label: 'Dashboards', icon: '📈' },
+  { key: '/', label: 'Dashboard', icon: <DashboardOutlined /> },
+  { key: '/logs', label: 'Logs', icon: <FileTextOutlined /> },
+  { key: '/parsers', label: 'Parsers', icon: <SettingOutlined /> },
+  { key: '/dashboards', label: 'Dashboards', icon: <FundOutlined /> },
 ]
 
 function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, logout, isAdmin } = useAuth()
   const { token } = theme.useToken()
+  const { themeMode, toggleTheme } = useTheme()
   const location = useLocation()
   const [pinnedDashboards, setPinnedDashboards] = useState<DashboardType[]>([])
+  const [collapsed, setCollapsed] = useState(false)
+  const [drawerVisible, setDrawerVisible] = useState(false)
+  const isMobile = useIsMobile()
 
   useEffect(() => {
     if (!user) return
@@ -38,110 +206,71 @@ function AppLayout({ children }: { children: React.ReactNode }) {
     load()
   }, [user])
 
+  useEffect(() => {
+    if (isMobile) {
+      setCollapsed(true)
+    }
+  }, [isMobile])
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Sider
-        width={220}
-        style={{ background: token.colorBgContainer }}
-        theme="light"
-      >
-        <div style={{ padding: '20px 16px', fontSize: 20, fontWeight: 700, color: '#1890ff' }}>
-          📡 SysLog GUI
-        </div>
-        <nav>
-          {navItems.map(item => (
-            <RouterLink
-              key={item.key}
-              to={item.key}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '12px 16px',
-                textDecoration: 'none',
-                color: location.pathname === item.key ? '#1890ff' : token.colorText,
-                background: location.pathname === item.key ? '#e6f7ff' : 'transparent',
-                borderRadius: 4,
-                margin: '2px 8px',
-                fontSize: 14,
-              }}
-            >
-              <span>{item.icon}</span>
-              {item.label}
-            </RouterLink>
-          ))}
-          {pinnedDashboards.length > 0 && (
-            <>
-              <div style={{ padding: '12px 16px 4px', fontSize: 11, color: '#999', textTransform: 'uppercase', letterSpacing: 1 }}>
-                Pinned
-              </div>
-              {pinnedDashboards.map(d => (
-                <RouterLink
-                  key={`pin-${d.id}`}
-                  to={`/dashboards/${d.id}`}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '12px 16px',
-                    textDecoration: 'none',
-                    color: location.pathname === `/dashboards/${d.id}` ? '#1890ff' : token.colorText,
-                    background: location.pathname === `/dashboards/${d.id}` ? '#e6f7ff' : 'transparent',
-                    borderRadius: 4,
-                    margin: '2px 8px',
-                    fontSize: 14,
-                  }}
-                >
-                  <span>📌</span>
-                  {d.name}
-                </RouterLink>
-              ))}
-            </>
-          )}
-          {isAdmin && (
-            <RouterLink
-              to="/admin"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '12px 16px',
-                textDecoration: 'none',
-                color: location.pathname === '/admin' ? '#1890ff' : token.colorText,
-                background: location.pathname === '/admin' ? '#e6f7ff' : 'transparent',
-                borderRadius: 4,
-                margin: '2px 8px',
-                fontSize: 14,
-              }}
-            >
-              <span>🔐</span>
-              Admin
-            </RouterLink>
-          )}
-        </nav>
-        <div style={{ position: 'absolute', bottom: 16, left: 16, right: 16 }}>
-          <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
-            {user?.username}
+      {!isMobile && (
+        <Sider
+          width={220}
+          collapsedWidth={80}
+          collapsed={collapsed}
+          onCollapse={setCollapsed}
+          style={{ background: token.colorBgContainer }}
+          theme={themeMode === 'dark' ? 'dark' : 'light'}
+        >
+          <NavContent location={location} user={user} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} />
+        </Sider>
+      )}
+      {isMobile && (
+        <Drawer
+          title=""
+          placement="left"
+          onClose={() => setDrawerVisible(false)}
+          open={drawerVisible}
+          width={260}
+          styles={{ body: { padding: 0 } }}
+        >
+          <div style={{ background: token.colorBgContainer, height: '100%' }}>
+            <NavContent location={location} user={user} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} onClose={() => setDrawerVisible(false)} />
           </div>
-          <button
-            onClick={logout}
-            style={{
-              width: '100%',
-              padding: '6px 0',
-              border: '1px solid #d9d9d9',
-              borderRadius: 4,
-              background: 'white',
-              cursor: 'pointer',
-              fontSize: 12,
-            }}
-          >
-            Logout
-          </button>
-        </div>
-      </Sider>
+        </Drawer>
+      )}
       <Layout>
+        <Header style={{ background: token.colorBgContainer, padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {isMobile && (
+              <Button
+                type="text"
+                icon={<MenuOutlined />}
+                onClick={() => setDrawerVisible(true)}
+              />
+            )}
+            {!isMobile && (
+              <Button
+                type="text"
+                icon={<MenuOutlined />}
+                onClick={() => setCollapsed(!collapsed)}
+              />
+            )}
+            <span style={{ fontSize: 16, fontWeight: 500 }}>
+              {location.pathname === '/' ? 'Dashboard' : location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'SysLog GUI'}
+            </span>
+          </div>
+          <Button
+            type="text"
+            icon={themeMode === 'dark' ? <SunOutlined /> : <MoonOutlined />}
+            onClick={toggleTheme}
+          >
+            {themeMode === 'dark' ? 'Light' : 'Dark'}
+          </Button>
+        </Header>
         <Content style={{ margin: 16, padding: 24, background: token.colorBgContainer, borderRadius: 8 }}>
-          {children}
+          <ErrorBoundary>{children}</ErrorBoundary>
         </Content>
       </Layout>
     </Layout>
@@ -176,9 +305,10 @@ export default function App() {
   }
 
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <Routes>
+    <ThemeProvider>
+      <BrowserRouter>
+        <AuthProvider>
+          <Routes>
           {!initialized ? (
             <>
               <Route path="/setup" element={<SetupWizard />} />
@@ -193,11 +323,12 @@ export default function App() {
               <Route path="/dashboards" element={<PrivateRoute><DashboardsPage /></PrivateRoute>} />
               <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
               <Route path="/admin" element={<PrivateRoute><Admin /></PrivateRoute>} />
-              <Route path="*" element={<Navigate to="/" replace />} />
+              <Route path="*" element={<PrivateRoute><Result status="404" title="404" subTitle="Page not found" /></PrivateRoute>} />
             </>
           )}
         </Routes>
-      </AuthProvider>
-    </BrowserRouter>
+        </AuthProvider>
+      </BrowserRouter>
+    </ThemeProvider>
   )
 }

@@ -12,7 +12,7 @@ interface User {
 interface AuthContextType {
   token: string | null
   user: User | null
-  login: (username: string, password: string) => Promise<boolean>
+  login: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>
   logout: () => Promise<void>
   isAdmin: boolean
 }
@@ -48,9 +48,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       localStorage.setItem('token', t)
       localStorage.setItem('refresh_token', rt)
       setUser(res.data.user)
-      return true
-    } catch {
-      return false
+      return { ok: true }
+    } catch (e: any) {
+      return {
+        ok: false,
+        error: e.response?.data?.error || 'Invalid credentials',
+      }
     }
   }
 

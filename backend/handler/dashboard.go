@@ -270,9 +270,13 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			argIdx++
 		}
 
-		if cfg.Filters.Search != "" {
+		searchTerm := c.DefaultQuery("search", "")
+		if searchTerm == "" {
+			searchTerm = cfg.Filters.Search
+		}
+		if searchTerm != "" {
 			query += " AND (message ILIKE $" + strconv.Itoa(argIdx) + " OR hostname ILIKE $" + strconv.Itoa(argIdx+1) + ")"
-			searchPattern := "%" + cfg.Filters.Search + "%"
+			searchPattern := "%" + searchTerm + "%"
 			args = append(args, searchPattern, searchPattern)
 			argIdx += 2
 		}

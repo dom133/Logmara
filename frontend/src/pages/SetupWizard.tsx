@@ -224,25 +224,18 @@ export default function SetupWizard() {
         return (
           <>
             <Form.Item name="jwt_secret" label="JWT Secret" rules={[{ required: true, min: 16 }]}>
-              <Input size="large" placeholder="32+ character secret key" />
+              <Input.Password size="large" placeholder="32+ character secret key" />
             </Form.Item>
-            <Button
-              onClick={handleGenerateKeys}
-              loading={loading}
-              style={{ marginBottom: 16 }}
-            >
-              Generate Random Key
-            </Button>
-            <Divider />
             <Form.Item name="encryption_key" label="Encryption Key" rules={[{ required: true, min: 16 }]}>
-              <Input size="large" placeholder="32+ character encryption key" />
+              <Input.Password size="large" placeholder="32+ character encryption key" />
             </Form.Item>
             <Button
+              type="primary"
               onClick={handleGenerateKeys}
               loading={loading}
-              style={{ marginBottom: 16 }}
+              style={{ marginBottom: 16, width: '100%' }}
             >
-              Generate Random Key
+              Generate Both Keys
             </Button>
           </>
         )
@@ -299,8 +292,8 @@ export default function SetupWizard() {
               </>
             )}
             <Title level={5}>Security</Title>
-            <Text><strong>JWT Secret:</strong> {collectedData.jwt_secret?.substring(0, 12)}...</Text><br />
-            <Text><strong>Encryption Key:</strong> {collectedData.encryption_key?.substring(0, 12)}...</Text>
+            <Text><strong>JWT Secret:</strong> {'•'.repeat(Math.min(collectedData.jwt_secret?.length || 0, 32))} ({collectedData.jwt_secret?.length || 0} chars)</Text><br />
+            <Text><strong>Encryption Key:</strong> {'•'.repeat(Math.min(collectedData.encryption_key?.length || 0, 32))} ({collectedData.encryption_key?.length || 0} chars)</Text>
             <br />
             {collectedData.cors_origins && (
               <>

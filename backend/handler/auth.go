@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
 	"syslog-gui/auth"
@@ -143,11 +142,30 @@ func Logout(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
+func GetMe() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, exists := c.Get("claims")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return
+		}
+
+		mapClaims := claims.(*jwt.MapClaims)
+		username := (*mapClaims)["username"].(string)
+		role := (*mapClaims)["role"].(string)
+
+		c.JSON(http.StatusOK, gin.H{
+			"username": username,
+			"role":     role,
+		})
+	}
+}
+
 func ChangePassword(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, _ := c.Get("claims")
 		userClaims := claims.(*jwt.MapClaims)
-		username := userClaims["username"].(string)
+		username := (*userClaims)["username"].(string)
 
 		var req ChangePasswordRequest
 		if err := c.ShouldBindJSON(&req); err != nil {

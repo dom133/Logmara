@@ -102,6 +102,7 @@ func main() {
 	authGroup.Use(auth.JWTRequired())
 	{
 		authGroup.GET("/logs", handler.GetLogs(database))
+		authGroup.GET("/logs/stream", handler.StreamLogs(database))
 		authGroup.GET("/stats/dashboard", handler.GetDashboardStats(database))
 		authGroup.GET("/stats/devices", handler.GetDeviceStats(database))
 		authGroup.GET("/stats/severity", handler.GetSeverityStats(database))
