@@ -227,6 +227,23 @@ func (w *worker) run(ctx context.Context) {
 				var qe sharedstate.QueueEntry
 				if err := json.Unmarshal(delivery.Body, &qe); err != nil {
 					slog.Error("worker: unmarshal queue entry error", "id", w.id, "error", err)
+					// The envelope itself is corrupt, so qe.Seq can't be
+					// trusted - encoding/json gives no guarantee about which
+					// fields got set before the error. Try a lenient decode
+					// that only needs seq/next_pos (the "line" payload can
+					// still be garbage) so a single corrupted message doesn't
+					// permanently freeze the flush tracker's contiguous
+					// sequence - a stuck seq means flushedPos/.tailer_pos
+					// never advance again and logs.jsonl is never compacted.
+					var partial struct {
+						Seq     int64 `json:"seq"`
+						NextPos int64 `json:"next_pos"`
+					}
+					if err2 := json.Unmarshal(delivery.Body, &partial); err2 == nil && partial.Seq > 0 {
+						w.flushTrk.ReportFlushed(ctx, []sharedstate.QueueEntry{{Seq: partial.Seq, NextPos: partial.NextPos}})
+					} else {
+						slog.Error("worker: cannot recover seq from corrupted queue entry, flush tracker progress may stall here", "id", w.id)
+					}
 					delivery.Ack(false)
 					w.metrics.Mutex.Lock()
 					w.metrics.ParseErrors++
@@ -237,6 +254,7 @@ func (w *worker) run(ctx context.Context) {
 
 				line := qe.Line
 				if line == "" {
+					w.flushTrk.ReportFlushed(ctx, []sharedstate.QueueEntry{qe})
 					delivery.Ack(false)
 					w.metrics.Mutex.Lock()
 					w.metrics.MsgsProcessed++
@@ -281,6 +299,7 @@ func (w *worker) run(ctx context.Context) {
 				entry.ViaRelay = sanitizeForPostgres(entry.ViaRelay)
 
 				if entry.Hostname == "" {
+					w.flushTrk.ReportFlushed(ctx, []sharedstate.QueueEntry{qe})
 					delivery.Ack(false)
 					w.metrics.Mutex.Lock()
 					w.metrics.MsgsProcessed++
