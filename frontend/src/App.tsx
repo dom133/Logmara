@@ -399,7 +399,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
             style={{
               margin: isMobile ? 8 : 16,
               padding: isMobile ? 12 : 24,
-              paddingBottom: isMobile ? 80 : 24,
+               paddingBottom: isMobile ? 120 : 24,
               background: token.colorBgContainer,
               borderRadius: tokens.borderRadius.md,
             }}
@@ -407,35 +407,71 @@ function AppLayout({ children }: { children: React.ReactNode }) {
             <PasswordExpiryWarning />
             <ErrorBoundary>{children}</ErrorBoundary>
           </Content>
-          <Footer
-            style={{
-              background: token.colorPrimaryBg,
-              color: token.colorPrimaryText,
-              fontSize: 12,
-              padding: isMobile ? '12px 16px calc(72px + env(safe-area-inset-bottom, 0px))' : '12px 16px',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              flexWrap: 'wrap',
-              gap: 8,
-            }}
-          >
-            <span>Logmara {appVersion}</span>
-            <span>
-              © {new Date().getFullYear()}{' '}
-              <a href="https://github.com/dom133" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
-                Dominik Kruszewski
-              </a>
-              {' · '}
-              <a href="https://github.com/dom133/Logmara" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
-                GitHub
-              </a>
-              {' · '}
-              AGPL-3.0
-            </span>
-          </Footer>
+           {!isMobile && (
+            <Footer
+              style={{
+                background: token.colorPrimaryBg,
+                color: token.colorPrimaryText,
+                fontSize: 12,
+                padding: '12px 16px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 8,
+              }}
+            >
+              <span>Logmara {appVersion}</span>
+              <span>
+                © {new Date().getFullYear()}{' '}
+                <a href="https://github.com/dom133" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
+                  Dominik Kruszewski
+                </a>
+                {' · '}
+                <a href="https://github.com/dom133/Logmara" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
+                  GitHub
+                </a>
+                {' · '}
+                AGPL-3.0
+              </span>
+            </Footer>
+          )}
         </Layout>
       </Layout>
+      {isMobile && (
+        <Footer
+          style={{
+            position: 'fixed',
+            bottom: `calc(56px + env(safe-area-inset-bottom, 0px))`,
+            left: 0,
+            right: 0,
+            zIndex: 999,
+            background: token.colorPrimaryBg,
+            color: token.colorPrimaryText,
+            fontSize: 12,
+            padding: '10px 16px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 8,
+          }}
+        >
+          <span>Logmara {appVersion}</span>
+          <span>
+            © {new Date().getFullYear()}{' '}
+            <a href="https://github.com/dom133" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
+              Dominik Kruszewski
+            </a>
+            {' · '}
+            <a href="https://github.com/dom133/Logmara" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
+              GitHub
+            </a>
+            {' · '}
+            AGPL-3.0
+          </span>
+        </Footer>
+      )}
       {isMobile && <BottomNav />}
       {isMobile && <div className="bottom-safe-spacer" />}
       {showSessionWarning && (

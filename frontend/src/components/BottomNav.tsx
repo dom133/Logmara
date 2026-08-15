@@ -41,6 +41,7 @@ export default function BottomNav() {
         paddingBottom: `calc(8px + env(safe-area-inset-bottom, 0px))`,
         background: isDark ? '#1f1f1f' : '#ffffff',
         borderTop: `1px solid ${isDark ? '#303030' : '#e8e8e8'}`,
+        color: isDark ? '#ffffff' : '#000000',
       }}
     >
       {visibleItems.map(item => {
@@ -58,7 +59,7 @@ export default function BottomNav() {
               gap: 2,
               padding: '4px 8px',
               textDecoration: 'none',
-              color: isActive ? tokens.colors.primary : 'inherit',
+              color: isActive ? tokens.colors.primary : (isDark ? 'rgba(255,255,255,0.65)' : 'rgba(0,0,0,0.65)'),
               fontSize: 10,
               fontWeight: isActive ? 600 : 400,
               minWidth: 48,

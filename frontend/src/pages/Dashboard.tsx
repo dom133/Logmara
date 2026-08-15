@@ -10,11 +10,14 @@ import { useColumnWidths } from '../hooks/useColumnWidths'
 import StatCard from '../components/StatCard'
 import { SEVERITY_HEX, getSeverityLabels, SEVERITY_ORDER } from '../constants'
 import { tokens } from '../theme/tokens'
+import { useTheme } from '../App'
 
 const { Title } = Typography
 
 export default function Dashboard() {
   const { t } = useTranslation()
+  const { themeMode } = useTheme()
+  const isDark = themeMode === 'dark'
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [timeline, setTimeline] = useState<TimelinePoint[]>([])
   const [severityData, setSeverityData] = useState<Array<{ severity: string; count: number }>>([])
@@ -147,14 +150,15 @@ export default function Dashboard() {
       type: 'scroll' as const,
       bottom: 0,
       left: 'center' as const,
+      textStyle: { color: isDark ? '#ffffff' : undefined },
     },
     title: {
       text: totalSeverity.toLocaleString(),
       subtext: t('dashboard.total'),
       left: 'center' as const,
       top: '38%' as const,
-      textStyle: { fontSize: 22, fontWeight: 600 },
-      subtextStyle: { fontSize: 12 },
+      textStyle: { fontSize: 22, fontWeight: 600, color: isDark ? '#ffffff' : undefined },
+      subtextStyle: { fontSize: 12, color: isDark ? 'rgba(255,255,255,0.65)' : undefined },
     },
     series: [{
       type: 'pie' as const,
@@ -166,7 +170,7 @@ export default function Dashboard() {
         value: s.count,
         itemStyle: { color: SEVERITY_HEX[s.severity] || '#bfbfbf' },
       })),
-      label: { show: true, formatter: '{b}: {d}%' },
+      label: { show: true, formatter: '{b}: {d}%', color: isDark ? '#ffffff' : undefined },
       labelLine: { show: true },
     }],
   }
