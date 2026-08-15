@@ -986,10 +986,6 @@ r := gin.New()
 		tailer.Run(ctx, dynamicPool, logFilePath, engine, ic, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient)
 	}()
 
-	// SIGUSR1 handler for pre-update preparation (Unix only).
-	// Setup is in maintenance_unix.go (build-tagged).
-	setupMaintenanceSignal()
-
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
