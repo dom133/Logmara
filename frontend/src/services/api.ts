@@ -1292,6 +1292,6 @@ export async function getRotationStatus(): Promise<RotationStatus> {
 }
 
 export async function triggerRotation(): Promise<RotationStatus> {
-  const res = await api.post('/admin/rotation/trigger')
+  const res = await api.post('/admin/rotation/trigger', undefined, { timeout: 120000 })
   return res.data
 }

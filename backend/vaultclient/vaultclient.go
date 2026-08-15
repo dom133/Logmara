@@ -326,18 +326,34 @@ func (c *Client) rotateSecrets(ctx context.Context, cb RotationCallbacks) {
 
 	// Rotate JWT secret
 	newJWTSecret, err := generateRandomKey(32)
-	if err == nil {
-		if err := c.WriteSecret("jwt_secret", newJWTSecret); err == nil {
-			cb.RotateJWTSecret(newJWTSecret)
+	if err != nil {
+		slog.Error("vault: failed to generate JWT secret", "error", err)
+		if cb.OnRotateFailure != nil {
+			cb.OnRotateFailure("jwt_secret", err.Error())
 		}
+	} else if err := c.WriteSecret("jwt_secret", newJWTSecret); err != nil {
+		slog.Error("vault: failed to write JWT secret", "error", err)
+		if cb.OnRotateFailure != nil {
+			cb.OnRotateFailure("jwt_secret", err.Error())
+		}
+	} else {
+		cb.RotateJWTSecret(newJWTSecret)
 	}
 
 	// Rotate encryption key
 	newEncKey, err := generateRandomKey(32)
-	if err == nil {
-		if err := c.WriteSecret("encryption_key", newEncKey); err == nil {
-			cb.RotateEncryptionKey(newEncKey)
+	if err != nil {
+		slog.Error("vault: failed to generate encryption key", "error", err)
+		if cb.OnRotateFailure != nil {
+			cb.OnRotateFailure("encryption_key", err.Error())
 		}
+	} else if err := c.WriteSecret("encryption_key", newEncKey); err != nil {
+		slog.Error("vault: failed to write encryption key", "error", err)
+		if cb.OnRotateFailure != nil {
+			cb.OnRotateFailure("encryption_key", err.Error())
+		}
+	} else {
+		cb.RotateEncryptionKey(newEncKey)
 	}
 
 	// Rotate dynamic PostgreSQL credentials

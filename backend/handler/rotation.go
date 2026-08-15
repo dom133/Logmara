@@ -20,30 +20,18 @@ import (
 )
 
 var (
-	vaultClientRef       *vaultclient.Client
-	authConfigRef        *auth.Config
-	vaultEnabled         atomic.Bool
-	lastRotationAtRef    atomic.Value
-	nextRotationAtRef    atomic.Value
-	manualTriggeredRef   atomic.Bool
-	secretResults        [4]atomicValue
-	secretLastRotatedAt  [4]atomicValue
-	secondaryKeyActive   [4]atomic.Bool
-	dbRef                *sql.DB
-	rotationBroadcaster  *sharedstate.Broadcaster
+	vaultClientRef      *vaultclient.Client
+	authConfigRef       *auth.Config
+	vaultEnabled        atomic.Bool
+	lastRotationAtRef   atomic.Value
+	nextRotationAtRef   atomic.Value
+	manualTriggeredRef  atomic.Bool
+	secretResults       [4]atomic.Value
+	secretLastRotatedAt [4]atomic.Value
+	secondaryKeyActive  [4]atomic.Bool
+	dbRef               *sql.DB
+	rotationBroadcaster *sharedstate.Broadcaster
 )
-
-type atomicValue struct {
-	v interface{}
-}
-
-func (av *atomicValue) Load() interface{} {
-	return av.v
-}
-
-func (av *atomicValue) Store(v interface{}) {
-	av.v = v
-}
 
 const rotationSyncChannel = "rotation:sync"
 const rotationTriggerChannel = "rotation:trigger"
@@ -227,7 +215,7 @@ func TriggerManualRotation() {
 // waitRotationComplete blocks until all 4 secrets have a newer last_rotated_at
 // timestamp than before the trigger, or until timeout (60s).
 func waitRotationComplete(before [4]time.Time) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -236,7 +224,7 @@ func waitRotationComplete(before [4]time.Time) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("rotation timed out after 60s")
+			return fmt.Errorf("rotation timed out after 120s")
 		case <-ticker.C:
 			allDone := true
 			for i := 0; i < 4; i++ {

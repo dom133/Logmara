@@ -678,10 +678,15 @@ func main() {
 			handler.SetSecretRotationResult(2, "success")
 		},
 		OnRotateFailure: func(engine string, errMsg string) {
-			slog.Warn("vault: dynamic secret rotation failed", "engine", engine, "error", errMsg)
-			if engine == "database" {
+			slog.Warn("vault: secret rotation failed", "engine", engine, "error", errMsg)
+			switch engine {
+			case "jwt_secret":
+				handler.SetSecretRotationResult(0, "failed")
+			case "encryption_key":
+				handler.SetSecretRotationResult(1, "failed")
+			case "database":
 				handler.SetSecretRotationResult(2, "failed")
-			} else if engine == "rabbitmq" {
+			case "rabbitmq":
 				handler.SetSecretRotationResult(3, "failed")
 			}
 		},
