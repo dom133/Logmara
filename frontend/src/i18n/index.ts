@@ -4,6 +4,32 @@ import LanguageDetector from 'i18next-browser-languagedetector'
 
 const LANGUAGE_PATH = '/locales'
 
+// Overrides for cases where the platform's own name for a language isn't
+// what we want to show; otherwise names come from Intl.DisplayNames so a
+// newly added locale needs no code change here.
+const LANGUAGE_NAME_OVERRIDES: Record<string, string> = {}
+
+export function languageDisplayName(code: string): string {
+  const fallback = code.charAt(0).toUpperCase() + code.slice(1)
+  if (LANGUAGE_NAME_OVERRIDES[code]) return LANGUAGE_NAME_OVERRIDES[code]
+  try {
+    const name = new Intl.DisplayNames([code], { type: 'language' }).of(code)
+    if (!name) return fallback
+    return name.charAt(0).toLocaleUpperCase(code) + name.slice(1)
+  } catch {
+    return fallback
+  }
+}
+
+export function sortLanguagesEnglishFirst(languages: string[]): string[] {
+  return [...languages].sort((a, b) => {
+    if (a === b) return 0
+    if (a === 'en') return -1
+    if (b === 'en') return 1
+    return languageDisplayName(a).localeCompare(languageDisplayName(b))
+  })
+}
+
 async function detectLanguages(): Promise<string[]> {
   try {
     const indexRes = await fetch(`${LANGUAGE_PATH}/index.json`)
@@ -32,10 +58,10 @@ async function loadLanguageResources(languages: string[]): Promise<Record<string
 
 async function getDefaultLanguage(): Promise<string | null> {
   try {
-    const res = await fetch('/api/settings')
+    const res = await fetch('/api/settings/default-language')
     if (!res.ok) return null
-    const settings: Record<string, string> = await res.json()
-    return settings['default_language'] || null
+    const data: { default_language?: string } = await res.json()
+    return data.default_language || null
   } catch {
     return null
   }

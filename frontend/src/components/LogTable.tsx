@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react'
 import { Table, Button, Select, Typography, Tag } from 'antd'
 import { ColumnsType } from 'antd/es/table'
+import { useTranslation } from 'react-i18next'
+import i18n from '../i18n'
 import { LogEntry, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import SeverityTag from './SeverityTag'
 import { ColumnDef } from '../hooks/useColumnWidths'
@@ -48,21 +50,21 @@ export function buildDefaultColumns(deviceMap: Map<string, string>): ColumnsType
 
   return [
     {
-      title: 'Time',
+      title: i18n.t('common.time'),
       dataIndex: 'timestamp',
       key: 'timestamp',
       width: 180,
       render: (v: string) => new Date(v).toLocaleString(),
     },
     {
-      title: 'Severity',
+      title: i18n.t('logs.severity'),
       dataIndex: 'severity',
       key: 'severity',
       width: 90,
       render: (v: string) => <SeverityTag severity={v} />,
     },
     {
-      title: 'Device',
+      title: i18n.t('dashboard.device'),
       dataIndex: 'hostname',
       key: 'hostname',
       width: 160,
@@ -74,14 +76,14 @@ export function buildDefaultColumns(deviceMap: Map<string, string>): ColumnsType
         ),
     },
     {
-      title: 'App',
+      title: i18n.t('dashboard.app'),
       dataIndex: 'app_name',
       key: 'app_name',
       width: 120,
       render: (v?: string) => (v ? <Text type="secondary">{v}</Text> : '-'),
     },
     {
-      title: 'Message',
+      title: i18n.t('logs.message'),
       dataIndex: 'message',
       key: 'message',
       width: 300,
@@ -124,6 +126,7 @@ export default function LogTable({
   onRowClick,
   enhanceColumns,
 }: LogTableProps) {
+  const { t } = useTranslation()
   const deviceMap = useDeviceMap(devices)
   const defaultCols = buildDefaultColumns(deviceMap)
   const finalColumns = columns || defaultCols
@@ -161,16 +164,16 @@ export default function LogTable({
           value={pageSize}
           onChange={setPageSize}
           options={['25', '50', '100', '200'].map(v => ({
-            label: `${v} / page`,
+            label: t('logsTable.perPage', { count: v }),
             value: parseInt(v),
           }))}
         />
         {hasMore ? (
           <Button onClick={onLoadMore} loading={loadingMore}>
-            Load more
+            {t('logsTable.loadMore')}
           </Button>
         ) : (
-          <Text type="secondary">No more logs</Text>
+          <Text type="secondary">{t('logsTable.noMoreLogs')}</Text>
         )}
       </div>
     </>

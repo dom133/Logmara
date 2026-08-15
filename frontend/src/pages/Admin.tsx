@@ -8,18 +8,19 @@ import { useAuth } from '../services/auth'
 import AdminUsers from '../components/AdminUsers'
 import { containerStateColor } from '../utils/adminUtils'
 import { useTranslation } from 'react-i18next'
+import i18nInstance, { languageDisplayName, sortLanguagesEnglishFirst } from '../i18n'
 
 const { Option } = Select
 
 function formatDurationAgo(ms: number): string {
   if (ms < 0) ms = 0
   const minutes = Math.floor(ms / 60000)
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes}m ago`
+  if (minutes < 1) return i18nInstance.t('admin.justNow')
+  if (minutes < 60) return i18nInstance.t('admin.minutesAgo', { minutes })
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ${minutes % 60}m ago`
+  if (hours < 24) return i18nInstance.t('admin.hoursAgo', { hours, minutes: minutes % 60 })
   const days = Math.floor(hours / 24)
-  return `${days}d ${hours % 24}h ago`
+  return i18nInstance.t('admin.daysAgo', { days, hours: hours % 24 })
 }
 
 export default function Admin() {
@@ -94,7 +95,7 @@ export default function Admin() {
       setRelayEnabled(data['relay_ingestion_enabled'] === 'true')
       setSmtpEnabled(data['smtp_enabled'] === 'true')
     } catch {
-      message.error('Failed to load settings')
+      message.error(t('admin.settingsLoadFailed'))
     }
   }
 
@@ -104,7 +105,7 @@ export default function Admin() {
       'ldap_base_dn', 'ldap_bind_dn', 'ldap_bind_password',
     ])
     if (!values.ldap_server) {
-      message.warning('Server is required')
+      message.warning(t('admin.serverRequired'))
       return
     }
     setTesting(true)
@@ -119,9 +120,9 @@ await testLDAPConnection({
         bind_dn: values.ldap_bind_dn,
         bind_password: values.ldap_bind_password,
       })
-      message.success('LDAP connection successful')
+      message.success(t('admin.ldapSuccess'))
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'LDAP connection failed'))
+      message.error(getErrorMessage(e, t('admin.ldapFailed')))
     } finally {
       setTesting(false)
     }
@@ -137,7 +138,7 @@ await testLDAPConnection({
       setDevices(data)
       setSilenceRules(alerts.filter(a => a.rule_type === 'device_silence' && a.is_active !== false))
     } catch {
-      message.error('Failed to load devices')
+      message.error(t('admin.devicesLoadFailed'))
     } finally {
       setDevicesLoading(false)
     }
@@ -164,11 +165,11 @@ await testLDAPConnection({
     const values = editDeviceForm.getFieldsValue()
     try {
       await updateDeviceAlias(editDevice.fromhost_ip, values.display_name)
-      message.success('Device alias updated')
+      message.success(t('admin.deviceAliasUpdated'))
       setEditDevice(null)
       loadDevices()
     } catch {
-      message.error('Failed to update alias')
+      message.error(t('admin.aliasUpdateFailed'))
     }
   }
 
@@ -178,7 +179,7 @@ await testLDAPConnection({
       const data = await getSlowQueries()
       setSlowQueries(data)
     } catch {
-      message.error('Failed to load slow queries')
+      message.error(t('admin.slowQueriesLoadFailed'))
     } finally {
       setSlowQueriesLoading(false)
     }
@@ -190,7 +191,7 @@ await testLDAPConnection({
       const data = await getContainersHealth()
       setHealth(data)
     } catch {
-      message.error('Failed to load health status')
+      message.error(t('admin.healthLoadFailed'))
     } finally {
       setHealthLoading(false)
     }
@@ -211,7 +212,7 @@ await testLDAPConnection({
       setAuditLogsTotal(data.total)
       setAuditLogsOffset(offset)
     } catch {
-      message.error('Failed to load audit logs')
+      message.error(t('admin.auditLoadFailed'))
     } finally {
       setAuditLogsLoading(false)
     }
@@ -220,29 +221,29 @@ await testLDAPConnection({
   const handleClearSlowQueries = async () => {
     try {
       await clearSlowQueries()
-      message.success('Slow query log cleared')
+      message.success(t('admin.slowQueriesCleared'))
       loadSlowQueries()
     } catch {
-      message.error('Failed to clear slow queries')
+      message.error(t('admin.clearFailed'))
     }
   }
 
   const handleUploadSSLCerts = async () => {
     if (!certFile || !keyFile) {
-      message.warning('Both certificate and key files are required')
+      message.warning(t('admin.bothFilesRequired'))
       return
     }
     setSslUploading(true)
     try {
       const result = await uploadSSLCerts(certFile, keyFile)
-      message.success(result.message || 'SSL certificates uploaded')
+      message.success(result.message || t('admin.sslUploaded'))
       setCertFile(null)
       setKeyFile(null)
       if (result.cert_info) {
         setCertInfo(result.cert_info)
       }
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to upload SSL certificates'))
+      message.error(getErrorMessage(e, t('admin.sslUploadFailed')))
     } finally {
       setSslUploading(false)
     }
@@ -283,11 +284,11 @@ const handleSaveSettings = async () => {
     try {
       const result = await updateSettings(strValues)
       if (result?.nginx_reload_error) {
-        message.warning(`Settings saved, but nginx reload failed: ${result.nginx_reload_error}`)
+        message.warning(t('admin.nginxReloadWarning', { error: result.nginx_reload_error }))
       } else if (result?.relay_reload_error) {
-        message.warning(`Settings saved, but relay config reload failed: ${result.relay_reload_error}`)
+        message.warning(t('admin.relayReloadWarning', { error: result.relay_reload_error }))
       } else {
-        message.success('Settings saved')
+        message.success(t('admin.settingsSaved'))
       }
       loadSettings()
       // notifications_enabled/relay_ingestion_enabled control which items
@@ -295,7 +296,7 @@ const handleSaveSettings = async () => {
       // that updates immediately instead of only after the next page load.
       refreshUser()
     } catch (e: unknown) {
-      const errMsg = getErrorMessage(e, 'Failed to save settings')
+      const errMsg = getErrorMessage(e, t('admin.settingsSaveFailed'))
       message.error(errMsg)
     }
   }
@@ -308,9 +309,9 @@ const handleSaveSettings = async () => {
 const handleCleanup = async () => {
     try {
       const result = await cleanupLogs()
-      message.success(`${result.deleted_count} old logs deleted`)
+      message.success(t('admin.logsDeleted', { count: result.deleted_count }))
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Cleanup failed'))
+      message.error(getErrorMessage(e, t('admin.cleanupFailed')))
     }
   }
 
@@ -318,10 +319,10 @@ const handleCleanup = async () => {
     setPurging(true)
     try {
       const result = await purgeAllLogs(pauseDuringPurge)
-      message.success(result.message || 'All logs purged')
+      message.success(result.message || t('admin.logsPurged'))
       setPurgeModalOpen(false)
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Purge failed'))
+      message.error(getErrorMessage(e, t('admin.purgeFailed')))
     } finally {
       setPurging(false)
     }
@@ -330,7 +331,7 @@ const handleCleanup = async () => {
   return (
     <div>
       <Card style={{ marginBottom: 16 }}>
-        <h2 style={{ margin: 0 }}>Admin Panel</h2>
+        <h2 style={{ margin: 0 }}>{t('admin.title')}</h2>
       </Card>
 
       <Tabs
@@ -339,31 +340,31 @@ const handleCleanup = async () => {
         items={[
           {
             key: 'users',
-            label: 'Users',
+            label: t('admin.users'),
             children: <AdminUsers settings={settings} />,
           },
           {
             key: 'settings',
-            label: 'Settings',
+            label: t('admin.settings'),
             children: (
-              <Card title="Application Settings">
+              <Card title={t('admin.appSettings')}>
                 <Form form={settingsForm} layout="vertical" onFinish={handleSaveSettings}>
-                  <Form.Item label="Log Retention (days)" name="retention_days">
+                  <Form.Item label={t('admin.logRetention')} name="retention_days">
                     <InputNumber min={1} max={3650} style={{ width: '100%' }} />
                   </Form.Item>
-                    <Form.Item label="Session Timeout (minutes)" name="session_timeout_min">
+                    <Form.Item label={t('admin.sessionTimeout')} name="session_timeout_min">
                       <InputNumber min={1} max={10080} style={{ width: '100%' }} />
                     </Form.Item>
-                    <Divider orientation="left">Security</Divider>
-                    <Form.Item label="Max Failed Login Attempts" name="security_max_failed_attempts" tooltip="Number of failed login attempts before account lockout. Leave empty to use MAX_FAILED_ATTEMPTS env var or default (5).">
+                    <Divider orientation="left">{t('admin.security')}</Divider>
+                    <Form.Item label={t('admin.maxFailedAttempts')} name="security_max_failed_attempts" tooltip="Number of failed login attempts before account lockout. Leave empty to use MAX_FAILED_ATTEMPTS env var or default (5).">
                       <InputNumber min={1} max={100} style={{ width: '100%' }} />
                     </Form.Item>
-                    <Form.Item label="Lockout Duration (minutes)" name="security_lockout_duration_min" tooltip="How long the account stays locked after reaching max failed attempts. Leave empty to use LOCKOUT_DURATION_MIN env var or default (15).">
+                    <Form.Item label={t('admin.lockoutDuration')} name="security_lockout_duration_min" tooltip="How long the account stays locked after reaching max failed attempts. Leave empty to use LOCKOUT_DURATION_MIN env var or default (15).">
                       <InputNumber min={1} max={1440} style={{ width: '100%' }} />
                     </Form.Item>
-                    <Divider orientation="left">CORS</Divider>
+                    <Divider orientation="left">{t('admin.cors')}</Divider>
 <Form.Item
-                      label="Allowed CORS Origins"
+                      label={t('admin.corsOrigins')}
                       name="cors_origins"
                       tooltip="Comma-separated list of origins allowed to call the API from a browser (e.g. http://localhost:3000,https://example.com). Leave empty to only allow the origin the app is served from."
                     >
@@ -372,11 +373,11 @@ const handleCleanup = async () => {
                     <Divider orientation="left">{t('admin.languageSettings')}</Divider>
                     <Form.Item label={t('admin.defaultLanguage')} name="default_language" tooltip={t('admin.defaultLanguageTooltip')}>
                       <Select
-                        options={Object.keys((i18n as any).resourceStore?.data || {}).map((l: string) => ({ value: l, label: l.charAt(0).toUpperCase() + l.slice(1) }))}
+                        options={sortLanguagesEnglishFirst(Object.keys((i18n as any).store?.data || {})).map((l: string) => ({ value: l, label: languageDisplayName(l) }))}
                       />
                     </Form.Item>
-                    <Divider orientation="left">HTTPS</Divider>
-                   <Form.Item label="Enable HTTPS" name="https_enabled" valuePropName="checked">
+                    <Divider orientation="left">{t('admin.https')}</Divider>
+                   <Form.Item label={t('admin.enableHttps')} name="https_enabled" valuePropName="checked">
                      <Switch checked={httpsEnabled} onChange={(v) => {
                        setHttpsEnabled(v)
                        settingsForm.setFieldValue('https_enabled', v)
@@ -387,10 +388,10 @@ const handleCleanup = async () => {
                        }
                      }} />
                    </Form.Item>
-                   <Form.Item label="Redirect HTTP to HTTPS" name="https_redirect" valuePropName="checked">
+                   <Form.Item label={t('admin.redirectHttps')} name="https_redirect" valuePropName="checked">
                      <Switch checked={httpsRedirect} disabled={!httpsEnabled} onChange={(v) => { setHttpsRedirect(v); settingsForm.setFieldValue('https_redirect', v) }} />
                    </Form.Item>
-                    <Form.Item label="Upload Certificate (.pem/.crt)">
+                    <Form.Item label={t('admin.uploadCert')}>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                         <input
                           type="file"
@@ -400,16 +401,16 @@ const handleCleanup = async () => {
                           disabled={!httpsEnabled}
                           onChange={(e) => {
                             const file = e.target.files?.[0]
-                            if (file) { setCertFile(file); message.success(`Certificate selected: ${file.name}`) }
+                            if (file) { setCertFile(file); message.success(t('admin.certSelected', { filename: file.name })) }
                             e.target.value = ''
                           }}
                         />
                         <Button icon={<UploadOutlined />} disabled={!httpsEnabled} onClick={() => { document.getElementById('ssl-cert-upload')?.click() }}>
-                          {certFile ? `Selected: ${certFile.name}` : 'Choose Certificate'}
+                          {certFile ? `${t('admin.selected')}: ${certFile.name}` : t('admin.chooseCert')}
                         </Button>
                       </div>
                     </Form.Item>
-                    <Form.Item label="Upload Private Key (.key)">
+                    <Form.Item label={t('admin.uploadKey')}>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                         <input
                           type="file"
@@ -419,12 +420,12 @@ const handleCleanup = async () => {
                           disabled={!httpsEnabled}
                           onChange={(e) => {
                             const file = e.target.files?.[0]
-                            if (file) { setKeyFile(file); message.success(`Key selected: ${file.name}`) }
+                            if (file) { setKeyFile(file); message.success(t('admin.keySelected', { filename: file.name })) }
                             e.target.value = ''
                           }}
                         />
                         <Button icon={<UploadOutlined />} disabled={!httpsEnabled} onClick={() => { document.getElementById('ssl-key-upload')?.click() }}>
-                          {keyFile ? `Selected: ${keyFile.name}` : 'Choose Key'}
+                          {keyFile ? `${t('admin.selected')}: ${keyFile.name}` : t('admin.chooseKey')}
                         </Button>
                       </div>
                     </Form.Item>
@@ -437,54 +438,54 @@ const handleCleanup = async () => {
                         onClick={handleUploadSSLCerts}
                         block
                       >
-                        {sslUploading ? 'Uploading...' : 'Upload Certificates'}
+                        {sslUploading ? t('admin.uploading') : t('admin.uploadCerts')}
                       </Button>
                     </Form.Item>
                     {certInfo && (
                       <Result
                         status={certInfo.error ? 'error' : 'success'}
                         icon={<SafetyCertificateOutlined />}
-                        title={certInfo.error || 'Certificate Verified'}
+                        title={certInfo.error || t('admin.certVerified')}
                         subTitle={certInfo.subject}
                       >
                         <Descriptions bordered column={1} size="small">
-                          <Descriptions.Item label="Subject"><span style={{ wordBreak: 'break-all' }}>{certInfo.subject || '-'}</span></Descriptions.Item>
-                          <Descriptions.Item label="Issuer"><span style={{ wordBreak: 'break-all' }}>{certInfo.issuer || '-'}</span></Descriptions.Item>
-                          <Descriptions.Item label="Valid From">{certInfo.valid_from || '-'}</Descriptions.Item>
-                          <Descriptions.Item label="Valid To">{certInfo.valid_to || '-'}</Descriptions.Item>
-                          <Descriptions.Item label="DNS Names"><span style={{ wordBreak: 'break-all' }}>{Array.isArray(certInfo.dns_names) && certInfo.dns_names.length > 0 ? certInfo.dns_names.join(', ') : '-'}</span></Descriptions.Item>
-                          {certInfo.error && <Descriptions.Item label="Error"><span style={{ wordBreak: 'break-all' }}>{certInfo.error}</span></Descriptions.Item>}
+                          <Descriptions.Item label={t('admin.subject')}><span style={{ wordBreak: 'break-all' }}>{certInfo.subject || '-'}</span></Descriptions.Item>
+                          <Descriptions.Item label={t('admin.issuer')}><span style={{ wordBreak: 'break-all' }}>{certInfo.issuer || '-'}</span></Descriptions.Item>
+                          <Descriptions.Item label={t('admin.validFrom')}>{certInfo.valid_from || '-'}</Descriptions.Item>
+                          <Descriptions.Item label={t('admin.validTo')}>{certInfo.valid_to || '-'}</Descriptions.Item>
+                          <Descriptions.Item label={t('admin.dnsNames')}><span style={{ wordBreak: 'break-all' }}>{Array.isArray(certInfo.dns_names) && certInfo.dns_names.length > 0 ? certInfo.dns_names.join(', ') : '-'}</span></Descriptions.Item>
+                          {certInfo.error && <Descriptions.Item label={t('admin.error')}><span style={{ wordBreak: 'break-all' }}>{certInfo.error}</span></Descriptions.Item>}
                         </Descriptions>
                       </Result>
                     )}
-                    <Divider orientation="left">Notifications</Divider>
-                    <Form.Item label="Enable Notifications" name="notifications_enabled" valuePropName="checked" tooltip="Master switch for alert rule evaluation and delivery through any channel">
+                    <Divider orientation="left">{t('admin.notifications')}</Divider>
+                    <Form.Item label={t('admin.enableNotifications')} name="notifications_enabled" valuePropName="checked" tooltip="Master switch for alert rule evaluation and delivery through any channel">
                       <Switch />
                     </Form.Item>
-                    <Form.Item label="Enable SMTP" name="smtp_enabled" valuePropName="checked" tooltip="Required for email notification channels">
+                    <Form.Item label={t('admin.enableSmtp')} name="smtp_enabled" valuePropName="checked" tooltip="Required for email notification channels">
                       <Switch checked={smtpEnabled} onChange={(v) => { setSmtpEnabled(v); settingsForm.setFieldValue('smtp_enabled', v) }} />
                     </Form.Item>
-                    <Form.Item label="SMTP Host" name="smtp_host">
+                    <Form.Item label={t('admin.smtpHost')} name="smtp_host">
                       <Input placeholder="smtp.example.com" disabled={!smtpEnabled} />
                     </Form.Item>
-                    <Form.Item label="SMTP Port" name="smtp_port">
+                    <Form.Item label={t('admin.smtpPort')} name="smtp_port">
                       <InputNumber min={1} max={65535} style={{ width: '100%' }} disabled={!smtpEnabled} />
                     </Form.Item>
-                    <Form.Item label="SMTP Username" name="smtp_username">
+                    <Form.Item label={t('admin.smtpUsername')} name="smtp_username">
                       <Input placeholder="notifications@example.com" disabled={!smtpEnabled} />
                     </Form.Item>
-                    <Form.Item label="SMTP Password" name="smtp_password">
+                    <Form.Item label={t('admin.smtpPassword')} name="smtp_password">
                       <Input.Password disabled={!smtpEnabled} />
                     </Form.Item>
-                    <Form.Item label="From Address" name="smtp_from">
+                    <Form.Item label={t('admin.fromAddress')} name="smtp_from">
                       <Input placeholder="logmara@example.com" disabled={!smtpEnabled} />
                     </Form.Item>
-                    <Form.Item label="Use STARTTLS" name="smtp_use_tls" valuePropName="checked">
+                    <Form.Item label={t('admin.useStarttls')} name="smtp_use_tls" valuePropName="checked">
                       <Switch disabled={!smtpEnabled} />
                     </Form.Item>
-                    <Divider orientation="left">Syslog Relay</Divider>
+                    <Divider orientation="left">{t('admin.syslogRelay')}</Divider>
                     <Form.Item
-                      label="Enable Syslog Relay Ingestion"
+                      label={t('admin.enableRelayIngestion')}
                       name="relay_ingestion_enabled"
                       valuePropName="checked"
                       tooltip="Accept syslog forwarded by remote relays (mTLS + IP whitelist) in other VLANs. Once enabled, whitelist and certificate management appear in a separate 'Syslog Relay' menu (admin-only)."
@@ -492,7 +493,7 @@ const handleCleanup = async () => {
                       <Switch checked={relayEnabled} onChange={(v) => { setRelayEnabled(v); settingsForm.setFieldValue('relay_ingestion_enabled', v) }} />
                     </Form.Item>
                     <Form.Item
-                      label="Central Server Address"
+                      label={t('admin.centralServer')}
                       name="relay_central_host"
                       tooltip="This server's hostname/IP as reachable from a relay's VLAN, pre-filled into every relay.conf bundle generated on the Syslog Relay page. Falls back to the RELAY_CENTRAL_HOST env var, then 127.0.0.1, if left empty."
                     >
@@ -501,24 +502,24 @@ const handleCleanup = async () => {
                   <Divider />
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <Button type="primary" htmlType="submit">
-                      Save Settings
+                      {t('admin.saveSettings')}
                     </Button>
                     <Button danger icon={<ThunderboltOutlined />} onClick={handleCleanup}>
-                      Clean Old Logs
+                      {t('admin.cleanOldLogs')}
                     </Button>
                     <Button danger type="primary" onClick={() => setPurgeModalOpen(true)}>
-                      Purge All Logs
+                      {t('admin.purgeAllLogs')}
                     </Button>
                     <Modal
-                      title="Purge ALL logs?"
+                      title={t('admin.purgeConfirm')}
                       open={purgeModalOpen}
                       onOk={handlePurgeAll}
                       onCancel={() => setPurgeModalOpen(false)}
-                      okText="Yes, purge all"
-                      cancelText="Cancel"
+                      okText={t('admin.yesPurge')}
+                      cancelText={t('common.cancel')}
                       okButtonProps={{ danger: true, disabled: purging, loading: purging }}
                     >
-                      <p>This will permanently delete every log entry. This cannot be undone.</p>
+                      <p>{t('admin.purgeConfirmText')}</p>
                       <div style={{ marginTop: 16 }}>
                         <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
                           <input
@@ -526,7 +527,7 @@ const handleCleanup = async () => {
                             checked={pauseDuringPurge}
                             onChange={(e) => setPauseDuringPurge(e.target.checked)}
                           />
-                          Pause ingestion during purge (resumes after)
+                          {t('admin.pauseIngestion')}
                         </label>
                       </div>
                     </Modal>
@@ -537,31 +538,31 @@ const handleCleanup = async () => {
           },
           {
             key: 'ldap',
-            label: 'LDAP',
+            label: t('admin.ldap'),
             children: (
-              <Card title="LDAP Authentication">
+              <Card title={t('admin.ldapAuth')}>
                 <Form form={settingsForm} layout="vertical" onFinish={handleSaveSettings}>
-                  <Form.Item label="Enable LDAP" name="ldap_enabled" valuePropName="checked">
+                  <Form.Item label={t('admin.enableLdap')} name="ldap_enabled" valuePropName="checked">
                     <Switch checked={ldapEnabled} onChange={(v) => { setLdapEnabled(v); settingsForm.setFieldValue('ldap_enabled', v); }} />
                   </Form.Item>
-                  <Form.Item label="Server" name="ldap_server">
+                  <Form.Item label={t('admin.server')} name="ldap_server">
                     <Input placeholder="ldap.example.com" disabled={!ldapEnabled} />
                   </Form.Item>
-                  <Form.Item label="Port" name="ldap_port">
+                  <Form.Item label={t('admin.port')} name="ldap_port">
                     <InputNumber min={1} max={65535} style={{ width: '100%' }} disabled={!ldapEnabled} />
                   </Form.Item>
-                  <Form.Item label="Use TLS" name="ldap_use_tls" valuePropName="checked">
+                  <Form.Item label={t('admin.useTls')} name="ldap_use_tls" valuePropName="checked">
                     <Switch checked={ldapUseTls} disabled={!ldapEnabled} onChange={(v) => { setLdapUseTls(v); settingsForm.setFieldValue('ldap_use_tls', v) }} />
                   </Form.Item>
-                  <Divider orientation="left">TLS/Certificate</Divider>
-                  <Form.Item label="Verify TLS Certificate" name="ldap_verify_cert" valuePropName="checked">
+                  <Divider orientation="left">{t('admin.tlsCert')}</Divider>
+                  <Form.Item label={t('admin.verifyTlsCert')} name="ldap_verify_cert" valuePropName="checked">
                     <Switch checked={ldapVerifyCert} disabled={!ldapEnabled} onChange={(v) => { setLdapVerifyCert(v); settingsForm.setFieldValue('ldap_verify_cert', v) }} />
                   </Form.Item>
                   <Form.Item
-                    label="Custom CA Certificate (PEM)"
+                    label={t('admin.customCaCert')}
                     name="ldap_ca_cert"
                   >
-                    <Input.TextArea rows={4} placeholder="Paste PEM certificate or upload a file..." disabled={!ldapEnabled} style={{ resize: 'none' }} />
+                    <Input.TextArea rows={4} placeholder={t('admin.pemPlaceholder')} disabled={!ldapEnabled} style={{ resize: 'none' }} />
                   </Form.Item>
                   <Form.Item>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -579,59 +580,59 @@ const handleCleanup = async () => {
                             const text = ev.target?.result
                             if (typeof text === 'string') {
                               settingsForm.setFieldValue('ldap_ca_cert', text)
-                              message.success('PEM file loaded')
+                              message.success(t('admin.pemLoaded'))
                             }
                           }
-                          reader.onerror = () => message.error('Failed to read PEM file')
+                          reader.onerror = () => message.error(t('admin.pemReadFailed'))
                           reader.readAsText(file)
                           e.target.value = ''
                         }}
                       />
                       <Button icon={<UploadOutlined />} disabled={!ldapEnabled} block onClick={() => { document.getElementById('ca-cert-upload')?.click() }}>
-                        Upload PEM
+                        {t('admin.uploadPem')}
                       </Button>
                     </div>
                   </Form.Item>
-                  <Divider orientation="left">Connection</Divider>
-                  <Form.Item label="Base DN" name="ldap_base_dn">
+                  <Divider orientation="left">{t('admin.connection')}</Divider>
+                  <Form.Item label={t('admin.baseDN')} name="ldap_base_dn">
                     <Input placeholder="dc=example,dc=com" disabled={!ldapEnabled} />
                   </Form.Item>
-                  <Form.Item label="Bind DN" name="ldap_bind_dn">
+                  <Form.Item label={t('admin.bindDN')} name="ldap_bind_dn">
                     <Input placeholder="cn=admin,dc=example,dc=com" disabled={!ldapEnabled} />
                   </Form.Item>
-                  <Form.Item label="Bind Password" name="ldap_bind_password">
+                  <Form.Item label={t('admin.bindPassword')} name="ldap_bind_password">
                     <Input.Password disabled={!ldapEnabled} />
                   </Form.Item>
-                  <Form.Item label="User Filter" name="ldap_user_filter">
+                  <Form.Item label={t('admin.userFilter')} name="ldap_user_filter">
                     <Input placeholder="(uid=%s)" disabled={!ldapEnabled} />
                   </Form.Item>
-                  <Divider orientation="left">Attribute Mapping</Divider>
-                  <Form.Item label="Username Attribute" name="ldap_username_attr">
+                  <Divider orientation="left">{t('admin.attributeMapping')}</Divider>
+                  <Form.Item label={t('admin.usernameAttr')} name="ldap_username_attr">
                     <Input placeholder="uid" disabled={!ldapEnabled} />
                   </Form.Item>
-                  <Form.Item label="Email Attribute" name="ldap_email_attr">
+                  <Form.Item label={t('admin.emailAttr')} name="ldap_email_attr">
                     <Input placeholder="mail" disabled={!ldapEnabled} />
                   </Form.Item>
-                  <Form.Item label="Auto-Provision LDAP Users" name="ldap_auto_provision" valuePropName="checked">
+                  <Form.Item label={t('admin.autoProvision')} name="ldap_auto_provision" valuePropName="checked">
                     <Switch disabled={!ldapEnabled} onChange={(v) => { setLdapAutoProvision(v); settingsForm.setFieldValue('ldap_auto_provision', v); }} />
                   </Form.Item>
-                  <Form.Item label="Default Role (auto-provisioned)" name="ldap_default_role">
+                  <Form.Item label={t('admin.defaultRole')} name="ldap_default_role">
                     <Select style={{ width: '100%' }} disabled={!ldapEnabled || !ldapAutoProvision}>
-                      <Option value="viewer">Viewer</Option>
-                      <Option value="editor">Editor</Option>
-                      <Option value="admin">Admin</Option>
+                      <Option value="viewer">{t('admin.viewer')}</Option>
+                      <Option value="editor">{t('admin.editor')}</Option>
+                      <Option value="admin">{t('admin.admin')}</Option>
                     </Select>
                   </Form.Item>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <Button type="primary" htmlType="submit" disabled={!ldapEnabled}>
-                      Save LDAP Settings
+                      {t('admin.saveLdapSettings')}
                     </Button>
                     <Button
                       icon={testing ? <LoadingOutlined /> : undefined}
                       onClick={handleTestLDAP}
                       disabled={!ldapEnabled || testing}
                     >
-                      Test Connection
+                      {t('admin.testConnection')}
                     </Button>
                   </div>
                 </Form>
@@ -640,13 +641,13 @@ const handleCleanup = async () => {
           },
           {
             key: 'devices',
-            label: 'Devices',
+            label: t('admin.devices'),
             children: (
               <Card
-                title="Device Statistics"
+                title={t('admin.deviceStats')}
                 extra={
                   <Button icon={<ReloadOutlined />} onClick={loadDevices}>
-                    Refresh
+                    {t('common.refresh')}
                   </Button>
                 }
               >
@@ -659,14 +660,14 @@ const handleCleanup = async () => {
                   scroll={{ x: 'max-content' }}
                   columns={[
                     {
-                      title: 'Source IP',
+                      title: t('admin.sourceIp'),
                       dataIndex: 'fromhost_ip',
                       key: 'fromhost_ip',
                       width: 140,
                       render: (ip: string) => ip || '-',
                     },
                     {
-                      title: 'Hostname',
+                      title: t('admin.hostname'),
                       dataIndex: 'hostname',
                       key: 'hostname',
                       width: 180,
@@ -681,22 +682,22 @@ const handleCleanup = async () => {
                       },
                     },
                     {
-                      title: 'Proxy',
+                      title: t('admin.proxy'),
                       dataIndex: 'via_relay',
                       key: 'via_relay',
                       width: 160,
                       filters: [
-                        { text: 'Via relay', value: true },
-                        { text: 'Direct', value: false },
+                        { text: t('admin.viaRelay'), value: true },
+                        { text: t('admin.direct'), value: false },
                       ],
                       onFilter: (value, record: DeviceStats) => record.uses_proxy === value,
                       render: (_v: unknown, record: DeviceStats) =>
                         record.uses_proxy
                           ? <Tag color="blue">{record.via_relay}</Tag>
-                          : <span style={{ color: '#999' }}>Direct</span>,
+                          : <span style={{ color: '#999' }}>{t('admin.direct')}</span>,
                     },
                     {
-                      title: 'Total Logs',
+                      title: t('admin.totalLogs'),
                       dataIndex: 'total_logs',
                       key: 'total_logs',
                       width: 100,
@@ -704,7 +705,7 @@ const handleCleanup = async () => {
                       render: (v: number) => typeof v === 'number' ? v : 0,
                     },
                     {
-                      title: 'Last Seen',
+                      title: t('admin.lastSeen'),
                       dataIndex: 'last_seen',
                       key: 'last_seen',
                       width: 200,
@@ -722,29 +723,29 @@ const handleCleanup = async () => {
                       sorter: (a: DeviceStats, b: DeviceStats) => new Date(a.last_seen).getTime() - new Date(b.last_seen).getTime(),
                     },
                     {
-                      title: 'Silence Status',
+                      title: t('admin.silenceStatus'),
                       key: 'silence_status',
                       width: 160,
                       render: (_v: unknown, record: DeviceStats) => {
                         const info = silenceInfoFor(record.fromhost_ip)
                         if (!info) {
-                          return <Tag>No rule</Tag>
+                          return <Tag>{t('admin.noRule')}</Tag>
                         }
                         const minutesSinceLastSeen = record.last_seen
                           ? (Date.now() - new Date(record.last_seen).getTime()) / 60000
                           : Infinity
                         const isSilent = minutesSinceLastSeen >= info.thresholdMin
                         return (
-                          <Tooltip title={`Watched by an alert rule with a ${info.thresholdMin}m threshold. Detection can lag up to ~30m behind real time (device stats refresh interval) on top of that.`}>
+                          <Tooltip title={t('admin.silenceTooltip', { threshold: info.thresholdMin })}>
                             <a onClick={() => window.location.href = '/alerts'}>
-                              <Tag color={isSilent ? 'red' : 'green'}>{isSilent ? 'Silent' : 'OK'}</Tag>
+                              <Tag color={isSilent ? 'red' : 'green'}>{isSilent ? t('admin.silent') : t('admin.ok')}</Tag>
                             </a>
                           </Tooltip>
                         )
                       },
                     },
                     {
-                      title: 'Severity',
+                      title: t('admin.severity'),
                       dataIndex: 'severity_count',
                       key: 'severity_count',
                       width: 220,
@@ -764,7 +765,7 @@ const handleCleanup = async () => {
                       },
                     },
                     {
-                      title: 'Matched Parsers',
+                      title: t('admin.matchedParsers'),
                       dataIndex: 'matched_parsers',
                       key: 'matched_parsers',
                       width: 200,
@@ -780,18 +781,18 @@ const handleCleanup = async () => {
                       },
                     },
                     {
-                      title: 'Parsed',
+                      title: t('admin.parsed'),
                       dataIndex: 'has_parsed',
                       key: 'has_parsed',
                       width: 90,
                       render: (parsed: boolean) => (
                         <Tag color={parsed ? 'green' : 'orange'}>
-                          {parsed ? 'Yes' : 'No'}
+                          {parsed ? t('common.yes') : t('common.no')}
                         </Tag>
                       ),
                     },
                     {
-                      title: 'Actions',
+                      title: t('common.actions'),
                       key: 'actions',
                       width: 130,
                       render: (_v, record: DeviceStats) => (
@@ -803,7 +804,7 @@ const handleCleanup = async () => {
                             editDeviceForm.setFieldsValue({ display_name: record.display_name || record.hostname })
                           }}
                         >
-                          Edit Name
+                          {t('admin.editName')}
                         </Button>
                       ),
                     },
@@ -814,17 +815,17 @@ const handleCleanup = async () => {
           },
           {
             key: 'slow_queries',
-            label: 'Slow Queries',
+            label: t('admin.slowQueries'),
             children: (
               <Card
-                title="Slow Query Log"
+                title={t('admin.slowQueryLog')}
                 extra={
                   <div style={{ display: 'flex', gap: 8 }}>
                     <Button icon={<ReloadOutlined />} onClick={loadSlowQueries}>
-                      Refresh
+                      {t('common.refresh')}
                     </Button>
                     <Button danger icon={<DeleteOutlined />} onClick={handleClearSlowQueries}>
-                      Clear
+                      {t('common.clear')}
                     </Button>
                   </div>
                 }
@@ -838,7 +839,7 @@ const handleCleanup = async () => {
                   scroll={{ x: 'max-content' }}
                   columns={[
                     {
-                      title: 'Query',
+                      title: t('admin.query'),
                       dataIndex: 'name',
                       key: 'name',
                       width: 400,
@@ -847,7 +848,7 @@ const handleCleanup = async () => {
                       ),
                     },
                     {
-                      title: 'Duration',
+                      title: t('admin.duration'),
                       dataIndex: 'duration_ms',
                       key: 'duration_ms',
                       width: 120,
@@ -858,7 +859,7 @@ const handleCleanup = async () => {
                       },
                     },
                     {
-                      title: 'Timestamp',
+                      title: t('admin.timestamp'),
                       dataIndex: 'timestamp',
                       key: 'timestamp',
                       width: 180,
@@ -872,15 +873,15 @@ const handleCleanup = async () => {
           },
           {
             key: 'health',
-            label: 'Health',
+            label: t('admin.health'),
             children: (
               <div>
                 <Card
-                  title="Container Health"
+                  title={t('admin.containerHealth')}
                   style={{ marginBottom: 16 }}
                   extra={
                     <Button icon={<ReloadOutlined />} loading={healthLoading} onClick={loadHealth}>
-                      Refresh
+                      {t('common.refresh')}
                     </Button>
                   }
                 >
@@ -895,8 +896,8 @@ const handleCleanup = async () => {
                   {health && !health.docker_available ? (
                     <Result
                       status="info"
-                      title="Docker health monitoring not configured"
-                      subTitle='Deploy the "docker-proxy" sidecar alongside the API (see docker-compose.yml / docker-stack.app.yml) to see container status here.'
+                      title={t('admin.dockerNotConfigured')}
+                      subTitle={t('admin.dockerNotConfiguredSub')}
                     />
                   ) : health?.services ? (
                     <Table
@@ -907,11 +908,11 @@ const handleCleanup = async () => {
                       tableLayout="fixed"
                       scroll={{ x: 'max-content' }}
                       columns={[
-                        { title: 'Service', dataIndex: 'name', key: 'name' },
-                        { title: 'Mode', dataIndex: 'mode', key: 'mode', width: 110 },
-                        { title: 'Image', dataIndex: 'image', key: 'image', ellipsis: true },
+                        { title: t('admin.service'), dataIndex: 'name', key: 'name' },
+                        { title: t('admin.mode'), dataIndex: 'mode', key: 'mode', width: 110 },
+                        { title: t('admin.image'), dataIndex: 'image', key: 'image', ellipsis: true },
                         {
-                          title: 'Replicas',
+                          title: t('admin.replicas'),
                           key: 'replicas',
                           width: 140,
                           render: (_: unknown, s) => (
@@ -930,14 +931,14 @@ const handleCleanup = async () => {
                             pagination={false}
                             size="small"
                             columns={[
-                              { title: 'Node', dataIndex: 'node', key: 'node' },
+                              { title: t('admin.node'), dataIndex: 'node', key: 'node' },
                               {
-                                title: 'State',
+                                title: t('admin.state'),
                                 dataIndex: 'state',
                                 key: 'state',
                                 render: (state: string) => <Tag color={containerStateColor(state)}>{state}</Tag>,
                               },
-                              { title: 'Message', dataIndex: 'status', key: 'status', ellipsis: true },
+                              { title: t('admin.message'), dataIndex: 'status', key: 'status', ellipsis: true },
                             ]}
                           />
                         ),
@@ -952,33 +953,33 @@ const handleCleanup = async () => {
                       tableLayout="fixed"
                       scroll={{ x: 'max-content' }}
                       columns={[
-                        { title: 'Container', dataIndex: 'name', key: 'name' },
-                        { title: 'Image', dataIndex: 'image', key: 'image', ellipsis: true },
+                        { title: t('admin.container'), dataIndex: 'name', key: 'name' },
+                        { title: t('admin.image'), dataIndex: 'image', key: 'image', ellipsis: true },
                         {
-                          title: 'State',
+                          title: t('admin.state'),
                           dataIndex: 'state',
                           key: 'state',
                           width: 120,
                           render: (state: string) => <Tag color={containerStateColor(state)}>{state}</Tag>,
                         },
                         {
-                          title: 'Health',
+                          title: t('admin.healthStatus'),
                           dataIndex: 'health',
                           key: 'health',
                           width: 140,
                           render: (h: string) => h ? <Tag color={containerHealthColor(h)}>{h}</Tag> : <span style={{ color: '#999' }}>-</span>,
                         },
-                        { title: 'Status', dataIndex: 'status', key: 'status', ellipsis: true },
+                        { title: t('admin.status'), dataIndex: 'status', key: 'status', ellipsis: true },
                       ]}
                     />
                   )}
                 </Card>
 
                 <Card
-                  title="Syslog Relay Liveness"
+                  title={t('admin.relayLiveness')}
                   extra={
-                    <Tooltip title="The relay host sits in a separate, untrusted client VLAN with no inbound access and no shared Docker network - real container status can't be checked. This instead shows whether logs are still arriving from its whitelisted IP and whether its certificate is still valid.">
-                      <span style={{ color: '#999', cursor: 'help' }}>Why not container status?</span>
+                    <Tooltip title={t('admin.relayLivenessTooltip')}>
+                      <span style={{ color: '#999', cursor: 'help' }}>{t('admin.whyNotContainerStatus')}</span>
                     </Tooltip>
                   }
                 >
@@ -989,25 +990,25 @@ const handleCleanup = async () => {
                     pagination={false}
                     tableLayout="fixed"
                     scroll={{ x: 'max-content' }}
-                    locale={{ emptyText: 'No relays configured - see Admin > Syslog Relay' }}
+                    locale={{ emptyText: t('admin.noRelays') }}
                     columns={[
-                      { title: 'Label', dataIndex: 'label', key: 'label' },
-                      { title: 'IP Address', dataIndex: 'ip_address', key: 'ip_address', width: 160 },
+                      { title: t('admin.label'), dataIndex: 'label', key: 'label' },
+                      { title: t('admin.ipAddress'), dataIndex: 'ip_address', key: 'ip_address', width: 160 },
                       {
-                        title: 'Certificate',
+                        title: t('admin.certificate'),
                         dataIndex: 'cert_status',
                         key: 'cert_status',
                         width: 120,
                         render: (s: string) => <Tag color={s === 'issued' ? 'green' : s === 'revoked' ? 'red' : 'default'}>{s}</Tag>,
                       },
                       {
-                        title: 'Last Seen',
+                        title: t('admin.lastSeen'),
                         key: 'last_seen',
                         width: 200,
-                        render: (_: unknown, r) => r.last_seen ? new Date(r.last_seen).toLocaleString() : 'never',
+                        render: (_: unknown, r) => r.last_seen ? new Date(r.last_seen).toLocaleString() : t('admin.never'),
                       },
                       {
-                        title: 'Status',
+                        title: t('common.status'),
                         dataIndex: 'status',
                         key: 'status',
                         width: 140,
@@ -1021,19 +1022,19 @@ const handleCleanup = async () => {
           },
           {
             key: 'audit_logs',
-            label: 'Audit Logs',
+            label: t('admin.auditLogs'),
             children: (
               <Card
-                title="Audit Logs"
+                title={t('admin.auditLogsTitle')}
                 extra={
                   <Button icon={<ReloadOutlined />} loading={auditLogsLoading} onClick={() => loadAuditLogs(0)}>
-                    Refresh
+                    {t('common.refresh')}
                   </Button>
                 }
               >
                 <Space style={{ marginBottom: 16 }} wrap>
                   <Select
-                    placeholder="Filter by username"
+                    placeholder={t('admin.filterByUser')}
                     value={auditLogsFilters.username || undefined}
                     style={{ width: 180 }}
                     allowClear
@@ -1042,7 +1043,7 @@ const handleCleanup = async () => {
                     options={userDirectory.map((u) => ({ label: u.username, value: u.username }))}
                   />
                   <Select
-                    placeholder="Filter by action"
+                    placeholder={t('admin.filterByAction')}
                     value={auditLogsFilters.action || undefined}
                     style={{ width: 200 }}
                     allowClear
@@ -1071,18 +1072,18 @@ const handleCleanup = async () => {
                     onChange={(e) => setAuditLogsFilters({ ...auditLogsFilters, to: e.target.value })}
                     style={{ width: 220 }}
                   />
-                  <Button type="primary" onClick={() => loadAuditLogs(0)}>Apply</Button>
-                  <Button onClick={() => { setAuditLogsFilters({ username: '', action: '', from: '', to: '' }); loadAuditLogs(0) }}>Clear</Button>
+                  <Button type="primary" onClick={() => loadAuditLogs(0)}>{t('admin.apply')}</Button>
+                  <Button onClick={() => { setAuditLogsFilters({ username: '', action: '', from: '', to: '' }); loadAuditLogs(0) }}>{t('common.clear')}</Button>
                 </Space>
                 <Table
                   rowKey="id"
                   columns={[
-                    { title: 'Timestamp', dataIndex: 'created_at', key: 'created_at', width: 200, render: (v: string) => new Date(v).toLocaleString() },
-                    { title: 'User', dataIndex: 'username', key: 'username', width: 150 },
-                    { title: 'Action', dataIndex: 'action', key: 'action', width: 160, render: (v: string) => <Tag>{v.replace(/_/g, ' ')}</Tag> },
-                    { title: 'IP', dataIndex: 'ip', key: 'ip', width: 140, render: (v: string | null) => v || '-' },
+                    { title: t('admin.timestamp'), dataIndex: 'created_at', key: 'created_at', width: 200, render: (v: string) => new Date(v).toLocaleString() },
+                    { title: t('notifDetail.user'), dataIndex: 'username', key: 'username', width: 150 },
+                    { title: t('notifDetail.action'), dataIndex: 'action', key: 'action', width: 160, render: (v: string) => <Tag>{v.replace(/_/g, ' ')}</Tag> },
+                    { title: t('notifDetail.ip'), dataIndex: 'ip', key: 'ip', width: 140, render: (v: string | null) => v || '-' },
                     {
-                      title: 'Details',
+                      title: t('common.details'),
                       key: 'details',
                       width: 200,
                       ellipsis: true,
@@ -1100,7 +1101,7 @@ const handleCleanup = async () => {
                     pageSize: 50,
                     total: auditLogsTotal,
                     showSizeChanger: false,
-                    showTotal: (total) => `${total} entries`,
+                    showTotal: (total) => t('admin.auditEntries', { count: total }),
                   }}
                   onChange={(pag) => { if (pag.current) loadAuditLogs((pag.current - 1) * 50) }}
                   tableLayout="fixed"
@@ -1114,41 +1115,41 @@ const handleCleanup = async () => {
 
 
       <Modal
-        title="Edit Device Name"
+        title={t('admin.editDeviceName')}
         open={!!editDevice}
         onCancel={() => setEditDevice(null)}
         onOk={handleEditDeviceSave}
-        okText="Save"
-        cancelText="Cancel"
+        okText={t('common.save')}
+        cancelText={t('common.cancel')}
         width={{ sm: '90%', md: 500 }}
       >
         <Form form={editDeviceForm} layout="vertical">
-          <Form.Item label="Source IP">
+          <Form.Item label={t('admin.sourceIp')}>
             <Input value={editDevice?.fromhost_ip} disabled />
           </Form.Item>
-          <Form.Item name="display_name" label="Display Name" rules={[{ required: true, message: 'Required' }]}>
+          <Form.Item name="display_name" label={t('admin.displayName')} rules={[{ required: true, message: t('relay.required') }]}>
             <Input />
           </Form.Item>
         </Form>
       </Modal>
 
       <Modal
-        title="Audit Log Details"
+        title={t('admin.auditLogDetails')}
         open={auditDetailOpen}
         onCancel={() => setAuditDetailOpen(false)}
         footer={[
-          <Button key="close" onClick={() => setAuditDetailOpen(false)} style={{ width: '100%' }}>Close</Button>
+          <Button key="close" onClick={() => setAuditDetailOpen(false)} style={{ width: '100%' }}>{t('common.close')}</Button>
         ]}
         width={{ sm: '90%', md: 700 }}
       >
         {auditDetailRecord && (
           <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
             <Descriptions bordered column={1} size="small">
-              <Descriptions.Item label="Timestamp">{new Date(auditDetailRecord.created_at).toLocaleString()}</Descriptions.Item>
-              <Descriptions.Item label="User">{auditDetailRecord.username}</Descriptions.Item>
-              <Descriptions.Item label="Action">{auditDetailRecord.action.replace(/_/g, ' ')}</Descriptions.Item>
-              <Descriptions.Item label="IP">{auditDetailRecord.ip || '-'}</Descriptions.Item>
-              <Descriptions.Item label="Details"><span style={{ wordBreak: 'break-all' }}>{auditDetailRecord.details || '-'}</span></Descriptions.Item>
+              <Descriptions.Item label={t('admin.timestamp')}>{new Date(auditDetailRecord.created_at).toLocaleString()}</Descriptions.Item>
+              <Descriptions.Item label={t('notifDetail.user')}>{auditDetailRecord.username}</Descriptions.Item>
+              <Descriptions.Item label={t('notifDetail.action')}>{auditDetailRecord.action.replace(/_/g, ' ')}</Descriptions.Item>
+              <Descriptions.Item label={t('notifDetail.ip')}>{auditDetailRecord.ip || '-'}</Descriptions.Item>
+              <Descriptions.Item label={t('common.details')}><span style={{ wordBreak: 'break-all' }}>{auditDetailRecord.details || '-'}</span></Descriptions.Item>
             </Descriptions>
           </div>
         )}
@@ -1177,9 +1178,9 @@ function relayStatusColor(status: string): string {
 
 function relayStatusLabel(status: string): string {
   switch (status) {
-    case 'online': return 'Online'
-    case 'stale': return 'Stale'
-    case 'cert_revoked': return 'Certificate Revoked'
-    default: return 'Never Seen'
+    case 'online': return i18nInstance.t('admin.relayOnline')
+    case 'stale': return i18nInstance.t('admin.relayStale')
+    case 'cert_revoked': return i18nInstance.t('admin.relayCertRevoked')
+    default: return i18nInstance.t('admin.relayNeverSeen')
   }
 }

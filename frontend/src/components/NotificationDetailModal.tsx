@@ -1,4 +1,5 @@
 import { Modal, Space, Descriptions, List, Typography, Empty, Button, Tag } from 'antd'
+import { useTranslation } from 'react-i18next'
 import { CheckCircleOutlined } from '@ant-design/icons'
 import { HistoryGroup } from './historyTypes'
 import SeverityTag from './SeverityTag'
@@ -12,24 +13,25 @@ interface NotificationDetailModalProps {
 }
 
 export default function NotificationDetailModal({ viewing, onClose }: NotificationDetailModalProps) {
+  const { t } = useTranslation()
   if (!viewing) return null
 
   return (
     <Modal
-      title="Notification Detail"
+      title={t('notifDetail.title')}
       open={true}
       onCancel={onClose}
-      footer={<Button onClick={onClose}>Close</Button>}
+      footer={<Button onClick={onClose}>{t('common.close')}</Button>}
       width={{ sm: '90%', md: 640 }}
     >
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <Descriptions column={1} bordered size="small">
-          <Descriptions.Item label="Time">{new Date(viewing.createdAt).toLocaleString()}</Descriptions.Item>
-          <Descriptions.Item label="Alert">{viewing.alertName || '\u2014'}</Descriptions.Item>
+          <Descriptions.Item label={t('common.time')}>{new Date(viewing.createdAt).toLocaleString()}</Descriptions.Item>
+          <Descriptions.Item label={t('alerts.alert')}>{viewing.alertName || '—'}</Descriptions.Item>
         </Descriptions>
 
         <div>
-          <Text strong>Delivery by channel</Text>
+          <Text strong>{t('notifDetail.deliveryByChannel')}</Text>
           <div style={{ marginTop: 8 }}>
             <List
               size="small"
@@ -56,39 +58,39 @@ export default function NotificationDetailModal({ viewing, onClose }: Notificati
         </div>
 
         <div>
-          <Text strong>Triggering log</Text>
+          <Text strong>{t('notifDetail.triggeringLog')}</Text>
           <div style={{ marginTop: 8 }}>
             {viewing.triggerLog ? (
               <Descriptions column={1} bordered size="small">
-                <Descriptions.Item label="Time">{new Date(viewing.triggerLog.timestamp).toLocaleString()}</Descriptions.Item>
-                <Descriptions.Item label="Severity"><SeverityTag severity={viewing.triggerLog.severity} /></Descriptions.Item>
-                <Descriptions.Item label="Host">{viewing.triggerLog.hostname} ({viewing.triggerLog.fromhost_ip})</Descriptions.Item>
+                <Descriptions.Item label={t('common.time')}>{new Date(viewing.triggerLog.timestamp).toLocaleString()}</Descriptions.Item>
+                <Descriptions.Item label={t('logs.severity')}><SeverityTag severity={viewing.triggerLog.severity} /></Descriptions.Item>
+                <Descriptions.Item label={t('logs.host')}>{viewing.triggerLog.hostname} ({viewing.triggerLog.fromhost_ip})</Descriptions.Item>
                 {viewing.triggerLog.app_name && (
-                  <Descriptions.Item label="App">{viewing.triggerLog.app_name}</Descriptions.Item>
+                  <Descriptions.Item label={t('dashboard.app')}>{viewing.triggerLog.app_name}</Descriptions.Item>
                 )}
-                <Descriptions.Item label="Message">
+                <Descriptions.Item label={t('logs.message')}>
                   <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable>
                     {viewing.triggerLog.message}
                   </Typography.Paragraph>
                 </Descriptions.Item>
               </Descriptions>
             ) : (
-              <Empty description="No log entry associated with this notification (e.g. an audit-log alert)" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              <Empty description={t('notifDetail.noTriggerLog')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
             )}
           </div>
         </div>
 
         {viewing.auditLogRef && (
           <div>
-            <Text strong>Audit log context</Text>
+            <Text strong>{t('notifDetail.auditLogContext')}</Text>
             <div style={{ marginTop: 8 }}>
               <Descriptions column={1} bordered size="small">
-                <Descriptions.Item label="Time">{new Date(viewing.auditLogRef.timestamp).toLocaleString()}</Descriptions.Item>
-                <Descriptions.Item label="Action">{viewing.auditLogRef.action}</Descriptions.Item>
-                <Descriptions.Item label="User">{viewing.auditLogRef.username}</Descriptions.Item>
-                <Descriptions.Item label="IP">{viewing.auditLogRef.user_ip}</Descriptions.Item>
+                <Descriptions.Item label={t('common.time')}>{new Date(viewing.auditLogRef.timestamp).toLocaleString()}</Descriptions.Item>
+                <Descriptions.Item label={t('notifDetail.action')}>{viewing.auditLogRef.action}</Descriptions.Item>
+                <Descriptions.Item label={t('notifDetail.user')}>{viewing.auditLogRef.username}</Descriptions.Item>
+                <Descriptions.Item label={t('notifDetail.ip')}>{viewing.auditLogRef.user_ip}</Descriptions.Item>
                 {viewing.auditLogRef.details && (
-                  <Descriptions.Item label="Details">
+                  <Descriptions.Item label={t('common.details')}>
                     <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable>
                       {viewing.auditLogRef.details}
                     </Typography.Paragraph>
@@ -100,7 +102,7 @@ export default function NotificationDetailModal({ viewing, onClose }: Notificati
         )}
 
         <div>
-          <Text strong>Conditions met</Text>
+          <Text strong>{t('notifDetail.conditionsMet')}</Text>
           <div style={{ marginTop: 8 }}>
             {viewing.matchedConditions && viewing.matchedConditions.length > 0 ? (
               <List
@@ -117,7 +119,7 @@ export default function NotificationDetailModal({ viewing, onClose }: Notificati
                 )}
               />
             ) : (
-              <Empty description="No condition breakdown recorded for this notification" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              <Empty description={t('notifDetail.noConditions')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
             )}
           </div>
         </div>

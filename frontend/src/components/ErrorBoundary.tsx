@@ -1,5 +1,6 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { Alert, Button, Result, Typography } from 'antd';
+import i18n from '../i18n';
 
 const { Title } = Typography;
 
@@ -40,16 +41,16 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
       return (
         <Result
           status="error"
-          title="Something went wrong"
-          subTitle={this.state.error?.message || 'An unexpected error occurred'}
+          title={i18n.t('errorBoundary.title')}
+          subTitle={this.state.error?.message || i18n.t('errorBoundary.defaultMessage')}
           extra={
             <>
               <Button type="primary" onClick={this.handleReset}>
-                Try Again
+                {i18n.t('errorBoundary.tryAgain')}
               </Button>
               <Alert
                 style={{ marginTop: 16, maxWidth: 600 }}
-                message="Error Details"
+                message={i18n.t('errorBoundary.errorDetails')}
                 description={this.state.error?.toString()}
                 type="error"
                 showIcon

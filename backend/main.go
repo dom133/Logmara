@@ -36,6 +36,21 @@ func versionHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"version": appVersion})
 }
 
+// defaultLanguageHandler exposes only the configured default UI language,
+// unauthenticated, so the login page and setup wizard can pick it before
+// anyone has signed in. It intentionally never touches handler.GetSettings
+// (the admin-only endpoint), which returns internal config - SMTP/LDAP
+// hosts, CORS origins, session limits - that must not be public.
+func defaultLanguageHandler(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		lang := "en"
+		if database != nil {
+			lang = db.GetSetting(database, "default_language", "en")
+		}
+		c.JSON(http.StatusOK, gin.H{"default_language": lang})
+	}
+}
+
 // RateLimiter is satisfied by both the local, in-memory limiter (default,
 // single-server/single-replica) and sharedstate.RedisRateLimiter (used
 // instead when Redis is configured, so limits are shared across every api
@@ -528,6 +543,7 @@ r := gin.New()
 
 	r.GET("/api/health", handler.HealthCheck(database))
 	r.GET("/api/version", versionHandler)
+	r.GET("/api/settings/default-language", defaultLanguageHandler(database))
 
 	metricsGroup := r.Group("/api")
 	metricsGroup.Use(authCfg.JWTRequired())
@@ -726,6 +742,7 @@ func waitForWizardDatabase(port string, sharedClient *sharedstate.Client) *sql.D
 	testDbLimiter := newLimiter(sharedClient, "wizard-test-db", 20, 10*time.Minute, "")
 	r.GET("/api/health", handler.HealthCheckStandalone())
 	r.GET("/api/version", versionHandler)
+	r.GET("/api/settings/default-language", defaultLanguageHandler(nil))
 	r.GET("/api/status/initialized", handler.CheckInitializedStandalone())
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
 	r.GET("/api/init/db-config", handler.GetDbConfig(nil))
