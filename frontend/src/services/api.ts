@@ -604,7 +604,15 @@ export async function uploadSSLCerts(certFile: File, keyFile: File) {
 // --- Alerts & Notifications ---
 
 export type AlertRuleType = 'log_threshold' | 'device_silence' | 'config_change'
-export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app'
+export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app' | 'push'
+export type FieldConditionOperator = 'equals' | 'contains' | 'not_equals' | 'regex'
+
+export interface AlertFieldCondition {
+	id?: number
+	field_name: string
+	operator: FieldConditionOperator
+	value: string
+}
 
 export interface Alert {
 	id: number
@@ -612,8 +620,9 @@ export interface Alert {
 	description: string
 	rule_type: AlertRuleType
 	severity?: string
-	hostname_pattern?: string
-	app_name_pattern?: string
+	device_ips: string[]
+	parser_names: string[]
+	field_conditions: AlertFieldCondition[]
 	message_pattern?: string
 	threshold: number
 	window_minutes: number
@@ -632,8 +641,9 @@ export interface AlertRequest {
 	description?: string
 	rule_type: AlertRuleType
 	severity?: string
-	hostname_pattern?: string
-	app_name_pattern?: string
+	device_ips?: string[]
+	parser_names?: string[]
+	field_conditions?: AlertFieldCondition[]
 	message_pattern?: string
 	threshold?: number
 	window_minutes?: number
@@ -724,6 +734,11 @@ export async function getNotificationHistory(limit = 100) {
 	return (res.data || []) as NotificationLogEntry[]
 }
 
+export async function clearNotificationHistory() {
+	const res = await api.delete('/admin/notifications/history')
+	return res.data
+}
+
 export interface InAppNotification {
 	id: number
 	alert_id?: number
@@ -735,11 +750,28 @@ export interface InAppNotification {
 
 export async function getNotifications() {
 	const res = await api.get('/notifications')
-	return res.data as { unread_count: number; last_id: number; notifications: InAppNotification[] }
+	return res.data as { enabled: boolean; unread_count: number; last_id: number; notifications: InAppNotification[] }
 }
 
 export async function markNotificationsRead(lastReadId: number) {
 	const res = await api.post('/notifications/mark-read', { last_read_id: lastReadId })
+	return res.data
+}
+
+// --- Web Push ---
+
+export async function getVapidPublicKey() {
+	const res = await api.get('/push/vapid-public-key')
+	return (res.data as { public_key: string }).public_key
+}
+
+export async function subscribePush(subscription: PushSubscriptionJSON) {
+	const res = await api.post('/push/subscribe', subscription)
+	return res.data
+}
+
+export async function unsubscribePush(endpoint: string) {
+	const res = await api.post('/push/unsubscribe', { endpoint })
 	return res.data
 }
 

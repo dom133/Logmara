@@ -7,6 +7,7 @@ interface User {
   role: string
   is_admin: boolean
   is_active: boolean
+  notifications_enabled: boolean
 }
 
 interface AuthContextType {

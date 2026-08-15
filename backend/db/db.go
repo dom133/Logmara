@@ -242,6 +242,16 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='last_fired_at') THEN ALTER TABLE alerts ADD COLUMN last_fired_at TIMESTAMPTZ; END IF; END $$`,
 		`ALTER TABLE alerts ALTER COLUMN condition DROP NOT NULL`,
 		`ALTER TABLE alerts ALTER COLUMN threshold DROP NOT NULL`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='device_ips') THEN ALTER TABLE alerts ADD COLUMN device_ips TEXT[]; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='parser_names') THEN ALTER TABLE alerts ADD COLUMN parser_names TEXT[]; END IF; END $$`,
+		`CREATE TABLE IF NOT EXISTS alert_field_conditions (
+			id SERIAL PRIMARY KEY,
+			alert_id INTEGER REFERENCES alerts(id) ON DELETE CASCADE,
+			field_name VARCHAR(100) NOT NULL,
+			operator VARCHAR(20) NOT NULL DEFAULT 'equals',
+			value VARCHAR(500) NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_alert_field_conditions_alert ON alert_field_conditions (alert_id)`,
 		`CREATE TABLE IF NOT EXISTS notification_channels (
 			id SERIAL PRIMARY KEY,
 			name VARCHAR(255) NOT NULL,
@@ -282,6 +292,15 @@ func Migrate(db *sql.DB) error {
 			user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
 			last_read_id BIGINT NOT NULL DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS push_subscriptions (
+			id SERIAL PRIMARY KEY,
+			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+			endpoint TEXT NOT NULL UNIQUE,
+			p256dh TEXT NOT NULL,
+			auth TEXT NOT NULL,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions (user_id)`,
 	}
 
 	for _, stmt := range statements {
@@ -557,6 +576,7 @@ func seedSettings(db *sql.DB) error {
 		"https_enabled":                "false",
 		"https_redirect":               "false",
 		"notifications_enabled":        "true",
+		"smtp_enabled":                 "false",
 		"smtp_host":                    "",
 		"smtp_port":                    "587",
 		"smtp_username":                "",
@@ -616,6 +636,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "Redirect HTTP traffic to HTTPS"
 		case "notifications_enabled":
 			desc = "Enable the alert notification system"
+		case "smtp_enabled":
+			desc = "Enable SMTP email delivery"
 		case "smtp_host":
 			desc = "SMTP server hostname for email notifications"
 		case "smtp_port":

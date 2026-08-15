@@ -17,6 +17,14 @@ func GzipCompress() gin.HandlerFunc {
 			return
 		}
 
+		// SSE stream: compressing it defeats the point of the per-event
+		// Flush() calls the handler relies on to push data as it happens
+		// rather than once enough of it has accumulated to compress well.
+		if strings.HasPrefix(c.Request.URL.Path, "/api/notifications/stream") {
+			c.Next()
+			return
+		}
+
 		w := &gzipResponseWriter{
 			ResponseWriter: c.Writer,
 		}

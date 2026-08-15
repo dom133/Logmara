@@ -17,26 +17,13 @@ import { SessionWarningModal } from './components/SessionWarningModal'
 import { NotificationBell } from './components/NotificationBell'
 import { AuthProvider, useAuth } from './services/auth'
 import { getDashboards, getDashboard, Dashboard as DashboardType, checkInitialized } from './services/api'
+import { useIsMobile } from './hooks/useIsMobile'
 
 const { Sider, Content, Header } = Layout
 
-const MOBILE_BREAKPOINT = 768
-
-function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(false)
-  useEffect(() => {
-    const m = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT}px)`)
-    setIsMobile(m.matches)
-    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches)
-    m.addEventListener('change', handler)
-    return () => m.removeEventListener('change', handler)
-  }, [])
-  return isMobile
-}
-
 function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collapsed, onClose }: {
   location: ReturnType<typeof useLocation>
-  user: { username?: string } | undefined
+  user: { username?: string; notifications_enabled?: boolean } | undefined
   logout: () => void
   isAdmin: boolean
   pinnedDashboards: DashboardType[]
@@ -49,7 +36,10 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collaps
   const renderLinks = () => (
     <>
       <nav>
-        {navItems.filter(item => !(item.adminOnly && !isAdmin)).map(item => (
+        {navItems.filter(item =>
+          !(item.adminOnly && !isAdmin) &&
+          !(item.hideWhenNotificationsDisabled && user?.notifications_enabled === false)
+        ).map(item => (
           <RouterLink
             key={item.key}
             to={item.key}
@@ -163,7 +153,7 @@ const navItems = [
   { key: '/logs', label: 'Logs', icon: <FileTextOutlined /> },
   { key: '/parsers', label: 'Parsers', icon: <SettingOutlined /> },
   { key: '/dashboards', label: 'Dashboards', icon: <FundOutlined /> },
-  { key: '/alerts', label: 'Alerts', icon: <BellOutlined /> },
+  { key: '/alerts', label: 'Alerts', icon: <BellOutlined />, hideWhenNotificationsDisabled: true },
   { key: '/admin', label: 'Admin', icon: <SafetyOutlined />, adminOnly: true },
 ]
 

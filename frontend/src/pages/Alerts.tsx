@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Card, Table, Button, Tag, Space, Modal, Form, Input, InputNumber, Select, Switch, message, Popconfirm, Tabs, Typography } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined } from '@ant-design/icons'
+import { Card, Table, Button, Tag, Space, Modal, Form, Input, InputNumber, Select, Switch, message, Popconfirm, Tabs, Typography, Descriptions } from 'antd'
+import { PlusOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined, EyeOutlined } from '@ant-design/icons'
 import {
-  getAlerts, createAlert, updateAlert, deleteAlert, Alert, AlertRequest, AlertRuleType,
+  getAlerts, createAlert, updateAlert, deleteAlert, Alert, AlertRequest, AlertRuleType, FieldConditionOperator,
   getNotificationChannels, createNotificationChannel, updateNotificationChannel, deleteNotificationChannel, testNotificationChannel,
   NotificationChannel, NotificationChannelRequest, NotificationChannelType,
-  getNotificationHistory, NotificationLogEntry,
+  getNotificationHistory, clearNotificationHistory, NotificationLogEntry,
+  getDevices, DeviceStats, resolveDeviceDisplayName, getParsers, Parser, getParsedFields, ParsedField,
 } from '../services/api'
 import { useAuth } from '../services/auth'
 import { getErrorMessage } from '../utils/error'
@@ -24,23 +25,38 @@ const channelTypeLabels: Record<NotificationChannelType, string> = {
   slack: 'Slack',
   teams: 'Microsoft Teams',
   in_app: 'In-app',
+  push: 'Push (browser)',
+}
+
+const operatorLabels: Record<FieldConditionOperator, string> = {
+  equals: 'Equals',
+  contains: 'Contains',
+  not_equals: 'Not equals',
+  regex: 'Regex',
 }
 
 function RulesTab({ canEdit }: { canEdit: boolean }) {
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [channels, setChannels] = useState<NotificationChannel[]>([])
+  const [devices, setDevices] = useState<DeviceStats[]>([])
+  const [parsers, setParsers] = useState<Parser[]>([])
+  const [parsedFields, setParsedFields] = useState<ParsedField[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Alert | null>(null)
   const [form] = Form.useForm()
   const ruleType = Form.useWatch('rule_type', form)
+  const selectedParsers: string[] = Form.useWatch('parser_names', form) || []
 
   const loadData = async () => {
     setLoading(true)
     try {
-      const [a, c] = await Promise.all([getAlerts(), getNotificationChannels()])
+      const [a, c, d, p, pf] = await Promise.all([getAlerts(), getNotificationChannels(), getDevices(), getParsers(), getParsedFields()])
       setAlerts(a)
       setChannels(c)
+      setDevices(d)
+      setParsers(p)
+      setParsedFields(pf)
     } catch {
       message.error('Failed to load alerts')
     } finally {
@@ -50,10 +66,23 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
 
   useEffect(() => { loadData() }, [])
 
+  const deviceOptions = devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))
+  const parserOptions = parsers.map(p => ({ label: p.name, value: p.name }))
+  const fieldOptions = Array.from(
+    new Map(
+      parsedFields
+        .filter(f => selectedParsers.length === 0 || selectedParsers.includes(f.parser_name))
+        .map(f => [f.field_name, f]),
+    ).values(),
+  ).map(f => ({ label: `${f.field_label || f.field_name} (${f.parser_name})`, value: f.field_name }))
+
   const openCreate = () => {
     setEditing(null)
     form.resetFields()
-    form.setFieldsValue({ rule_type: 'log_threshold', is_active: true, window_minutes: 5, cooldown_minutes: 15, threshold: 5, channel_ids: [] })
+    form.setFieldsValue({
+      rule_type: 'log_threshold', is_active: true, window_minutes: 5, cooldown_minutes: 15, threshold: 5,
+      channel_ids: [], device_ips: [], parser_names: [], field_conditions: [],
+    })
     setModalOpen(true)
   }
 
@@ -98,11 +127,16 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
     {
       title: 'Condition', key: 'condition', ellipsis: true,
       render: (_v: unknown, r: Alert) => {
+        const scope = [
+          (r.device_ips || []).length > 0 ? `${r.device_ips.length} device(s)` : 'all devices',
+          (r.parser_names || []).length > 0 ? `${r.parser_names.length} parser(s)` : null,
+          (r.field_conditions || []).length > 0 ? `${r.field_conditions.length} field condition(s)` : null,
+        ].filter(Boolean).join(', ')
         if (r.rule_type === 'log_threshold') {
-          return `${r.threshold}+ matches / ${r.window_minutes}m${r.severity ? ` (severity >= ${r.severity})` : ''}`
+          return `${r.threshold}+ matches / ${r.window_minutes}m on ${scope}${r.severity ? `, severity >= ${r.severity}` : ''}`
         }
         if (r.rule_type === 'device_silence') {
-          return `silent for ${r.threshold}m${r.hostname_pattern ? ` (${r.hostname_pattern})` : ''}`
+          return `silent for ${r.threshold}m on ${scope}`
         }
         return r.audit_action_filter ? `action = ${r.audit_action_filter}` : 'any config change'
       },
@@ -150,20 +184,48 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
             <Select options={Object.entries(ruleTypeLabels).map(([value, label]) => ({ value, label }))} />
           </Form.Item>
 
+          {(ruleType === 'log_threshold' || ruleType === 'device_silence') && (
+            <Form.Item name="device_ips" label="Devices" tooltip="Leave empty to watch all devices">
+              <Select mode="multiple" allowClear placeholder="All devices" options={deviceOptions} />
+            </Form.Item>
+          )}
+
           {ruleType === 'log_threshold' && (
             <>
               <Form.Item name="severity" label="Minimum Severity" tooltip="Leave empty to match any severity">
                 <Select allowClear options={['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug'].map(s => ({ value: s, label: s }))} />
               </Form.Item>
-              <Form.Item name="hostname_pattern" label="Hostname Pattern" tooltip="Substring or glob (*), empty matches all hosts">
-                <Input placeholder="router-*" />
+              <Form.Item name="parser_names" label="Parsers" tooltip="Which parser(s) must have matched the log entry; leave empty to match any parser (including unparsed logs)">
+                <Select mode="multiple" allowClear placeholder="Any parser" options={parserOptions} />
               </Form.Item>
-              <Form.Item name="app_name_pattern" label="App Name Pattern">
-                <Input />
-              </Form.Item>
-              <Form.Item name="message_pattern" label="Message Pattern">
+              <Form.Item name="message_pattern" label="Message Pattern" tooltip="Substring or glob (*) match against the raw log message">
                 <Input placeholder="failed login" />
               </Form.Item>
+
+              <Form.Item label="Field Conditions" tooltip="All conditions must match (AND). Fields come from the parsers selected above, or all known fields if none are selected.">
+                <Form.List name="field_conditions">
+                  {(fields, { add, remove }) => (
+                    <>
+                      {fields.map((field) => (
+                        <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }} wrap>
+                          <Form.Item name={[field.name, 'field_name']} rules={[{ required: true, message: 'Field required' }]} noStyle>
+                            <Select showSearch placeholder="Field" style={{ width: 200 }} options={fieldOptions} />
+                          </Form.Item>
+                          <Form.Item name={[field.name, 'operator']} initialValue="equals" noStyle>
+                            <Select style={{ width: 130 }} options={Object.entries(operatorLabels).map(([value, label]) => ({ value, label }))} />
+                          </Form.Item>
+                          <Form.Item name={[field.name, 'value']} rules={[{ required: true, message: 'Value required' }]} noStyle>
+                            <Input placeholder="Value" style={{ width: 180 }} />
+                          </Form.Item>
+                          <Button type="link" danger onClick={() => remove(field.name)}>Remove</Button>
+                        </Space>
+                      ))}
+                      <Button type="dashed" onClick={() => add({ operator: 'equals' })} block>+ Add Field Condition</Button>
+                    </>
+                  )}
+                </Form.List>
+              </Form.Item>
+
               <Space.Compact block>
                 <Form.Item name="threshold" label="Threshold (matches)" style={{ flex: 1 }} rules={[{ required: true }]}>
                   <InputNumber min={1} style={{ width: '100%' }} />
@@ -176,14 +238,9 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
           )}
 
           {ruleType === 'device_silence' && (
-            <>
-              <Form.Item name="hostname_pattern" label="Hostname Pattern" tooltip="Which devices to watch; empty watches all devices">
-                <Input placeholder="router-*" />
-              </Form.Item>
-              <Form.Item name="threshold" label="Silent After (minutes)" rules={[{ required: true }]}>
-                <InputNumber min={1} style={{ width: '100%' }} />
-              </Form.Item>
-            </>
+            <Form.Item name="threshold" label="Silent After (minutes)" rules={[{ required: true }]}>
+              <InputNumber min={1} style={{ width: '100%' }} />
+            </Form.Item>
           )}
 
           {ruleType === 'config_change' && (
@@ -365,6 +422,9 @@ function ChannelsTab({ canEdit }: { canEdit: boolean }) {
           {channelType === 'in_app' && (
             <Text type="secondary">Delivers to the notification bell for every signed-in user - no further configuration needed.</Text>
           )}
+          {channelType === 'push' && (
+            <Text type="secondary">Delivers a browser push notification to every device subscribed via the bell menu's "Enable push notifications" toggle - no further configuration needed.</Text>
+          )}
 
           <Form.Item name="enabled" label="Enabled" valuePropName="checked">
             <Switch />
@@ -375,23 +435,96 @@ function ChannelsTab({ canEdit }: { canEdit: boolean }) {
   )
 }
 
-function HistoryTab() {
+const historyStatusColor: Record<string, string> = {
+  sent: 'green',
+  failed: 'red',
+  no_channel: 'orange',
+}
+
+function HistoryTab({ isAdmin }: { isAdmin: boolean }) {
   const [entries, setEntries] = useState<NotificationLogEntry[]>([])
   const [loading, setLoading] = useState(true)
+  const [clearing, setClearing] = useState(false)
+  const [viewing, setViewing] = useState<NotificationLogEntry | null>(null)
 
-  useEffect(() => {
+  const loadData = () => {
+    setLoading(true)
     getNotificationHistory().then(setEntries).catch(() => message.error('Failed to load notification history')).finally(() => setLoading(false))
-  }, [])
+  }
+
+  useEffect(() => { loadData() }, [])
+
+  const handleClear = async () => {
+    setClearing(true)
+    try {
+      await clearNotificationHistory()
+      message.success('Notification history cleared')
+      loadData()
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to clear notification history'))
+    } finally {
+      setClearing(false)
+    }
+  }
 
   const columns = [
     { title: 'Time', dataIndex: 'created_at', key: 'created_at', render: (v: string) => new Date(v).toLocaleString() },
     { title: 'Alert', dataIndex: 'alert_name', key: 'alert_name' },
     { title: 'Channel', dataIndex: 'channel_name', key: 'channel_name', render: (v: string, r: NotificationLogEntry) => `${v} (${r.channel_type})` },
-    { title: 'Status', dataIndex: 'status', key: 'status', render: (v: string) => <Tag color={v === 'sent' ? 'green' : 'red'}>{v}</Tag> },
+    { title: 'Status', dataIndex: 'status', key: 'status', render: (v: string) => <Tag color={historyStatusColor[v] || 'default'}>{v}</Tag> },
     { title: 'Detail', dataIndex: 'detail', key: 'detail', ellipsis: true },
+    {
+      title: 'Actions', key: 'actions',
+      render: (_v: unknown, r: NotificationLogEntry) => (
+        <Button size="small" icon={<EyeOutlined />} onClick={() => setViewing(r)}>Details</Button>
+      ),
+    },
   ]
 
-  return <Table dataSource={entries} columns={columns} rowKey="id" loading={loading} size="small" scroll={{ x: 'max-content' }} />
+  return (
+    <>
+      {isAdmin && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+          <Popconfirm title="Clear all notification history?" onConfirm={handleClear}>
+            <Button danger loading={clearing} disabled={entries.length === 0}>Clear History</Button>
+          </Popconfirm>
+        </div>
+      )}
+      <Table
+        dataSource={entries}
+        columns={columns}
+        rowKey="id"
+        loading={loading}
+        size="small"
+        scroll={{ x: 'max-content' }}
+        onRow={(r) => ({ onClick: () => setViewing(r), style: { cursor: 'pointer' } })}
+      />
+
+      <Modal
+        title="Notification Detail"
+        open={!!viewing}
+        onCancel={() => setViewing(null)}
+        footer={<Button onClick={() => setViewing(null)}>Close</Button>}
+        width={{ sm: '90%', md: 560 }}
+      >
+        {viewing && (
+          <Descriptions column={1} bordered size="small">
+            <Descriptions.Item label="Time">{new Date(viewing.created_at).toLocaleString()}</Descriptions.Item>
+            <Descriptions.Item label="Alert">{viewing.alert_name || '—'}</Descriptions.Item>
+            <Descriptions.Item label="Channel">{viewing.channel_name} ({viewing.channel_type})</Descriptions.Item>
+            <Descriptions.Item label="Status">
+              <Tag color={historyStatusColor[viewing.status] || 'default'}>{viewing.status}</Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="Detail">
+              <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable={!!viewing.detail}>
+                {viewing.detail || '—'}
+              </Typography.Paragraph>
+            </Descriptions.Item>
+          </Descriptions>
+        )}
+      </Modal>
+    </>
+  )
 }
 
 export default function AlertsPage() {
@@ -402,7 +535,7 @@ export default function AlertsPage() {
   const items = [
     { key: 'rules', label: 'Alert Rules', children: <RulesTab canEdit={canEdit} /> },
     { key: 'channels', label: 'Notification Channels', children: <ChannelsTab canEdit={isAdmin} /> },
-    { key: 'history', label: 'History', children: <HistoryTab /> },
+    { key: 'history', label: 'History', children: <HistoryTab isAdmin={isAdmin} /> },
   ]
 
   return (

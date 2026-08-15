@@ -282,9 +282,18 @@ func main() {
 		changePasswordLimiter := newLimiter(sharedClient, "change-password", 5, time.Minute)
 		authGroup.POST("/auth/change-password", rateLimitMiddleware(changePasswordLimiter), handler.ChangePassword(database))
 
+		notificationsGate := handler.RequireNotificationsEnabled(database)
+
+		// Deliberately ungated: the bell needs GET /notifications to reach it
+		// even while disabled, since that's how it learns enabled:false and
+		// hides itself. mark-read is harmless either way.
 		authGroup.GET("/notifications", handler.GetNotifications(database))
 		authGroup.POST("/notifications/mark-read", handler.MarkNotificationsRead(database))
-		authGroup.GET("/notifications/stream", handler.StreamNotifications(notifHub))
+		authGroup.GET("/notifications/stream", notificationsGate, handler.StreamNotifications(notifHub))
+
+		authGroup.GET("/push/vapid-public-key", notificationsGate, handler.GetVAPIDPublicKey(database))
+		authGroup.POST("/push/subscribe", notificationsGate, handler.SubscribePush(database))
+		authGroup.POST("/push/unsubscribe", notificationsGate, handler.UnsubscribePush(database))
 
 		authGroup.GET("/parsers", handler.ListParsers(engine))
 		authGroup.GET("/parsers/fields", handler.ListParsedFields(engine))
@@ -311,10 +320,10 @@ func main() {
 			editorGroup.DELETE("/dashboards/:id", handler.DeleteDashboard(database))
 			editorGroup.PATCH("/dashboards/:id/public", handler.TogglePublicDashboard(database))
 
-			editorGroup.GET("/alerts", handler.ListAlerts(database))
-			editorGroup.POST("/alerts", handler.CreateAlert(database))
-			editorGroup.PUT("/alerts/:id", handler.UpdateAlert(database))
-			editorGroup.DELETE("/alerts/:id", handler.DeleteAlert(database))
+			editorGroup.GET("/alerts", notificationsGate, handler.ListAlerts(database))
+			editorGroup.POST("/alerts", notificationsGate, handler.CreateAlert(database))
+			editorGroup.PUT("/alerts/:id", notificationsGate, handler.UpdateAlert(database))
+			editorGroup.DELETE("/alerts/:id", notificationsGate, handler.DeleteAlert(database))
 		}
 
 		adminGroup := authGroup.Group("/admin")
@@ -340,12 +349,22 @@ func main() {
 			adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(database))
 			adminGroup.POST("/nginx-reload", handler.ReloadNginx(database))
 
-			adminGroup.GET("/notification-channels", handler.ListNotificationChannels(database))
-			adminGroup.POST("/notification-channels", handler.CreateNotificationChannel(database))
-			adminGroup.PUT("/notification-channels/:id", handler.UpdateNotificationChannel(database))
-			adminGroup.DELETE("/notification-channels/:id", handler.DeleteNotificationChannel(database))
-			adminGroup.POST("/notification-channels/:id/test", handler.TestNotificationChannel(database))
-			adminGroup.GET("/notifications/history", handler.GetNotificationHistory(database))
+			adminGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))
+			adminGroup.PUT("/notification-channels/:id", notificationsGate, handler.UpdateNotificationChannel(database))
+			adminGroup.DELETE("/notification-channels/:id", notificationsGate, handler.DeleteNotificationChannel(database))
+			adminGroup.POST("/notification-channels/:id/test", notificationsGate, handler.TestNotificationChannel(database, notifHub))
+			adminGroup.DELETE("/notifications/history", notificationsGate, handler.ClearNotificationHistory(database))
+		}
+
+		// Same /admin path prefix as adminGroup above, but readable by editors
+		// too - they can already create alert rules (editorGroup), so they
+		// need to see which channels exist to assign and whether their rules
+		// actually fired. Channel secrets and mutations stay admin-only.
+		adminReadGroup := authGroup.Group("/admin")
+		adminReadGroup.Use(auth.RoleRequired("admin", "editor"))
+		{
+			adminReadGroup.GET("/notification-channels", notificationsGate, handler.ListNotificationChannels(database))
+			adminReadGroup.GET("/notifications/history", notificationsGate, handler.GetNotificationHistory(database))
 		}
 	}
 

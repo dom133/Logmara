@@ -17,6 +17,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// RequireNotificationsEnabled blocks the alert/channel/history management
+// API (not the notification bell's own GET /notifications, which needs to
+// stay reachable so it can report enabled:false and hide itself) whenever
+// the notifications_enabled setting is off.
+func RequireNotificationsEnabled(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if db.GetSetting(database, "notifications_enabled", "true") != "true" {
+			middleware.HandleError(c, model.NewForbidden("Notifications are disabled", nil))
+			return
+		}
+		c.Next()
+	}
+}
+
 func ListNotificationChannels(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		channels, err := db.GetAllNotificationChannels(database)
@@ -88,7 +102,7 @@ func DeleteNotificationChannel(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func TestNotificationChannel(database *sql.DB) gin.HandlerFunc {
+func TestNotificationChannel(database *sql.DB, hub *notifyhub.Hub) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
@@ -106,7 +120,7 @@ func TestNotificationChannel(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		if err := notify.TestChannel(database, *channel); err != nil {
+		if err := notify.TestChannel(database, *channel, hub.Publish); err != nil {
 			middleware.HandleError(c, model.NewBadRequest("Test notification failed: "+err.Error(), err))
 			return
 		}
@@ -132,25 +146,45 @@ func GetNotificationHistory(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// GetNotifications returns the signed-in user's unread count plus the most
-// recent in-app notifications, for the bell dropdown's initial load (the
-// live stream in StreamNotifications handles updates after that).
+func ClearNotificationHistory(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := db.ClearNotificationHistory(database); err != nil {
+			middleware.HandleError(c, model.NewInternal("Failed to clear notification history", err))
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "notification history cleared"})
+	}
+}
+
+// GetNotifications returns the signed-in user's unread count plus their
+// still-unread in-app notifications, for the bell dropdown's initial load
+// (the live stream in StreamNotifications handles updates after that).
+// Once something is marked read - whether via the "Clear all" button or
+// just by opening the bell - it drops out of this list for good, so a
+// "cleared" bell stays cleared across a page reload instead of the same
+// items reappearing every time.
 func GetNotifications(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetInt64("user_id")
 
+		lastRead, err := db.GetLastReadID(database, userID)
+		if err != nil {
+			middleware.HandleError(c, model.NewInternal("Failed to load notifications", err))
+			return
+		}
 		count, lastID, err := db.GetUnreadNotificationCount(database, userID)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to load notifications", err))
 			return
 		}
-		items, err := db.GetInAppNotifications(database, 0, 20)
+		items, err := db.GetInAppNotifications(database, lastRead, 20)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to load notifications", err))
 			return
 		}
 
 		c.JSON(http.StatusOK, gin.H{
+			"enabled":       db.GetSetting(database, "notifications_enabled", "true") == "true",
 			"unread_count":  count,
 			"last_id":       lastID,
 			"notifications": items,
@@ -191,6 +225,14 @@ func StreamNotifications(hub *notifyhub.Hub) gin.HandlerFunc {
 			middleware.HandleError(c, model.NewInternal("Streaming unsupported", nil))
 			return
 		}
+
+		// The server's WriteTimeout (15s, see main.go) exists to bound normal
+		// request/response cycles and would otherwise kill this connection
+		// out from under us shortly after it opens, well before the client
+		// ever sees a second event - nginx logs that as "upstream
+		// prematurely closed connection". Disable it for just this
+		// connection; every other route keeps the 15s limit.
+		_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
 
 		c.Writer.Header().Set("Content-Type", "text/event-stream")
 		c.Writer.Header().Set("Cache-Control", "no-cache")

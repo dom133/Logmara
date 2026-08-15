@@ -16,6 +16,9 @@ import (
 func BuildNotifier(database *sql.DB, channel model.NotificationChannel, secret string) (Notifier, error) {
 	switch channel.Type {
 	case model.ChannelTypeEmail:
+		if db.GetSetting(database, "smtp_enabled", "false") != "true" {
+			return nil, fmt.Errorf("SMTP is disabled (enable it under Admin > Settings)")
+		}
 		var cfg struct {
 			To []string `json:"to"`
 		}
@@ -93,6 +96,17 @@ func (d *Dispatcher) DispatchAlert(alert model.Alert, payload Payload) {
 		return
 	}
 	alertID := alert.ID
+
+	if len(channels) == 0 {
+		// The rule fired but has nothing to deliver to - record that it fired
+		// at all, otherwise there is no trace of it anywhere in the history.
+		_ = db.LogNotification(d.DB, model.NotificationLogEntry{
+			AlertID: &alertID, AlertName: alert.Name,
+			ChannelName: "(none)", Status: "no_channel", Detail: "Rule fired but has no notification channels attached",
+		})
+		return
+	}
+
 	for _, ch := range channels {
 		d.dispatchOne(&alertID, alert.Name, ch, payload)
 	}
@@ -108,6 +122,8 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName string, ch model.Noti
 		} else if d.OnInApp != nil {
 			d.OnInApp(model.InAppNotification{ID: id, AlertID: alertID, Title: payload.Title, Message: payload.Message, Severity: payload.Severity})
 		}
+	} else if ch.Type == model.ChannelTypePush {
+		status, detail = sendPushChannel(d.DB, payload)
 	} else {
 		secret, err := db.DecryptChannelSecret(d.DB, ch.ID)
 		if err != nil {
@@ -125,10 +141,30 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName string, ch model.Noti
 	})
 }
 
+// sendPushChannel fans a payload out to every subscribed browser and
+// collapses the per-device results into the single status/detail pair the
+// notification_log records for this channel.
+func sendPushChannel(database *sql.DB, payload Payload) (status, detail string) {
+	delivered, failed, err := dispatchPush(database, payload)
+	if err != nil {
+		return "failed", err.Error()
+	}
+	if delivered == 0 {
+		return "failed", fmt.Sprintf("all %d push deliveries failed", failed)
+	}
+	if failed > 0 {
+		return "sent", fmt.Sprintf("delivered to %d device(s), %d failed", delivered, failed)
+	}
+	return "sent", fmt.Sprintf("delivered to %d device(s)", delivered)
+}
+
 // TestChannel sends a fixed test payload directly to a single channel,
 // bypassing alert association and notification_log - used by the "Test"
-// button in the admin UI.
-func TestChannel(database *sql.DB, channel model.NotificationChannel) error {
+// button in the admin UI. onInApp, if set, is called for an in_app channel
+// so the caller can fan the test notification out over SSE the same way a
+// real alert firing would - otherwise it would only ever show up after the
+// browser reloads and re-fetches the recent list.
+func TestChannel(database *sql.DB, channel model.NotificationChannel, onInApp func(model.InAppNotification)) error {
 	payload := Payload{
 		Title:    "Test notification",
 		Message:  "This is a test notification from SysLog GUI.",
@@ -136,8 +172,25 @@ func TestChannel(database *sql.DB, channel model.NotificationChannel) error {
 	}
 
 	if channel.Type == model.ChannelTypeInApp {
-		_, err := db.CreateInAppNotification(database, nil, payload.Title, payload.Message, payload.Severity)
-		return err
+		id, err := db.CreateInAppNotification(database, nil, payload.Title, payload.Message, payload.Severity)
+		if err != nil {
+			return err
+		}
+		if onInApp != nil {
+			onInApp(model.InAppNotification{ID: id, Title: payload.Title, Message: payload.Message, Severity: payload.Severity})
+		}
+		return nil
+	}
+
+	if channel.Type == model.ChannelTypePush {
+		delivered, failed, err := dispatchPush(database, payload)
+		if err != nil {
+			return err
+		}
+		if delivered == 0 {
+			return fmt.Errorf("all %d push deliveries failed", failed)
+		}
+		return nil
 	}
 
 	secret, err := db.DecryptChannelSecret(database, channel.ID)
