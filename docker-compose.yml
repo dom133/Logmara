@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: syslog_db
+      POSTGRES_USER: syslog
+      POSTGRES_PASSWORD: syslogpass
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U syslog -d syslog_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - syslog_net
+
+  rsyslog:
+    build:
+      context: .
+      dockerfile: Dockerfile.rsyslog
+    volumes:
+      - log_data:/data
+      - log_spool:/spool
+    ports:
+      - "514:514"
+      - "514:514/udp"
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - syslog_net
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      DATABASE_URL: postgres://syslog:syslogpass@postgres:5432/syslog_db?sslmode=disable
+      JWT_SECRET: change-this-to-a-random-secret-key
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin123
+      PORT: "8080"
+      LOG_FILE_PATH: /data/logs.jsonl
+    volumes:
+      - log_data:/data
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - syslog_net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - syslog_net
+
+volumes:
+  pg_data:
+  log_data:
+  log_spool:
+
+networks:
+  syslog_net:
+    driver: bridge

@@ -1,0 +1,92 @@
+package model
+
+import (
+	"encoding/json"
+	"time"
+)
+
+type SyslogLog struct {
+	ID           int64             `json:"id"`
+	Timestamp    time.Time         `json:"timestamp"`
+	Hostname     string            `json:"hostname"`
+	AppName      *string           `json:"app_name,omitempty"`
+	ProcessID    *string           `json:"process_id,omitempty"`
+	MsgID        *string           `json:"msg_id,omitempty"`
+	Severity     string            `json:"severity"`
+	Facility     *string           `json:"facility,omitempty"`
+	Message      string            `json:"message"`
+	RawMessage   *string           `json:"raw_message,omitempty"`
+	ParsedFields map[string]string `json:"parsed_fields,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+}
+
+type IngestEntry struct {
+	Timestamp    string  `json:"timestamp"`
+	Hostname     string  `json:"hostname"`
+	AppName      string  `json:"app_name"`
+	ProcessID    string  `json:"process_id"`
+	MsgID        string  `json:"msg_id"`
+	Severity     string  `json:"severity"`
+	Facility     string  `json:"facility"`
+	Message      string  `json:"message"`
+	RawMessage   string  `json:"raw_message"`
+	ParsedFields []byte  `json:"-"`
+}
+
+type LogQueryParams struct {
+	Offset   int    `form:"offset"`
+	Limit    int    `form:"limit"`
+	Hostname string `form:"hostname"`
+	Severity string `form:"severity"`
+	AppName  string `form:"app_name"`
+	Search   string `form:"search"`
+	From     string `form:"from"`
+	To       string `form:"to"`
+	Sort     string `form:"sort"`
+}
+
+type DashboardStats struct {
+	TotalLogs      int64             `json:"total_logs"`
+	LogsLastHour   int64             `json:"logs_last_hour"`
+	LogsLastDay    int64             `json:"logs_last_day"`
+	UniqueDevices  int64             `json:"unique_devices"`
+	SeverityCounts map[string]int64  `json:"severity_counts"`
+	TopDevices     []DeviceCount     `json:"top_devices"`
+	TopErrors      []ErrorMessage    `json:"top_errors"`
+}
+
+type DeviceCount struct {
+	Hostname string `json:"hostname"`
+	Count    int64  `json:"count"`
+}
+
+type ErrorMessage struct {
+	Message  string `json:"message"`
+	Count    int64  `json:"count"`
+	Hostname string `json:"hostname"`
+}
+
+type TimelinePoint struct {
+	Timestamp time.Time `json:"timestamp"`
+	Count     int64     `json:"count"`
+}
+
+type SeverityStats struct {
+	Severity string `json:"severity"`
+	Count    int64  `json:"count"`
+}
+
+type DeviceStats struct {
+	Hostname    string `json:"hostname"`
+	TotalLogs   int64  `json:"total_logs"`
+	LastSeen    time.Time `json:"last_seen"`
+	SeverityMap map[string]int64 `json:"severity_map"`
+}
+
+func ParseIngestEntry(raw []byte) (*IngestEntry, error) {
+	var entry IngestEntry
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return nil, err
+	}
+	return &entry, nil
+}
