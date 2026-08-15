@@ -90,8 +90,7 @@ export default function SetupWizard() {
     setLoading(true)
     try {
       await initialize(data)
-      message.success('Application initialized! Redirecting to login...')
-      setTimeout(() => navigate('/login'), 1500)
+      message.success('Application initialized!')
     } catch (e: any) {
       message.error(e?.response?.data?.error || 'Initialization failed')
     }

@@ -25,6 +25,16 @@ export default function Dashboard() {
   const [severityData, setSeverityData] = useState<Array<{ severity: string; count: number }>>([])
   const [loading, setLoading] = useState(true)
 
+  const { enhanceColumns: enhanceDevices, hasChanges: devChanged, reset: resetDevices } = useColumnWidths(
+    'col_widths_dashboard_devs',
+    [{ key: 'hostname', width: 160 }, { key: 'count', width: 100 }],
+  )
+
+  const { enhanceColumns: enhanceErrors, hasChanges: errChanged, reset: resetErrors } = useColumnWidths(
+    'col_widths_dashboard_errs',
+    [{ key: 'message', width: 300 }, { key: 'hostname', width: 160 }, { key: 'count', width: 80 }],
+  )
+
   useEffect(() => {
     loadData()
     const interval = setInterval(loadData, 30000)
@@ -83,16 +93,6 @@ export default function Dashboard() {
   if (loading && !stats) {
     return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />
   }
-
-  const { enhanceColumns: enhanceDevices, hasChanges: devChanged, reset: resetDevices } = useColumnWidths(
-    'col_widths_dashboard_devs',
-    [{ key: 'hostname', width: 160 }, { key: 'count', width: 100 }],
-  )
-
-  const { enhanceColumns: enhanceErrors, hasChanges: errChanged, reset: resetErrors } = useColumnWidths(
-    'col_widths_dashboard_errs',
-    [{ key: 'message', width: 300 }, { key: 'hostname', width: 160 }, { key: 'count', width: 80 }],
-  )
 
   const topDevicesColumns = [
     { title: 'Source IP', dataIndex: 'hostname', key: 'hostname', width: 160, render: (v: string) => <Tag color="blue">{v}</Tag> },
