@@ -2,6 +2,7 @@ package auth
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
@@ -146,6 +147,14 @@ func GenerateRefreshToken(userID int, remember bool) (string, time.Time) {
 	return token, exp
 }
 
+// HashRefreshToken returns a SHA-256 hex digest of the token for secure storage.
+// The raw token is never persisted; only this hash is stored and compared
+// during lookup, so a database breach doesn't yield usable session tokens.
+func HashRefreshToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
+
 // GenerateDeviceID returns a random identifier for a "remember this device"
 // cookie, stable across logins/logouts on the same browser.
 func GenerateDeviceID() string {
@@ -167,24 +176,68 @@ var (
 	hasSpecial = regexp.MustCompile(`[^A-Za-z0-9]`)
 )
 
-// ValidatePassword enforces complexity requirements.
+// PasswordPolicy holds configurable password requirements loaded from app_settings.
+type PasswordPolicy struct {
+	MinLength     int
+	MaxLength     int
+	RequireUpper  bool
+	RequireLower  bool
+	RequireDigit  bool
+	RequireSpecial bool
+	HistoryCount  int
+}
+
+// LoadPasswordPolicy reads password policy settings from the database.
+func LoadPasswordPolicy(getSetting func(string, string) string) PasswordPolicy {
+	p := PasswordPolicy{
+		MinLength:    envOrInt(getSetting("security_password_min_length", "8"), 8),
+		MaxLength:    envOrInt(getSetting("security_password_max_length", "128"), 128),
+		RequireUpper: getSetting("security_password_require_upper", "true") == "true",
+		RequireLower: getSetting("security_password_require_lower", "true") == "true",
+		RequireDigit: getSetting("security_password_require_digit", "true") == "true",
+		RequireSpecial: getSetting("security_password_require_special", "true") == "true",
+		HistoryCount: envOrInt(getSetting("security_password_history_count", "12"), 12),
+	}
+	return p
+}
+
+func envOrInt(val string, def int) int {
+	if v, err := strconv.Atoi(val); err == nil && v > 0 {
+		return v
+	}
+	return def
+}
+
+// ValidatePassword enforces complexity requirements (uses defaults, no DB).
 func ValidatePassword(password string) error {
-	if len(password) < 8 {
-		return fmt.Errorf("password must be at least 8 characters")
+	return ValidatePasswordWithPolicy(PasswordPolicy{
+		MinLength:    8,
+		MaxLength:    128,
+		RequireUpper: true,
+		RequireLower: true,
+		RequireDigit: true,
+		RequireSpecial: true,
+	}, password)
+}
+
+// ValidatePasswordWithPolicy validates a password against the given policy.
+func ValidatePasswordWithPolicy(p PasswordPolicy, password string) error {
+	if len(password) < p.MinLength {
+		return fmt.Errorf("password must be at least %d characters", p.MinLength)
 	}
-	if len(password) > 128 {
-		return fmt.Errorf("password must not exceed 128 characters")
+	if len(password) > p.MaxLength {
+		return fmt.Errorf("password must not exceed %d characters", p.MaxLength)
 	}
-	if !hasUpper.MatchString(password) {
+	if p.RequireUpper && !hasUpper.MatchString(password) {
 		return fmt.Errorf("password must contain at least one uppercase letter")
 	}
-	if !hasLower.MatchString(password) {
+	if p.RequireLower && !hasLower.MatchString(password) {
 		return fmt.Errorf("password must contain at least one lowercase letter")
 	}
-	if !hasDigit.MatchString(password) {
+	if p.RequireDigit && !hasDigit.MatchString(password) {
 		return fmt.Errorf("password must contain at least one digit")
 	}
-	if !hasSpecial.MatchString(password) {
+	if p.RequireSpecial && !hasSpecial.MatchString(password) {
 		return fmt.Errorf("password must contain at least one special character")
 	}
 	return nil
@@ -215,14 +268,14 @@ func (cfg *Config) JWTRequired() gin.HandlerFunc {
 		// EventSource) is fetched with credentials instead - see
 		// frontend streamNotifications - so it rides the cookie like everything else.
 		if tokenString == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization header"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization header", "error_key": "auth.missingAuthorization"})
 			c.Abort()
 			return
 		}
 
 		claims, err := cfg.ValidateToken(tokenString)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token", "error_key": "auth.invalidToken"})
 			c.Abort()
 			return
 		}
@@ -230,7 +283,7 @@ func (cfg *Config) JWTRequired() gin.HandlerFunc {
 		jti := extractJTI(claims)
 		if jti != "" && cfg.db != nil {
 			if blacklisted, err := db.IsJTIBlacklisted(cfg.db, jti); err == nil && blacklisted {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "token revoked"})
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "token revoked", "error_key": "auth.tokenRevoked"})
 				c.Abort()
 				return
 			}
@@ -250,7 +303,7 @@ func (cfg *Config) RoleRequired(roles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, exists := c.Get("claims")
 		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required", "error_key": "auth.required"})
 			c.Abort()
 			return
 		}
@@ -273,7 +326,7 @@ func (cfg *Config) RoleRequired(roles ...string) gin.HandlerFunc {
 			}()
 		}
 
-		c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions", "error_key": "auth.insufficientPermissions"})
 		c.Abort()
 	}
 }
@@ -283,7 +336,7 @@ func (cfg *Config) AdminRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, exists := c.Get("claims")
 		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required", "error_key": "auth.required"})
 			c.Abort()
 			return
 		}
@@ -300,7 +353,7 @@ func (cfg *Config) AdminRequired() gin.HandlerFunc {
 				}()
 			}
 
-			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required", "error_key": "auth.adminRequired"})
 			c.Abort()
 			return
 		}

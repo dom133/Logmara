@@ -160,7 +160,7 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req LoginRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request", "error_key": "error.invalidRequest"})
 			return
 		}
 
@@ -170,14 +170,14 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		if err == nil {
 			if locked, _ := db.CheckUserLockout(database, existing.ID); locked {
 				audit.LogAudit(database, existing.ID, req.Username, "login_failed_lockout", c.ClientIP(), "account locked due to too many failed attempts")
-				c.JSON(http.StatusTooManyRequests, gin.H{"error": "Account temporarily locked due to too many failed login attempts. Try again later."})
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "Account temporarily locked due to too many failed login attempts. Try again later.", "error_key": "auth.accountLocked"})
 				return
 			}
 			if !existing.IsActive {
 				dummyHash := "$2b$14$AAAAAAAAAAAAAAAAAAAAAAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 				bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(req.Password))
 				audit.LogAudit(database, existing.ID, req.Username, "login_failed_inactive", c.ClientIP(), "account deactivated by admin")
-				c.JSON(http.StatusForbidden, gin.H{"error": "Your account has been deactivated. Contact your administrator."})
+				c.JSON(http.StatusForbidden, gin.H{"error": "Your account has been deactivated. Contact your administrator.", "error_key": "auth.accountDeactivated"})
 				return
 			}
 			if err := bcrypt.CompareHashAndPassword([]byte(existing.PasswordHash), []byte(req.Password)); err == nil {
@@ -211,13 +211,13 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 							if err != nil {
 								slog.Error("ldap auto-provision failed", "error", err)
 								audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "auto-provision failed")
-								c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+								c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials", "error_key": "auth.invalidCredentials"})
 								return
 							}
 							user = u
 						} else {
 							audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "user not found locally")
-							c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+							c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials", "error_key": "auth.invalidCredentials"})
 							return
 						}
 					} else {
@@ -237,7 +237,7 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 					}
 				}
 				audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "invalid user or inactive")
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials", "error_key": "auth.invalidCredentials"})
 				return
 			}
 		}
@@ -248,7 +248,7 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 
 		token, jti, accessExpiresAt, err := authCfg.GenerateToken(user.ID, user.Username, user.Role, req.Remember)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token", "error_key": "auth.tokenGenerationFailed"})
 			return
 		}
 
@@ -313,10 +313,10 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		if err != nil || refreshToken == "" {
 			var req RefreshRequest
 			if err := c.ShouldBindJSON(&req); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-				return
-			}
-			refreshToken = req.RefreshToken
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request", "error_key": "error.invalidRequest"})
+			return
+		}
+		refreshToken = req.RefreshToken
 		}
 
 		// The frontend sends this on its silent, boot-time restore attempt
@@ -330,12 +330,13 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		// Session click if the tab is in fact still open.
 		if c.GetHeader("X-Silent-Refresh") == "true" {
 			var remembered bool
+			rh := auth.HashRefreshToken(refreshToken)
 			err := database.QueryRow(
-				`SELECT remember FROM refresh_tokens WHERE token = $1 AND used = false AND expires_at > NOW()`,
-				refreshToken,
+				`SELECT remember FROM refresh_tokens WHERE token_hash = $1 AND used = false AND expires_at > NOW()`,
+				rh,
 			).Scan(&remembered)
 			if err != nil || !remembered {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "silent refresh not allowed for this session"})
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "silent refresh not allowed for this session", "error_key": "auth.silentRefreshNotAllowed"})
 				return
 			}
 		}
@@ -343,11 +344,12 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		var userID int
 		var deviceIDVal sql.NullString
 		var remember bool
+		rh := auth.HashRefreshToken(refreshToken)
 		claimErr := database.QueryRow(
 			`UPDATE refresh_tokens SET used = true, used_at = NOW()
-			 WHERE token = $1 AND used = false AND expires_at > NOW()
+			 WHERE token_hash = $1 AND used = false AND expires_at > NOW()
 			 RETURNING user_id, device_id, remember`,
-			refreshToken,
+			rh,
 		).Scan(&userID, &deviceIDVal, &remember)
 
 		var replacementToken string
@@ -357,7 +359,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			if !recovered {
 				clearAuthCookies(c)
 				audit.LogAudit(database, 0, "", "refresh_failed", c.ClientIP(), "invalid, expired, or reused refresh token")
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token", "error_key": "auth.invalidRefreshToken"})
 				return
 			}
 			userID = recoveredUserID
@@ -369,13 +371,13 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		user, err := getUserByID(database, userID)
 		if err != nil {
 			clearAuthCookies(c)
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found", "error_key": "auth.userNotFound"})
 			return
 		}
 
 		token, newJTI, accessExpiresAt, err := authCfg.GenerateToken(user.ID, user.Username, user.Role, remember)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token", "error_key": "auth.tokenGenerationFailed"})
 			return
 		}
 
@@ -399,7 +401,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		}); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
-		if _, err := database.Exec("UPDATE refresh_tokens SET replaced_by = $1 WHERE token = $2", newRefreshToken, refreshToken); err != nil {
+		if _, err := database.Exec("UPDATE refresh_tokens SET replaced_by = $1 WHERE token_hash = $2", newRefreshToken, rh); err != nil {
 			slog.Error("failed to link rotated refresh token", "error", err)
 		}
 
@@ -415,11 +417,12 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 // within the grace window, hands back the replacement token instead of
 // treating this as a stale/replayed refresh token.
 func recoverRacedRefresh(database *sql.DB, token string) (userID int, replacementToken string, replacementExpiry time.Time, remember bool, ok bool) {
+	rh := auth.HashRefreshToken(token)
 	var replacedBy sql.NullString
 	var usedAt sql.NullTime
 	err := database.QueryRow(
-		"SELECT user_id, used_at, replaced_by FROM refresh_tokens WHERE token = $1 AND used = true",
-		token,
+		"SELECT user_id, used_at, replaced_by FROM refresh_tokens WHERE token_hash = $1 AND used = true",
+		rh,
 	).Scan(&userID, &usedAt, &replacedBy)
 	if err != nil || !replacedBy.Valid || !usedAt.Valid {
 		return 0, "", time.Time{}, false, false
@@ -429,9 +432,10 @@ func recoverRacedRefresh(database *sql.DB, token string) (userID int, replacemen
 	}
 
 	var expiresAt time.Time
+	rrh := auth.HashRefreshToken(replacedBy.String)
 	err = database.QueryRow(
-		"SELECT expires_at, remember FROM refresh_tokens WHERE token = $1 AND expires_at > NOW()",
-		replacedBy.String,
+		"SELECT expires_at, remember FROM refresh_tokens WHERE token_hash = $1 AND expires_at > NOW()",
+		rrh,
 	).Scan(&expiresAt, &remember)
 	if err != nil {
 		return 0, "", time.Time{}, false, false
@@ -468,7 +472,8 @@ func Logout(database *sql.DB) gin.HandlerFunc {
 			// "every refresh token this user has", which would log out every
 			// other device/browser too, including any "remember this device"
 			// session that's supposed to survive independently of this one.
-			database.Exec("UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE token = $1 AND used = false", refreshToken)
+			rh := auth.HashRefreshToken(refreshToken)
+			database.Exec("UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE token_hash = $1 AND used = false", rh)
 		}
 		clearAuthCookies(c)
 		c.JSON(http.StatusOK, gin.H{"message": "Logged out"})
@@ -495,7 +500,7 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, exists := c.Get("claims")
 		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required", "error_key": "auth.required"})
 			return
 		}
 
@@ -533,42 +538,52 @@ func ChangePassword(database *sql.DB) gin.HandlerFunc {
 
 		var req ChangePasswordRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request", "error_key": "error.invalidRequest"})
 			return
 		}
 
 		if len(req.NewPassword) < 8 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be at least 8 characters"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be at least 8 characters", "error_key": "auth.passwordTooShort"})
 			return
 		}
 
-		if err := auth.ValidatePassword(req.NewPassword); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Password does not meet requirements", err))
+		policy := auth.LoadPasswordPolicy(func(k, def string) string { return db.GetSetting(database, k, def) })
+		if err := auth.ValidatePasswordWithPolicy(policy, req.NewPassword); err != nil {
+			middleware.HandleError(c, model.NewBadRequestKey("auth.passwordRequirements", "Password does not meet requirements", err))
 			return
 		}
 
 		var storedHash string
 		err := database.QueryRow("SELECT password_hash FROM users WHERE username = $1", username).Scan(&storedHash)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found", "error_key": "auth.userNotFound"})
 			return
 		}
 
 		if err := bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(req.CurrentPassword)); err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Current password is incorrect"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Current password is incorrect", "error_key": "auth.currentPasswordIncorrect"})
 			return
 		}
 
 		newHash, err := auth.HashPassword(req.NewPassword)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password", "error_key": "auth.hashFailed"})
 			return
 		}
 
-		if err := db.ResetUserPassword(database, getUserID(database, username), newHash); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
+		uid := getUserID(database, username)
+		if exists, _ := db.CheckPasswordHistory(database, uid, newHash); exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Password already used recently", "error_key": "auth.passwordAlreadyUsed"})
 			return
 		}
+
+		if err := db.ResetUserPassword(database, uid, newHash); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password", "error_key": "auth.passwordUpdateFailed"})
+			return
+		}
+
+		_ = db.AddPasswordHistory(database, uid, newHash)
+		_ = db.TrimPasswordHistory(database, uid)
 
 		audit.LogAudit(database, getUserID(database, username), username, "password_changed", c.ClientIP(), "")
 		c.JSON(http.StatusOK, gin.H{"message": "Password updated"})
@@ -587,10 +602,11 @@ type refreshTokenParams struct {
 }
 
 func insertRefreshToken(db *sql.DB, p refreshTokenParams) error {
+	tokenHash := auth.HashRefreshToken(p.token)
 	_, err := db.Exec(
-		`INSERT INTO refresh_tokens (user_id, token, expires_at, used, device_id, user_agent, ip, remember, jti, last_used_at)
-		 VALUES ($1, $2, $3, false, $4, $5, $6, $7, $8, NOW())`,
-		p.userID, p.token, p.expiresAt, p.deviceID, p.userAgent, p.ip, p.remember, p.jti,
+		`INSERT INTO refresh_tokens (user_id, token, token_hash, expires_at, used, device_id, user_agent, ip, remember, jti, last_used_at)
+		 VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8, $9, NOW())`,
+		p.userID, p.token, tokenHash, p.expiresAt, p.deviceID, p.userAgent, p.ip, p.remember, p.jti,
 	)
 	return err
 }

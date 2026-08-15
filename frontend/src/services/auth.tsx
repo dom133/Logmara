@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { t } from 'i18next'
 import { api, checkSession } from './api'
 
 interface User {
@@ -84,7 +85,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const msLeft = expiresAt - Date.now()
 
+    // A remembered session can reach msLeft<=0 without ever crossing the
+    // silent-extend threshold below - e.g. a backgrounded tab gets its
+    // interval throttled by the browser for over an hour, then
+    // visibilitychange fires this once the token is already long expired.
+    // The refresh token is still good for up to 60 days, so try it before
+    // giving up instead of hard-logging-out a session that's still valid
+    // server-side.
     if (msLeft <= 0) {
+      if (rememberedRef.current) {
+        extendSessionRef.current()
+        return
+      }
       logout()
       return
     }
@@ -175,7 +187,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setupSessionWarning(res.data.expires_at)
       return { ok: true }
     } catch (error: any) {
-      return { ok: false, error: error.response?.data?.error || 'Login failed' }
+      return { ok: false, error: error.response?.data?.error || t('login.loginFailed') }
     }
   }, [setupSessionWarning])
 

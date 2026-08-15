@@ -110,7 +110,72 @@ func MigrateWithLock(db *sql.DB) error {
 	return Migrate(db)
 }
 
+// schemaVersion must be bumped whenever a statement is appended to
+// statements/partitionStmts/postStmts below. Migrate short-circuits once the
+// schema_version table already records this value, so a forgotten bump
+// means an already-deployed instance will never see the new statement
+// applied.
+const schemaVersion = 1
+
+func ensureSchemaVersionTable(db *sql.DB) error {
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
+		version INTEGER NOT NULL,
+		applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	)`)
+	return err
+}
+
+func getSchemaVersion(db *sql.DB) (int, error) {
+	var version int
+	err := db.QueryRow(`SELECT version FROM schema_version ORDER BY version DESC LIMIT 1`).Scan(&version)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return version, err
+}
+
+func setSchemaVersion(db *sql.DB, version int) error {
+	if _, err := db.Exec(`DELETE FROM schema_version`); err != nil {
+		return err
+	}
+	_, err := db.Exec(`INSERT INTO schema_version (version) VALUES ($1)`, version)
+	return err
+}
+
 func Migrate(db *sql.DB) error {
+	if err := ensureSchemaVersionTable(db); err != nil {
+		return fmt.Errorf("ensure schema_version table: %w", err)
+	}
+	current, err := getSchemaVersion(db)
+	if err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+
+	if current >= schemaVersion {
+		slog.Info("schema up to date, skipping DDL migration", "version", current)
+	} else {
+		if err := runSchemaMigration(db); err != nil {
+			return err
+		}
+	}
+
+	// Builtin parser/setting definitions (e.g. PARSER_DEFS_DIR contents) can
+	// change independently of the schema DDL above, so these must always
+	// re-sync on every start rather than being gated on schemaVersion - a
+	// gate here would mean an already-migrated instance never picks up a
+	// newly added/edited builtin parser.
+	if err := seedParsers(db); err != nil {
+		slog.Warn("seeding parsers failed", "error", err)
+	}
+
+	if err := seedSettings(db); err != nil {
+		slog.Warn("seeding settings failed", "error", err)
+	}
+
+	return nil
+}
+
+func runSchemaMigration(db *sql.DB) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS syslog_logs (
 			id BIGSERIAL PRIMARY KEY,
@@ -256,6 +321,13 @@ func Migrate(db *sql.DB) error {
 		// and GET /auth/session-check, which the frontend polls precisely to
 		// notice that blacklisting quickly rather than on its own schedule.
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='jti') THEN ALTER TABLE refresh_tokens ADD COLUMN jti VARCHAR(64); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='token_hash') THEN ALTER TABLE refresh_tokens ADD COLUMN token_hash VARCHAR(64); END IF; END $$`,
+		`CREATE TABLE IF NOT EXISTS password_history (
+			id BIGSERIAL PRIMARY KEY,
+			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+			password_hash VARCHAR(255) NOT NULL,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
 		`DELETE FROM app_settings WHERE key = 'jwt_expiry'`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='rule_type') THEN ALTER TABLE alerts ADD COLUMN rule_type VARCHAR(30) NOT NULL DEFAULT 'log_threshold'; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='severity') THEN ALTER TABLE alerts ADD COLUMN severity VARCHAR(20); END IF; END $$`,
@@ -555,15 +627,11 @@ END $$`,
 		}
 	}
 
-	if err := seedParsers(db); err != nil {
-		slog.Warn("seeding parsers failed", "error", err)
+	if err := setSchemaVersion(db, schemaVersion); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
 	}
 
-	if err := seedSettings(db); err != nil {
-		slog.Warn("seeding settings failed", "error", err)
-	}
-
-	slog.Info("database migration completed")
+	slog.Info("database migration completed", "version", schemaVersion)
 	return nil
 }
 
@@ -667,6 +735,7 @@ func seedSettings(db *sql.DB) error {
 		"retention_days":                "30",
 		"session_timeout_min":           "15",
 		"is_initialized":                "false",
+		"default_language":              "en",
 		"ldap_enabled":                  "false",
 		"ldap_server":                   "",
 		"ldap_port":                     "389",
@@ -696,8 +765,15 @@ func seedSettings(db *sql.DB) error {
 		"device_silence_check_minutes":  "5",
 		"relay_ingestion_enabled":       "false",
 		"relay_central_host":            "",
-		"security_max_failed_attempts":  "",
-		"security_lockout_duration_min": "",
+		"security_max_failed_attempts":     "",
+		"security_lockout_duration_min":    "",
+		"security_password_min_length":     "8",
+		"security_password_max_length":     "128",
+		"security_password_require_upper":  "true",
+		"security_password_require_lower":  "true",
+		"security_password_require_digit":  "true",
+		"security_password_require_special":"true",
+		"security_password_history_count":  "12",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -712,6 +788,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "Session timeout in minutes"
 		case "is_initialized":
 			desc = "Application initialization flag"
+		case "default_language":
+			desc = "Default UI language for new sessions"
 		case "ldap_enabled":
 			desc = "Enable LDAP authentication"
 		case "ldap_server":
@@ -774,6 +852,20 @@ func seedSettings(db *sql.DB) error {
 			desc = "Max failed login attempts before account lockout (empty = use MAX_FAILED_ATTEMPTS env or default 5)"
 		case "security_lockout_duration_min":
 			desc = "Account lockout duration in minutes (empty = use LOCKOUT_DURATION_MIN env or default 15)"
+		case "security_password_min_length":
+			desc = "Minimum password length"
+		case "security_password_max_length":
+			desc = "Maximum password length"
+		case "security_password_require_upper":
+			desc = "Require at least one uppercase letter"
+		case "security_password_require_lower":
+			desc = "Require at least one lowercase letter"
+		case "security_password_require_digit":
+			desc = "Require at least one digit"
+		case "security_password_require_special":
+			desc = "Require at least one special character"
+		case "security_password_history_count":
+			desc = "Number of recent passwords to remember (0 = disabled)"
 		}
 		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
 			return fmt.Errorf("seed setting %s: %w", k, err)
@@ -839,6 +931,13 @@ var envSettings = []envSetting{
 	{"MAX_FAILED_ATTEMPTS", "security_max_failed_attempts", "5", false},
 	{"LOCKOUT_DURATION_MIN", "security_lockout_duration_min", "15", false},
 	{"SESSION_TIMEOUT_MIN", "session_timeout_min", "15", false},
+	{"PASSWORD_MIN_LENGTH", "security_password_min_length", "8", false},
+	{"PASSWORD_MAX_LENGTH", "security_password_max_length", "128", false},
+	{"PASSWORD_REQUIRE_UPPER", "security_password_require_upper", "true", true},
+	{"PASSWORD_REQUIRE_LOWER", "security_password_require_lower", "true", true},
+	{"PASSWORD_REQUIRE_DIGIT", "security_password_require_digit", "true", true},
+	{"PASSWORD_REQUIRE_SPECIAL", "security_password_require_special", "true", true},
+	{"PASSWORD_HISTORY_COUNT", "security_password_history_count", "12", false},
 }
 
 // ApplyEnvSettingOverrides populates app_settings rows that are still empty
@@ -994,8 +1093,8 @@ func deleteOldLogsBatched(db *sql.DB, retentionDays int) (int64, error) {
 
 	for {
 		result, err := db.Exec(
-			"DELETE FROM syslog_logs WHERE ctid IN (SELECT ctid FROM syslog_logs WHERE timestamp < NOW() - $1::interval LIMIT $2)",
-			fmt.Sprintf("%d days", retentionDays), batchSize,
+			"DELETE FROM syslog_logs WHERE ctid IN (SELECT ctid FROM syslog_logs WHERE timestamp < NOW() - ($1 || ' days')::interval LIMIT $2)",
+			retentionDays, batchSize,
 		)
 		if err != nil {
 			return totalDeleted, err
@@ -1125,6 +1224,42 @@ func DeleteUser(db *sql.DB, id int64) error {
 
 func ResetUserPassword(db *sql.DB, id int64, passwordHash string) error {
 	_, err := db.Exec("UPDATE users SET password_hash = $1 WHERE id = $2", passwordHash, id)
+	return err
+}
+
+// AddPasswordHistory stores a password hash in the history table for reuse checking.
+func AddPasswordHistory(db *sql.DB, userID int64, passwordHash string) error {
+	_, err := db.Exec("INSERT INTO password_history (user_id, password_hash) VALUES ($1, $2)", userID, passwordHash)
+	return err
+}
+
+// CheckPasswordHistory returns true if the given hash matches any of the last
+// N passwords for the user, where N is the history_count setting (default 12).
+func CheckPasswordHistory(db *sql.DB, userID int64, passwordHash string) (bool, error) {
+	historyCount := 12
+	if v, err := strconv.Atoi(GetSetting(db, "security_password_history_count", "12")); err == nil && v > 0 {
+		historyCount = v
+	}
+	var count int
+	err := db.QueryRow(
+		`SELECT COUNT(*) FROM (SELECT password_hash FROM password_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2) sub WHERE password_hash = $3`,
+		userID, historyCount, passwordHash,
+	).Scan(&count)
+	return count > 0, err
+}
+
+// TrimPasswordHistory keeps only 2x the history_count entries per user to
+// prevent unbounded growth of the history table.
+func TrimPasswordHistory(db *sql.DB, userID int64) error {
+	historyCount := 12
+	if v, err := strconv.Atoi(GetSetting(db, "security_password_history_count", "12")); err == nil && v > 0 {
+		historyCount = v
+	}
+	keep := historyCount * 2
+	_, err := db.Exec(
+		`DELETE FROM password_history WHERE ctid NOT IN (SELECT ctid FROM password_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2)`,
+		userID, keep,
+	)
 	return err
 }
 

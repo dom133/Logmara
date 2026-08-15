@@ -1,4 +1,5 @@
 import { TagProps } from 'antd';
+import { TFunction } from 'i18next';
 
 export const SEVERITY_COLORS: Record<string, NonNullable<TagProps['color']>> = {
   emerg: 'magenta',
@@ -11,16 +12,18 @@ export const SEVERITY_COLORS: Record<string, NonNullable<TagProps['color']>> = {
   debug: 'default',
 };
 
-export const SEVERITY_LABELS: Record<string, string> = {
-  emerg: 'Emergency',
-  alert: 'Alert',
-  crit: 'Critical',
-  err: 'Error',
-  warning: 'Warning',
-  notice: 'Notice',
-  info: 'Info',
-  debug: 'Debug',
-};
+export function getSeverityLabels(t: TFunction): Record<string, string> {
+  return {
+    emerg: t('severity.emerg'),
+    alert: t('severity.alert'),
+    crit: t('severity.crit'),
+    err: t('severity.err'),
+    warning: t('severity.warning'),
+    notice: t('severity.notice'),
+    info: t('severity.info'),
+    debug: t('severity.debug'),
+  };
+}
 
 // Ordered worst-to-best; drives severity sort order across the UI.
 export const SEVERITY_ORDER = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug'];
@@ -38,10 +41,12 @@ export const SEVERITY_HEX: Record<string, string> = {
   debug: '#8c8c8c',
 };
 
-export const DATE_PRESETS = [
-  { label: 'Last Hour', value: '1h' },
-  { label: 'Last 6 Hours', value: '6h' },
-  { label: 'Last 24 Hours', value: '24h' },
-  { label: 'Last 7 Days', value: '7d' },
-  { label: 'Last 30 Days', value: '30d' },
-];
+export function getDatePresets(t: TFunction) {
+  return [
+    { label: t('logs.lastHour'), value: '1h' },
+    { label: t('logs.last6Hours'), value: '6h' },
+    { label: t('logs.last24Hours'), value: '24h' },
+    { label: t('logs.last7Days'), value: '7d' },
+    { label: t('logs.last30Days'), value: '30d' },
+  ];
+}

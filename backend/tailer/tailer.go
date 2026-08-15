@@ -119,9 +119,21 @@ const (
 	leaderRetryJitter   = 1 * time.Second
 	leaderRenewInterval = 5 * time.Second
 	leaderMaxRenewFails = 3
+	// startupJitterMax staggers each replica's very first Acquire attempt.
+	// Not needed for correctness - Acquire's SetNX is atomic regardless of
+	// how many replicas race it - but every replica typically starts within
+	// the same second or two of a `docker stack deploy`/rescale, so without
+	// this every one of them logs a failed acquire attempt at once. Purely
+	// cosmetic log-noise reduction.
+	startupJitterMax = 3 * time.Second
 )
 
 func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine, rate sharedstate.RateCounter) {
+	startupJitter := time.Duration(rand.Int63n(int64(startupJitterMax)))
+	if !sleepOrDone(ctx, startupJitter) {
+		return
+	}
+
 	for {
 		if ctx.Err() != nil {
 			return
@@ -154,11 +166,24 @@ func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, eng
 				elector.Release(context.Background())
 				return
 			case <-time.After(leaderRenewInterval):
-				if !elector.Renew(ctx) {
+				ok, lost := elector.Renew(ctx)
+				if lost {
+					// Definitive: Redis confirmed another instance already
+					// owns the lock, meaning it may already be ingesting.
+					// Unlike a transient renew error below, this can never
+					// be tolerated for extra cycles - every extra second
+					// here is a window where two replicas tail the same
+					// file concurrently.
+					slog.Warn("tailer: lost leader lock to another instance, stepping down immediately")
+					cancel()
+					<-done
+					break renewLoop
+				}
+				if !ok {
 					consecutiveFails++
-					slog.Warn("tailer: renew failed", "consecutive", consecutiveFails, "threshold", leaderMaxRenewFails)
+					slog.Warn("tailer: renew failed (transient), retrying", "consecutive", consecutiveFails, "threshold", leaderMaxRenewFails)
 					if consecutiveFails >= leaderMaxRenewFails {
-						slog.Warn("tailer: lost leader lock, stepping down")
+						slog.Warn("tailer: renew failing repeatedly, stepping down")
 						cancel()
 						<-done
 						break renewLoop

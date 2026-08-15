@@ -104,7 +104,7 @@ export default function DashboardsPage() {
       refresh()
       window.dispatchEvent(new CustomEvent('dashboards-pinned-changed'))
     } catch (e: unknown) {
-      message.error(getErrorMessage(e, 'Failed to toggle pin'))
+      message.error(getErrorMessage(e, t('dashboards.failedTogglePin')))
     }
   }
 

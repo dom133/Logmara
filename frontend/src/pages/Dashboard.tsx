@@ -7,7 +7,7 @@ import { getDashboardStats, getTimeline, getSeverityStats, getDevices, getLogsRa
 import { DashboardStats, TimelinePoint } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import StatCard from '../components/StatCard'
-import { SEVERITY_HEX, SEVERITY_LABELS, SEVERITY_ORDER } from '../constants'
+import { SEVERITY_HEX, getSeverityLabels, SEVERITY_ORDER } from '../constants'
 
 const { Title } = Typography
 
@@ -160,7 +160,7 @@ export default function Dashboard() {
       center: ['50%', '44%'],
       avoidLabelOverlap: true,
       data: sortedSeverity.map(s => ({
-        name: SEVERITY_LABELS[s.severity] || s.severity,
+        name: getSeverityLabels(t)[s.severity] || s.severity,
         value: s.count,
         itemStyle: { color: SEVERITY_HEX[s.severity] || '#bfbfbf' },
       })),

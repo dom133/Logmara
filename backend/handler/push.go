@@ -18,7 +18,7 @@ func GetVAPIDPublicKey(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		publicKey, _, err := db.GetOrCreateVAPIDKeys(database)
 		if err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to load VAPID key", err))
+			middleware.HandleError(c, model.NewInternalKey("push.failedToLoadVapidKey", "Failed to load VAPID key", err))
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"public_key": publicKey})
@@ -31,13 +31,13 @@ func SubscribePush(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req model.PushSubscribeRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
-			return
+		middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
+		return
 		}
 
 		userID := c.GetInt64("user_id")
 		if err := db.SavePushSubscription(database, userID, req.Endpoint, req.Keys.P256dh, req.Keys.Auth); err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to save push subscription", err))
+			middleware.HandleError(c, model.NewInternalKey("push.failedToSaveSubscription", "Failed to save push subscription", err))
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "subscribed"})
@@ -50,12 +50,12 @@ func UnsubscribePush(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req model.PushUnsubscribeRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
 			return
 		}
 
 		if err := db.DeletePushSubscription(database, req.Endpoint); err != nil {
-			middleware.HandleError(c, model.NewInternal("Failed to remove push subscription", err))
+			middleware.HandleError(c, model.NewInternalKey("push.failedToRemoveSubscription", "Failed to remove push subscription", err))
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "unsubscribed"})

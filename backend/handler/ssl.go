@@ -23,20 +23,20 @@ func UploadSSLCerts(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		certFile, certHeader, err := c.Request.FormFile("cert")
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Certificate file is required", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", "Certificate file is required", nil))
 			return
 		}
 		defer certFile.Close()
 
 		keyFile, keyHeader, err := c.Request.FormFile("key")
 		if err != nil {
-			middleware.HandleError(c, model.NewBadRequest("Key file is required", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", "Key file is required", nil))
 			return
 		}
 		defer keyFile.Close()
 
 		if certHeader.Size > 5*1024*1024 || keyHeader.Size > 5*1024*1024 {
-			middleware.HandleError(c, model.NewBadRequest("File too large (max 5 MB)", nil))
+			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequest", "File too large (max 5 MB)", nil))
 			return
 		}
 
@@ -47,7 +47,7 @@ func UploadSSLCerts(database *sql.DB) gin.HandlerFunc {
 
 		if err := os.MkdirAll(sslDir, 0700); err != nil {
 			slog.Error("failed to create SSL directory", "dir", sslDir, "error", err)
-			middleware.HandleError(c, model.NewInternal("Failed to create SSL directory", err))
+			middleware.HandleError(c, model.NewInternalKey("ssl.failedCreateDir", "Failed to create SSL directory", err))
 			return
 		}
 
@@ -56,13 +56,13 @@ func UploadSSLCerts(database *sql.DB) gin.HandlerFunc {
 
 		if err := saveUploadedFile(certFile, certPath); err != nil {
 			slog.Error("failed to save cert", "error", err)
-			middleware.HandleError(c, model.NewInternal("Failed to save certificate", err))
+			middleware.HandleError(c, model.NewInternalKey("ssl.failedSaveCert", "Failed to save certificate", err))
 			return
 		}
 
 		if err := saveUploadedFile(keyFile, keyPath); err != nil {
 			slog.Error("failed to save key", "error", err)
-			middleware.HandleError(c, model.NewInternal("Failed to save key", err))
+			middleware.HandleError(c, model.NewInternalKey("ssl.failedSaveKey", "Failed to save key", err))
 			return
 		}
 

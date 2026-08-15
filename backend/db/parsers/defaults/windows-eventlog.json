@@ -1,0 +1,162 @@
+[
+  {
+    "name": "Windows EventLog NXLog JSON",
+    "description": "Parses Windows Event Log JSON forwarded by nxlog/sysmon (compact format: {time, source, event_id, event_data})",
+    "device_type": "windows",
+    "match_type": "message",
+    "match_value": "{\"time\":",
+    "regex": "\"time\":\"([^\"]+)\",\"source\":\"([^\"]+)\",\"event_id\":(\\d+),\"event_data\":(.+)$",
+    "fields": [
+      {
+        "name": "time",
+        "label": "Time",
+        "type": "string"
+      },
+      {
+        "name": "source",
+        "label": "Source Host",
+        "type": "string"
+      },
+      {
+        "name": "event_id",
+        "label": "Event ID",
+        "type": "number"
+      },
+      {
+        "name": "event_data",
+        "label": "Event Data (JSON)",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Windows Logon Success (NXLog)",
+    "description": "Extracts fields from Windows logon success events (4624/5007) forwarded as JSON",
+    "device_type": "windows",
+    "match_type": "message",
+    "match_value": "\"event_id\":4624",
+    "regex": "\"TargetUserName\":\"([^\"]*)\",\"TargetDomainName\":\"([^\"]*)\",\"TargetSid\":\"([^\"]*)\",\"LogonType\":\"(\\d+)\"",
+    "fields": [
+      {
+        "name": "target_user",
+        "label": "Target User",
+        "type": "string"
+      },
+      {
+        "name": "target_domain",
+        "label": "Domain",
+        "type": "string"
+      },
+      {
+        "name": "target_sid",
+        "label": "SID",
+        "type": "string"
+      },
+      {
+        "name": "logon_type",
+        "label": "Logon Type",
+        "type": "number"
+      }
+    ]
+  },
+  {
+    "name": "Windows Logon Failure (NXLog)",
+    "description": "Extracts fields from Windows logon failure events (529/4625) forwarded as JSON",
+    "device_type": "windows",
+    "match_type": "message",
+    "match_value": "\"event_id\":529",
+    "regex": "\"TargetUserName\":\"([^\"]*)\",\"TargetDomainName\":\"([^\"]*)\",\"LogonType\":\"(\\d+)\",\"FailureReason\":\"([^\"]*)\"",
+    "fields": [
+      {
+        "name": "target_user",
+        "label": "Target User",
+        "type": "string"
+      },
+      {
+        "name": "target_domain",
+        "label": "Domain",
+        "type": "string"
+      },
+      {
+        "name": "logon_type",
+        "label": "Logon Type",
+        "type": "number"
+      },
+      {
+        "name": "failure_reason",
+        "label": "Failure Reason",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Windows SMB Access (NXLog)",
+    "description": "Extracts fields from SMB share access events (5145) forwarded as JSON",
+    "device_type": "windows",
+    "match_type": "message",
+    "match_value": "\"event_id\":5145",
+    "regex": "\"SubjectUserName\":\"([^\"]*)\",\"ShareName\":\"\\\\\\\\([^\\\\]+)\\\\\\\\([^\"]+)\",\"SourceIp\":\"([^\"]*)\"",
+    "fields": [
+      {
+        "name": "subject_user",
+        "label": "Subject User",
+        "type": "string"
+      },
+      {
+        "name": "share_server",
+        "label": "Share Server",
+        "type": "string"
+      },
+      {
+        "name": "share_name",
+        "label": "Share Name",
+        "type": "string"
+      },
+      {
+        "name": "source_ip",
+        "label": "Source IP",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "name": "Windows Firewall Connection (NXLog)",
+    "description": "Extracts fields from Windows Firewall connection events (5156/5158) forwarded as JSON",
+    "device_type": "windows",
+    "match_type": "message",
+    "match_value": "\"event_id\":5156",
+    "regex": "\"Direction\":\"([^\"]*)\",\"SourceAddress\":\"([^\"]*)\",\"DestinationAddress\":\"([^\"]*)\",\"SourcePort\":(\\d+),\"DestinationPort\":(\\d+),\"Protocol\":(\\d+)",
+    "fields": [
+      {
+        "name": "direction",
+        "label": "Direction",
+        "type": "string"
+      },
+      {
+        "name": "source_address",
+        "label": "Source Address",
+        "type": "string"
+      },
+      {
+        "name": "destination_address",
+        "label": "Destination Address",
+        "type": "string"
+      },
+      {
+        "name": "source_port",
+        "label": "Source Port",
+        "type": "number"
+      },
+      {
+        "name": "destination_port",
+        "label": "Destination Port",
+        "type": "number"
+      },
+      {
+        "name": "protocol",
+        "label": "Protocol",
+        "type": "number"
+      }
+    ]
+  }
+]

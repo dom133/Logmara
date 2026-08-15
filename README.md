@@ -81,11 +81,14 @@ sudo ufw allow 514/udp
 > [!NOTE]
 > `8080/tcp` (the API) is also published by `docker-compose.yml`, but only needed if you want to hit the API directly instead of through nginx on 80/443 — leave it firewalled off unless you have a specific reason to open it.
 
-### 3. Clone the repo and configure
+### 3. Download the compose file and configure
+
+No need to clone the whole repo — this uses [pre-built images](#pre-built-images) from Docker Hub, so the compose file and env template are all you need:
 
 ```bash
-git clone https://github.com/dom133/Logmara.git
-cd syslog_gui
+mkdir logmara && cd logmara
+curl -fsSLO https://raw.githubusercontent.com/dom133/Logmara/master/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/dom133/Logmara/master/.env.example
 cp .env.example .env
 ```
 
@@ -97,7 +100,7 @@ Edit `.env` and set at least these — the app **will not start** until the two 
 ### 4. Start it
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 `-d` runs it in the background so it survives you logging out. Every service already has `restart: unless-stopped` in `docker-compose.yml`, and `systemctl enable docker` from step 1 means Docker itself starts on boot — so the stack comes back up automatically after a server reboot, no extra systemd unit needed.
@@ -115,9 +118,38 @@ Open `http://<server-ip>` in a browser and complete the Setup Wizard (creates th
 ### Updating later
 
 ```bash
-git pull
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
+
+Bump `IMAGE_TAG` in `.env` first if you want to move to a specific newer release instead of whatever `docker-compose.yml`'s default currently points to.
+
+### Deploying local changes / building from source
+
+Only needed if you've modified the code, or want something not yet published under `dom133/logmara-*` on Docker Hub — otherwise stick with the steps above.
+
+```bash
+git clone https://github.com/dom133/Logmara.git
+cd syslog_gui
+cp .env.example .env   # fill in POSTGRES_PASSWORD, JWT_SECRET, ENCRYPTION_KEY as above
+docker compose -f docker-compose.build.yml up -d --build
+```
+
+`docker-compose.build.yml` is identical to `docker-compose.yml` except every service builds from the local `Dockerfile.*` instead of pulling from Docker Hub. Update the same way with `git pull` followed by the same `up -d --build` command.
+
+## Pre-built Images
+
+Pre-built images are published on Docker Hub under [`dom133`](https://hub.docker.com/u/dom133), tagged `v0.0.1`:
+
+- [`dom133/logmara-api:v0.0.1`](https://hub.docker.com/r/dom133/logmara-api) (built from `Dockerfile.backend`)
+- [`dom133/logmara-frontend:v0.0.1`](https://hub.docker.com/r/dom133/logmara-frontend)
+- [`dom133/logmara-rsyslog:v0.0.1`](https://hub.docker.com/r/dom133/logmara-rsyslog)
+- [`dom133/logmara-rsyslog-relay:v0.0.1`](https://hub.docker.com/r/dom133/logmara-rsyslog-relay)
+- [`dom133/logmara-patroni:v0.0.1`](https://hub.docker.com/r/dom133/logmara-patroni)
+
+`docker-compose.yml` pulls these by default (`image:`, pinned via `${IMAGE_TAG:-v0.0.1}` in `.env`) — this is what the [Quick Start](#quick-start-single-server) above uses, no clone or build needed. Need to build from source instead (local changes, or something not yet published)? Use `docker-compose.build.yml` — see [Deploying local changes / building from source](#deploying-local-changes--building-from-source).
+
+These are also a drop-in `REGISTRY`/`TAG` pair for the [High Availability](#high-availability-deployment-multi-node-optional) deployment below (`REGISTRY=dom133 TAG=v0.0.1`), since the image names match what `docker-stack.app.yml`/`docker-stack.postgres.yml` expect — see [step 4](#4-clone-the-repo-then-buildpush-or-use-pre-built-images).
 
 ## Configuration
 
@@ -302,9 +334,14 @@ On `app1`/`app2`, install the NFS client (Docker's `local` volume driver shells 
 sudo apt-get install -y nfs-common
 ```
 
-#### 4. Clone the repo and build/push images
+#### 4. Clone the repo, then build/push (or use pre-built) images
+
+Unlike the single-server [Quick Start](#quick-start-single-server) above, this path still needs a full repo clone regardless of which images you end up running — the stack YAMLs alone aren't enough, since `haproxy/`, `redis/`, `keepalived/`, `nfs-ha/` and `scripts/swarm-bootstrap.sh` supply the configs/templates/helper scripts every step below depends on.
 
 Pick one manager (`pg1` here) as your "control" node — everywhere below that says "run on a manager", run it there, over SSH, against `pg1`'s local Docker socket. You'll also need a container image registry every node can pull from.
+
+> [!TIP]
+> If you haven't modified the code, you can skip *building* (not cloning) and pull the [pre-built `v0.0.1` images](#pre-built-images) from Docker Hub instead — `docker login` on every node (or add `--with-registry-auth` to the `docker stack deploy` commands later), then just use `REGISTRY=dom133 TAG=v0.0.1` in steps 4 and 10 instead of building/pushing your own.
 
 **Registry options:**
 - A managed registry (GHCR, ECR, Docker Hub, ...) — simplest if your nodes have internet access. `docker login` on every node, add `--with-registry-auth` to the `docker stack deploy` commands later.
@@ -531,6 +568,9 @@ Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizar
 When you change code, config, or dependencies, rebuild your images, push them under a **new tag**, then re-deploy each stack so Swarm performs a rolling update (no downtime if done in the right order).
 
 #### 1. Build and push new images
+
+> [!TIP]
+> Upgrading to a newer official release without local code changes? Skip building and just bump `TAG` to the new [pre-built](#pre-built-images) version instead, e.g. `REGISTRY=dom133 TAG=v0.0.2`, then jump straight to step 2 below.
 
 ```bash
 ssh pg1
@@ -830,10 +870,17 @@ Devices that don't need a relay but still want an encrypted transport instead of
 
 1. Admin > Settings > **Syslog Relay** > turn on "Enable Syslog Relay Ingestion". This starts accepting mTLS connections on port 6515 (still gated by the whitelist below, so nothing gets in until you add a relay).
 2. A new **Syslog Relay** entry appears in the sidebar. Either open **Certificates** > "Generate Certificate" and give the relay a label and the IP it will connect from directly, or first add the IP under **Whitelist IP** and generate a certificate for that entry afterwards (its "Generate Certificate" row action) — useful if you want the IP approved before a certificate exists for it. Either way, the browser downloads `syslog-relay-<label>.tar.gz` — save it now, this is the only copy.
-3. Copy that file to the small server you're deploying in the client VLAN, alongside `docker-compose.relay.yml` and `Dockerfile.rsyslog-relay` from this repo:
+3. Copy that file to the small server you're deploying in the client VLAN. No repo clone needed — this pulls the pre-built [`dom133/logmara-rsyslog-relay`](#pre-built-images) image, so `docker-compose.relay.yml` is the only other file required:
    ```bash
+   curl -fsSLO https://raw.githubusercontent.com/dom133/Logmara/master/docker-compose.relay.yml
    mkdir -p relay-bundle && tar xzf syslog-relay-<label>.tar.gz -C relay-bundle
-   docker compose -f docker-compose.relay.yml up -d --build
+   docker compose -f docker-compose.relay.yml up -d
+   ```
+   Deploying local changes to the relay, or something not yet published to Docker Hub? Clone the repo and use `docker-compose.relay.build.yml` instead (builds from `Dockerfile.rsyslog-relay`):
+   ```bash
+   git clone https://github.com/dom133/Logmara.git && cd syslog_gui
+   mkdir -p relay-bundle && tar xzf syslog-relay-<label>.tar.gz -C relay-bundle
+   docker compose -f docker-compose.relay.build.yml up -d --build
    ```
 4. Point the devices in that VLAN at the relay's IP on port 514 (tcp or udp) — or 6514/tcp if they want TLS into the relay itself, see [Sending directly over TLS, without a relay](#sending-directly-over-tls-without-a-relay) — same as you would the central server directly.
 
@@ -1108,8 +1155,10 @@ POST /api/parsers/test
 ## Project Structure
 
 ```
-├── docker-compose.yml
-├── docker-compose.relay.yml  # Standalone compose for a remote syslog relay host
+├── docker-compose.yml         # Pulls pre-built dom133/logmara-* images (default, no build needed)
+├── docker-compose.build.yml   # Same stack, builds every image from source instead
+├── docker-compose.relay.yml       # Standalone compose for a remote syslog relay host, pre-built image
+├── docker-compose.relay.build.yml # Same, builds Dockerfile.rsyslog-relay from source instead
 ├── Dockerfile.backend
 ├── Dockerfile.frontend
 ├── Dockerfile.rsyslog

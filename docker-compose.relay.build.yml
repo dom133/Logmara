@@ -1,10 +1,8 @@
-# Standalone compose file for the small "syslog relay" host deployed in a
-# client VLAN, forwarding syslog to the central server over mTLS instead of
-# storing anything locally. This is NOT part of the main app stack (see
-# docker-compose.yml / docker-stack.app.yml). Pulls the pre-built
-# dom133/logmara-rsyslog-relay image from Docker Hub - no repo clone, no
-# local build needed. Just copy this file to the small server that will sit
-# in the clients' VLAN and run it there, on its own.
+# Builds the relay image from source instead of pulling the pre-built one
+# from Docker Hub (see docker-compose.relay.yml). Use this file when you need
+# to deploy local changes to the relay, or anything not yet published under
+# dom133/logmara-rsyslog-relay on Docker Hub - requires the full repo
+# (source + Dockerfile.rsyslog-relay), not just this file.
 #
 # Deploy:
 #   1. On the central server, Admin > Settings > enable "Enable Syslog Relay Ingestion".
@@ -15,20 +13,18 @@
 #   3. Extract it next to this file:
 #        mkdir -p relay-bundle && tar xzf syslog-relay-<label>.tar.gz -C relay-bundle
 #      (produces ca.crt, client.crt, client.key, relay.conf)
-#   4. docker compose -f docker-compose.relay.yml up -d
-#
-# Need to deploy local changes to the relay, or anything not yet published to
-# Docker Hub? Use docker-compose.relay.build.yml instead (requires the full
-# repo + Dockerfile.rsyslog-relay).
+#   4. docker compose -f docker-compose.relay.build.yml up -d --build
 #
 # See README "Syslog Relay" for the full walkthrough, including the
 # firewall rule this needs (outbound 6515/tcp to the central server only).
 
 services:
   rsyslog-relay:
-    image: dom133/logmara-rsyslog-relay:${IMAGE_TAG:-v0.0.1}
     environment:
       - TZ=UTC
+    build:
+      context: .
+      dockerfile: Dockerfile.rsyslog-relay
     volumes:
       - ./relay-bundle/relay.conf:/etc/rsyslog.d/relay.conf:ro
       - ./relay-bundle/ca.crt:/etc/syslog-relay/tls/ca.crt:ro

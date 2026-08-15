@@ -25,6 +25,8 @@ export default function SetupWizard() {
   const [dbTestMessage, setDbTestMessage] = useState('')
   const [ldapTestStatus, setLdapTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle')
   const [ldapTestMessage, setLdapTestMessage] = useState('')
+  const ldapEnabled = Form.useWatch('ldap_enabled', form)
+  const ldapAutoProvision = Form.useWatch('ldap_auto_provision', form)
   const [collectedData, setCollectedData] = useState({
     username: '',
     email: '',
@@ -344,7 +346,7 @@ export default function SetupWizard() {
             <Form.Item name="ldap_enabled" label={t('setup.enableLdap')} valuePropName="checked">
               <Switch />
             </Form.Item>
-            {form.getFieldValue('ldap_enabled') && (
+            {ldapEnabled && (
               <>
                 <Divider orientation="left">{t('setup.connection')}</Divider>
                 <Form.Item name="ldap_server" label={t('setup.ldapServer')}>
@@ -419,7 +421,7 @@ export default function SetupWizard() {
                     { label: t('roles.viewer'), value: 'viewer' },
                     { label: t('roles.editor'), value: 'editor' },
                     { label: t('roles.admin'), value: 'admin' },
-                  ]} disabled={!form.getFieldValue('ldap_auto_provision')} />
+                  ]} disabled={!ldapAutoProvision} />
                 </Form.Item>
                 <Divider orientation="left">{t('common.test')}</Divider>
                 <Button

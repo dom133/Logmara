@@ -234,92 +234,118 @@ function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <Layout style={{ minHeight: '100vh', background: token.colorBgContainer }}>
-      {!isMobile && (
-        <Sider
-          width={220}
-          collapsedWidth={80}
-          collapsed={collapsed}
-          onCollapse={setCollapsed}
-          style={{ background: token.colorBgContainer }}
-          theme={themeMode === 'dark' ? 'dark' : 'light'}
-        >
-          <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} loadingDashboards={loadingDashboards} collapsed={collapsed} />
-        </Sider>
-      )}
-      {isMobile && (
-        <Drawer
-          title=""
-          placement="left"
-          onClose={() => setDrawerVisible(false)}
-          open={drawerVisible}
-          width="85%"
-          styles={{ body: { padding: 0 } }}
-        >
-          <div style={{ background: token.colorBgContainer, height: '100%' }}>
-            <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} loadingDashboards={loadingDashboards} onClose={() => setDrawerVisible(false)} />
-          </div>
-        </Drawer>
-      )}
       <Layout>
-        <Header style={{ background: token.colorBgContainer, padding: '0 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            {isMobile && (
+        {!isMobile && (
+          <Sider
+            width={220}
+            collapsedWidth={80}
+            collapsed={collapsed}
+            onCollapse={setCollapsed}
+            style={{ background: token.colorBgContainer }}
+            theme={themeMode === 'dark' ? 'dark' : 'light'}
+          >
+            <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} loadingDashboards={loadingDashboards} collapsed={collapsed} />
+          </Sider>
+        )}
+        {isMobile && (
+          <Drawer
+            title=""
+            placement="left"
+            onClose={() => setDrawerVisible(false)}
+            open={drawerVisible}
+            width="85%"
+            styles={{ body: { padding: 0 } }}
+          >
+            <div style={{ background: token.colorBgContainer, height: '100%' }}>
+              <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} loadingDashboards={loadingDashboards} onClose={() => setDrawerVisible(false)} />
+            </div>
+          </Drawer>
+        )}
+        <Layout>
+          <Header style={{ background: token.colorBgContainer, padding: '0 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {isMobile && (
+                <Button
+                  type="text"
+                  icon={<MenuOutlined />}
+                  onClick={() => setDrawerVisible(true)}
+                />
+              )}
+              {!isMobile && (
+                <Button
+                  type="text"
+                  icon={<MenuOutlined />}
+                  onClick={() => setCollapsed(!collapsed)}
+                />
+              )}
+              <span style={{ fontSize: 16, fontWeight: 500 }}>
+                {(() => {
+                  if (location.pathname === '/') return t('nav.dashboard')
+                  const match = location.pathname.match(/^\/dashboards\/([^/]+)$/)?.[1]
+                  if (match && dashboardTitle) return `${t('nav.dashboards')} / ${dashboardTitle}`
+                  const key = `nav.${location.pathname.replace('/', '')}`
+                  return t(key) || (location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'Logmara')
+                })()}
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'nowrap', overflow: 'hidden' }}>
+              <NotificationBell />
               <Button
                 type="text"
-                icon={<MenuOutlined />}
-                onClick={() => setDrawerVisible(true)}
-              />
-            )}
-            {!isMobile && (
+                onClick={() => setSessionsModalOpen(true)}
+                style={{ fontSize: 13, color: token.colorTextSecondary, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
+                title={t('nav.sessions')}
+              >
+                <UserOutlined /> {user?.username}
+              </Button>
               <Button
                 type="text"
-                icon={<MenuOutlined />}
-                onClick={() => setCollapsed(!collapsed)}
-              />
-            )}
-            <span style={{ fontSize: 16, fontWeight: 500 }}>
-              {(() => {
-                if (location.pathname === '/') return t('nav.dashboard')
-                const match = location.pathname.match(/^\/dashboards\/([^/]+)$/)?.[1]
-                if (match && dashboardTitle) return `${t('nav.dashboards')} / ${dashboardTitle}`
-                const key = `nav.${location.pathname.replace('/', '')}`
-                return t(key) || (location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'Logmara')
-              })()}
+                icon={themeMode === 'dark' ? <SunOutlined /> : <MoonOutlined />}
+                onClick={toggleTheme}
+              >
+                <span className="navbar-text-label">{themeMode === 'dark' ? t('nav.themeLight') : t('nav.themeDark')}</span>
+              </Button>
+              <Button
+                type="text"
+                danger
+                icon={<LogoutOutlined />}
+                onClick={logout}
+              >
+                <span className="navbar-text-label">{t('nav.logout')}</span>
+              </Button>
+            </div>
+          </Header>
+          <Content style={{ margin: 16, padding: 24, background: token.colorBgContainer, borderRadius: 8 }}>
+            <ErrorBoundary>{children}</ErrorBoundary>
+          </Content>
+          <Footer
+            style={{
+              background: token.colorPrimaryBg,
+              color: token.colorPrimaryText,
+              fontSize: 12,
+              padding: '12px 16px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: 8,
+            }}
+          >
+            <span>Logmara {appVersion}</span>
+            <span>
+              © {new Date().getFullYear()}{' '}
+              <a href="https://github.com/dom133" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
+                Dominik Kruszewski
+              </a>
+              {' · '}
+              <a href="https://github.com/dom133/Logmara" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
+                GitHub
+              </a>
+              {' · '}
+              AGPL-3.0
             </span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'nowrap', overflow: 'hidden' }}>
-            <NotificationBell />
-            <Button
-              type="text"
-              onClick={() => setSessionsModalOpen(true)}
-              style={{ fontSize: 13, color: token.colorTextSecondary, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
-              title={t('nav.sessions')}
-            >
-              <UserOutlined /> {user?.username}
-            </Button>
-            <Button
-              type="text"
-              icon={themeMode === 'dark' ? <SunOutlined /> : <MoonOutlined />}
-              onClick={toggleTheme}
-            >
-              <span className="navbar-text-label">{themeMode === 'dark' ? t('nav.themeLight') : t('nav.themeDark')}</span>
-            </Button>
-            <Button
-              type="text"
-              danger
-              icon={<LogoutOutlined />}
-              onClick={logout}
-            >
-              <span className="navbar-text-label">{t('nav.logout')}</span>
-            </Button>
-          </div>
-        </Header>
-        <Content style={{ margin: 16, padding: 24, background: token.colorBgContainer, borderRadius: 8 }}>
-          <ErrorBoundary>{children}</ErrorBoundary>
-        </Content>
-        <Footer style={{ margin: '0 16px 16px', textAlign: 'center', color: token.colorTextQuaternary, fontSize: 12 }}>
-          Logmara {appVersion}
-        </Footer>
+          </Footer>
+        </Layout>
       </Layout>
       {showSessionWarning && (
         <SessionWarningModal
