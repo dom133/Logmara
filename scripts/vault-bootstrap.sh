@@ -368,11 +368,28 @@ BEGIN
     END LOOP;
 END \$\$;
 
+DO \$\$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN
+        SELECT matviewname
+        FROM pg_matviews
+        WHERE schemaname = 'public'
+          AND matviewowner != 'logmara_app_group'
+    LOOP
+        EXECUTE format('ALTER MATERIALIZED VIEW %I OWNER TO logmara_app_group', r.matviewname);
+    END LOOP;
+END \$\$;
+
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT ALL PRIVILEGES ON TABLES TO logmara_app_group;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
-    GRANT ALL PRIVILEGES ON SEQUENCES TO logmara_app_group;" 2>/dev/null || true
+    GRANT ALL PRIVILEGES ON SEQUENCES TO logmara_app_group;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT ALL PRIVILEGES ON MATERIALIZED VIEWS TO logmara_app_group;" 2>/dev/null || true
 
         # SECURITY DEFINER function so any app user (even after Vault rotates
         # the dynamic credentials) can refresh the dashboard materialized

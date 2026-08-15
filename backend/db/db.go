@@ -120,7 +120,7 @@ func MigrateWithLock(db *sql.DB) error {
 // schema_version table already records this value, so a forgotten bump
 // means an already-deployed instance will never see the new statement
 // applied.
-const schemaVersion = 9
+const schemaVersion = 15
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -715,14 +715,24 @@ END $$`, g.name, toCharFmt)
 				COUNT(DISTINCT fromhost_ip) as unique_ips
 			FROM syslog_logs
 			WITH NO DATA`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_summary_key ON mv_dashboard_summary (refreshed_at)`,
+		`DO $$ BEGIN
+			CREATE UNIQUE INDEX idx_mv_dashboard_summary_key ON mv_dashboard_summary (refreshed_at);
+		EXCEPTION WHEN duplicate_object THEN NULL;
+		          WHEN duplicate_table THEN NULL;
+		          WHEN insufficient_privilege THEN NULL;
+		END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_coalesce_fromhost_ip ON syslog_logs (COALESCE(fromhost_ip, ''))`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_coalesce_dev_ts ON syslog_logs (COALESCE(fromhost_ip, ''), timestamp DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_app_ts_cover ON syslog_logs (app_name, timestamp DESC) INCLUDE (hostname, severity)`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_severity AS
 			SELECT NOW() as refreshed_at, severity, COUNT(*) as cnt FROM syslog_logs GROUP BY severity
 			WITH NO DATA`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_severity_key ON mv_dashboard_severity (severity)`,
+		`DO $$ BEGIN
+			CREATE UNIQUE INDEX idx_mv_dashboard_severity_key ON mv_dashboard_severity (severity);
+		EXCEPTION WHEN duplicate_object THEN NULL;
+		          WHEN duplicate_table THEN NULL;
+		          WHEN insufficient_privilege THEN NULL;
+		END $$`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_top_errors AS
 			SELECT NOW() as refreshed_at, LEFT(message, 100) as message,
 				COALESCE(fromhost_ip, '') as fromhost_ip, MIN(hostname) as hostname, COUNT(*) as cnt
@@ -732,7 +742,12 @@ END $$`, g.name, toCharFmt)
 			ORDER BY cnt DESC
 			LIMIT 10
 			WITH NO DATA`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_top_errors_key ON mv_dashboard_top_errors (message, fromhost_ip)`,
+		`DO $$ BEGIN
+			CREATE UNIQUE INDEX idx_mv_dashboard_top_errors_key ON mv_dashboard_top_errors (message, fromhost_ip);
+		EXCEPTION WHEN duplicate_object THEN NULL;
+		          WHEN duplicate_table THEN NULL;
+		          WHEN insufficient_privilege THEN NULL;
+		END $$`,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_app_name_trgm ON syslog_logs USING GIN (app_name gin_trgm_ops)`,
 		// mv_device_stats predates the via_relay column: CREATE ... IF NOT
@@ -753,6 +768,7 @@ END $$`, g.name, toCharFmt)
 				OR EXISTS (SELECT 1 FROM pg_matviews WHERE matviewname = 'mv_device_stats' AND definition LIKE '%FILTER%') THEN
 				DROP MATERIALIZED VIEW IF EXISTS mv_device_stats;
 			END IF;
+		EXCEPTION WHEN OTHERS THEN NULL;
 		END $$`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_device_stats AS
 			WITH dev_stats AS (
@@ -790,17 +806,27 @@ END $$`, g.name, toCharFmt)
 			FROM dev_stats d
 			LEFT JOIN dev_parsers p ON p.fromhost_ip = d.fromhost_ip
 			WITH NO DATA`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_device_stats_key ON mv_device_stats (fromhost_ip)`,
+		`DO $$ BEGIN
+			CREATE UNIQUE INDEX idx_mv_device_stats_key ON mv_device_stats (fromhost_ip);
+		EXCEPTION WHEN duplicate_object THEN NULL;
+		          WHEN duplicate_table THEN NULL;
+		          WHEN insufficient_privilege THEN NULL;
+		END $$`,
 		`DO $$ BEGIN CREATE INDEX idx_syslog_timestamp ON syslog_logs USING BRIN (timestamp); EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_object THEN NULL; END $$`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_timeline_hourly AS
 			SELECT date_trunc('hour', timestamp) AS hour, COUNT(*) AS cnt FROM syslog_logs GROUP BY 1 ORDER BY 1
 			WITH NO DATA`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_timeline_hourly_key ON mv_timeline_hourly (hour)`,
+		`DO $$ BEGIN
+			CREATE UNIQUE INDEX idx_mv_timeline_hourly_key ON mv_timeline_hourly (hour);
+		EXCEPTION WHEN duplicate_object THEN NULL;
+		          WHEN duplicate_table THEN NULL;
+		          WHEN insufficient_privilege THEN NULL;
+		END $$`,
 		`CREATE OR REPLACE FUNCTION refresh_mv(name TEXT)
 			RETURNS VOID AS $$
 			BEGIN
 				EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY %I', name);
-			EXCEPTION WHEN invalid_object_state THEN
+			EXCEPTION WHEN object_not_in_prerequisite_state THEN
 				EXECUTE format('REFRESH MATERIALIZED VIEW %I', name);
 			END;
 			$$ LANGUAGE plpgsql SECURITY DEFINER`,
