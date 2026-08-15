@@ -276,7 +276,8 @@ Getting here required backend code changes (not just Docker config) — see "How
 | [`scripts/swarm-bootstrap.sh`](scripts/swarm-bootstrap.sh) | Guided commands for swarm init/join, node labeling, network/secret/config creation |
 | [`scripts/swarm-deploy.sh`](scripts/swarm-deploy.sh) | Wrapper that sources `.env` then runs `docker stack deploy` (Swarm doesn't read `.env` on its own) |
 | [`scripts/build-images.sh`](scripts/build-images.sh) | Builds + pushes all Docker images, reading `REGISTRY`/`TAG` from `.env` |
-| [`docker-stack.vault.yml`](docker-stack.vault.yml) | 3-node Vault cluster (Raft storage) + global Vault agent sidecars for secret injection |
+| [`docker-stack.vault.yml`](docker-stack.vault.yml) | 3-node Vault server cluster (Raft storage) |
+| [`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml) | Global Vault agent sidecars for secret injection - a separate stack from the servers, see [Deploying Vault](#deploying-vault) for why |
 | [`vault/`](vault/) | Vault server and agent configuration files |
 | [`scripts/vault-bootstrap.sh`](scripts/vault-bootstrap.sh) | Vault init, unseal, policy creation, Docker→Vault secret migration, and creation of the `vault_agent_token` Docker secret the agent sidecars auto-authenticate with |
 | [`scripts/rotate-secrets.sh`](scripts/rotate-secrets.sh) | Secret rotation (auto-detects Docker secrets or Vault KV) - `rotate` for a single secret with a zero-downtime rolling restart, `rotate-batch` to rotate several secrets at once with logmara-app scaled to 0 for the duration |
@@ -287,7 +288,7 @@ Getting here required backend code changes (not just Docker config) — see "How
 
 ### Deploying Vault
 
-The `vault-agent` sidecar authenticates to Vault with a bootstrap token that only exists once Vault itself has been initialized and unsealed, so the stack goes out in two passes — on the first pass the `vault-agent` tasks will fail to start (the `vault_agent_token` secret doesn't exist yet); that's expected, they come up once you redeploy after `migrate-secrets`:
+`vault-agent` authenticates to Vault with a bootstrap token (`vault_agent_token`) that only exists once Vault itself has been initialized, unsealed, and `migrate-secrets` has run — so it's deployed as its **own stack**, [`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml), separate from the 3-node server cluster in `docker-stack.vault.yml`. This isn't just tidiness: `docker stack deploy` refuses to create *any* service in a stack if *any* service in it references a Swarm secret/config that doesn't exist yet, not just the one missing it — so if the agent were still a service inside `docker-stack.vault.yml`, the very first deploy would fail to create `vault-1`/`vault-2`/`vault-3` too, not just the agent.
 
 ```bash
 docker stack deploy -c docker-stack.vault.yml logmara-vault
@@ -295,7 +296,7 @@ docker stack deploy -c docker-stack.vault.yml logmara-vault
 ./scripts/vault-bootstrap.sh unseal
 ./scripts/vault-bootstrap.sh policy
 ./scripts/vault-bootstrap.sh migrate-secrets   # migrates existing Docker secrets into Vault, creates vault_agent_token
-docker stack deploy -c docker-stack.vault.yml logmara-vault   # re-run so vault-agent picks up vault_agent_token
+docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent   # only now does vault_agent_token exist
 ```
 
 ### Vault UI
@@ -557,11 +558,11 @@ ENCRYPTION_KEY_VAL=$(openssl rand -base64 48)   # separate value; see "Security 
 ./scripts/swarm-bootstrap.sh redis-sentinel-config
 ./scripts/swarm-bootstrap.sh haproxy-rabbitmq-config
 ```
-All the passwords/keys now live only as Swarm secrets - none of them need to be exported as shell env vars again later, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later. `pg_superuser_password`, `pg_replication_password`, and `rabbitmq_erlang_cookie` stay mounted directly into their containers at `/run/secrets/*` as native Swarm secrets. The other five (`pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key`) are only the *source* values here — step 8 below migrates them into Vault, which is what postgres/redis/rabbitmq/api actually read from at `/run/secrets/*` (bind-mounted from Vault agent's local output, not the Swarm secret directly — see [`docker-stack.vault.yml`](docker-stack.vault.yml)).
+All the passwords/keys now live only as Swarm secrets - none of them need to be exported as shell env vars again later, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later. `pg_superuser_password`, `pg_replication_password`, and `rabbitmq_erlang_cookie` stay mounted directly into their containers at `/run/secrets/*` as native Swarm secrets. The other five (`pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key`) are only the *source* values here — step 8 below migrates them into Vault, which is what postgres/redis/rabbitmq/api actually read from at `/run/secrets/*` (bind-mounted from Vault agent's local output, not the Swarm secret directly — see [`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml)).
 
 #### 8. Deploy Vault and migrate secrets
 
-Postgres/Redis/RabbitMQ/the app tier (steps 10-11 below) all read `pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, and `encryption_key` from Vault, via a bind-mounted file `vault-agent` writes locally on every node — so Vault must be deployed and fully bootstrapped *before* those stacks, or their containers will fail to start (the bind-mount source file won't exist yet). See [`docker-stack.vault.yml`](docker-stack.vault.yml) and [Deploying Vault](#deploying-vault) above for the full explanation; the commands, run once from `pg1`:
+Postgres/Redis/RabbitMQ/the app tier (steps 10-11 below) all read `pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, and `encryption_key` from Vault, via a bind-mounted file `vault-agent` writes locally on every node — so Vault must be deployed and fully bootstrapped *before* those stacks, or their containers will fail to start (the bind-mount source file won't exist yet). `vault-agent` is a separate stack ([`docker-stack.vault-agent.yml`](docker-stack.vault-agent.yml)) from the Vault servers ([`docker-stack.vault.yml`](docker-stack.vault.yml)) — see [Deploying Vault](#deploying-vault) above for why. The commands, run once from `pg1`:
 
 ```bash
 # 3 nodes for the Vault Raft cluster - reuse pg1-pg3/app1-app2 on a small
@@ -569,15 +570,26 @@ Postgres/Redis/RabbitMQ/the app tier (steps 10-11 below) all read `pg_app_passwo
 docker node update --label-add vault_id=1 pg1
 docker node update --label-add vault_id=2 pg2
 docker node update --label-add vault_id=3 pg3
+```
 
+On each of `pg1`, `pg2`, `pg3` — its own raft data directory (`hashicorp/vault` runs as a non-root user with no chown-on-start logic, so a fresh Docker-managed volume would be root-owned and Vault would fail with "permission denied"; substitute that node's own vault_id for `<N>`, e.g. just `vault2/data` on `pg2`):
+```bash
+sudo mkdir -p /srv/syslog-ha/vault/vault<N>/data
+sudo chmod -R 777 /srv/syslog-ha/vault/vault<N>/data
+```
+
+Back on `pg1`:
+```bash
 docker stack deploy -c docker-stack.vault.yml logmara-vault
+watch docker service ls   # wait for vault-1/2/3 at Running before continuing
+
 ./scripts/vault-bootstrap.sh init      # unseal keys + root token -> /srv/syslog-ha/vault-token
 ./scripts/vault-bootstrap.sh unseal
 ./scripts/vault-bootstrap.sh policy
 ./scripts/vault-bootstrap.sh migrate-secrets   # copies the 5 secrets above into Vault, creates vault_agent_token
-docker stack deploy -c docker-stack.vault.yml logmara-vault   # re-run so vault-agent picks up vault_agent_token
 
-watch docker service ls   # wait for vault-1/2/3 and vault-agent (global) at Running
+docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent   # only now does vault_agent_token exist
+watch docker service ls   # wait for vault-agent (global) at Running
 ```
 
 Verify every node has the files before moving on: `ls /srv/syslog-ha/vault-secrets/` should show `pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key` on each of `pg1`/`pg2`/`pg3`/`app1`/`app2`.

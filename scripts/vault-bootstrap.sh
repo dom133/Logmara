@@ -21,13 +21,16 @@ ACTION="${1:-}"
 
 VAULT_ADDR="http://vault-1:8200"
 
-# Run vault CLI inside a container
+# Run vault CLI inside a container. -i keeps stdin open and forwards it
+# into the container (needed for `policy write NAME -` reading a heredoc);
+# harmless for the other subcommands this is used for, which don't read
+# stdin at all.
 vault_cli() {
-    docker run --rm \
+    docker run --rm -i \
         --network syslog_net \
         -e VAULT_ADDR="$VAULT_ADDR" \
         -e VAULT_TOKEN="$VAULT_TOKEN" \
-        vault:1.15.0 "$@"
+        hashicorp/vault:1.15.0 "$@"
 }
 
 # Write a secret to Vault KV v2. NOTE: `vault kv put/get` already prepends
@@ -47,7 +50,7 @@ vault_kv_write() {
         -e VAULT_ADDR="$VAULT_ADDR" \
         -e VAULT_TOKEN="$VAULT_TOKEN" \
         -v "$tmpfile:/tmp/secretval:ro" \
-        vault:1.15.0 sh -c "
+        hashicorp/vault:1.15.0 sh -c "
             VAL=\$(cat /tmp/secretval) && \
             vault kv put \"${path}\" \"${key}=\$VAL\"
         " 2>/dev/null || true
@@ -61,7 +64,11 @@ vault_kv_write() {
 read_docker_secret_value() {
     local name="$1"
     local svc="vault-bootstrap-read-$$-$RANDOM"
-    docker service create --quiet --name "$svc" \
+    # --detach: don't wait for the service to converge here - some Docker
+    # versions block on that by default (e.g. if the node scheduled to
+    # pull `alpine` is slow/unreachable), and we already poll for the
+    # result ourselves below.
+    docker service create --quiet --detach --name "$svc" \
         --secret "$name" \
         --restart-condition none \
         --network syslog_net \
@@ -83,9 +90,15 @@ case "$ACTION" in
         # Wait for Vault to be ready
         echo "Waiting for Vault to be ready..."
         for i in {1..30}; do
-            if docker run --rm --network syslog_net vault:1.15.0 \
+            # `vault status` intentionally exits non-zero when sealed (2) -
+            # that's the normal, expected state we're checking for here,
+            # not a failure. With `set -o pipefail` (see top of file), that
+            # exit code would otherwise win over grep's success and make
+            # this `if` always false. The `|| true` inside the subshell
+            # keeps only grep's match result significant to the pipe.
+            if (docker run --rm --network syslog_net \
                 -e VAULT_ADDR="$VAULT_ADDR" \
-                status 2>/dev/null | grep -q "sealed\|inactive"; then
+                hashicorp/vault:1.15.0 status 2>/dev/null || true) | grep -qi "sealed\|inactive"; then
                 echo "Vault is ready"
                 break
             fi
@@ -98,7 +111,7 @@ case "$ACTION" in
         INIT_OUTPUT=$(docker run --rm \
             --network syslog_net \
             -e VAULT_ADDR="$VAULT_ADDR" \
-            vault:1.15.0 operator init \
+            hashicorp/vault:1.15.0 operator init \
                 -key-shares=5 \
                 -key-threshold=3 \
                 -format=json 2>/dev/null)
@@ -150,7 +163,7 @@ case "$ACTION" in
                 docker run --rm \
                     --network syslog_net \
                     -e VAULT_ADDR="$VAULT_ADDR" \
-                    vault:1.15.0 operator unseal "${KEYS[$i]}" 2>/dev/null || true
+                    hashicorp/vault:1.15.0 operator unseal "${KEYS[$i]}" 2>/dev/null || true
             done
 
             echo "$NODE unsealed"
@@ -170,7 +183,7 @@ case "$ACTION" in
         # Create policy for agent access. Raw KV v2 data paths need the
         # literal "data/" segment here (ACL policies always use the raw
         # API path, unlike the `vault kv` CLI subcommands).
-        vault_cli policy write logmara <<'EOF'
+        vault_cli policy write logmara - <<'EOF'
 path "secret/data/logmara/*" {
   capabilities = ["read"]
 }
@@ -226,8 +239,8 @@ EOF
         fi
 
         echo "=== Secrets migrated ==="
-        echo "Now (re-)deploy the vault stack so vault-agent picks up the secret:"
-        echo "  docker stack deploy -c docker-stack.vault.yml logmara-vault"
+        echo "Now deploy the vault-agent stack (its secret didn't exist until now):"
+        echo "  docker stack deploy -c docker-stack.vault-agent.yml logmara-vault-agent"
         ;;
 
     *)

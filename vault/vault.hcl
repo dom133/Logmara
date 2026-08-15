@@ -18,6 +18,12 @@ listener "tcp" {
   cluster_address = "0.0.0.0:8201"
 }
 
+# The container doesn't have (and Swarm services can't easily grant) the
+# IPC_LOCK capability Vault wants for mlock (keeps secrets out of swap).
+# Without this, Vault disables mlock itself anyway and just logs a
+# warning every start - this silences that instead of fighting it.
+disable_mlock = true
+
 storage "raft" {
   path = "/vault/data"
 
