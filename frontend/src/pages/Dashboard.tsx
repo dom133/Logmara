@@ -150,15 +150,15 @@ export default function Dashboard() {
       type: 'scroll' as const,
       bottom: 0,
       left: 'center' as const,
-      textStyle: { color: isDark ? '#ffffff' : undefined },
+      textStyle: { color: isDark ? '#ffffff' : 'rgba(0,0,0,0.85)' },
     },
     title: {
       text: totalSeverity.toLocaleString(),
       subtext: t('dashboard.total'),
       left: 'center' as const,
       top: '38%' as const,
-      textStyle: { fontSize: 22, fontWeight: 600, color: isDark ? '#ffffff' : undefined },
-      subtextStyle: { fontSize: 12, color: isDark ? 'rgba(255,255,255,0.65)' : undefined },
+      textStyle: { fontSize: 22, fontWeight: 600, color: isDark ? '#ffffff' : 'rgba(0,0,0,0.85)' },
+      subtextStyle: { fontSize: 12, color: isDark ? 'rgba(255,255,255,0.65)' : 'rgba(0,0,0,0.45)' },
     },
     series: [{
       type: 'pie' as const,
@@ -170,7 +170,7 @@ export default function Dashboard() {
         value: s.count,
         itemStyle: { color: SEVERITY_HEX[s.severity] || '#bfbfbf' },
       })),
-      label: { show: true, formatter: '{b}: {d}%', color: isDark ? '#ffffff' : undefined },
+      label: { show: true, formatter: '{b}: {d}%', color: isDark ? '#ffffff' : 'rgba(0,0,0,0.85)' },
       labelLine: { show: true },
     }],
   }
