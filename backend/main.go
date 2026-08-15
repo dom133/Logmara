@@ -336,6 +336,34 @@ func main() {
 	db.SetAppStarting(true)
 	schemaReady := make(chan struct{})
 	migrationDone := make(chan struct{})
+
+	// The real router/listener below doesn't come up until schemaReady
+	// closes (see the <-schemaReady wait further down) - a schema migration
+	// on a large existing database can run for minutes, and until this stub
+	// existed that whole window left /api/health completely unreachable
+	// (connection refused, not even "starting"), not just slow. Docker's
+	// HEALTHCHECK then had nothing to succeed against, so a long enough
+	// migration flipped the container to unhealthy before it ever finished -
+	// which a Swarm deployment's health-based task monitor (or any external
+	// restarter watching container health) reacts to by killing and
+	// restarting the task, aborting the migration mid-flight and starting it
+	// over from scratch every time. This stub server exists solely to answer
+	// /api/health with "starting" (still HTTP 200, since db.IsAppStarting()
+	// is true) for that window, and is torn down right after schemaReady
+	// closes, before the real server binds the same port.
+	startupSrv := &http.Server{
+		Addr:         ":" + port,
+		Handler:      startupHealthHandler(database),
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	go func() {
+		if err := startupSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("startup health server failed", "error", err)
+		}
+	}()
+
 	go func() {
 		defer close(migrationDone)
 		if err := db.MigrateWithLock(database); err != nil {
@@ -426,6 +454,19 @@ func main() {
 	// the HTTP listener off the critical path of the materialized-view
 	// refresh below.
 	<-schemaReady
+
+	// Schema is ready - hand the port over from the startup stub to the
+	// real server built below. Shutdown stops it from accepting new
+	// connections and releases the listening socket immediately, so the
+	// real srv.ListenAndServe() further down can bind the same port right
+	// after.
+	{
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := startupSrv.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("startup health server did not shut down cleanly", "error", err)
+		}
+		cancel()
+	}
 
 	// Validate TLS configuration: warn if HTTPS is enabled but certificates are missing
 	if tlsEnabled := db.GetSetting(database, "https_enabled", "false"); tlsEnabled == "true" {
@@ -778,6 +819,18 @@ r := gin.New()
 		slog.Error("forced shutdown", "error", err)
 	}
 	slog.Info("server stopped")
+}
+
+// startupHealthHandler serves only /api/health - just enough for Docker's
+// HEALTHCHECK (and a Swarm deployment's health-based task monitor) to see
+// the container as "starting" rather than unreachable while the schema
+// migration is still running. See the startupSrv comment in main().
+func startupHealthHandler(database *sql.DB) http.Handler {
+	r := gin.New()
+	configureTrustedProxies(r)
+	r.Use(gin.Recovery())
+	r.GET("/api/health", handler.HealthCheck(database))
+	return r
 }
 
 // waitForWizardDatabase runs a minimal, database-less HTTP server exposing
