@@ -95,7 +95,7 @@ export default function Dashboard() {
   }
 
   const topDevicesColumns = [
-    { title: 'Source IP', dataIndex: 'hostname', key: 'hostname', width: 160, render: (v: string) => <Tag color="blue">{v}</Tag> },
+    { title: 'Device', dataIndex: 'hostname', key: 'hostname', width: 160, render: (v: string) => <Tag color="blue">{v}</Tag> },
     { title: 'Logs', dataIndex: 'count', key: 'count', width: 100, sorter: (a: any, b: any) => a.count - b.count },
   ]
 

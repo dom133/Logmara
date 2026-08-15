@@ -26,8 +26,19 @@ type InitRequest struct {
 		User     string `json:"user" binding:"required"`
 		Password string `json:"password" binding:"required"`
 	} `json:"database" binding:"required"`
-	JWTSecret      string `json:"jwt_secret" binding:"required,min=16"`
-	EncryptionKey  string `json:"encryption_key" binding:"required,min=16"`
+	JWTSecret     string `json:"jwt_secret" binding:"required,min=16"`
+	EncryptionKey string `json:"encryption_key" binding:"required,min=16"`
+	CORSOrigins   string `json:"cors_origins"`
+	LDAP          struct {
+		Server       string `json:"server"`
+		Port         int    `json:"port"`
+		UseTLS       bool   `json:"use_tls"`
+		VerifyCert   bool   `json:"verify_cert"`
+		CaCert       string `json:"ca_cert"`
+		BaseDN       string `json:"base_dn"`
+		BindDN       string `json:"bind_dn"`
+		BindPassword string `json:"bind_password"`
+	} `json:"ldap"`
 }
 
 func Initialize(database *sql.DB) gin.HandlerFunc {
@@ -75,6 +86,36 @@ func Initialize(database *sql.DB) gin.HandlerFunc {
 			"is_initialized": "Application initialization flag",
 			"jwt_secret":     "JWT signing secret key",
 			"encryption_key": "Encryption key for sensitive data",
+		}
+		if req.CORSOrigins != "" {
+			settings["cors_origins"] = req.CORSOrigins
+			descriptions["cors_origins"] = "Allowed CORS origins"
+		}
+		if req.LDAP.Server != "" {
+			settings["ldap_server"] = req.LDAP.Server
+			descriptions["ldap_server"] = "LDAP server address"
+			settings["ldap_port"] = strconv.Itoa(req.LDAP.Port)
+			descriptions["ldap_port"] = "LDAP port"
+			settings["ldap_use_tls"] = strconv.FormatBool(req.LDAP.UseTLS)
+			descriptions["ldap_use_tls"] = "Use TLS for LDAP"
+			settings["ldap_verify_cert"] = strconv.FormatBool(req.LDAP.VerifyCert)
+			descriptions["ldap_verify_cert"] = "Verify LDAP certificate"
+			if req.LDAP.CaCert != "" {
+				settings["ldap_ca_cert"] = req.LDAP.CaCert
+				descriptions["ldap_ca_cert"] = "LDAP CA certificate"
+			}
+			if req.LDAP.BaseDN != "" {
+				settings["ldap_base_dn"] = req.LDAP.BaseDN
+				descriptions["ldap_base_dn"] = "LDAP base DN"
+			}
+			if req.LDAP.BindDN != "" {
+				settings["ldap_bind_dn"] = req.LDAP.BindDN
+				descriptions["ldap_bind_dn"] = "LDAP bind DN"
+			}
+			if req.LDAP.BindPassword != "" {
+				settings["ldap_bind_password"] = req.LDAP.BindPassword
+				descriptions["ldap_bind_password"] = "LDAP bind password"
+			}
 		}
 
 		if req.Database.Host != "" {

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"database/sql"
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
+	"time"
 
 	"syslog-gui/auth"
 	"syslog-gui/db"
@@ -14,10 +18,49 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type rateLimiter struct {
+	mu       sync.Mutex
+	requests map[string][]time.Time
+	limit    int
+	window   time.Duration
+}
+
+func newRateLimiter(limit int, window time.Duration) *rateLimiter {
+	return &rateLimiter{
+		requests: make(map[string][]time.Time),
+		limit:    limit,
+		window:   window,
+	}
+}
+
+func (rl *rateLimiter) allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
+
+	times := rl.requests[ip]
+	valid := make([]time.Time, 0, len(times))
+	for _, t := range times {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+
+	if len(valid) >= rl.limit {
+		rl.requests[ip] = valid
+		return false
+	}
+
+	rl.requests[ip] = append(valid, now)
+	return true
+}
+
 func main() {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		dsn = "postgres://syslog:syslogpass@postgres:5432/syslog_db?sslmode=disable"
+		log.Fatal("DATABASE_URL environment variable is required")
 	}
 
 	database, err := db.Connect(dsn)
@@ -30,7 +73,7 @@ func main() {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
 
-	auth.InitAdmin(database)
+	auth.Init(database)
 
 	engine := parser.NewEngine(database)
 
@@ -42,18 +85,13 @@ func main() {
 
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.Use(func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "*")
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(http.StatusNoContent)
-			return
-		}
-		c.Next()
-	})
+	r.Use(corsMiddleware(database))
 
-	r.POST("/api/auth/login", handler.Login(database))
+	loginLimiter := newRateLimiter(5, time.Minute)
+
+	r.POST("/api/auth/login", rateLimitMiddleware(loginLimiter), handler.Login(database))
+	r.POST("/api/auth/refresh", handler.Refresh(database))
+	r.POST("/api/auth/logout", handler.Logout(database))
 	r.POST("/api/ingest/batch", handler.IngestBatch(database))
 	r.GET("/api/status/initialized", handler.CheckInitialized(database))
 	r.POST("/api/init", handler.Initialize(database))
@@ -107,6 +145,7 @@ func main() {
 			adminGroup.POST("/settings/cleanup", handler.CleanupLogs(database))
 			adminGroup.DELETE("/logs", handler.PurgeAllLogs(database))
 			adminGroup.POST("/ldap/test", handler.TestLDAP(database))
+			adminGroup.GET("/audit-log", handler.GetAuditLog(database))
 		}
 	}
 
@@ -118,5 +157,43 @@ func main() {
 	log.Printf("Server starting on port %s", port)
 	if err := r.Run(":" + port); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func corsMiddleware(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		origins := db.GetSetting(database, "cors_origins", "")
+		if origins == "" {
+			host := c.Request.Host
+			c.Writer.Header().Set("Access-Control-Allow-Origin", "http://"+host)
+		} else {
+			origin := c.GetHeader("Origin")
+			for _, allowed := range strings.Split(origins, ",") {
+				allowed = strings.TrimSpace(allowed)
+				if allowed == origin || allowed == "*" {
+					c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+					break
+				}
+			}
+		}
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
+}
+
+func rateLimitMiddleware(rl *rateLimiter) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ip := c.ClientIP()
+		if !rl.allow(ip) {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "Too many login attempts, try again later"})
+			c.Abort()
+			return
+		}
+		c.Next()
 	}
 }

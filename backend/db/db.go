@@ -4,9 +4,13 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	_ "github.com/lib/pq"
+
+	"syslog-gui/db/parsers"
+	"syslog-gui/util"
 )
 
 func Connect(dsn string) (*sql.DB, error) {
@@ -112,6 +116,23 @@ func Migrate(db *sql.DB) error {
 			value TEXT NOT NULL,
 			description TEXT
 		)`,
+		`CREATE TABLE IF NOT EXISTS refresh_tokens (
+			id SERIAL PRIMARY KEY,
+			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+			token VARCHAR(255) UNIQUE NOT NULL,
+			expires_at TIMESTAMPTZ NOT NULL,
+			used BOOLEAN DEFAULT FALSE,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS audit_log (
+			id SERIAL PRIMARY KEY,
+			user_id INTEGER,
+			username VARCHAR(100),
+			action VARCHAR(100) NOT NULL,
+			ip VARCHAR(100),
+			details TEXT,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
 	}
 
 	for _, stmt := range statements {
@@ -133,335 +154,33 @@ func Migrate(db *sql.DB) error {
 }
 
 func seedParsers(db *sql.DB) error {
-	count := 0
-	db.QueryRow("SELECT count(*) FROM parsers WHERE is_builtin").Scan(&count)
-	if count > 0 {
-		return nil
-	}
+	allParsers := append([]parsers.ParserSeed{}, parsers.MikroTikParsers...)
+	allParsers = append(allParsers, parsers.UbiquitiParsers...)
+	allParsers = append(allParsers, parsers.CiscoParsers...)
+	allParsers = append(allParsers, parsers.PaloAltoParsers...)
+	allParsers = append(allParsers, parsers.PfSenseParsers...)
+	allParsers = append(allParsers, parsers.LinuxParsers...)
+	allParsers = append(allParsers, parsers.GenericParsers...)
 
-	type fieldSeed struct {
-		Name  string
-		Label string
-		Type  string
+	rows, err := db.Query("SELECT id, name FROM parsers WHERE is_builtin")
+	if err != nil {
+		return fmt.Errorf("query builtin parsers: %w", err)
 	}
-
-	type parserSeed struct {
-		Name        string
-		Description string
-		DeviceType  string
-		MatchType   string
-		MatchValue  string
-		Regex       string
-		Fields      []fieldSeed
+	dbByName := make(map[string]int64)
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			rows.Close()
+			return err
+		}
+		dbByName[name] = id
 	}
+	rows.Close()
 
-	parsers := []parserSeed{
-		{
-			Name:        "MikroTik Interface Status",
-			Description: "Matches MikroTik interface up/down events",
-			DeviceType:  "mikrotik",
-			MatchType:   "hostname",
-			MatchValue:  "mikrotik*",
-			Regex:       `interface\s+(\S+)\s+link\s+(up|down)(?:\s+on\s+the\s+(\S+))?`,
-			Fields: []fieldSeed{
-				{Name: "interface", Label: "Interface", Type: "string"},
-				{Name: "status", Label: "Link Status", Type: "string"},
-				{Name: "cause", Label: "Cause", Type: "string"},
-			},
-		},
-		{
-			Name:        "MikroTik DHCP Lease",
-			Description: "Matches MikroTik DHCP lease events",
-			DeviceType:  "mikrotik",
-			MatchType:   "hostname",
-			MatchValue:  "mikrotik*",
-			Regex:       `DHCPLease:(\S+)\s+address=(\d+\.\d+\.\d+\.\d+)\s+mac-address=([0-9A-Fa-f:-]+)`,
-			Fields: []fieldSeed{
-				{Name: "lease_action", Label: "Lease Action", Type: "string"},
-				{Name: "ip_address", Label: "IP Address", Type: "string"},
-				{Name: "mac_address", Label: "MAC Address", Type: "string"},
-			},
-		},
-		{
-			Name:        "MikroTik User Login",
-			Description: "Matches MikroTik user login/logout events",
-			DeviceType:  "mikrotik",
-			MatchType:   "hostname",
-			MatchValue:  "mikrotik*",
-			Regex:       `User\s+(\S+)\s+logged\s+(in|out)\s+from\s+(\S+)`,
-			Fields: []fieldSeed{
-				{Name: "username", Label: "Username", Type: "string"},
-				{Name: "login_action", Label: "Action", Type: "string"},
-				{Name: "source_ip", Label: "Source IP", Type: "string"},
-			},
-		},
-		{
-			Name:        "Ubiquiti AP Event",
-			Description: "Matches Ubiquiti UniFi AP connect/disconnect/reboot events",
-			DeviceType:  "ubiquiti",
-			MatchType:   "hostname",
-			MatchValue:  "ubnt*",
-			Regex:       `AP\s+([0-9A-Fa-f:]+)\s+(\S+)\s+on\s+(\S+)`,
-			Fields: []fieldSeed{
-				{Name: "mac_address", Label: "MAC Address", Type: "string"},
-				{Name: "event_type", Label: "Event Type", Type: "string"},
-				{Name: "site", Label: "Site", Type: "string"},
-			},
-		},
-		{
-			Name:        "Ubiquiti Client Connect",
-			Description: "Matches Ubiquiti client association events",
-			DeviceType:  "ubiquiti",
-			MatchType:   "hostname",
-			MatchValue:  "ubnt*",
-			Regex:       `client\s+([0-9A-Fa-f:]+)\s+(\S+)\s+on\s+(\S+)\s+channel\s+(\d+)$`,
-			Fields: []fieldSeed{
-				{Name: "client_mac", Label: "Client MAC", Type: "string"},
-				{Name: "action", Label: "Action", Type: "string"},
-				{Name: "ssid", Label: "SSID", Type: "string"},
-				{Name: "channel", Label: "Channel", Type: "string"},
-			},
-		},
-		{
-			Name:        "Cisco IOS Interface",
-			Description: "Matches Cisco IOS interface up/down %LINK messages",
-			DeviceType:  "cisco",
-			MatchType:   "hostname",
-			MatchValue:  "cisco*",
-			Regex:       `%LINK-(\d+)-(UPDN):\s+Interface\s+(\S+),\s+(change|condition)\s+(is\s+\S+|state\s+\S+)`,
-			Fields: []fieldSeed{
-				{Name: "msec", Label: "MSEC Code", Type: "string"},
-				{Name: "interface", Label: "Interface", Type: "string"},
-				{Name: "status", Label: "Status", Type: "string"},
-			},
-		},
-		{
-			Name:        "Cisco IOS BGP",
-			Description: "Matches Cisco IOS BGP state change messages",
-			DeviceType:  "cisco",
-			MatchType:   "hostname",
-			MatchValue:  "cisco*",
-			Regex:       `%BGP-5-ADJCHANGE:\s+Neighbor\s+(\d+\.\d+\.\d+\.\d+)\s+session\s+(Down|Up)`,
-			Fields: []fieldSeed{
-				{Name: "neighbor_ip", Label: "Neighbor IP", Type: "string"},
-				{Name: "session_state", Label: "Session State", Type: "string"},
-			},
-		},
-		{
-			Name:        "Cisco IOS Authentication",
-			Description: "Matches Cisco authentication success/failure",
-			DeviceType:  "cisco",
-			MatchType:   "hostname",
-			MatchValue:  "cisco*",
-			Regex:       `%SEC_LOGIN-\d+-(\S+):\s+User=\S+,\s+Method=(\S+),\s+Reason=(\S+),\s+Info=(\S+)`,
-			Fields: []fieldSeed{
-				{Name: "auth_result", Label: "Result", Type: "string"},
-				{Name: "method", Label: "Method", Type: "string"},
-				{Name: "reason", Label: "Reason", Type: "string"},
-				{Name: "info", Label: "Info", Type: "string"},
-			},
-		},
-		{
-			Name:        "Palo Alto Threat",
-			Description: "Matches Palo Alto threat log entries",
-			DeviceType:  "palo_alto",
-			MatchType:   "hostname",
-			MatchValue:  "pan*",
-			Regex:       `threat.*?src=(\d+\.\d+\.\d+\.\d+).*?dst=(\d+\.\d+\.\d+\.\d+).*?action=(\S+).*?category=(\S+)`,
-			Fields: []fieldSeed{
-				{Name: "src_ip", Label: "Source IP", Type: "string"},
-				{Name: "dst_ip", Label: "Destination IP", Type: "string"},
-				{Name: "action", Label: "Action", Type: "string"},
-				{Name: "category", Label: "Category", Type: "string"},
-			},
-		},
-		{
-			Name:        "Palo Alto Traffic",
-			Description: "Matches Palo Alto traffic log entries",
-			DeviceType:  "palo_alto",
-			MatchType:   "hostname",
-			MatchValue:  "pan*",
-			Regex:       `traffic.*?src=(\d+\.\d+\.\d+\.\d+).*?dst=(\d+\.\d+\.\d+\.\d+).*?proto=(\S+).*?action=(\S+)`,
-			Fields: []fieldSeed{
-				{Name: "src_ip", Label: "Source IP", Type: "string"},
-				{Name: "dst_ip", Label: "Destination IP", Type: "string"},
-				{Name: "protocol", Label: "Protocol", Type: "string"},
-				{Name: "action", Label: "Action", Type: "string"},
-			},
-		},
-		{
-			Name:        "pfSense Filter Log",
-			Description: "Matches pfSense firewall filter log entries",
-			DeviceType:  "pfsense",
-			MatchType:   "hostname",
-			MatchValue:  "pfsense*",
-			Regex:       `filter\+.*?(pass|block).*?(\S+)\s+(\d+\.\d+\.\d+\.\d+):\d+\s->\s(\d+\.\d+\.\d+\.\d+):\d+`,
-			Fields: []fieldSeed{
-				{Name: "action", Label: "Action", Type: "string"},
-				{Name: "interface", Label: "Interface", Type: "string"},
-				{Name: "src_ip", Label: "Source IP", Type: "string"},
-				{Name: "dst_ip", Label: "Destination IP", Type: "string"},
-			},
-		},
-		{
-			Name:        "Suricata Alert",
-			Description: "Matches Suricata IDS/IPS alert entries",
-			DeviceType:  "pfsense",
-			MatchType:   "hostname",
-			MatchValue:  "pfsense*",
-			Regex:       `\[1:\d+:\d+\]\s+(\S+)\s+(\d+\.\d+\.\d+\.\d+):\d+\s->\s(\d+\.\d+\.\d+\.\d+):\d+`,
-			Fields: []fieldSeed{
-				{Name: "alert_msg", Label: "Alert Message", Type: "string"},
-				{Name: "src_ip", Label: "Source IP", Type: "string"},
-				{Name: "dst_ip", Label: "Destination IP", Type: "string"},
-			},
-		},
-		{
-			Name:        "Generic IP Extraction",
-			Description: "Generic catch-all for IP addresses in log messages",
-			DeviceType:  "generic",
-			MatchType:   "all",
-			MatchValue:  "",
-			Regex:       `(?:src|source|SRC|from)=(\d+\.\d+\.\d+\.\d+).*?(?:dst|dest|DEST|to)=(\d+\.\d+\.\d+\.\d+)`,
-			Fields: []fieldSeed{
-				{Name: "src_ip", Label: "Source IP", Type: "string"},
-				{Name: "dst_ip", Label: "Destination IP", Type: "string"},
-			},
-		},
-		{
-			Name:        "Generic MAC Extraction",
-			Description: "Generic catch-all for MAC addresses in log messages",
-			DeviceType:  "generic",
-			MatchType:   "all",
-			MatchValue:  "",
-			Regex:       `(?:mac|MAC|ether|hwaddr|client)=([0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2})`,
-			Fields: []fieldSeed{
-				{Name: "mac_address", Label: "MAC Address", Type: "string"},
-			},
-		},
-		{
-			Name:        "SSHD Auth",
-			Description: "Matches successful SSH authentication",
-			DeviceType:  "linux",
-			MatchType:   "app_name",
-			MatchValue:  "sshd",
-			Regex:       `Accepted\s+(\w+)\s+for\s+(\S+)\s+from\s+(\d+\.\d+\.\d+\.\d+)\s+port\s+(\d+)`,
-			Fields: []fieldSeed{
-				{Name: "auth_method", Label: "Auth Method", Type: "string"},
-				{Name: "username", Label: "Username", Type: "string"},
-				{Name: "src_ip", Label: "Source IP", Type: "string"},
-				{Name: "src_port", Label: "Source Port", Type: "string"},
-			},
-		},
-		{
-			Name:        "SSHD Failed Auth",
-			Description: "Matches failed SSH authentication attempts",
-			DeviceType:  "linux",
-			MatchType:   "app_name",
-			MatchValue:  "sshd",
-			Regex:       `Failed\s+(\w+)\s+for\s+(invalid user\s+)?(\S+)\s+from\s+(\d+\.\d+\.\d+\.\d+)\s+port\s+(\d+)`,
-			Fields: []fieldSeed{
-				{Name: "auth_type", Label: "Auth Type", Type: "string"},
-				{Name: "username", Label: "Username", Type: "string"},
-				{Name: "src_ip", Label: "Source IP", Type: "string"},
-				{Name: "src_port", Label: "Source Port", Type: "string"},
-			},
-		},
-		{
-			Name:        "Systemd Service",
-			Description: "Matches systemd service start/stop events",
-			DeviceType:  "linux",
-			MatchType:   "app_name",
-			MatchValue:  "systemd",
-			Regex:       `(Started|Stopped)\s+(.+?)\s+—`,
-			Fields: []fieldSeed{
-				{Name: "action", Label: "Action", Type: "string"},
-				{Name: "service", Label: "Service Name", Type: "string"},
-			},
-		},
-		{
-			Name:        "Kernel Network",
-			Description: "Matches kernel network interface events",
-			DeviceType:  "linux",
-			MatchType:   "app_name",
-			MatchValue:  "kernel",
-			Regex:       `(\S+):\s+link\s+beacon\s+(\S+)\s+speed\s+(\d+)\s+Mbps`,
-			Fields: []fieldSeed{
-				{Name: "interface", Label: "Interface", Type: "string"},
-				{Name: "status", Label: "Status", Type: "string"},
-				{Name: "speed", Label: "Speed Mbps", Type: "string"},
-			},
-		},
-		{
-			Name:        "Sudo Command",
-			Description: "Matches sudo command execution",
-			DeviceType:  "linux",
-			MatchType:   "app_name",
-			MatchValue:  "sudo",
-			Regex:       `(\S+)[\[:\s]+COMMAND\s+=\s*(\S+)\s+;?\s*TTY=(\S+)\s+PWD=(\S+)\s+USER=(\S+)`,
-			Fields: []fieldSeed{
-				{Name: "username", Label: "Username", Type: "string"},
-				{Name: "command", Label: "Command", Type: "string"},
-				{Name: "tty", Label: "TTY", Type: "string"},
-				{Name: "pwd", Label: "Working Dir", Type: "string"},
-				{Name: "run_as", Label: "Run As", Type: "string"},
-			},
-		},
-		{
-			Name:        "Cron Job",
-			Description: "Matches cron job execution",
-			DeviceType:  "linux",
-			MatchType:   "app_name",
-			MatchValue:  "CRON",
-			Regex:       `\[(\S+)\]\s+(\S+)(?:\s+\((\S+)\))?\s+(\S+)`,
-			Fields: []fieldSeed{
-				{Name: "job_id", Label: "Job ID", Type: "string"},
-				{Name: "action", Label: "Action", Type: "string"},
-				{Name: "user", Label: "User", Type: "string"},
-				{Name: "command", Label: "Command", Type: "string"},
-			},
-		},
-		{
-			Name:        "NetworkManager",
-			Description: "Matches NetworkManager device state changes",
-			DeviceType:  "linux",
-			MatchType:   "app_name",
-			MatchValue:  "NetworkManager",
-			Regex:       `device\s+(\S+)\s+(\S+)\s+(:\s+.+)?`,
-			Fields: []fieldSeed{
-				{Name: "device", Label: "Device", Type: "string"},
-				{Name: "state", Label: "State", Type: "string"},
-				{Name: "details", Label: "Details", Type: "string"},
-			},
-		},
-		{
-			Name:        "DHCP Client",
-			Description: "Matches dhclient lease events",
-			DeviceType:  "linux",
-			MatchType:   "app_name",
-			MatchValue:  "dhclient",
-			Regex:       `DHCP(\s+\S+)*\s+(\S+)\s+of\s+(\d+\.\d+\.\d+\.\d+)\s+on\s+(\S+)/`,
-			Fields: []fieldSeed{
-				{Name: "action", Label: "Action", Type: "string"},
-				{Name: "ip_address", Label: "IP Address", Type: "string"},
-				{Name: "interface", Label: "Interface", Type: "string"},
-			},
-		},
-		{
-			Name:        "Firewall Drop",
-			Description: "Matches kernel firewall drop/reject messages",
-			DeviceType:  "linux",
-			MatchType:   "app_name",
-			MatchValue:  "kernel",
-			Regex:       `(\S+)\s+IN=(\S+)\s+OUT=(\S*)\s+SRC=(\d+\.\d+\.\d+\.\d+)\s+DST=(\d+\.\d+\.\d+\.\d+)`,
-			Fields: []fieldSeed{
-				{Name: "action", Label: "Action", Type: "string"},
-				{Name: "in_iface", Label: "In Interface", Type: "string"},
-				{Name: "out_iface", Label: "Out Interface", Type: "string"},
-				{Name: "src_ip", Label: "Source IP", Type: "string"},
-				{Name: "dst_ip", Label: "Dest IP", Type: "string"},
-			},
-		},
+	codeNames := make(map[string]bool)
+	for _, p := range allParsers {
+		codeNames[p.Name] = true
 	}
 
 	tx, err := db.Begin()
@@ -472,23 +191,47 @@ func seedParsers(db *sql.DB) error {
 
 	insertParser := `INSERT INTO parsers (name, description, device_type, match_type, match_value, regex, enabled, is_builtin)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`
+	updateParser := `UPDATE parsers SET description=$2, device_type=$3, match_type=$4, match_value=$5, regex=$6, enabled=$7
+		WHERE id=$1`
+	deleteFields := `DELETE FROM parsed_fields_registry WHERE parser_id=$1`
 	insertField := `INSERT INTO parsed_fields_registry (parser_id, field_name, field_label, field_type)
 		VALUES ($1, $2, $3, $4)`
 
-	for _, p := range parsers {
+	for _, p := range allParsers {
 		var parserID int64
 		desc := nullStrPtr(p.Description)
 		matchVal := nullStrPtr(p.MatchValue)
 
-		err := tx.QueryRow(insertParser, p.Name, desc, p.DeviceType, p.MatchType, matchVal, p.Regex, true, true).
-			Scan(&parserID)
-		if err != nil {
-			return fmt.Errorf("seed parser %s: %w", p.Name, err)
+		existingID, exists := dbByName[p.Name]
+		if exists {
+			parserID = existingID
+			if _, err := tx.Exec(updateParser, parserID, desc, p.DeviceType, p.MatchType, matchVal, p.Regex, true); err != nil {
+				return fmt.Errorf("update parser %s: %w", p.Name, err)
+			}
+			if _, err := tx.Exec(deleteFields, parserID); err != nil {
+				return fmt.Errorf("clear fields for parser %s: %w", p.Name, err)
+			}
+		} else {
+			if err := tx.QueryRow(insertParser, p.Name, desc, p.DeviceType, p.MatchType, matchVal, p.Regex, true, true).
+				Scan(&parserID); err != nil {
+				return fmt.Errorf("seed parser %s: %w", p.Name, err)
+			}
 		}
 
 		for _, f := range p.Fields {
 			if _, err := tx.Exec(insertField, parserID, f.Name, f.Label, f.Type); err != nil {
 				return fmt.Errorf("seed field %s for parser %s: %w", f.Name, p.Name, err)
+			}
+		}
+	}
+
+	for name, id := range dbByName {
+		if !codeNames[name] {
+			if _, err := tx.Exec("DELETE FROM parsed_fields_registry WHERE parser_id=$1", id); err != nil {
+				return fmt.Errorf("clear orphan fields: %w", err)
+			}
+			if _, err := tx.Exec("DELETE FROM parsers WHERE id=$1", id); err != nil {
+				return fmt.Errorf("remove orphan parser %s: %w", name, err)
 			}
 		}
 	}
@@ -505,18 +248,22 @@ func nullStrPtr(s string) *string {
 
 func seedSettings(db *sql.DB) error {
 	settings := map[string]string{
-		"retention_days":   "30",
-		"default_role":     "viewer",
-		"jwt_expiry":       "24",
-		"is_initialized":   "false",
-		"ldap_enabled":     "false",
-		"ldap_server":      "",
-		"ldap_port":        "389",
-		"ldap_use_tls":     "false",
-		"ldap_base_dn":     "",
-		"ldap_bind_dn":     "",
-		"ldap_bind_password": "",
-		"ldap_user_filter": "(uid=%s)",
+		"retention_days":         "30",
+		"default_role":           "viewer",
+		"jwt_expiry":             "24",
+		"is_initialized":         "false",
+		"ldap_enabled":           "false",
+		"ldap_server":            "",
+		"ldap_port":              "389",
+		"ldap_use_tls":           "false",
+		"ldap_verify_cert":       "true",
+		"ldap_ca_cert":           "",
+		"ldap_base_dn":           "",
+		"ldap_bind_dn":           "",
+		"ldap_bind_password":     "",
+		"ldap_user_filter":       "(uid=%s)",
+		"encryption_key":         "",
+		"cors_origins":           "",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -549,6 +296,14 @@ func seedSettings(db *sql.DB) error {
 			desc = "LDAP bind password for service account"
 		case "ldap_user_filter":
 			desc = "LDAP user search filter (%s = username)"
+		case "ldap_verify_cert":
+			desc = "Verify LDAP server TLS certificate"
+		case "ldap_ca_cert":
+			desc = "Custom CA certificate for LDAP TLS (PEM format)"
+		case "encryption_key":
+			desc = "AES-256 encryption key for sensitive data"
+		case "cors_origins":
+			desc = "Allowed CORS origins (comma-separated)"
 		}
 		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
 			return fmt.Errorf("seed setting %s: %w", k, err)
@@ -565,14 +320,47 @@ func GetSetting(db *sql.DB, key, defaultValue string) string {
 	if err != nil {
 		return defaultValue
 	}
+	if key == "ldap_bind_password" && val != "" {
+		encKey := os.Getenv("ENCRYPTION_KEY")
+		if encKey == "" {
+			encKey = getSettingRaw(db, "encryption_key")
+		}
+		if encKey != "" {
+			decrypted, err := util.Decrypt(encKey, val)
+			if err == nil {
+				return decrypted
+			}
+		}
+	}
 	return val
 }
 
-// UpdateSetting updates a setting value
+// UpdateSetting updates a setting value, encrypting sensitive fields
 func UpdateSetting(db *sql.DB, key, value string) error {
+	if key == "ldap_bind_password" && value != "" {
+		encKey := os.Getenv("ENCRYPTION_KEY")
+		if encKey == "" {
+			encKey = getSettingRaw(db, "encryption_key")
+		}
+		if encKey != "" {
+			encrypted, err := util.Encrypt(encKey, value)
+			if err == nil {
+				value = encrypted
+			}
+		}
+	}
 	_, err := db.Exec(`UPDATE app_settings SET value = $1 WHERE key = $2
 		ON CONFLICT (key) DO UPDATE SET value = $1`, value, key)
 	return err
+}
+
+func getSettingRaw(db *sql.DB, key string) string {
+	var val string
+	err := db.QueryRow("SELECT value FROM app_settings WHERE key = $1", key).Scan(&val)
+	if err != nil {
+		return ""
+	}
+	return val
 }
 
 // GetAllSettings retrieves all settings as a map
@@ -604,12 +392,23 @@ func CleanupOldLogs(db *sql.DB, retentionDays int) (int64, error) {
 }
 
 type User struct {
-	ID        int64     `json:"id"`
-	Username  string    `json:"username"`
-	Role      string    `json:"role"`
-	IsAdmin   bool      `json:"is_admin"`
-	IsActive  bool      `json:"is_active"`
-	CreatedAt time.Time `json:"created_at"`
+	ID           int64     `json:"id"`
+	Username     string    `json:"username"`
+	PasswordHash string    `json:"-"`
+	Role         string    `json:"role"`
+	IsAdmin      bool      `json:"is_admin"`
+	IsActive     bool      `json:"is_active"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type AuditLog struct {
+	ID        int64      `json:"id"`
+	UserID    *int64     `json:"user_id"`
+	Username  string     `json:"username"`
+	Action    string     `json:"action"`
+	IP        *string    `json:"ip"`
+	Details   *string    `json:"details"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 func GetAllUsers(db *sql.DB) ([]User, error) {

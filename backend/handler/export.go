@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +19,14 @@ func ExportCSV(db *sql.DB) gin.HandlerFunc {
 		from := c.Query("from")
 		to := c.Query("to")
 		search := c.Query("search")
-		limit := c.DefaultQuery("limit", "100000")
+		limitStr := c.DefaultQuery("limit", "100000")
+		limit, err := strconv.Atoi(limitStr)
+		if err != nil || limit <= 0 {
+			limit = 100000
+		}
+		if limit > 100000 {
+			limit = 100000
+		}
 
 		whereClauses := []string{}
 		args := []interface{}{}
@@ -56,8 +64,8 @@ func ExportCSV(db *sql.DB) gin.HandlerFunc {
 		}
 
 		rows, err := db.Query(
-			"SELECT timestamp, hostname, app_name, severity, message FROM syslog_logs "+whereSQL+" ORDER BY timestamp DESC LIMIT "+limit,
-			args...,
+			"SELECT timestamp, hostname, app_name, severity, message FROM syslog_logs "+whereSQL+" ORDER BY timestamp DESC LIMIT $1",
+			append(args, limit)...,
 		)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Query failed"})

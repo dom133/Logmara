@@ -122,7 +122,7 @@ export default function LogsViewer() {
       onFilter: (v: any, record: LogEntry) => record.severity === String(v),
     },
     {
-      title: 'Source IP',
+      title: 'Device',
       dataIndex: 'hostname',
       key: 'hostname',
       width: 160,
@@ -178,7 +178,7 @@ export default function LogsViewer() {
             value={filters.search}
           />
           <Select
-            placeholder="Source IP"
+            placeholder="Device"
             style={{ width: 180 }}
             allowClear
             options={devices.map(d => ({ label: d, value: d }))}
@@ -206,7 +206,7 @@ export default function LogsViewer() {
               { label: 'Newest First', value: 'timestamp_desc' },
               { label: 'Oldest First', value: 'timestamp_asc' },
               { label: 'By Severity', value: 'severity' },
-              { label: 'By Source IP', value: 'hostname' },
+              { label: 'By Device', value: 'hostname' },
             ]}
           />
           <Popconfirm title="Export as CSV?" onConfirm={() => handleExport('csv')}>

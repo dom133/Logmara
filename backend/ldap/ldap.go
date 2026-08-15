@@ -2,10 +2,11 @@ package ldap
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log"
 
-	"github.com/go-ldap/ldap/v3"
+	ldaplib "github.com/go-ldap/ldap/v3"
 )
 
 type Config struct {
@@ -15,6 +16,8 @@ type Config struct {
 	BindDN       string
 	BindPassword string
 	UseTLS       bool
+	VerifyCert   bool
+	CaCert       string
 	UserFilter   string
 	Enabled      bool
 }
@@ -40,6 +43,14 @@ func LoadConfig(getSetting func(string, string) string) *Config {
 		useTLS = true
 	}
 
+	verifyCert := true
+	if v := getSetting("ldap_verify_cert", "true"); v == "false" {
+		verifyCert = false
+	}
+
+	caCert := getSetting("ldap_ca_cert", "")
+	bindPassword := getSetting("ldap_bind_password", "")
+
 	if port == 0 {
 		port = 636
 	}
@@ -51,8 +62,10 @@ func LoadConfig(getSetting func(string, string) string) *Config {
 		Port:         port,
 		BaseDN:       getSetting("ldap_base_dn", ""),
 		BindDN:       getSetting("ldap_bind_dn", ""),
-		BindPassword: getSetting("ldap_bind_password", ""),
+		BindPassword: bindPassword,
 		UseTLS:       useTLS,
+		VerifyCert:   verifyCert,
+		CaCert:       caCert,
 		UserFilter:   userFilter,
 		Enabled:      true,
 	}
@@ -78,9 +91,9 @@ func Authenticate(cfg *Config, username, password string) bool {
 		}
 
 		filter := fmt.Sprintf(cfg.UserFilter, username)
-		searchReq := ldap.NewSearchRequest(
+		searchReq := ldaplib.NewSearchRequest(
 			cfg.BaseDN,
-			ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+			ldaplib.ScopeWholeSubtree, ldaplib.NeverDerefAliases, 0, 0, false,
 			filter,
 			[]string{"dn"},
 			nil,
@@ -110,18 +123,16 @@ func Authenticate(cfg *Config, username, password string) bool {
 	return true
 }
 
-func dialLDAP(cfg *Config) (*ldap.Conn, error) {
+func dialLDAP(cfg *Config) (*ldaplib.Conn, error) {
 	addr := fmt.Sprintf("%s:%d", cfg.Server, cfg.Port)
 
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: true,
-	}
+	tlsConfig := buildTLSConfig(cfg)
 
 	if cfg.UseTLS && cfg.Port == 636 {
-		return ldap.DialTLS("tcp", addr, tlsConfig)
+		return ldaplib.DialTLS("tcp", addr, tlsConfig)
 	}
 
-	l, err := ldap.Dial("tcp", addr)
+	l, err := ldaplib.Dial("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -136,6 +147,21 @@ func dialLDAP(cfg *Config) (*ldap.Conn, error) {
 	return l, nil
 }
 
+func buildTLSConfig(cfg *Config) *tls.Config {
+	tc := &tls.Config{
+		InsecureSkipVerify: !cfg.VerifyCert,
+	}
+
+	if cfg.CaCert != "" && cfg.VerifyCert {
+		caCertPool := x509.NewCertPool()
+		if caCertPool.AppendCertsFromPEM([]byte(cfg.CaCert)) {
+			tc.RootCAs = caCertPool
+		}
+	}
+
+	return tc
+}
+
 func TestConnection(server string, port int, useTLS bool, baseDN, bindDN, bindPassword string) error {
 	if server == "" {
 		return fmt.Errorf("server is required")
@@ -148,6 +174,7 @@ func TestConnection(server string, port int, useTLS bool, baseDN, bindDN, bindPa
 		BaseDN:       baseDN,
 		BindDN:       bindDN,
 		BindPassword: bindPassword,
+		VerifyCert:   true,
 	}
 
 	l, err := dialLDAP(cfg)

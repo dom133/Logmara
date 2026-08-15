@@ -13,6 +13,60 @@ api.interceptors.request.use(config => {
   return config
 })
 
+let isRefreshing = false
+let retryQueue: Array<{ resolve: (value: unknown) => void; reject: () => void }> = []
+
+const processQueue = (error: unknown | null) => {
+  retryQueue.forEach(cb => {
+    if (error) cb.reject()
+    else cb.resolve(null)
+  })
+  retryQueue = []
+}
+
+api.interceptors.response.use(
+  response => response,
+  async error => {
+    const originalRequest = error.config
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      if (isRefreshing) {
+        return new Promise((resolve, reject) => {
+          retryQueue.push({ resolve, reject })
+        }).then(() => api(originalRequest))
+      }
+      originalRequest._retry = true
+      isRefreshing = true
+      try {
+        const refreshToken = localStorage.getItem('refresh_token')
+        if (!refreshToken) throw new Error('No refresh token')
+        const res = await api.post('/auth/refresh', { refresh_token: refreshToken })
+        const newToken = res.data.token
+        const newRT = res.data.refresh_token
+        localStorage.setItem('token', newToken)
+        localStorage.setItem('refresh_token', newRT)
+        api.defaults.headers.common['Authorization'] = `Bearer ${newToken}`
+        originalRequest.headers.Authorization = `Bearer ${newToken}`
+        processQueue(null)
+        return api(originalRequest)
+      } catch (err) {
+        processQueue(err)
+        localStorage.removeItem('token')
+        localStorage.removeItem('refresh_token')
+        window.location.href = '/login'
+        return Promise.reject(err)
+      } finally {
+        isRefreshing = false
+      }
+    }
+    return Promise.reject(error)
+  }
+)
+
+export async function refreshAccessToken(refreshToken: string) {
+  const res = await api.post('/auth/refresh', { refresh_token: refreshToken })
+  return res.data
+}
+
 export interface LogEntry {
   id: number
   timestamp: string
@@ -368,6 +422,17 @@ export interface InitRequest {
 	}
 	jwt_secret: string
 	encryption_key: string
+	cors_origins?: string
+	ldap?: {
+		server: string
+		port: number
+		use_tls: boolean
+		verify_cert: boolean
+		ca_cert: string
+		base_dn: string
+		bind_dn: string
+		bind_password: string
+	}
 }
 
 export async function initialize(data: InitRequest) {

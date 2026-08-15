@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react'
-import { api } from './api'
+import { api, refreshAccessToken } from './api'
 
 interface User {
   id: number
@@ -13,7 +13,7 @@ interface AuthContextType {
   token: string | null
   user: User | null
   login: (username: string, password: string) => Promise<boolean>
-  logout: () => void
+  logout: () => Promise<void>
   isAdmin: boolean
 }
 
@@ -42,8 +42,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (username: string, password: string) => {
     try {
       const res = await api.post('/auth/login', { username, password })
-      setToken(res.data.token)
-      localStorage.setItem('token', res.data.token)
+      const t = res.data.token
+      const rt = res.data.refresh_token
+      setToken(t)
+      localStorage.setItem('token', t)
+      localStorage.setItem('refresh_token', rt)
       setUser(res.data.user)
       return true
     } catch {
@@ -51,10 +54,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  const logout = () => {
+  const logout = async () => {
+    const rt = localStorage.getItem('refresh_token')
+    if (rt) {
+      try {
+        await api.post('/auth/logout', { refresh_token: rt })
+      } catch { /* ignore */ }
+    }
     setToken(null)
     setUser(null)
     localStorage.removeItem('token')
+    localStorage.removeItem('refresh_token')
     delete api.defaults.headers.common['Authorization']
   }
 

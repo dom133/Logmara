@@ -64,7 +64,7 @@ func GetDbConfig() gin.HandlerFunc {
 			"port":     port,
 			"name":     name,
 			"user":     user,
-			"password": password,
+			"password": "",
 		})
 	}
 }
