@@ -409,8 +409,8 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           </Content>
           <Footer
             style={{
-              background: 'transparent',
-              color: token.colorTextTertiary,
+              background: token.colorPrimaryBg,
+              color: token.colorPrimaryText,
               fontSize: 12,
               padding: isMobile ? '12px 16px calc(72px + env(safe-area-inset-bottom, 0px))' : '12px 16px',
               display: 'flex',
