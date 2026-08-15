@@ -15,13 +15,15 @@
 # `api` and `frontend` run 2 replicas each (see API_REPLICAS/FRONTEND_
 # REPLICAS below to change that). This requires docker-stack.redis.yml to
 # already be deployed: it's what makes running >1 replica safe (Redis-backed
-# rate limiting/cache invalidation/tailer leader election/ingestion control
-# in backend/sharedstate, replacing what used to be in-memory, single-
-# process-only state - see backend/control/ingestion.go, backend/tailer/
-# tailer.go, backend/handler/stats.go+logs.go+slow_query_logger.go). Without
-# REDIS_SENTINEL_ADDRS set, all of that transparently falls back to the
-# original single-process behavior instead - safe, but only correct at
-# replicas: 1.
+# rate limiting/cache invalidation/ingestion control in backend/sharedstate,
+# replacing what used to be in-memory, single-process-only state - see
+# backend/control/ingestion.go, backend/tailer/tailer.go, backend/handler/
+# stats.go+logs.go+slow_query_logger.go). The tailer is gated on the
+# keepalived VIP marker file (see keepalived/notify_vip.sh) so only the API
+# on the VIP-holding node tails the log file, guaranteeing co-location with
+# rsyslog and eliminating NFS read-cache delay. Without REDIS_SENTINEL_ADDRS
+# set, all of that transparently falls back to the original single-process
+# behavior instead - safe, but only correct at replicas: 1.
 #
 # `frontend` is not published on the host anymore - `haproxy-app` (below) is
 # what actually binds :80/:443 on every edge=true node and load-balances
@@ -180,6 +182,7 @@ services:
       # os.Hostname() (the container ID) when unset, e.g. plain
       # docker-compose.yml, which doesn't support this templating.
       SWARM_TASK_IDENTITY: "{{.Node.Hostname}}.{{.Task.Slot}}"
+      MY_NODE: "{{.Node.Hostname}}"
       # Every credential below is mounted as a Docker Swarm secret (see the
       # `secrets:` list below and the top-level `secrets:` section) rather
       # than passed as a plain env var - none of them appear in `docker
@@ -268,14 +271,13 @@ services:
       restart_policy:
         condition: any
         delay: 5s
-      # stop-first (not start-first): each replica's tailer only guards
-      # against concurrent ingestion via Redis leader election, which still
-      # needs its lock's TTL to lapse before a new task can take over (see
-      # main.go's LeaderElector comment) - starting the new task before the
-      # old one has fully stopped means both briefly exist, and the update
-      # only really has to wait as long as the old task takes to shut down
-      # (well under the lock TTL). Trading a brief gap in serving traffic
-      # during rollout for one less thing that has to line up perfectly.
+      # stop-first (not start-first): tailer is gated on the keepalived VIP
+      # marker file (see keepalived/notify_vip.sh) - on a rolling update, the
+      # old task stops first, its tailer flushes and exits, then the new task
+      # starts and picks up tailing from the saved position. This avoids a
+      # window where both old and new tailer could briefly read the same file
+      # concurrently. Trading a brief gap in serving traffic during rollout
+      # for deterministic, gap-free ingestion.
       update_config:
         order: stop-first
         parallelism: 1

@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { message } from 'antd'
 import { t } from 'i18next'
-import { api, checkSession } from './api'
+import { api, checkSession, reportActivity } from './api'
 import { getErrorMessage } from '../utils/error'
 
 interface User {
@@ -325,6 +325,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
   }, [user, scheduleSessionCheck])
+
+  // Track user activity (click, keydown, scroll) and report to backend
+  // so the inactivity timer is reset. Throttled to 1 call per minute.
+  const lastActivityRef = useRef(0)
+  const ACTIVITY_THROTTLE_MS = 60000
+
+  const reportUserActivity = useCallback(() => {
+    if (!user) return
+    const now = Date.now()
+    if (now - lastActivityRef.current < ACTIVITY_THROTTLE_MS) return
+    lastActivityRef.current = now
+    localStorage.setItem(STORAGE_KEY_LAST_ACTIVE, now.toString())
+    reportActivity().catch(() => { /* non-critical */ })
+  }, [user])
+
+  useEffect(() => {
+    if (!user) return
+    const opts = { capture: true, passive: true }
+    const targets = ['mousedown', 'keydown', 'scroll'] as const
+    targets.forEach(evt => window.addEventListener(evt, reportUserActivity, opts))
+    return () => {
+      targets.forEach(evt => window.removeEventListener(evt, reportUserActivity, opts))
+    }
+  }, [user, reportUserActivity])
 
   const isAdmin = user?.is_admin || false
   const canEdit = user?.role === 'admin' || user?.role === 'editor'

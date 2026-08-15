@@ -212,6 +212,7 @@ func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 	sb.WriteString("    tbody tr:hover { background: #e6f7ff; }\n")
 	sb.WriteString("    tbody tr:nth-child(even) { background: #fafafa; }\n")
 	sb.WriteString("    tbody tr:nth-child(even):hover { background: #e6f7ff; }\n")
+	sb.WriteString("    .msg-cell { min-width: 200px; word-break: break-all; white-space: pre-wrap; }\n")
 	sb.WriteString("    .sev-emerg { color: #cf1322; font-weight: 600; }\n")
 	sb.WriteString("    .sev-alert { color: #cf1322; }\n")
 	sb.WriteString("    .sev-crit { color: #f5222d; }\n")
@@ -259,7 +260,7 @@ func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 		sb.WriteString("            <td>" + html.EscapeString(r.hostname) + "</td>\n")
 		sb.WriteString("            <td>" + html.EscapeString(r.app) + "</td>\n")
 		sb.WriteString("            <td><span class='" + sevClass + "'>" + html.EscapeString(r.severity) + "</span></td>\n")
-		sb.WriteString("            <td style='max-width:400px;word-break:break-word'>" + html.EscapeString(r.message) + "</td>\n")
+		sb.WriteString("            <td class='msg-cell'>" + html.EscapeString(r.message) + "</td>\n")
 		if len(fields) > 0 {
 			for _, f := range fields {
 				sb.WriteString("            <td>" + html.EscapeString(r.parsed[f]) + "</td>\n")
@@ -303,12 +304,12 @@ func queryExportRows(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 	if limit > 0 {
 		limitIdx := len(args) + 2
 		query = fmt.Sprintf(
-			"SELECT to_char((timestamp AT TIME ZONE $%d) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts, hostname, app_name, severity, message, parsed_fields FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d",
+			"SELECT to_char(timestamp AT TIME ZONE $%d, 'YYYY-MM-DD HH24:MI:SS') as ts, hostname, app_name, severity, message, parsed_fields FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d",
 			tzIdx, whereSQL, limitIdx,
 		)
 	} else {
 		query = fmt.Sprintf(
-			"SELECT to_char((timestamp AT TIME ZONE $%d) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') as ts, hostname, app_name, severity, message, parsed_fields FROM syslog_logs %s ORDER BY timestamp DESC",
+			"SELECT to_char(timestamp AT TIME ZONE $%d, 'YYYY-MM-DD HH24:MI:SS') as ts, hostname, app_name, severity, message, parsed_fields FROM syslog_logs %s ORDER BY timestamp DESC",
 			tzIdx, whereSQL,
 		)
 	}

@@ -179,7 +179,7 @@ func cleanupExpiredRefreshTokens(db *sql.DB) {
 	// active-browsing window.
 	timeoutMin := getInactivityTimeoutMin(db)
 	res, err = db.Exec(
-		"UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE used = false AND remember = false AND created_at < NOW() - ($1 || ' minutes')::INTERVAL",
+		"UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE used = false AND remember = false AND COALESCE(last_used_at, created_at) < NOW() - ($1 || ' minutes')::INTERVAL",
 		timeoutMin,
 	)
 	if err != nil {
@@ -285,7 +285,7 @@ func HasActiveSession(db *sql.DB) bool {
 			SELECT 1 FROM refresh_tokens
 			WHERE used = false
 			  AND expires_at > NOW()
-			  AND created_at > NOW() - (COALESCE((SELECT value FROM app_settings WHERE key = 'session_timeout_min'), '15')::int || ' minutes')::INTERVAL
+			  AND COALESCE(last_used_at, created_at) > NOW() - (COALESCE((SELECT value FROM app_settings WHERE key = 'session_timeout_min'), '15')::int || ' minutes')::INTERVAL
 		)
 	`).Scan(&active)
 	if err != nil {

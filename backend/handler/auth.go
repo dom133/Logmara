@@ -61,6 +61,27 @@ func deviceID(c *gin.Context) string {
 	return id
 }
 
+// RefreshDeviceID is a middleware that keeps the device_id cookie alive by
+// re-setting it on every authenticated request. Without this, the cookie
+// would expire after 60 days while the session in the database is still
+// valid, causing ListSessions to mark no session as "this device".
+func RefreshDeviceID() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if id, err := c.Cookie(DeviceIDCookieName); err == nil && id != "" {
+			http.SetCookie(c.Writer, &http.Cookie{
+				Name:     DeviceIDCookieName,
+				Value:    id,
+				Path:     "/",
+				MaxAge:   deviceIDCookieMaxAge,
+				HttpOnly: true,
+				Secure:   isHTTPS(c),
+				SameSite: http.SameSiteLaxMode,
+			})
+		}
+		c.Next()
+	}
+}
+
 func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpiry, refreshExpiry time.Time) {
 	csrf := generateCSRFToken()
 	accessMaxAge := int(time.Until(accessExpiry).Seconds())
@@ -386,8 +407,9 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 
 		var replacementToken string
 		var replacementExpiry time.Time
+		var recoveredDeviceID string
 		if claimErr != nil {
-			recoveredUserID, recoveredToken, recoveredExpiry, recoveredRemember, recovered := recoverRacedRefresh(database, refreshToken)
+			recoveredUserID, recoveredToken, recoveredExpiry, recoveredRemember, recoveredDID, recovered := recoverRacedRefresh(database, refreshToken)
 			if !recovered {
 				clearAuthCookies(c)
 				audit.LogAudit(database, 0, "", "refresh_failed", c.ClientIP(), "invalid, expired, or reused refresh token")
@@ -398,6 +420,19 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			replacementToken = recoveredToken
 			replacementExpiry = recoveredExpiry
 			remember = recoveredRemember
+			recoveredDeviceID = recoveredDID
+		}
+
+		// If the old token was created before device_id existed, or device_id
+		// is empty for any reason, fall back to the browser's device_id cookie
+		// so the new rotated token carries a valid identifier.
+		finalDeviceID := ""
+		if deviceIDVal.Valid && deviceIDVal.String != "" {
+			finalDeviceID = deviceIDVal.String
+		} else if recoveredDeviceID != "" {
+			finalDeviceID = recoveredDeviceID
+		} else {
+			finalDeviceID = deviceID(c)
 		}
 
 		user, err := getUserByID(database, userID)
@@ -426,7 +461,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			userID:           userID,
 			token:            newRefreshToken,
 			expiresAt:        newExpiresAt,
-			deviceID:         deviceIDVal.String,
+			deviceID:         finalDeviceID,
 			userAgent:        c.Request.UserAgent(),
 			ip:               c.ClientIP(),
 			remember:         remember,
@@ -451,19 +486,20 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 // rotated moments ago (used=true, linked to a replacement) and, if so,
 // within the grace window, hands back the replacement token instead of
 // treating this as a stale/replayed refresh token.
-func recoverRacedRefresh(database *sql.DB, token string) (userID int, replacementToken string, replacementExpiry time.Time, remember bool, ok bool) {
+func recoverRacedRefresh(database *sql.DB, token string) (userID int, replacementToken string, replacementExpiry time.Time, remember bool, deviceID string, ok bool) {
 	rh := auth.HashRefreshToken(token)
 	var replacedBy sql.NullString
 	var usedAt sql.NullTime
+	var devID sql.NullString
 	err := database.QueryRow(
-		"SELECT user_id, used_at, replaced_by FROM refresh_tokens WHERE token_hash = $1 AND used = true",
+		"SELECT user_id, used_at, replaced_by, COALESCE(device_id, '') FROM refresh_tokens WHERE token_hash = $1 AND used = true",
 		rh,
-	).Scan(&userID, &usedAt, &replacedBy)
+	).Scan(&userID, &usedAt, &replacedBy, &devID)
 	if err != nil || !replacedBy.Valid || !usedAt.Valid {
-		return 0, "", time.Time{}, false, false
+		return 0, "", time.Time{}, false, "", false
 	}
 	if time.Since(usedAt.Time) > refreshReuseGraceWindow {
-		return 0, "", time.Time{}, false, false
+		return 0, "", time.Time{}, false, "", false
 	}
 
 	var expiresAt time.Time
@@ -473,10 +509,10 @@ func recoverRacedRefresh(database *sql.DB, token string) (userID int, replacemen
 		rrh,
 	).Scan(&expiresAt, &remember)
 	if err != nil {
-		return 0, "", time.Time{}, false, false
+		return 0, "", time.Time{}, false, "", false
 	}
 
-	return userID, replacedBy.String, expiresAt, remember, true
+	return userID, replacedBy.String, expiresAt, remember, devID.String, true
 }
 
 func getUserByID(database *sql.DB, userID int) (*db.User, error) {
@@ -528,6 +564,16 @@ func Logout(database *sql.DB) gin.HandlerFunc {
 func CheckSession(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"active": true})
+	}
+}
+
+// Activity is a lightweight endpoint the frontend calls on user interaction
+// (click, keydown, scroll). The middleware UpdateSessionActivity already
+// updated last_used_at asynchronously - this handler just returns 200 so the
+// frontend can confirm the heartbeat went through.
+func Activity(database *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
 }
 

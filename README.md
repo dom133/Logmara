@@ -159,17 +159,17 @@ docker compose -f docker-compose.build.yml up -d --build
 
 ## Pre-built Images
 
-Pre-built images are published on Docker Hub under [`dom133`](https://hub.docker.com/u/dom133), tagged `v0.0.1`:
+Pre-built images are published on Docker Hub under [`dom133`](https://hub.docker.com/u/dom133), tagged `v0.0.2`:
 
-- [`dom133/logmara-api:v0.0.1`](https://hub.docker.com/r/dom133/logmara-api) (built from `Dockerfile.backend`)
-- [`dom133/logmara-frontend:v0.0.1`](https://hub.docker.com/r/dom133/logmara-frontend)
-- [`dom133/logmara-rsyslog:v0.0.1`](https://hub.docker.com/r/dom133/logmara-rsyslog)
-- [`dom133/logmara-rsyslog-relay:v0.0.1`](https://hub.docker.com/r/dom133/logmara-rsyslog-relay)
-- [`dom133/logmara-patroni:v0.0.1`](https://hub.docker.com/r/dom133/logmara-patroni)
+- [`dom133/logmara-api:v0.0.2`](https://hub.docker.com/r/dom133/logmara-api) (built from `Dockerfile.backend`)
+- [`dom133/logmara-frontend:v0.0.2`](https://hub.docker.com/r/dom133/logmara-frontend)
+- [`dom133/logmara-rsyslog:v0.0.2`](https://hub.docker.com/r/dom133/logmara-rsyslog)
+- [`dom133/logmara-rsyslog-relay:v0.0.2`](https://hub.docker.com/r/dom133/logmara-rsyslog-relay)
+- [`dom133/logmara-patroni:v0.0.2`](https://hub.docker.com/r/dom133/logmara-patroni)
 
-`docker-compose.yml` pulls these by default (`image:`, pinned via `${IMAGE_TAG:-v0.0.1}` in `.env`) — this is what the [Quick Start](#quick-start-single-server) above uses, no clone or build needed. Need to build from source instead (local changes, or something not yet published)? Use `docker-compose.build.yml` — see [Deploying local changes / building from source](#deploying-local-changes--building-from-source).
+`docker-compose.yml` pulls these by default (`image:`, pinned via `${IMAGE_TAG:-v0.0.2}` in `.env`) — this is what the [Quick Start](#quick-start-single-server) above uses, no clone or build needed. Need to build from source instead (local changes, or something not yet published)? Use `docker-compose.build.yml` — see [Deploying local changes / building from source](#deploying-local-changes--building-from-source).
 
-These are also a drop-in `REGISTRY`/`TAG` pair for the [High Availability](#high-availability-deployment-multi-node-optional) deployment below (`REGISTRY=dom133 TAG=v0.0.1`), since the image names match what `docker-stack.app.yml`/`docker-stack.postgres.yml` expect — see [step 4](#4-clone-the-repo-then-buildpush-or-use-pre-built-images).
+These are also a drop-in `REGISTRY`/`TAG` pair for the [High Availability](#high-availability-deployment-multi-node-optional) deployment below (`REGISTRY=dom133 TAG=v0.0.2`), since the image names match what `docker-stack.app.yml`/`docker-stack.postgres.yml` expect — see [step 4](#4-clone-the-repo-then-buildpush-or-use-pre-built-images).
 
 ## Configuration
 
@@ -217,7 +217,7 @@ echo "JWT_SECRET=$(openssl rand -base64 48)"     >> .env
 echo "ENCRYPTION_KEY=$(openssl rand -base64 48)" >> .env
 ```
 
-**High Availability (`docker-stack.*.yml`)** — export them in the shell you run `docker stack deploy` from (or keep them in the same `.env` you source), so every node's `api` replica receives them:
+**High Availability (`docker-stack.*.yml`)** — credentials are passed as Swarm secrets (step 7 of the HA guide), not as plain env vars. Non-sensitive deployment parameters (`REGISTRY`, `TAG`, `NFS_SERVER`, `API_REPLICAS`, etc.) go into `.env` and are sourced automatically by `scripts/swarm-deploy.sh`. If you call `docker stack deploy` directly instead, export them in your shell first — Swarm won't read `.env` on its own.
 
 ```bash
 export JWT_SECRET=$(openssl rand -base64 48)
@@ -269,6 +269,8 @@ Getting here required backend code changes (not just Docker config) — see "How
 | [`haproxy/haproxy-app.cfg`](haproxy/haproxy-app.cfg) | Load-balances `:80`/`:443` across every `frontend` replica cluster-wide (`tasks.frontend`), and internally load-balances every `api` replica (`tasks.api`) on `:8090` for nginx's `/api/` proxy_pass; the API is never published directly to the host. Preserves the real client IP across both hops - `option forwardfor` on `:80`, a PROXY protocol header (`send-proxy`) on `:443` since that one's a raw TLS passthrough (paired with `NGINX_PROXY_PROTOCOL=true` on the `api` service, consumed by `backend/handler/admin.go`'s generated `https.conf`) - so audit log IPs and API key IP allowlists see the actual caller, not an internal overlay address |
 | [`keepalived/`](keepalived/) | VRRP config template + health-check scripts (`rsyslog` and `haproxy-app`) for the floating app/edge VIP |
 | [`scripts/swarm-bootstrap.sh`](scripts/swarm-bootstrap.sh) | Guided commands for swarm init/join, node labeling, network/secret/config creation |
+| [`scripts/swarm-deploy.sh`](scripts/swarm-deploy.sh) | Wrapper that sources `.env` then runs `docker stack deploy` (Swarm doesn't read `.env` on its own) |
+| [`scripts/build-images.sh`](scripts/build-images.sh) | Builds + pushes all Docker images, reading `REGISTRY`/`TAG` from `.env` |
 | [`nfs-ha/`](nfs-ha/) | *Optional* — DRBD resource template + keepalived VIP + promote/demote hooks for a synchronously-replicated NFS pair, instead of a single NFS box |
 
 ### How multi-replica safety works
@@ -361,7 +363,7 @@ Unlike the single-server [Quick Start](#quick-start-single-server) above, this p
 Pick one manager (`pg1` here) as your "control" node — everywhere below that says "run on a manager", run it there, over SSH, against `pg1`'s local Docker socket. You'll also need a container image registry every node can pull from.
 
 > [!TIP]
-> If you haven't modified the code, you can skip *building* (not cloning) and pull the [pre-built `v0.0.1` images](#pre-built-images) from Docker Hub instead — `docker login` on every node (or add `--with-registry-auth` to the `docker stack deploy` commands later), then just use `REGISTRY=dom133 TAG=v0.0.1` in steps 4 and 10 instead of building/pushing your own.
+> If you haven't modified the code, you can skip *building* (not cloning) and pull the [pre-built `v0.0.2` images](#pre-built-images) from Docker Hub instead — `docker login` on every node (or add `--with-registry-auth` to the `docker stack deploy` commands later), then just use `REGISTRY=dom133 TAG=v0.0.2` in steps 4 and 10 instead of building/pushing your own.
 
 **Registry options:**
 - A managed registry (GHCR, ECR, Docker Hub, ...) — simplest if your nodes have internet access. `docker login` on every node, add `--with-registry-auth` to the `docker stack deploy` commands later.
@@ -388,16 +390,13 @@ ssh pg1
 git clone https://github.com/dom133/Logmara.git
 cd syslog_gui
 
-export REGISTRY=registry.example.com/logmara TAG=v1
-docker build -f Dockerfile.backend  -t $REGISTRY/logmara-api:$TAG .
-docker build -f Dockerfile.rsyslog  -t $REGISTRY/logmara-rsyslog:$TAG .
-docker build -f Dockerfile.frontend -t $REGISTRY/logmara-frontend:$TAG .
-docker build -f Dockerfile.patroni  -t $REGISTRY/logmara-patroni:$TAG .
-docker push $REGISTRY/logmara-api:$TAG
-docker push $REGISTRY/logmara-rsyslog:$TAG
-docker push $REGISTRY/logmara-frontend:$TAG
-docker push $REGISTRY/logmara-patroni:$TAG
+# Put REGISTRY and TAG into .env, then build + push all images:
+echo 'REGISTRY=registry.example.com/logmara' >> .env
+echo 'TAG=v1' >> .env
+./scripts/build-images.sh
 ```
+
+`./scripts/build-images.sh` reads `REGISTRY` and `TAG` from `.env` (or use `-r` / `-t` to override). It builds and pushes all 5 images (`api`, `frontend`, `rsyslog`, `patroni`, `rsyslog-relay`). Pass `-s` to skip push (build locally only).
 
 #### 5. Initialize the swarm and join the other nodes
 
@@ -469,15 +468,18 @@ These are node-local bind mounts, deliberately *not* on the shared NFS — Patro
 
 On `pg1`:
 ```bash
-docker stack deploy -c docker-stack.postgres.yml logmara-pg
+./scripts/swarm-deploy.sh postgres   # deploys as stack "logmara-pg"
 watch docker service ls   # wait for postgres1/2/3 and etcd1/2/3 at 1/1, haproxy at 2/2
 ```
 
 Once that's healthy:
 ```bash
-docker stack deploy -c docker-stack.redis.yml logmara-redis
+./scripts/swarm-deploy.sh redis   # deploys as stack "logmara-redis"
 watch docker service ls   # wait for redis1/2/3 and sentinel1/2/3 at 1/1
 ```
+
+> [!TIP]
+> `./scripts/swarm-deploy.sh` sources `.env` from the repo root before calling `docker stack deploy`, so variables like `REGISTRY`, `TAG`, `NFS_SERVER`, and `API_REPLICAS` are available without manual `export`. Skip it and call `docker stack deploy` directly if you prefer — just remember that Swarm won't read `.env` on its own.
 
 Sanity-check leader election worked: `docker exec -it $(docker ps -qf name=logmara-pg_postgres1) curl -s localhost:8008/` should show `"role": "master"` on exactly one of `postgres1/2/3`.
 
@@ -501,12 +503,11 @@ Sanity-check leader election worked: `docker exec -it $(docker ps -qf name=logma
 Still on `pg1` (or wherever you're driving `docker stack deploy` from) - the app tier's credentials (JWT signing key, encryption key, and the Postgres/Redis app passwords) all come from the Swarm secrets created in step 7, so nothing sensitive needs exporting here, only deployment parameters:
 
 ```bash
-export REGISTRY=registry.example.com/logmara TAG=v1
-export NFS_SERVER=10.0.0.30
-
-docker stack deploy -c docker-stack.app.yml logmara-app
+./scripts/swarm-deploy.sh app   # deploys as stack "logmara-app"
 watch docker service ls   # wait for api and frontend at 2/2, rsyslog and haproxy-app global at 2/2
 ```
+
+`REGISTRY`, `TAG`, and `NFS_SERVER` are read from `.env` (or exported in your shell). If you put them in `.env` in step 4, they're picked up automatically — no manual `export` needed.
 
 #### 11. Set up keepalived on the edge nodes
 
@@ -530,12 +531,14 @@ export STATE=MASTER PRIORITY=150 \
        MY_IP=10.0.0.21 \
        PEER_IPS="        10.0.0.22" \
        VIP=10.0.0.100 VIP_CIDR=24 INTERFACE=eth0 \
-       VRRP_AUTH_PASS=<the-8-char-pass-from-above>
+       VRRP_AUTH_PASS=<the-8-char-pass-from-above> \
+       VIP_MARKER_PATH=/srv/syslog-ha/nfs/log_data
 
 envsubst < keepalived/keepalived.conf.tpl | sudo tee /etc/keepalived/keepalived.conf > /dev/null
 sudo cp keepalived/check_rsyslog.sh /etc/keepalived/check_rsyslog.sh
 sudo cp keepalived/check_haproxy_app.sh /etc/keepalived/check_haproxy_app.sh
-sudo chmod +x /etc/keepalived/check_rsyslog.sh /etc/keepalived/check_haproxy_app.sh
+sudo cp keepalived/notify_vip.sh /etc/keepalived/notify_vip.sh
+sudo chmod +x /etc/keepalived/check_rsyslog.sh /etc/keepalived/check_haproxy_app.sh /etc/keepalived/notify_vip.sh
 sudo systemctl enable --now keepalived
 ```
 
@@ -551,12 +554,14 @@ export STATE=BACKUP PRIORITY=100 \
        MY_IP=10.0.0.22 \
        PEER_IPS="        10.0.0.21" \
        VIP=10.0.0.100 VIP_CIDR=24 INTERFACE=eth0 \
-       VRRP_AUTH_PASS=<the-same-8-char-pass>
+       VRRP_AUTH_PASS=<the-same-8-char-pass> \
+       VIP_MARKER_PATH=/srv/syslog-ha/nfs/log_data
 
 envsubst < keepalived/keepalived.conf.tpl | sudo tee /etc/keepalived/keepalived.conf > /dev/null
 sudo cp keepalived/check_rsyslog.sh /etc/keepalived/check_rsyslog.sh
 sudo cp keepalived/check_haproxy_app.sh /etc/keepalived/check_haproxy_app.sh
-sudo chmod +x /etc/keepalived/check_rsyslog.sh /etc/keepalived/check_haproxy_app.sh
+sudo cp keepalived/notify_vip.sh /etc/keepalived/notify_vip.sh
+sudo chmod +x /etc/keepalived/check_rsyslog.sh /etc/keepalived/check_haproxy_app.sh /etc/keepalived/notify_vip.sh
 sudo systemctl enable --now keepalived
 ```
 
@@ -577,7 +582,7 @@ Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizar
 ### Testing failover
 
 - Kill the Patroni leader's node → `docker service logs logmara-pg_haproxy` and the Patroni REST API (`curl http://<any-pg-node>:8008/`) should show a new leader within a few seconds, with no manual steps.
-- Kill the Redis node currently acting as Sentinel's master → the other two Sentinels should promote a replica within a few seconds (`docker service logs logmara-redis_sentinel1` shows the failover); `api` replicas using `go-redis`'s Sentinel-aware client should reconnect to the new master automatically, and exactly one of them should log `"tailer: acquired leader lock"` shortly after.
+- Kill the Redis node currently acting as Sentinel's master → the other two Sentinels should promote a replica within a few seconds (`docker service logs logmara-redis_sentinel1` shows the failover); `api` replicas using `go-redis`'s Sentinel-aware client should reconnect to the new master automatically.
 - Kill the node running one `api`/`frontend` replica → the other replica(s) keep serving without interruption; `docker service ps logmara-app_api` should show the lost one rescheduled onto the other `app=true` node.
 - Kill the edge node currently holding the VIP → keepalived should fail over in 1-3s; confirm with `ip addr` on the new holder and by sending a test syslog message during the cutover.
 - Confirm `haproxy-app` is actually load-balancing, not just failing over: hit `http://<any-app-node-ip>:7001/` (the stats page) and check every `frontend-*`/`api-*` server-template slot shows `UP` with a non-zero request count after a few page loads/API calls; `docker service logs logmara-app_haproxy-app` also shows each backend server going up as its task starts.
@@ -590,23 +595,15 @@ When you change code, config, or dependencies, rebuild your images, push them un
 #### 1. Build and push new images
 
 > [!TIP]
-> Upgrading to a newer official release without local code changes? Skip building and just bump `TAG` to the new [pre-built](#pre-built-images) version instead, e.g. `REGISTRY=dom133 TAG=v0.0.2`, then jump straight to step 2 below.
+> Upgrading to a newer official release without local code changes? Skip building and just bump `TAG` to the new [pre-built](#pre-built-images) version instead, e.g. `REGISTRY=dom133 TAG=v0.0.3`, then jump straight to step 2 below.
 
 ```bash
 ssh pg1
 cd syslog_gui
 git pull   # or switch to the branch/commit you want
 
-export REGISTRY=registry.example.com/logmara TAG=v2   # <-- bump the tag
-
-docker build -f Dockerfile.backend   -t $REGISTRY/logmara-api:$TAG .
-docker build -f Dockerfile.rsyslog   -t $REGISTRY/logmara-rsyslog:$TAG .
-docker build -f Dockerfile.frontend  -t $REGISTRY/logmara-frontend:$TAG .
-docker build -f Dockerfile.patroni   -t $REGISTRY/logmara-patroni:$TAG .
-docker push $REGISTRY/logmara-api:$TAG
-docker push $REGISTRY/logmara-rsyslog:$TAG
-docker push $REGISTRY/logmara-frontend:$TAG
-docker push $REGISTRY/logmara-patroni:$TAG
+# Bump TAG in .env (or override with -t), then build + push:
+./scripts/build-images.sh -t v2
 ```
 
 #### 2. Re-deploy stacks (rolling update)
@@ -614,26 +611,17 @@ docker push $REGISTRY/logmara-patroni:$TAG
 Deploy in this order so that data-tier services are current before the app tier connects to them:
 
 ```bash
-# Postgres + etcd (uses stop-first: old task stops before new one starts)
-docker stack deploy \
-  --resolve-image always \
-  --with-registry-auth \
-  -c docker-stack.postgres.yml logmara-pg
-
-# Redis + Sentinel (stop-first default)
-docker stack deploy \
-  --resolve-image always \
-  --with-registry-auth \
-  -c docker-stack.redis.yml logmara-redis
-
-# App tier: api/frontend (start-first) + rsyslog (global)
-docker stack deploy \
-  --resolve-image always \
-  --with-registry-auth \
-  -c docker-stack.app.yml logmara-app
+./scripts/swarm-deploy.sh --resolve-image --with-registry-auth postgres   # logmara-pg
+./scripts/swarm-deploy.sh --resolve-image --with-registry-auth redis      # logmara-redis
+./scripts/swarm-deploy.sh --resolve-image --with-registry-auth app        # logmara-app
 ```
 
-`--resolve-image always` forces every node to pull the latest image from the registry before starting the new task. Without it, Swarm reuses the locally cached image and your update silently does nothing.
+Or deploy all three at once (same order, automatically):
+```bash
+./scripts/swarm-deploy.sh --resolve-image --with-registry-auth all
+```
+
+`--resolve-image` (→ `--resolve-image always`) forces every node to pull the latest image from the registry before starting the new task. Without it, Swarm reuses the locally cached image and your update silently does nothing.
 
 #### 3. Force an update (config/secret changes)
 
@@ -645,10 +633,10 @@ docker service update --force logmara-app_frontend
 docker service update --force logmara-app_rsyslog
 ```
 
-Or re-deploy the whole stack with both flags:
+Or re-deploy the whole stack via the wrapper:
 
 ```bash
-docker stack deploy --resolve-image always --with-registry-auth -c docker-stack.app.yml logmara-app
+./scripts/swarm-deploy.sh --resolve-image --with-registry-auth app   # logmara-app
 ```
 
 #### 4. Watch the rollout
@@ -670,15 +658,12 @@ Each stack's `update_config` controls the pace:
 
 #### 5. Roll back if something went wrong
 
-If a new image breaks, revert to the previous tag:
+If a new image breaks, revert to the previous tag (set `TAG` in `.env` or export it):
 
 ```bash
 export TAG=v1   # previous working tag
 
-docker stack deploy \
-  --resolve-image always \
-  --with-registry-auth \
-  -c docker-stack.app.yml logmara-app
+./scripts/swarm-deploy.sh --resolve-image --with-registry-auth app   # logmara-app
 ```
 
 Swarm rolls back each replica in the same rolling fashion. For a faster emergency rollback, drain the affected node:
@@ -812,9 +797,10 @@ Confirm: `ip -br addr show eth0` should list `10.0.0.40` on `nfs1`, and `drbdadm
 
 #### 6. Point the app tier at the NFS VIP
 
+Set `NFS_SERVER=10.0.0.40` in `.env` (the VIP, not `nfs1`'s bare IP), then:
+
 ```bash
-export NFS_SERVER=10.0.0.40   # the VIP, not nfs1's bare IP
-docker stack deploy -c docker-stack.app.yml logmara-app
+./scripts/swarm-deploy.sh app   # logmara-app
 ```
 If you're adding this to an already-running cluster, this is a `docker service update`-triggering redeploy of `api`/`frontend`/`rsyslog` (they all mount `log_data`/`log_spool`/`parser_defs`) — expect the same rolling-update behavior as any other config change (see "Updating images" above).
 

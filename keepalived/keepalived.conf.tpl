@@ -6,32 +6,20 @@
 # direct L2 access that Swarm's overlay network does not provide.
 #
 # Render one file per edge node from this template, substituting:
-#   ${STATE}      MASTER on exactly one edge node, BACKUP on the rest
-#   ${PRIORITY}   higher wins election, e.g. 150 for the MASTER, 100/90/... for BACKUPs
-#   ${MY_IP}      this node's real interface IP (unicast_src_ip)
-#   ${PEER_IPS}   the other edge nodes' real interface IPs, one per line
-#   ${VIP}        the floating IP syslog senders / clients target
-#   ${VIP_CIDR}   e.g. 24
-#   ${INTERFACE}  e.g. eth0
+#   ${STATE}            MASTER on exactly one edge node, BACKUP on the rest
+#   ${PRIORITY}         higher wins election, e.g. 150 for the MASTER, 100/90/... for BACKUPs
+#   ${MY_IP}            this node's real interface IP (unicast_src_ip)
+#   ${PEER_IPS}         the other edge nodes' real interface IPs, one per line
+#   ${VIP}              the floating IP syslog senders / clients target
+#   ${VIP_CIDR}         e.g. 24
+#   ${INTERFACE}        e.g. eth0
+#   ${VIP_MARKER_PATH}  full path to the NFS-mounted log_data directory on
+#                       this host (e.g. /srv/syslog-ha/nfs/log_data)
 #
 # Unicast (not multicast) VRRP is used deliberately — it works across plain
 # L3 routed networks and most cloud VPCs where multicast is blocked.
 
 global_defs {
-    # Required since keepalived 2.x: without this, keepalived refuses to
-    # actually run vrrp_script below (it logs "SECURITY VIOLATION - scripts
-    # are being executed but script_security not enabled" and synthesizes a
-    # failing exit code instead) - which silently traps this node in FAULT
-    # state forever, so it can never take over the VIP even when the peer
-    # genuinely goes down. The keyword really is `enable_script_security`,
-    # not the more-guessable `script_security` - the latter is silently
-    # ignored as an unrecognized global_defs key (no parse error, no
-    # effect) rather than rejected, which is what makes this so easy to
-    # get wrong: see https://github.com/acassen/keepalived/issues/901.
-    # `user root` on the script below is what makes it safe to enable
-    # without also having to provision a dedicated unprivileged
-    # 'keepalived_script' system user.
-    enable_script_security
 }
 
 vrrp_script check_rsyslog {
@@ -82,6 +70,7 @@ ${PEER_IPS}
         check_haproxy_app
     }
 
-    # Optional: notify_master/notify_backup scripts can be added here to log
-    # failover events or push a metric/alert.
+    notify_master "/etc/keepalived/notify_vip.sh notify_vip MASTER ${VIP_MARKER_PATH}/.vip_master"
+    notify_backup "/etc/keepalived/notify_vip.sh notify_vip BACKUP ${VIP_MARKER_PATH}/.vip_master"
+    notify_fault  "/etc/keepalived/notify_vip.sh notify_vip FAULT ${VIP_MARKER_PATH}/.vip_master"
 }
