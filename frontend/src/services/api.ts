@@ -5,6 +5,14 @@ export const api = axios.create({
   timeout: 30000,
 })
 
+api.interceptors.request.use(config => {
+  const token = localStorage.getItem('token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
 export interface LogEntry {
   id: number
   timestamp: string
@@ -54,7 +62,7 @@ export async function getLogs(params: {
   sort?: string
 }) {
   const res = await api.get('/logs', { params })
-  return res.data
+  return res.data || { logs: [], total: 0 }
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {
@@ -64,22 +72,22 @@ export async function getDashboardStats(): Promise<DashboardStats> {
 
 export async function getTimeline(interval = '1h', from?: string, to?: string) {
   const res = await api.get('/stats/timeline', { params: { interval, from, to } })
-  return res.data.timeline as TimelinePoint[]
+  return (res.data?.timeline || []) as TimelinePoint[]
 }
 
 export async function getDevices() {
   const res = await api.get('/devices')
-  return res.data.devices as string[]
+  return (res.data?.devices || []) as string[]
 }
 
 export async function getDeviceStats() {
   const res = await api.get('/stats/devices')
-  return res.data.devices as DeviceStats[]
+  return (res.data?.devices || []) as DeviceStats[]
 }
 
 export async function getSeverityStats(from?: string, to?: string) {
   const res = await api.get('/stats/severity', { params: { from, to } })
-  return res.data.stats as Array<{ severity: string; count: number }>
+  return (res.data?.stats || []) as Array<{ severity: string; count: number }>
 }
 
 export function exportCSV(params: Record<string, string>) {
@@ -169,7 +177,7 @@ export interface DashboardDataResponse {
 // --- Parser API ---
 export async function getParsers() {
   const res = await api.get('/parsers')
-  return res.data as Parser[]
+  return (res.data || []) as Parser[]
 }
 
 export async function createParser(data: {
@@ -216,13 +224,13 @@ export async function reparseUnparsed(hostname?: string, from?: string, to?: str
 
 export async function getParsedFields() {
   const res = await api.get('/parsers/fields')
-  return res.data as ParsedField[]
+  return (res.data || []) as ParsedField[]
 }
 
 // --- Dashboard API ---
 export async function getDashboards() {
   const res = await api.get('/dashboards')
-  return res.data as Dashboard[]
+  return (res.data || []) as Dashboard[]
 }
 
 export async function createDashboard(data: {
@@ -255,7 +263,8 @@ export async function deleteDashboard(id: number) {
 
 export async function getDashboardData(id: number, limit = 100, offset = 0) {
 	const res = await api.get(`/dashboards/${id}/data`, { params: { limit, offset } })
-	return res.data as DashboardDataResponse
+	const d = res.data || {}
+	return { logs: d.logs || [], total: d.total || 0, fields: d.fields || [], devices: d.devices || [] } as DashboardDataResponse
 }
 
 export async function togglePinDashboard(id: number) {
@@ -270,12 +279,13 @@ export interface User {
 	role: string
 	is_admin: boolean
 	is_active: boolean
+	is_ldap: boolean
 	created_at: string
 }
 
 export async function getUsers() {
 	const res = await api.get('/admin/users')
-	return res.data as User[]
+	return (res.data || []) as User[]
 }
 
 export async function createUser(data: { username: string; password: string; role: string }) {
