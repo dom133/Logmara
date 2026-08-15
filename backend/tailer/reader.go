@@ -126,6 +126,15 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 		splitter := &lineSplitter{}
 		scanner.Split(splitter.split)
 
+		// If we're at or near the end of the file, rsyslog may still be
+		// writing the last line. Wait briefly before scanning so we don't
+		// read a partial write and produce a malformed queue entry.
+		if filePos >= 0 && (filePos >= fileSize || fileSize-filePos < 4096) {
+			if !sleepOrDone(ctx, 200*time.Millisecond) {
+				return
+			}
+		}
+
 		curFilePos := filePos
 		published := 0
 

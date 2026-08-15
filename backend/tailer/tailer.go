@@ -866,6 +866,14 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 		splitter := &lineSplitter{}
 		scanner.Split(splitter.split)
 
+		// If we're at or near the end of the file, rsyslog may still be
+		// writing the last line. Wait briefly before scanning so we don't
+		// read a partial write and produce a "[MALFORMED JSON]" entry.
+		if filePos >= 0 && (filePos >= fileSize || fileSize-filePos < 4096) {
+			if !sleepOrDone(ctx, 200*time.Millisecond) {
+				return
+			}
+		}
 
 		curFilePos := filePos
 		scanned := false
@@ -885,6 +893,15 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 
 			var entry model.IngestEntry
 			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				// Every valid line in logs.jsonl starts with "{" (JsonLines
+				// template). A line that doesn't is a partial write from
+				// rsyslog — discard and break so the next loop iteration
+				// re-reads it cleanly.
+				if !strings.HasPrefix(line, "{") {
+					slog.Warn("tailer: dropping partial write from rsyslog", "lineLen", len(line))
+					break
+				}
+
 				debug := line
 				if len(debug) > 200 {
 					debug = debug[:200]

@@ -272,6 +272,18 @@ func (w *worker) run(ctx context.Context) {
 
 				var entry model.IngestEntry
 				if err := json.Unmarshal([]byte(line), &entry); err != nil {
+					// Every valid line in logs.jsonl starts with "{" (JsonLines
+					// template). A line that doesn't is a partial write from
+					// rsyslog that made it into the queue — discard silently.
+					if !strings.HasPrefix(line, "{") {
+						w.flushTrk.ReportFlushed(ctx, []sharedstate.QueueEntry{qe})
+						delivery.Ack(false)
+						w.metrics.Mutex.Lock()
+						w.metrics.MsgsProcessed++
+						w.metrics.Mutex.Unlock()
+						continue
+					}
+
 					debug := line
 					if len(debug) > 200 {
 						debug = debug[:200]
