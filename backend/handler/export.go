@@ -17,23 +17,38 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// exportFilterOptionsFromQuery builds LogFilterOptions from the query params
-// shared by the generic /export endpoints and the dashboard-scoped ones -
-// same filters the table view itself uses, so exports match what's on screen.
-func exportFilterOptionsFromQuery(c *gin.Context) LogFilterOptions {
+// ExportFilterRequest is the JSON body for export endpoints.
+type ExportFilterRequest struct {
+	Hostname   string `json:"hostname"`
+	FromHostIP string `json:"fromhost_ip"`
+	Severity   string `json:"severity"`
+	AppName    string `json:"app_name"`
+	Search     string `json:"search"`
+	From       string `json:"from"`
+	To         string `json:"to"`
+	Devices    string `json:"devices"`
+	HasFields  string `json:"has_fields"`
+	TZ         string `json:"tz"`
+	Limit      string `json:"limit"`
+}
+
+// exportFilterOptionsFromBody builds LogFilterOptions from the JSON request body.
+func exportFilterOptionsFromBody(c *gin.Context) LogFilterOptions {
+	var req ExportFilterRequest
+	_ = c.ShouldBindJSON(&req)
 	opts := LogFilterOptions{
-		Hostname:   c.Query("hostname"),
-		FromHostIP: c.Query("fromhost_ip"),
-		Severity:   c.Query("severity"),
-		AppName:    c.Query("app_name"),
-		Search:     c.Query("search"),
-		From:       c.Query("from"),
-		To:         c.Query("to"),
+		Hostname:   req.Hostname,
+		FromHostIP: req.FromHostIP,
+		Severity:   req.Severity,
+		AppName:    req.AppName,
+		Search:     req.Search,
+		From:       req.From,
+		To:         req.To,
 	}
-	if devices := c.Query("devices"); devices != "" {
-		opts.Devices = strings.Split(devices, ",")
+	if req.Devices != "" {
+		opts.Devices = strings.Split(req.Devices, ",")
 	}
-	opts.HasFields = c.Query("has_fields") == "1"
+	opts.HasFields = req.HasFields == "1"
 	return opts
 }
 
@@ -53,7 +68,12 @@ func csvSafe(s string) string {
 
 func ExportCSV(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		limitStr := c.DefaultQuery("limit", "100000")
+		var req ExportFilterRequest
+		_ = c.ShouldBindJSON(&req)
+		limitStr := req.Limit
+		if limitStr == "" {
+			limitStr = "100000"
+		}
 		limit, err := strconv.Atoi(limitStr)
 		if err != nil || limit <= 0 {
 			limit = DefaultExportLimit
@@ -62,14 +82,14 @@ func ExportCSV(db *sql.DB) gin.HandlerFunc {
 			limit = MaxExportLimit
 		}
 
-		whereClauses, args, _ := buildLogWhereClauses(exportFilterOptionsFromQuery(c))
+		whereClauses, args, _ := buildLogWhereClauses(exportFilterOptionsFromBody(c))
 		writeCSVExport(c, db, buildWhereSQL(whereClauses), args, limit, nil)
 	}
 }
 
 func ExportHTML(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		whereClauses, args, _ := buildLogWhereClauses(exportFilterOptionsFromQuery(c))
+		whereClauses, args, _ := buildLogWhereClauses(exportFilterOptionsFromBody(c))
 		writeHTMLExport(c, db, buildWhereSQL(whereClauses), args, 5000, nil)
 	}
 }
@@ -175,7 +195,12 @@ func writeHTMLExport(c *gin.Context, db *sql.DB, whereSQL string, args []interfa
 // Postgres rejects the zone name (unknown zones only fail at AT TIME ZONE
 // evaluation, not query parse time).
 func queryExportRows(c *gin.Context, db *sql.DB, whereSQL string, args []interface{}, limit int) (*sql.Rows, error) {
-	tz := c.DefaultQuery("tz", "UTC")
+	var req ExportFilterRequest
+	_ = c.ShouldBindJSON(&req)
+	tz := req.TZ
+	if tz == "" {
+		tz = "UTC"
+	}
 	tzIdx := len(args) + 1
 	limitIdx := len(args) + 2
 	query := fmt.Sprintf(

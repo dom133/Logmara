@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"syslytics/db"
+	"syslytics/util"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -25,28 +26,17 @@ type Config struct {
 	db        *sql.DB
 }
 
-// weakDefaultJWTSecret is the placeholder value shipped in docker-compose.yml
-// and .env.example. It must never be used to sign real tokens.
+// weakDefaultJWTSecret is the placeholder value that used to ship in
+// docker-compose.yml and .env.example. It must never be used to sign real
+// tokens, so it is treated as "unset".
 const weakDefaultJWTSecret = "change-this-to-a-random-secret-key"
 
-// Init validates the JWT secret, persists a generated one if missing,
-// and returns a ready-to-use Config.
+// Init resolves the JWT secret from the environment and returns a ready-to-use
+// Config. The secret is never read from or written to the database.
 func Init(database *sql.DB) (*Config, error) {
-	secret := os.Getenv("JWT_SECRET")
-	if secret == weakDefaultJWTSecret {
-		secret = ""
-	} else if secret != "" && len(secret) < 32 {
-		return nil, fmt.Errorf("JWT_SECRET is too short (%d chars); use at least 32 characters", len(secret))
-	}
-	if secret == "" {
-		secret = db.GetSetting(database, "jwt_secret", "")
-	}
-	if secret != "" && len(secret) < 32 {
-		return nil, fmt.Errorf("persisted jwt_secret is too short (%d chars); use at least 32 characters", len(secret))
-	}
-	if secret == "" {
-		secret = generateRandomKey()
-		db.UpdateSetting(database, "jwt_secret", secret)
+	secret, err := ResolveJWTSecret()
+	if err != nil {
+		return nil, err
 	}
 	return &Config{
 		jwtSecret: []byte(secret),
@@ -54,10 +44,21 @@ func Init(database *sql.DB) (*Config, error) {
 	}, nil
 }
 
-func generateRandomKey() string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+// ResolveJWTSecret returns the JWT signing secret from the JWT_SECRET env var
+// (or the file JWT_SECRET_FILE points at), or an error explaining how to set
+// it. It deliberately never falls back to the database: keeping the signing
+// key out of the same store as the data means a database dump alone cannot
+// forge session tokens. Shared by Init at startup and the setup wizard's
+// pre-flight check so both enforce identical rules.
+func ResolveJWTSecret() (string, error) {
+	secret := util.SecretFromEnv("JWT_SECRET")
+	if secret == "" || secret == weakDefaultJWTSecret {
+		return "", fmt.Errorf("JWT_SECRET is not set; generate one (e.g. `openssl rand -base64 48`) and provide it via the JWT_SECRET env var or JWT_SECRET_FILE - see README")
+	}
+	if len(secret) < 32 {
+		return "", fmt.Errorf("JWT_SECRET is too short (%d chars); use at least 32 characters", len(secret))
+	}
+	return secret, nil
 }
 
 func generateJTI() string {
@@ -184,9 +185,11 @@ func (cfg *Config) JWTRequired() gin.HandlerFunc {
 				tokenString = authHeader
 			}
 		}
-		if tokenString == "" {
-			tokenString = c.Query("token")
-		}
+		// Deliberately no ?token= query-param fallback: an access token in the
+		// URL leaks into nginx access logs, browser history and Referer
+		// headers. The SSE stream (the one client that can't set headers with
+		// EventSource) is fetched with credentials instead - see
+		// frontend streamNotifications - so it rides the cookie like everything else.
 		if tokenString == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization header"})
 			c.Abort()

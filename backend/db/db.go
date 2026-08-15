@@ -60,15 +60,18 @@ func Connect(dsn string) (*sql.DB, error) {
 
 	slog.Info("db pool configured", "max_open", maxOpen, "max_idle", maxIdle, "max_lifetime", maxLifeTime, "max_idle_time", maxIdleTime)
 
+	var lastErr error
 	for i := 0; i < 5; i++ {
 		if err := db.Ping(); err == nil {
 			return db, nil
+		} else {
+			lastErr = err
 		}
-		slog.Warn("waiting for database", "attempt", i+1)
+		slog.Warn("waiting for database", "attempt", i+1, "error", lastErr)
 		time.Sleep(2 * time.Second)
 	}
 
-	return nil, fmt.Errorf("could not connect to database after 5 attempts")
+	return nil, fmt.Errorf("could not connect to database after 5 attempts: %w", lastErr)
 }
 
 // migrationLockKey is an arbitrary constant used as a Postgres advisory
@@ -756,13 +759,11 @@ func GetSetting(db *sql.DB, key, defaultValue string) string {
 		return defaultValue
 	}
 	if (key == "ldap_bind_password" || key == "smtp_password") && val != "" {
-		encKey := os.Getenv("ENCRYPTION_KEY")
-		if encKey == "" {
-			encKey = getSettingRaw(db, "encryption_key")
-		}
-		if encKey != "" {
-			decrypted, err := util.Decrypt(encKey, val)
-			if err == nil {
+		// Encryption key comes only from the environment (ENCRYPTION_KEY /
+		// ENCRYPTION_KEY_FILE), never the database - see util.SecretFromEnv and
+		// the "secrets at rest" note in README.
+		if encKey := util.SecretFromEnv("ENCRYPTION_KEY"); encKey != "" {
+			if decrypted, err := util.Decrypt(encKey, val); err == nil {
 				return decrypted
 			}
 		}
@@ -773,13 +774,8 @@ func GetSetting(db *sql.DB, key, defaultValue string) string {
 // UpdateSetting updates a setting value, encrypting sensitive fields
 func UpdateSetting(db *sql.DB, key, value string) error {
 	if (key == "ldap_bind_password" || key == "smtp_password") && value != "" {
-		encKey := os.Getenv("ENCRYPTION_KEY")
-		if encKey == "" {
-			encKey = getSettingRaw(db, "encryption_key")
-		}
-		if encKey != "" {
-			encrypted, err := util.Encrypt(encKey, value)
-			if err == nil {
+		if encKey := util.SecretFromEnv("ENCRYPTION_KEY"); encKey != "" {
+			if encrypted, err := util.Encrypt(encKey, value); err == nil {
 				value = encrypted
 			}
 		}
@@ -1250,22 +1246,22 @@ func GetAuditLogs(db *sql.DB, filter AuditLogFilter) ([]AuditLog, int64, error) 
 	argIdx := 1
 
 	if filter.Username != "" {
-		whereConditions = append(whereConditions, fmt.Sprintf("username ILIKE $%s", argIdx))
+		whereConditions = append(whereConditions, fmt.Sprintf("username ILIKE $%d", argIdx))
 		args = append(args, "%"+filter.Username+"%")
 		argIdx++
 	}
 	if filter.Action != "" {
-		whereConditions = append(whereConditions, fmt.Sprintf("action = $%s", argIdx))
+		whereConditions = append(whereConditions, fmt.Sprintf("action = $%d", argIdx))
 		args = append(args, filter.Action)
 		argIdx++
 	}
 	if filter.From != "" {
-		whereConditions = append(whereConditions, fmt.Sprintf("created_at >= $%s", argIdx))
+		whereConditions = append(whereConditions, fmt.Sprintf("created_at >= $%d", argIdx))
 		args = append(args, filter.From)
 		argIdx++
 	}
 	if filter.To != "" {
-		whereConditions = append(whereConditions, fmt.Sprintf("created_at <= $%s", argIdx))
+		whereConditions = append(whereConditions, fmt.Sprintf("created_at <= $%d", argIdx))
 		args = append(args, filter.To)
 		argIdx++
 	}

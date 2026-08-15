@@ -51,11 +51,18 @@ type DashboardConfig struct {
 	Filters DashboardFilters `json:"filters"`
 }
 
+type FieldFilter struct {
+	Field    string   `json:"field"`
+	Operator string   `json:"operator"`
+	Values   []string `json:"values"`
+}
+
 type DashboardFilters struct {
-	Severity string `json:"severity,omitempty"`
-	From     string `json:"from,omitempty"`
-	To       string `json:"to,omitempty"`
-	Search   string `json:"search,omitempty"`
+	Severity    string        `json:"severity,omitempty"`
+	From        string        `json:"from,omitempty"`
+	To          string        `json:"to,omitempty"`
+	Search      string        `json:"search,omitempty"`
+	FieldFilters []FieldFilter `json:"fieldFilters,omitempty"`
 }
 
 type DashboardDataResponse struct {

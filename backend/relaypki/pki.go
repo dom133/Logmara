@@ -13,6 +13,7 @@
 package relaypki
 
 import (
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -69,7 +70,7 @@ func EnsureCA(dir string) error {
 	caKeyPath := filepath.Join(dir, caKeyFile)
 
 	var caCert *x509.Certificate
-	var caKey *rsa.PrivateKey
+	var caKey crypto.Signer
 
 	if _, err := os.Stat(caCertPath); err == nil {
 		caCert, caKey, err = loadCA(dir)
@@ -90,7 +91,10 @@ func EnsureCA(dir string) error {
 		if err := writeCertPEM(caCertPath, caCert.Raw, 0644); err != nil {
 			return err
 		}
-		if err := writeRSAKeyPEM(caKeyPath, caKey, 0600); err != nil {
+		// generateCA() above always yields an RSA key today - see its doc
+		// comment on why loadCA (used on the other branch) must additionally
+		// tolerate an EC key.
+		if err := writeRSAKeyPEM(caKeyPath, caKey.(*rsa.PrivateKey), 0600); err != nil {
 			return err
 		}
 	}
@@ -107,7 +111,7 @@ func EnsureCA(dir string) error {
 	return issueServerCert(dir, caCert, caKey)
 }
 
-func generateCA() (*x509.Certificate, *rsa.PrivateKey, error) {
+func generateCA() (*x509.Certificate, crypto.Signer, error) {
 	key, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
 		return nil, nil, err
@@ -132,7 +136,7 @@ func generateCA() (*x509.Certificate, *rsa.PrivateKey, error) {
 // Subject. This only handles ordinary expiry; a suspected key compromise
 // needs a real rotation instead (a new key, and every relay certificate
 // reissued), which isn't automatic.
-func renewCA(dir string, oldCert *x509.Certificate, key *rsa.PrivateKey) (*x509.Certificate, error) {
+func renewCA(dir string, oldCert *x509.Certificate, key crypto.Signer) (*x509.Certificate, error) {
 	cert, err := selfSignCA(key, oldCert.Subject)
 	if err != nil {
 		return nil, err
@@ -143,7 +147,7 @@ func renewCA(dir string, oldCert *x509.Certificate, key *rsa.PrivateKey) (*x509.
 	return cert, nil
 }
 
-func selfSignCA(key *rsa.PrivateKey, subject pkix.Name) (*x509.Certificate, error) {
+func selfSignCA(key crypto.Signer, subject pkix.Name) (*x509.Certificate, error) {
 	serial, err := newSerialNumber()
 	if err != nil {
 		return nil, err
@@ -157,7 +161,7 @@ func selfSignCA(key *rsa.PrivateKey, subject pkix.Name) (*x509.Certificate, erro
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +174,7 @@ func selfSignCA(key *rsa.PrivateKey, subject pkix.Name) (*x509.Certificate, erro
 // it's nearing expiry. Unlike the CA, there's no reason to keep the same
 // key across reissuance: this cert is never distributed to anything that
 // pins it, relays only need to trust the CA that signs it.
-func issueServerCert(dir string, caCert *x509.Certificate, caKey *rsa.PrivateKey) error {
+func issueServerCert(dir string, caCert *x509.Certificate, caKey crypto.Signer) error {
 	serverKey, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
 		return fmt.Errorf("generate server key: %w", err)
@@ -197,7 +201,7 @@ func issueServerCert(dir string, caCert *x509.Certificate, caKey *rsa.PrivateKey
 	return writeRSAKeyPEM(filepath.Join(dir, serverKeyFile), serverKey, 0600)
 }
 
-func loadCA(dir string) (*x509.Certificate, *rsa.PrivateKey, error) {
+func loadCA(dir string) (*x509.Certificate, crypto.Signer, error) {
 	certPEM, err := os.ReadFile(filepath.Join(dir, caCertFile))
 	if err != nil {
 		return nil, nil, err
@@ -216,16 +220,41 @@ func loadCA(dir string) (*x509.Certificate, *rsa.PrivateKey, error) {
 		return nil, nil, err
 	}
 
-	keyBlock, _ := pem.Decode(keyPEM)
-	if keyBlock == nil {
-		return nil, nil, fmt.Errorf("invalid CA key PEM")
-	}
-	key, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+	key, err := parsePrivateKeyPEM(keyPEM)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	return cert, key, nil
+}
+
+// parsePrivateKeyPEM loads either kind of key that can legitimately own
+// ca.key: this package's own RSA (PKCS1) keys, or the EC (SEC1,
+// prime256v1) placeholder rsyslog/entrypoint.sh generates via `openssl
+// ecparam` when it wins the "whichever writes ca.key first" race described
+// in EnsureCA's doc comment. Falls back to PKCS8 in case either side's
+// generation ever changes format.
+func parsePrivateKeyPEM(keyPEM []byte) (crypto.Signer, error) {
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return nil, fmt.Errorf("invalid CA key PEM")
+	}
+	switch block.Type {
+	case "EC PRIVATE KEY":
+		return x509.ParseECPrivateKey(block.Bytes)
+	case "RSA PRIVATE KEY":
+		return x509.ParsePKCS1PrivateKey(block.Bytes)
+	default:
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("unrecognized private key format %q: %w", block.Type, err)
+		}
+		signer, ok := key.(crypto.Signer)
+		if !ok {
+			return nil, fmt.Errorf("private key of type %T does not support signing", key)
+		}
+		return signer, nil
+	}
 }
 
 // loadCertOnly reads just a certificate's expiry (no key needed) - used to

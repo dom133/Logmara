@@ -2,10 +2,11 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form, Popconfirm, message } from 'antd'
 import { ArrowLeftOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined, ClockCircleOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
-import { getDashboard, getDashboardData, getDashboardDataCount, exportDashboardCSV, exportDashboardHTML, togglePinDashboard, togglePublicDashboard, Dashboard, LogEntry, getDevices, DeviceStats, resolveDeviceDisplayName, sortSupportsCursor } from '../services/api'
+import { getDashboard, getDashboardData, getDashboardDataCount, exportDashboardCSV, exportDashboardHTML, togglePinDashboard, togglePublicDashboard, Dashboard, LogEntry, getDevices, DeviceStats, resolveDeviceDisplayName, sortSupportsCursor, FieldFilter } from '../services/api'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
+import DashboardFieldFilters from '../components/DashboardFieldFilters'
 import { SEVERITY_LABELS } from '../constants'
 import { useAuth } from '../services/auth'
 
@@ -38,6 +39,7 @@ export default function DashboardViewPage() {
     to: '',
     sort: 'timestamp_desc',
   })
+  const [fieldFilters, setFieldFilters] = useState<FieldFilter[]>([])
   const [detailLog, setDetailLog] = useState<LogEntry | null>(null)
   const [devices, setDevices] = useState<DeviceStats[]>([])
   const { user } = useAuth()
@@ -77,6 +79,9 @@ export default function DashboardViewPage() {
     try {
       const d = await getDashboard(dashboardId)
       setDashboard(d)
+      if (d?.config?.filters?.fieldFilters) {
+        setFieldFilters(d.config.filters.fieldFilters)
+      }
     } catch (e) {
       navigate('/')
     } finally {
@@ -108,13 +113,14 @@ export default function DashboardViewPage() {
         filters.search, filters.severity, from, to,
         filters.sort, !useCursor && !reset ? offsetRef.current : 0,
         filters.fromhost_ip,
+        fieldFilters.length > 0 ? fieldFilters : undefined,
       )
       setLogs(prev => (reset ? data.logs : [...prev, ...data.logs]))
       setHasMore(data.has_more)
       cursorRef.current = data.next_cursor
       offsetRef.current = reset ? pageSize : offsetRef.current + pageSize
       if (reset) {
-        getDashboardDataCount(dashboardId, filters.search, filters.severity, from, to, filters.fromhost_ip)
+        getDashboardDataCount(dashboardId, filters.search, filters.severity, from, to, filters.fromhost_ip, fieldFilters.length > 0 ? fieldFilters : undefined)
           .then(setTotalLogs).catch(() => {})
       }
     } catch (e) {
@@ -123,7 +129,7 @@ export default function DashboardViewPage() {
       setTableLoading(false)
       setLoadingMore(false)
     }
-  }, [dashboardId, pageSize, filters])
+  }, [dashboardId, pageSize, filters, fieldFilters])
 
   const handleLoadMore = () => loadLogs(false)
 
@@ -132,7 +138,7 @@ export default function DashboardViewPage() {
     try {
       const from = filters.from ? dayjs(filters.from).format() : ''
       const to = filters.to ? dayjs(filters.to).format() : ''
-      const data = await getDashboardData(dashboardId, pageSize, '', filters.search, filters.severity, from, to, filters.sort, 0, filters.fromhost_ip)
+      const data = await getDashboardData(dashboardId, pageSize, '', filters.search, filters.severity, from, to, filters.sort, 0, filters.fromhost_ip, fieldFilters.length > 0 ? fieldFilters : undefined)
       setHasMore(data.has_more)
       cursorRef.current = data.next_cursor
       offsetRef.current = pageSize
@@ -140,7 +146,7 @@ export default function DashboardViewPage() {
     } catch (e) {
       // error handled by API
     }
-  }, [dashboardId, pageSize, filters, appendMode])
+  }, [dashboardId, pageSize, filters, appendMode, fieldFilters])
 
   const handleExport = (format: 'csv' | 'html') => {
     const from = filters.from ? dayjs(filters.from).format() : ''
@@ -156,6 +162,10 @@ export default function DashboardViewPage() {
     else exportDashboardHTML(dashboardId, params)
     message.success(`Exporting ${format.toUpperCase()}...`)
   }
+
+  useEffect(() => {
+    setFieldFilters([])
+  }, [dashboardId])
 
   useEffect(() => {
     loadDashboard()
@@ -514,6 +524,10 @@ export default function DashboardViewPage() {
           </Col>
         </Row>
       )}
+
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <DashboardFieldFilters availableFields={fields} value={fieldFilters} onChange={setFieldFilters} />
+      </Card>
 
       <Table
         dataSource={logs}

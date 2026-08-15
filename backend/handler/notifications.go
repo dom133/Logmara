@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	"syslytics/db"
@@ -128,13 +127,17 @@ func TestNotificationChannel(database *sql.DB, hub *notifyhub.Hub) gin.HandlerFu
 	}
 }
 
+type NotificationHistoryRequest struct {
+	Limit int `json:"limit"`
+}
+
 func GetNotificationHistory(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		limit := DefaultAdminLimit
-		if v := c.Query("limit"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil {
-				limit = n
-			}
+		var req NotificationHistoryRequest
+		_ = c.ShouldBindJSON(&req)
+		limit := req.Limit
+		if limit <= 0 {
+			limit = DefaultAdminLimit
 		}
 
 		entries, err := db.GetNotificationHistory(database, limit)

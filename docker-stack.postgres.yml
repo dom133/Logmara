@@ -136,11 +136,12 @@ services:
     volumes:
       - type: bind
         source: /srv/syslog-ha/pg
-        target: /home/postgres/pgdata
+        target: /home/postgres
     healthcheck: *patroni-healthcheck
     logging: *patroni-logging
     depends_on: [etcd1, etcd2, etcd3]
     deploy:
+      endpoint_mode: dnsrr
       replicas: 1
       restart_policy:
         condition: on-failure
@@ -161,11 +162,12 @@ services:
     volumes:
       - type: bind
         source: /srv/syslog-ha/pg
-        target: /home/postgres/pgdata
+        target: /home/postgres
     healthcheck: *patroni-healthcheck
     logging: *patroni-logging
     depends_on: [etcd1, etcd2, etcd3]
     deploy:
+      endpoint_mode: dnsrr
       replicas: 1
       restart_policy:
         condition: on-failure
@@ -186,11 +188,12 @@ services:
     volumes:
       - type: bind
         source: /srv/syslog-ha/pg
-        target: /home/postgres/pgdata
+        target: /home/postgres
     healthcheck: *patroni-healthcheck
     logging: *patroni-logging
     depends_on: [etcd1, etcd2, etcd3]
     deploy:
+      endpoint_mode: dnsrr
       replicas: 1
       restart_policy:
         condition: on-failure
@@ -204,7 +207,7 @@ services:
     image: haproxy:2.9-alpine
     networks: [syslog_net]
     configs:
-      - source: haproxy_pg_cfg
+      - source: haproxy_pg_cfg_1784921589
         target: /usr/local/etc/haproxy/haproxy.cfg
     ports:
       # Published on every "app" node via host mode; point api's
@@ -235,5 +238,5 @@ secrets:
     external: true
 
 configs:
-  haproxy_pg_cfg:
+  haproxy_pg_cfg_1784921589:
     external: true

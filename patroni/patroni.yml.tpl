@@ -28,6 +28,17 @@ bootstrap:
         hot_standby: "on"
         max_wal_senders: 10
         max_replication_slots: 10
+        # Without these, a replication connection killed mid-transfer (e.g.
+        # Patroni's own bootstrap timeout firing on a slow/interrupted
+        # attempt) can leave the walsender on the leader permanently blocked
+        # in a write() syscall if the overlay network drops the FIN/RST -
+        # wal_sender_timeout alone doesn't help since the process never gets
+        # back to its own event loop to check it. These make the kernel
+        # detect the dead peer and unblock the write within ~60s instead.
+        tcp_keepalives_idle: 30
+        tcp_keepalives_interval: 10
+        tcp_keepalives_count: 3
+        wal_sender_timeout: 30000
   initdb:
     - encoding: UTF8
     - data-checksums

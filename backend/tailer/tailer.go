@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -48,17 +50,22 @@ func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine
 	runWithLeaderElection(ctx, db, filePath, engine, ic, elector, alerts)
 }
 
-func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine) {
-	const retryInterval = 5 * time.Second
-	const renewInterval = 5 * time.Second
+const (
+	leaderRetryInterval   = 5 * time.Second
+	leaderRetryJitter     = 1 * time.Second
+	leaderRenewInterval   = 5 * time.Second
+	leaderMaxRenewFails   = 3
+)
 
+func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
 		if !elector.Acquire(ctx) {
-			if !sleepOrDone(ctx, retryInterval) {
+			jitter := time.Duration(rand.Int63n(int64(leaderRetryJitter)))
+			if !sleepOrDone(ctx, leaderRetryInterval+jitter) {
 				return
 			}
 			continue
@@ -72,6 +79,8 @@ func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, eng
 			runIngestionLoop(leaderCtx, db, filePath, engine, ic, alerts)
 		}()
 
+		consecutiveFails := 0
+
 	renewLoop:
 		for {
 			select {
@@ -80,12 +89,18 @@ func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, eng
 				<-done
 				elector.Release(context.Background())
 				return
-			case <-time.After(renewInterval):
+			case <-time.After(leaderRenewInterval):
 				if !elector.Renew(ctx) {
-					slog.Warn("tailer: lost leader lock, stepping down")
-					cancel()
-					<-done
-					break renewLoop
+					consecutiveFails++
+					slog.Warn("tailer: renew failed", "consecutive", consecutiveFails, "threshold", leaderMaxRenewFails)
+					if consecutiveFails >= leaderMaxRenewFails {
+						slog.Warn("tailer: lost leader lock, stepping down")
+						cancel()
+						<-done
+						break renewLoop
+					}
+				} else {
+					consecutiveFails = 0
 				}
 			}
 		}
@@ -140,7 +155,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 
 		f, err := os.OpenFile(filePath, os.O_RDWR, 0644)
 		if err != nil {
-			slog.Error("waiting for file", "path", filePath, "error", err)
+			slog.Warn("tailer: log file not available, retrying", "path", filePath, "error", err)
 			if !sleepOrDone(ctx, 2*time.Second) {
 				return
 			}
@@ -191,6 +206,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 
 		for scanner.Scan() {
 			if ic.IsPaused() {
+				slog.Info("tailer: ingestion paused, breaking scan")
 				break
 			}
 			line := scanner.Text()
@@ -220,8 +236,15 @@ if entry.Hostname == "" {
 		// (e.g. "2026-07-23T20") as programname and the rest ("11:40.246Z ...")
 		// as the message. Restore the original message by merging them back.
 		if truncatedISORe.MatchString(entry.AppName) {
-			entry.Message = entry.AppName + ":" + entry.Message
-			entry.AppName = ""
+			fullMsg := entry.AppName + ":" + entry.Message
+			entry.Message = fullMsg
+			entry.RawMessage = fullMsg
+			// If the restored message contains a known structured format, set app
+			if idx := strings.Index(fullMsg, "CEF:"); idx >= 0 {
+				entry.AppName = "CEF"
+			} else {
+				entry.AppName = ""
+			}
 		}
 
 		appName := entry.AppName
@@ -242,13 +265,20 @@ if entry.Hostname == "" {
 					if err := flushBatch(db, entries); err != nil {
 						slog.Error("flush error", "error", err)
 					} else {
-						flushedPos = batchStartPos
-						savePosition(posFile, flushedPos)
+						curPos, seekErr := f.Seek(0, 1)
+						if seekErr == nil {
+							flushedPos = curPos
+							savePosition(posFile, flushedPos)
+						} else {
+							flushedPos = batchStartPos
+						}
 						alerts.EvaluateBatch(db, entries)
 					}
 				}
 				entries = entries[:0]
-				batchStartPos = filePos
+				if cp, err := f.Seek(0, 1); err == nil {
+					batchStartPos = cp
+				}
 				lastFlush = now
 			}
 		}
@@ -270,6 +300,9 @@ if entry.Hostname == "" {
 				alerts.EvaluateBatch(db, entries)
 			}
 			entries = entries[:0]
+		}
+		if len(entries) > 0 && ic.IsPaused() {
+			slog.Warn("tailer: skipping flush — ingestion paused", "entries", len(entries))
 		}
 
 		if !sleepOrDone(ctx, 200*time.Millisecond) {

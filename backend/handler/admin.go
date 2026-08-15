@@ -595,17 +595,22 @@ func postReload(url string) error {
 	return nil
 }
 
-// reloadNginxWithRetry retries reloadNginx a few times with a fixed delay,
+// reloadNginxWithRetry retries reloadNginx with exponential backoff,
 // smoothing over the brief window (container startup, or an admin action
 // that races it) where the frontend's reload sidecar isn't listening yet.
 func reloadNginxWithRetry(httpsEnabled, redirectEnabled bool, corsOrigins string, attempts int, delay time.Duration) error {
 	var err error
+	backoff := delay
 	for i := 0; i < attempts; i++ {
 		if err = reloadNginx(httpsEnabled, redirectEnabled, corsOrigins); err == nil {
 			return nil
 		}
 		if i < attempts-1 {
-			time.Sleep(delay)
+			time.Sleep(backoff)
+			backoff = backoff * 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
 		}
 	}
 	return err
@@ -754,13 +759,17 @@ func TestLDAP(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
+type AuditLogRequest struct {
+	Limit int `json:"limit"`
+}
+
 func GetAuditLog(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		limit := DefaultAdminLimit
-		if l := c.Query("limit"); l != "" {
-			if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 1000 {
-				limit = n
-			}
+		var req AuditLogRequest
+		_ = c.ShouldBindJSON(&req)
+		limit := req.Limit
+		if limit <= 0 || limit > 1000 {
+			limit = DefaultAdminLimit
 		}
 
 		rows, err := database.Query(
@@ -786,27 +795,33 @@ func GetAuditLog(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
+type AuditLogQueryRequest struct {
+	Username string `json:"username"`
+	Action   string `json:"action"`
+	From     string `json:"from"`
+	To       string `json:"to"`
+	Limit    int    `json:"limit"`
+	Offset   int    `json:"offset"`
+}
+
 func GetAuditLogsHandler(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		limit := 50
-		if l := c.Query("limit"); l != "" {
-			if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 1000 {
-				limit = n
-			}
+		var req AuditLogQueryRequest
+		_ = c.ShouldBindJSON(&req)
+		limit := req.Limit
+		if limit <= 0 || limit > 1000 {
+			limit = 50
 		}
-
-		offset := 0
-		if o := c.Query("offset"); o != "" {
-			if n, err := strconv.Atoi(o); err == nil && n >= 0 {
-				offset = n
-			}
+		offset := req.Offset
+		if offset < 0 {
+			offset = 0
 		}
 
 		filter := db.AuditLogFilter{
-			Username: c.Query("username"),
-			Action:   c.Query("action"),
-			From:     c.Query("from"),
-			To:       c.Query("to"),
+			Username: req.Username,
+			Action:   req.Action,
+			From:     req.From,
+			To:       req.To,
 			Limit:    limit,
 			Offset:   offset,
 		}

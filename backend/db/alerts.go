@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -14,11 +13,12 @@ import (
 	"syslytics/util"
 )
 
-func encryptionKey(db *sql.DB) string {
-	if k := os.Getenv("ENCRYPTION_KEY"); k != "" {
-		return k
-	}
-	return getSettingRaw(db, "encryption_key")
+// encryptionKey returns the AES key used to encrypt notification-channel
+// secrets. It is sourced only from the environment (never the database), so a
+// database dump alone can't decrypt them - see util.SecretFromEnv. The *sql.DB
+// parameter is kept for call-site symmetry with the other db helpers.
+func encryptionKey(_ *sql.DB) string {
+	return util.SecretFromEnv("ENCRYPTION_KEY")
 }
 
 // ---- Alerts ----
