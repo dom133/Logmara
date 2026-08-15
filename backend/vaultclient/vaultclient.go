@@ -47,8 +47,13 @@ const requestTimeout = 5 * time.Second
 const dynamicSecretTimeout = 15 * time.Second
 
 // dynamicSecretMaxRetries is how many times to retry a dynamic-credentials
-// request when it fails with context.DeadlineExceeded.
+// request when it fails with context.DeadlineExceeded or Vault 500.
 const dynamicSecretMaxRetries = 2
+
+// dynamicFetchMaxRetries is how many times to retry the initial dynamic
+// credentials fetch at startup. More retries than rotation since startup
+// should tolerate Vault being briefly unavailable.
+const dynamicFetchMaxRetries = 5
 
 // dynamicSecretRetryDelay is the wait between retries.
 const dynamicSecretRetryDelay = 2 * time.Second
@@ -386,10 +391,12 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 			break
 		}
 
-		// Retry only on deadline exceeded; other errors are likely
-		// misconfiguration and won't be fixed by retrying.
-		if err == context.DeadlineExceeded && attempt < dynamicSecretMaxRetries {
-			slog.Warn("vault: dynamic secret rotation timed out, will retry", "engine", engine, "attempt", attempt+1, "error", err)
+		// Retry on deadline exceeded or Vault 500 (transient backend errors
+		// like PostgreSQL "tuple concurrently updated"). Other errors are
+		// likely misconfiguration and won't be fixed by retrying.
+		isRetryable := (err == context.DeadlineExceeded) || strings.Contains(err.Error(), "Code: 500")
+		if isRetryable && attempt < dynamicSecretMaxRetries {
+			slog.Warn("vault: dynamic secret rotation failed, will retry", "engine", engine, "attempt", attempt+1, "error", err)
 			continue
 		}
 
@@ -421,10 +428,10 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 		username, _ := secret.Data["username"].(string)
 		password, _ := secret.Data["password"].(string)
 		if username != "" && password != "" {
-			host := os.Getenv("PG_HOST")
-			port := os.Getenv("PG_PORT")
-			dbname := os.Getenv("PG_DB")
-			sslmode := os.Getenv("PG_SSLMODE")
+			host := os.Getenv("POSTGRES_HOST")
+			port := os.Getenv("POSTGRES_PORT")
+			dbname := os.Getenv("POSTGRES_DB")
+			sslmode := os.Getenv("POSTGRES_SSLMODE")
 			newValue = "postgres://" + username + ":" + password + "@" + host + ":" + port + "/" + dbname + "?sslmode=" + sslmode
 		}
 	case "redis":
@@ -450,5 +457,121 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 		if onFailure != nil {
 			onFailure(engine, "rotation produced no value")
 		}
+	}
+}
+
+// DynamicCredentials holds the DSN and RabbitMQ URL fetched from Vault's
+// dynamic secrets engines.
+type DynamicCredentials struct {
+	PGDSN     string
+	RabbitMQ  string
+}
+
+// FetchDynamicCredentials fetches initial dynamic credentials for PostgreSQL
+// and RabbitMQ from Vault. It retries on transient errors (deadline exceeded,
+// Vault 500) up to dynamicFetchMaxRetries times. Returns an error if Vault
+// is unavailable after all retries.
+//
+// Returns nil (not an error) if Vault is not configured (c is nil), so
+// callers can fall back to static credentials or the setup wizard.
+func (c *Client) FetchDynamicCredentials(ctx context.Context) (*DynamicCredentials, error) {
+	if c == nil {
+		return nil, nil
+	}
+
+	pgDSN, err := c.fetchDynamicCredential(ctx, "database")
+	if err != nil {
+		return nil, fmt.Errorf("fetch PG dynamic credentials: %w", err)
+	}
+
+	rmqURL, err := c.fetchDynamicCredential(ctx, "rabbitmq")
+	if err != nil {
+		return nil, fmt.Errorf("fetch RabbitMQ dynamic credentials: %w", err)
+	}
+
+	slog.Info("vault: dynamic credentials fetched at startup", "engines", "database,rabbitmq")
+	return &DynamicCredentials{PGDSN: pgDSN, RabbitMQ: rmqURL}, nil
+}
+
+func (c *Client) fetchDynamicCredential(ctx context.Context, engine string) (string, error) {
+	path := "secret-dynamic/" + engine + "/creds/" + dynamicRoleName
+
+	maxAttempts := 1 + dynamicFetchMaxRetries
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			slog.Info("vault: retrying dynamic credential fetch", "engine", engine, "attempt", attempt+1, "max", maxAttempts)
+			time.Sleep(dynamicSecretRetryDelay)
+		}
+
+		ctx2, cancel := context.WithTimeout(ctx, dynamicSecretTimeout)
+		secret, err := c.api.Logical().ReadWithContext(ctx2, path)
+		cancel()
+
+		if err == nil {
+			return buildDynamicValue(engine, secret)
+		}
+
+		isRetryable := (err == context.DeadlineExceeded) || strings.Contains(err.Error(), "Code: 500")
+		if isRetryable && attempt < dynamicFetchMaxRetries {
+			slog.Warn("vault: dynamic credential fetch failed, will retry", "engine", engine, "attempt", attempt+1, "error", err)
+			continue
+		}
+
+		slog.Error("vault: failed to fetch dynamic credential", "engine", engine, "error", err)
+		return "", err
+	}
+
+	return "", fmt.Errorf("exhausted retries fetching %s credentials", engine)
+}
+
+func buildDynamicValue(engine string, secret *vaultapi.Secret) (string, error) {
+	if secret == nil || secret.Data == nil {
+		return "", fmt.Errorf("no secret data returned from Vault")
+	}
+
+	switch engine {
+	case "database":
+		username, _ := secret.Data["username"].(string)
+		password, _ := secret.Data["password"].(string)
+		if username == "" || password == "" {
+			return "", fmt.Errorf("missing username or password from Vault")
+		}
+		host := os.Getenv("POSTGRES_HOST")
+		port := os.Getenv("POSTGRES_PORT")
+		dbname := os.Getenv("POSTGRES_DB")
+		sslmode := os.Getenv("POSTGRES_SSLMODE")
+		if host == "" {
+			return "", fmt.Errorf("POSTGRES_HOST not set")
+		}
+		if port == "" {
+			port = "5432"
+		}
+		if dbname == "" {
+			dbname = "syslog_db"
+		}
+		if sslmode == "" {
+			sslmode = "disable"
+		}
+		return "postgres://" + username + ":" + password + "@" + host + ":" + port + "/" + dbname + "?sslmode=" + sslmode, nil
+
+	case "rabbitmq":
+		connectionURL, _ := secret.Data["connection_url"].(string)
+		if connectionURL != "" {
+			return connectionURL, nil
+		}
+		username, _ := secret.Data["username"].(string)
+		password, _ := secret.Data["password"].(string)
+		host := os.Getenv("RABBITMQ_HOST")
+		port := os.Getenv("RABBITMQ_PORT")
+		if username == "" || password == "" || host == "" {
+			return "", fmt.Errorf("missing RabbitMQ credentials or host")
+		}
+		if port == "" {
+			port = "5672"
+		}
+		return "amqp://" + username + ":" + password + "@" + host + ":" + port, nil
+
+	default:
+		return "", fmt.Errorf("unknown engine: %s", engine)
 	}
 }

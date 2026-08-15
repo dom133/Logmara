@@ -296,11 +296,18 @@ func main() {
 	migrateOnly := flag.Bool("migrate-only", false, "run pending DB migration and builtin parser/settings seeding, then exit")
 	flag.Parse()
 	if *migrateOnly {
-		if err := vaultclient.Get().WaitUntilReady(); err != nil {
+		vc := vaultclient.Get()
+		if err := vc.WaitUntilReady(); err != nil {
 			slog.Error("vault not ready", "error", err)
 			os.Exit(1)
 		}
 		dsn := util.ResolveDatabaseURL()
+		if vc != nil {
+			if creds, err := vc.FetchDynamicCredentials(context.Background()); err == nil && creds.PGDSN != "" {
+				slog.Info("database: using dynamic credentials from Vault")
+				dsn = creds.PGDSN
+			}
+		}
 		if dsn == "" {
 			slog.Error("DATABASE_URL not set; cannot run --migrate-only")
 			os.Exit(1)
@@ -370,15 +377,33 @@ func main() {
 	// as well as the plain DATABASE_URL env var, so a Swarm deployment can
 	// keep the DB password out of the deploy-time environment - see
 	// util.ResolveDatabaseURL.
-	// If Vault is configured, wait for it to become unsealed first.
-	// ResolveDatabaseURL pulls the DB password from Vault, so attempting
-	// connection before Vault is ready always fails with an empty password.
-	if err := vaultclient.Get().WaitUntilReady(); err != nil {
+	// If Vault is configured, wait for it to become unsealed first, then
+	// fetch dynamic credentials for PostgreSQL and RabbitMQ.
+	vc := vaultclient.Get()
+	if err := vc.WaitUntilReady(); err != nil {
 		slog.Error("vault not ready", "error", err)
 		os.Exit(1)
 	}
 
-	dsn := util.ResolveDatabaseURL()
+	// Fetch dynamic credentials from Vault, or fall back to static.
+	var dsn, rabbitmqURL string
+	if vc != nil {
+		creds, err := vc.FetchDynamicCredentials(context.Background())
+		if err == nil && creds.PGDSN != "" {
+			slog.Info("database: using dynamic credentials from Vault")
+			dsn = creds.PGDSN
+			rabbitmqURL = creds.RabbitMQ
+		} else {
+			if err != nil {
+				slog.Warn("vault: failed to fetch dynamic credentials, falling back to static", "error", err)
+			}
+			dsn = util.ResolveDatabaseURL()
+			rabbitmqURL = util.ResolveRabbitMQURL()
+		}
+	} else {
+		dsn = util.ResolveDatabaseURL()
+		rabbitmqURL = util.ResolveRabbitMQURL()
+	}
 
 	var dynamicPool *db.DynamicPool
 	if dsn != "" {
@@ -563,7 +588,6 @@ func main() {
 	}
 	util.SetEncryptionKey(encKey)
 
-	vc := vaultclient.Get()
 	handler.SetRotationRefs(vc, authCfg, dynamicPool.Get())
 
 	// Restore rotation timestamps from database (persists across restarts)
@@ -576,7 +600,35 @@ func main() {
 	// goroutine, or main() never reaches wg.Wait()/the tailer/the real
 	// HTTP server below, leaving /api/health stuck reporting "starting"
 	// forever.
-	go vc.StartRotation(ctx, vaultclient.RotationCallbacks{
+	//
+	// In HA mode (sharedClient != nil), only one replica acts as the
+	// rotation leader. The other replicas skip StartRotation and rely on
+	// FetchDynamicCredentials() at startup + the rotation:sync channel
+	// for status updates. Manual rotation (GUI) is forwarded via
+	// rotation:trigger to the leader.
+	//
+	// rotationTriggerBroadcaster is set on every replica so GUI-triggered
+	// rotation can reach the leader regardless of which replica handles
+	// the request. Only the leader subscribes to rotation:trigger.
+	// When sharedClient is nil (single-server), the broadcaster is nil
+	// and TriggerRotation falls back to direct TriggerManualRotation().
+	isRotationLeader := true
+	if sharedClient != nil {
+		rotationTriggerBroadcaster := sharedstate.NewBroadcaster(sharedClient)
+		handler.SetRotationTriggerBroadcaster(rotationTriggerBroadcaster)
+
+		rotationElector := sharedstate.NewLeaderElector(sharedClient, "vault-rotation", 25*time.Hour)
+		if rotationElector.Acquire(ctx) {
+			slog.Info("vault: this replica is rotation leader")
+			go handler.StartRotationTriggerSubscriber(ctx, rotationTriggerBroadcaster)
+		} else {
+			slog.Info("vault: another replica is rotation leader, skipping StartRotation")
+			isRotationLeader = false
+		}
+	}
+
+	if isRotationLeader {
+		go vc.StartRotation(ctx, vaultclient.RotationCallbacks{
 		RotateJWTSecret: func(s string) {
 			authCfg.RotateSecret(s)
 			handler.SetSecretRotationResult(0, "success")
@@ -634,6 +686,7 @@ func main() {
 			}
 		},
 	})
+	}
 
 	engine := parser.NewEngine(dynamicPool)
 	ic := control.New(ctx, sharedClient)
@@ -983,7 +1036,7 @@ r := gin.New()
 			ic.Resume()
 		}
 
-		tailer.Run(ctx, dynamicPool, logFilePath, engine, ic, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient)
+		tailer.Run(ctx, dynamicPool, logFilePath, engine, ic, alertEngine, logRate, handler.ReopenRsyslogLogFile, sharedClient, rabbitmqURL)
 	}()
 
 	quit := make(chan os.Signal, 1)

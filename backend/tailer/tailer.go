@@ -432,17 +432,17 @@ type pipeline struct {
 // single-replica deployments), it runs the ingestion loop directly.
 // When sharedClient is set (multiple api replicas over NFS), it uses
 // the distributed pipeline with RabbitMQ.
-func Run(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+func Run(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client, rabbitmqURL string) {
 	currentIC = ic
 	currentReopenLogFile = reopenLogFile
 	if sharedClient == nil {
 		runIngestionLoop(ctx, pool.Get(), filePath, engine, ic, alerts, rate, reopenLogFile, nil)
 		return
 	}
-	runWithVIPElection(ctx, pool, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
+	runWithVIPElection(ctx, pool, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient, rabbitmqURL)
 }
 
-func runWithVIPElection(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+func runWithVIPElection(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client, rabbitmqURL string) {
 	db := pool.Get()
 	// myNode identifies the physical Swarm node this task runs on. It's used
 	// below ONLY to compare against the VIP marker file, which keepalived
@@ -472,7 +472,7 @@ func runWithVIPElection(ctx context.Context, pool *db.DynamicPool, filePath stri
 
 	// All replicas start the consumer pipeline (RabbitMQ queue + WorkerPool).
 	// This allows every replica to consume and execute tasks from the queue.
-	pipeline := startConsumerPipeline(ctx, pool, filePath, engine, ic, alerts, rate, sharedClient, taskID)
+	pipeline := startConsumerPipeline(ctx, pool, filePath, engine, ic, alerts, rate, sharedClient, taskID, rabbitmqURL)
 
 	// If RabbitMQ is unavailable, the fallback local ingestion loop is running.
 	if pipeline.queue == nil {
@@ -573,10 +573,12 @@ func runWithVIPElection(ctx context.Context, pool *db.DynamicPool, filePath stri
 }
 
 func startConsumerPipeline(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController,
-	alerts *alertengine.Engine, rate sharedstate.RateCounter, sharedClient *sharedstate.Client, nodeID string) *pipeline {
+	alerts *alertengine.Engine, rate sharedstate.RateCounter, sharedClient *sharedstate.Client, nodeID string, rabbitmqURL string) *pipeline {
 	db := pool.Get()
 
-	rabbitmqURL := util.ResolveRabbitMQURL()
+	if rabbitmqURL == "" {
+		rabbitmqURL = util.ResolveRabbitMQURL()
+	}
 	if rabbitmqURL == "" {
 		rabbitmqURL = "amqp://logmara:logmara@localhost:5672"
 	}

@@ -23,11 +23,9 @@ func GetSecretLoadCount() int64 {
 // docker-stack.vault.yml. Only secrets actually migrated there are listed;
 // anything else always falls straight through to env/file below.
 var vaultSecretNames = map[string]string{
-	"JWT_SECRET":        "jwt_secret",
-	"ENCRYPTION_KEY":    "encryption_key",
-	"POSTGRES_PASSWORD": "pg_app_password",
-	"REDIS_PASSWORD":    "redis_password",
-	"RABBITMQ_PASS":     "rabbitmq_password",
+	"JWT_SECRET":     "jwt_secret",
+	"ENCRYPTION_KEY": "encryption_key",
+	"REDIS_PASSWORD": "redis_password",
 }
 
 // SecretFromEnv reads a secret, in priority order:

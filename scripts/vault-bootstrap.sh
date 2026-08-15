@@ -326,12 +326,31 @@ EOF
             username="${PG_SUPERUSER:-postgres}" \
             password="${PG_SUPERUSER_PASSWORD}" 2>/dev/null || true
 
+        # Create a persistent group role that holds all privileges.
+        # Dynamic users are granted membership in this group instead of
+        # per-table GRANTs, which avoids "tuple concurrently updated"
+        # (SQLSTATE XX000) errors when Vault's CREATE ROLE races with
+        # VACUUM / MV refresh / partition creation.
+        docker run --rm \
+          --network syslog_net \
+          -e PGPASSWORD="$PG_SUPERUSER_PASSWORD" \
+          postgres:16-alpine psql -h haproxy -p 5000 \
+            -U "${PG_SUPERUSER:-postgres}" \
+            -d "${PG_DB:-syslog_db}" \
+            -c "DO \$\$ BEGIN
+                IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'logmara_app_group') THEN
+                  CREATE ROLE logmara_app_group;
+                  GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO logmara_app_group;
+                  GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO logmara_app_group;
+                END IF;
+              END \$\$;" 2>/dev/null || true
+
         # Create role for application user
         vault_cli write secret-dynamic/database/roles/logmara-app \
             db_name=db \
-            creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO \"{{name}}\";" \
-            default_ttl="24h" \
-            max_ttl="48h" 2>/dev/null || true
+            creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT logmara_app_group TO \"{{name}}\";" \
+            default_ttl="48h" \
+            max_ttl="72h" 2>/dev/null || true
 
         # Redis dynamic secrets are deliberately NOT set up here. Both the
         # official redis-database-plugin and the community
@@ -368,14 +387,14 @@ EOF
         echo "Enabling RabbitMQ dynamic secrets engine..."
         vault_cli secrets enable -path=secret-dynamic/rabbitmq rabbitmq 2>/dev/null || true
         vault_cli write secret-dynamic/rabbitmq/config/connection \
-            url="amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@haproxy-rabbitmq:5672" \
+            connection_uri="http://haproxy-rabbitmq:15672" \
             username="${RABBITMQ_DEFAULT_USER}" \
             password="${RABBITMQ_DEFAULT_PASS}" 2>/dev/null || true
         vault_cli write secret-dynamic/rabbitmq/roles/logmara-app \
-            vhost="/" \
+            vhosts='{"/":{"configure": ".*", "write": ".*", "read": ".*"}}' \
             tags="administrator,management" \
-            default_ttl="24h" \
-            max_ttl="48h" 2>/dev/null || true
+            default_ttl="48h" \
+            max_ttl="72h" 2>/dev/null || true
 
         # Update policy to allow dynamic secret reads
         vault_cli policy write logmara-dynamic - <<'EOF'

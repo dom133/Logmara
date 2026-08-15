@@ -154,25 +154,30 @@ deploy_stack() {
 # Pre-update maintenance: pause ingest, compact logs, reset position
 # ---------------------------------------------------------------------------
 run_pre_update() {
-    # Try to reach the API via the internal Docker network.
-    # In Swarm, services can reach each other by service name.
-    local api_host="logmara-app_api"
-    local port="8080"
-    local max_wait=120  # seconds
+    # Find a running api container on any node in the cluster.
+    # `docker ps` on a manager node shows containers from all nodes, so
+    # `docker exec` will reach the correct container regardless of which
+    # physical node the api task is running on.
+    local api_container
+    api_container=$(docker ps -q \
+      --filter "name=logmara-app_api" \
+      --filter "status=running" 2>/dev/null | head -1)
+
+    if [[ -z "$api_container" ]]; then
+        echo "Warning: no running api container, skipping pre-update"
+        return 0
+    fi
 
     echo
     echo "=== Running pre-update maintenance ==="
 
-    # Trigger pre-update preparation
+    # Trigger pre-update preparation via docker exec (localhost inside container)
     local http_code
-    http_code=$(curl -sf -o /dev/null -w "%{http_code}" -X POST \
-      "http://${api_host}:${port}/api/maintenance/pre-update" \
+    http_code=$(docker exec "$api_container" curl -sf -o /dev/null -w "%{http_code}" \
+      -X POST "http://localhost:8080/api/maintenance/pre-update" \
       --max-time 10 2>/dev/null) || true
 
-    if [[ "$http_code" == "000" ]]; then
-        echo "Warning: cannot reach API for pre-update, proceeding with deploy"
-        return 0
-    elif [[ "$http_code" == "202" ]]; then
+    if [[ "$http_code" == "202" ]]; then
         echo "Pre-update trigger sent, waiting for completion..."
     elif [[ "$http_code" == "409" ]]; then
         echo "Pre-update already in progress, waiting for completion..."
@@ -183,9 +188,11 @@ run_pre_update() {
 
     # Poll for completion
     local elapsed=0
+    local max_wait=120
     while [[ $elapsed -lt $max_wait ]]; do
         local status
-        status=$(curl -sf "http://${api_host}:${port}/api/maintenance/status" \
+        status=$(docker exec "$api_container" curl -sf \
+          "http://localhost:8080/api/maintenance/status" \
           --max-time 5 2>/dev/null) || true
 
         if echo "$status" | grep -q '"completed"'; then
