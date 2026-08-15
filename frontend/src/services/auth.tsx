@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react'
+import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
 import { api, refreshAccessToken } from './api'
 
 interface User {
@@ -50,7 +50,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       localStorage.setItem('refresh_token', rt)
       setUser(res.data.user)
       return { ok: true }
-    } catch (e: any) {
+    } catch (e: unknown) {
       return {
         ok: false,
         error: e.response?.data?.error || 'Invalid credentials',

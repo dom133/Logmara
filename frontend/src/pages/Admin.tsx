@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
 import { Card, Table, Button, Modal, Form, Input, Select, Switch, Space, Tag, message, Tabs, InputNumber, Divider, Popconfirm } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined } from '@ant-design/icons'
-import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, User, DeviceStats } from '../services/api'
+import { PlusOutlined, DeleteOutlined, EditOutlined, KeyOutlined, ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined } from '@ant-design/icons'
+import { getUsers, createUser, updateUser, deleteUser, resetPassword, getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDeviceStats, testLDAPConnection, updateDeviceAlias, User, DeviceStats } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
+import { getErrorMessage } from '../utils/error'
 
 const { Option } = Select
 
@@ -18,8 +19,16 @@ export default function Admin() {
   const [settings, setSettings] = useState<Record<string, string>>({})
   const [settingsForm] = Form.useForm()
   const [devices, setDevices] = useState<DeviceStats[]>([])
+  const [devicesLoading, setDevicesLoading] = useState(false)
+  const [editDevice, setEditDevice] = useState<DeviceStats | null>(null)
+  const [editDeviceForm] = Form.useForm()
   const [ldapEnabled, setLdapEnabled] = useState(false)
+  const [ldapAutoProvision, setLdapAutoProvision] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [purgeModalOpen, setPurgeModalOpen] = useState(false)
+  const [pauseDuringPurge, setPauseDuringPurge] = useState(false)
+  const [purging, setPurging] = useState(false)
+  const [authType, setAuthType] = useState('local')
 
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_admin',
@@ -39,7 +48,7 @@ export default function Admin() {
     try {
       const data = await getUsers()
       setUsers(data)
-    } catch (e: any) {
+    } catch {
       message.error('Failed to load users')
     }
     setLoading(false)
@@ -49,16 +58,18 @@ export default function Admin() {
     try {
       const data = await getSettings()
       setSettings(data)
-      const formValues: Record<string, any> = { ...data }
+      const formValues: Record<string, unknown> = { ...data }
       formValues['ldap_enabled'] = data['ldap_enabled'] === 'true'
       formValues['ldap_use_tls'] = data['ldap_use_tls'] === 'true'
+      formValues['ldap_verify_cert'] = data['ldap_verify_cert'] === 'true'
       formValues['ldap_auto_provision'] = data['ldap_auto_provision'] === 'true'
       if (data['ldap_port']) formValues['ldap_port'] = parseInt(data['ldap_port'], 10)
       if (data['retention_days']) formValues['retention_days'] = parseInt(data['retention_days'], 10)
       if (data['jwt_expiry']) formValues['jwt_expiry'] = parseInt(data['jwt_expiry'], 10)
       settingsForm.setFieldsValue(formValues)
       setLdapEnabled(data['ldap_enabled'] === 'true')
-    } catch (e: any) {
+      setLdapAutoProvision(data['ldap_auto_provision'] === 'true')
+    } catch {
       message.error('Failed to load settings')
     }
   }
@@ -83,19 +94,35 @@ export default function Admin() {
         bind_password: values.ldap_bind_password,
       })
       message.success('LDAP connection successful')
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'LDAP connection failed')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'LDAP connection failed'))
     } finally {
       setTesting(false)
     }
   }
 
   const loadDevices = async () => {
+    setDevicesLoading(true)
     try {
       const data = await getDeviceStats()
       setDevices(data)
-    } catch (e: any) {
+    } catch {
       message.error('Failed to load devices')
+    } finally {
+      setDevicesLoading(false)
+    }
+  }
+
+  const handleEditDeviceSave = async () => {
+    if (!editDevice) return
+    const values = editDeviceForm.getFieldsValue()
+    try {
+      await updateDeviceAlias(editDevice.fromhost_ip, values.display_name)
+      message.success('Device alias updated')
+      setEditDevice(null)
+      loadDevices()
+    } catch {
+      message.error('Failed to update alias')
     }
   }
 
@@ -105,16 +132,19 @@ export default function Admin() {
     loadDevices()
   }, [])
 
-  const handleCreate = async () => {
+const handleCreate = async () => {
     const values = await form.validateFields()
+    if (settings['ldap_auto_provision'] === 'true') {
+      values.auth_type = 'local'
+    }
     try {
       await createUser(values)
       message.success('User created')
       setModalVisible(false)
       form.resetFields()
       loadUsers()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to create user')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to create user'))
     }
   }
 
@@ -123,7 +153,7 @@ export default function Admin() {
     editForm.setFieldsValue({ role: user.role, is_active: user.is_active })
   }
 
-  const handleEditSave = async () => {
+const handleEditSave = async () => {
     if (!editUser) return
     const values = await editForm.validateFields()
     try {
@@ -131,22 +161,22 @@ export default function Admin() {
       message.success('User updated')
       setEditUser(null)
       loadUsers()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to update user')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to update user'))
     }
   }
 
-  const handleDelete = async (id: number) => {
+const handleDelete = async (id: number) => {
     try {
       await deleteUser(id)
       message.success('User deleted')
       loadUsers()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to delete user')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to delete user'))
     }
   }
 
-  const handleResetPassword = async (user: User) => {
+const handleResetPassword = async (user: User) => {
     const password = prompt(`Enter new password for ${user.username}:`)
     if (!password || password.length < 4) {
       if (password !== null) message.error('Password must be at least 4 characters')
@@ -155,12 +185,12 @@ export default function Admin() {
     try {
       await resetPassword(user.id, password)
       message.success('Password reset')
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to reset password')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to reset password'))
     }
   }
 
-  const handleSaveSettings = async () => {
+const handleSaveSettings = async () => {
     const values = settingsForm.getFieldsValue()
     const strValues: Record<string, string> = {}
     for (const [k, v] of Object.entries(values)) {
@@ -170,8 +200,8 @@ export default function Admin() {
       await updateSettings(strValues)
       message.success('Settings saved')
       loadSettings()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to save settings')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to save settings'))
     }
   }
 
@@ -180,21 +210,25 @@ export default function Admin() {
     return v === true || v === 'true' || v === 1
   }
 
-  const handleCleanup = async () => {
+const handleCleanup = async () => {
     try {
       const result = await cleanupLogs()
       message.success(`${result.deleted_count} old logs deleted`)
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Cleanup failed')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Cleanup failed'))
     }
   }
 
   const handlePurgeAll = async () => {
+    setPurging(true)
     try {
-      const result = await purgeAllLogs()
-      message.success(`${result.deleted_count} logs purged`)
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Purge failed')
+      const result = await purgeAllLogs(pauseDuringPurge)
+      message.success(result.message || 'All logs purged')
+      setPurgeModalOpen(false)
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Purge failed'))
+    } finally {
+      setPurging(false)
     }
   }
 
@@ -246,10 +280,10 @@ export default function Admin() {
     {
       title: 'Actions',
       key: 'actions',
-      render: (_: any, record: User) => (
-        <Space>
+      render: (_v, record: User) => (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <Button size="small" onClick={() => handleEdit(record)} icon={<EditOutlined />} />
-          <Button size="small" onClick={() => handleResetPassword(record)} icon={<KeyOutlined />} />
+          {record.auth_type !== 'ldap' && <Button size="small" onClick={() => handleResetPassword(record)} icon={<KeyOutlined />} />}
           <Popconfirm
             title="Delete user?"
             okText="Yes"
@@ -258,7 +292,7 @@ export default function Admin() {
           >
             <Button size="small" danger icon={<DeleteOutlined />} />
           </Popconfirm>
-        </Space>
+        </div>
       ),
     },
   ]
@@ -279,12 +313,16 @@ export default function Admin() {
               <Card
                 title="User Management"
                 extra={
-                  <Space>
+                  <div style={{ display: 'flex', gap: 8 }}>
                     {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
-                    <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalVisible(true)}>
+                    <Button type="primary" icon={<PlusOutlined />} onClick={() => {
+                    form.setFieldsValue({ auth_type: 'local' })
+                    setAuthType('local')
+                    setModalVisible(true)
+                  }}>
                       Add User
                     </Button>
-                  </Space>
+                  </div>
                 }
               >
                 <Table
@@ -306,34 +344,42 @@ export default function Admin() {
                   <Form.Item label="Log Retention (days)" name="retention_days">
                     <InputNumber min={1} max={3650} style={{ width: '100%' }} />
                   </Form.Item>
-                  <Form.Item label="Default Role" name="default_role">
-                    <Select style={{ width: '100%' }}>
-                      <Option value="viewer">Viewer</Option>
-                      <Option value="editor">Editor</Option>
-                      <Option value="admin">Admin</Option>
-                    </Select>
-                  </Form.Item>
                   <Form.Item label="JWT Expiry (hours)" name="jwt_expiry">
                     <InputNumber min={1} max={8760} style={{ width: '100%' }} />
                   </Form.Item>
                   <Divider />
-                  <Space>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <Button type="primary" htmlType="submit">
                       Save Settings
                     </Button>
                     <Button danger icon={<ThunderboltOutlined />} onClick={handleCleanup}>
                       Clean Old Logs
                     </Button>
-                    <Popconfirm
+                    <Button danger type="primary" onClick={() => setPurgeModalOpen(true)}>
+                      Purge All Logs
+                    </Button>
+                    <Modal
                       title="Purge ALL logs?"
-                      description="This will permanently delete every log entry. This cannot be undone."
+                      open={purgeModalOpen}
+                      onOk={handlePurgeAll}
+                      onCancel={() => setPurgeModalOpen(false)}
                       okText="Yes, purge all"
                       cancelText="Cancel"
-                      onConfirm={handlePurgeAll}
+                      okButtonProps={{ danger: true, disabled: purging, loading: purging }}
                     >
-                      <Button danger type="primary">Purge All Logs</Button>
-                    </Popconfirm>
-                  </Space>
+                      <p>This will permanently delete every log entry. This cannot be undone.</p>
+                      <div style={{ marginTop: 16 }}>
+                        <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <input
+                            type="checkbox"
+                            checked={pauseDuringPurge}
+                            onChange={(e) => setPauseDuringPurge(e.target.checked)}
+                          />
+                          Pause ingestion during purge (resumes after)
+                        </label>
+                      </div>
+                    </Modal>
+                  </div>
                 </Form>
               </Card>
             ),
@@ -356,6 +402,44 @@ export default function Admin() {
                   <Form.Item label="Use TLS" name="ldap_use_tls" valuePropName="checked">
                     <Switch disabled={!ldapEnabled} />
                   </Form.Item>
+                  <Divider orientation="left">TLS/Certificate</Divider>
+                  <Form.Item label="Verify TLS Certificate" name="ldap_verify_cert" valuePropName="checked">
+                    <Switch disabled={!ldapEnabled} />
+                  </Form.Item>
+                  <Form.Item
+                    label="Custom CA Certificate (PEM)"
+                    name="ldap_ca_cert"
+                  >
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <Input.TextArea rows={4} placeholder="Paste PEM certificate or upload a file..." disabled={!ldapEnabled} style={{ resize: 'none' }} />
+                      <input
+                        type="file"
+                        accept=".pem,.crt,.cer"
+                        style={{ display: 'none' }}
+                        id="ca-cert-upload"
+                        disabled={!ldapEnabled}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0]
+                          if (!file) return
+                          const reader = new FileReader()
+                          reader.onload = (ev) => {
+                            const text = ev.target?.result
+                            if (typeof text === 'string') {
+                              settingsForm.setFieldValue('ldap_ca_cert', text)
+                              message.success('PEM file loaded')
+                            }
+                          }
+                          reader.onerror = () => message.error('Failed to read PEM file')
+                          reader.readAsText(file)
+                          e.target.value = ''
+                        }}
+                      />
+                      <Button icon={<UploadOutlined />} disabled={!ldapEnabled} block onClick={() => { document.getElementById('ca-cert-upload')?.click() }}>
+                        Upload PEM
+                      </Button>
+                    </div>
+                  </Form.Item>
+                  <Divider orientation="left">Connection</Divider>
                   <Form.Item label="Base DN" name="ldap_base_dn">
                     <Input placeholder="dc=example,dc=com" disabled={!ldapEnabled} />
                   </Form.Item>
@@ -376,16 +460,16 @@ export default function Admin() {
                     <Input placeholder="mail" disabled={!ldapEnabled} />
                   </Form.Item>
                   <Form.Item label="Auto-Provision LDAP Users" name="ldap_auto_provision" valuePropName="checked">
-                    <Switch disabled={!ldapEnabled} />
+                    <Switch disabled={!ldapEnabled} onChange={(v) => { setLdapAutoProvision(v); settingsForm.setFieldValue('ldap_auto_provision', v); }} />
                   </Form.Item>
                   <Form.Item label="Default Role (auto-provisioned)" name="ldap_default_role">
-                    <Select style={{ width: '100%' }} disabled={!ldapEnabled}>
+                    <Select style={{ width: '100%' }} disabled={!ldapEnabled || !ldapAutoProvision}>
                       <Option value="viewer">Viewer</Option>
                       <Option value="editor">Editor</Option>
                       <Option value="admin">Admin</Option>
                     </Select>
                   </Form.Item>
-                  <Space>
+                  <div style={{ display: 'flex', gap: 8 }}>
                     <Button type="primary" htmlType="submit" disabled={!ldapEnabled}>
                       Save LDAP Settings
                     </Button>
@@ -396,7 +480,7 @@ export default function Admin() {
                     >
                       Test Connection
                     </Button>
-                  </Space>
+                  </div>
                 </Form>
               </Card>
             ),
@@ -414,19 +498,26 @@ export default function Admin() {
                 }
               >
                 <Table
-                  rowKey="hostname"
+                  loading={devicesLoading}
+                  rowKey="fromhost_ip"
                   dataSource={devices}
                   pagination={false}
                   scroll={{ x: 'max-content' }}
                   columns={[
                     {
+                      title: 'Source IP',
+                      dataIndex: 'fromhost_ip',
+                      key: 'fromhost_ip',
+                      render: (ip: string) => ip || '-',
+                    },
+                    {
                       title: 'Hostname',
                       dataIndex: 'hostname',
                       key: 'hostname',
                       render: (hostname: string, record: DeviceStats) => {
-                        const name = hostname || record.hostname || '-';
+                        const name = record.display_name || hostname || record.hostname || '-';
                         return (
-                          <a onClick={() => window.location.href = `/logs?hostname=${encodeURIComponent(name)}`}>
+                          <a onClick={() => window.location.href = `/logs?fromhost_ip=${encodeURIComponent(record.fromhost_ip)}`}>
                             {name}
                           </a>
                         );
@@ -490,6 +581,22 @@ export default function Admin() {
                         </Tag>
                       ),
                     },
+                    {
+                      title: 'Actions',
+                      key: 'actions',
+                      render: (_v, record: DeviceStats) => (
+                        <Button
+                          type="link"
+                          icon={<EditOutlined />}
+                          onClick={() => {
+                            setEditDevice(record)
+                            editDeviceForm.setFieldsValue({ display_name: record.display_name || record.hostname })
+                          }}
+                        >
+                          Edit Name
+                        </Button>
+                      ),
+                    },
                   ]}
                 />
               </Card>
@@ -514,7 +621,19 @@ export default function Admin() {
           <Form.Item name="email" label="Email" rules={[{ required: true, message: 'Required' }, { type: 'email' }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="password" label="Password" rules={[{ required: true, min: 8, message: 'Min 8 characters' }]}>
+          <Form.Item name="auth_type" label="Auth Type" rules={[{ required: true }]} initialValue="local" hidden={settings['ldap_auto_provision'] === 'true'}>
+            <Select onChange={(v) => { setAuthType(v); if (v === 'ldap') form.setFieldsValue({ password: undefined }) }}>
+              <Option value="local">Local</Option>
+              <Option value="ldap">LDAP</Option>
+            </Select>
+          </Form.Item>
+          <Form.Item
+            name="password"
+            label="Password"
+            dependencies={['auth_type']}
+            hidden={authType === 'ldap'}
+            rules={[{ required: authType === 'local' || settings['ldap_auto_provision'] === 'true', min: 8, message: 'Min 8 characters' }]}
+          >
             <Input.Password />
           </Form.Item>
           <Form.Item name="role" label="Role" rules={[{ required: true }]}>
@@ -549,6 +668,25 @@ export default function Admin() {
           </Form.Item>
           <Form.Item name="is_active" label="Active" valuePropName="checked">
             <Switch />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="Edit Device Name"
+        open={!!editDevice}
+        onCancel={() => setEditDevice(null)}
+        onOk={handleEditDeviceSave}
+        okText="Save"
+        cancelText="Cancel"
+        width={{ sm: '90%', md: 500 }}
+      >
+        <Form form={editDeviceForm} layout="vertical">
+          <Form.Item label="Source IP">
+            <Input value={editDevice?.fromhost_ip} disabled />
+          </Form.Item>
+          <Form.Item name="display_name" label="Display Name" rules={[{ required: true, message: 'Required' }]}>
+            <Input />
           </Form.Item>
         </Form>
       </Modal>

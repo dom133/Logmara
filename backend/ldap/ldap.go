@@ -4,26 +4,26 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"log"
+	"log/slog"
 
 	ldaplib "github.com/go-ldap/ldap/v3"
 )
 
 type Config struct {
-	Server         string
-	Port           int
-	BaseDN         string
-	BindDN         string
-	BindPassword   string
-	UseTLS         bool
-	VerifyCert     bool
-	CaCert         string
-	UserFilter     string
-	Enabled        bool
-	UsernameAttr   string
-	EmailAttr      string
-	DefaultRole    string
-	AutoProvision  bool
+	Server        string
+	Port          int
+	BaseDN        string
+	BindDN        string
+	BindPassword  string
+	UseTLS        bool
+	VerifyCert    bool
+	CaCert        string
+	UserFilter    string
+	Enabled       bool
+	UsernameAttr  string
+	EmailAttr     string
+	DefaultRole   string
+	AutoProvision bool
 }
 
 func LoadConfig(getSetting func(string, string) string) *Config {
@@ -66,20 +66,20 @@ func LoadConfig(getSetting func(string, string) string) *Config {
 	autoProvision := getSetting("ldap_auto_provision", "true") == "true"
 
 	return &Config{
-		Server:         server,
-		Port:           port,
-		BaseDN:         getSetting("ldap_base_dn", ""),
-		BindDN:         getSetting("ldap_bind_dn", ""),
-		BindPassword:   bindPassword,
-		UseTLS:         useTLS,
-		VerifyCert:     verifyCert,
-		CaCert:         caCert,
-		UserFilter:     userFilter,
-		Enabled:        true,
-		UsernameAttr:   usernameAttr,
-		EmailAttr:      emailAttr,
-		DefaultRole:    defaultRole,
-		AutoProvision:  autoProvision,
+		Server:        server,
+		Port:          port,
+		BaseDN:        getSetting("ldap_base_dn", ""),
+		BindDN:        getSetting("ldap_bind_dn", ""),
+		BindPassword:  bindPassword,
+		UseTLS:        useTLS,
+		VerifyCert:    verifyCert,
+		CaCert:        caCert,
+		UserFilter:    userFilter,
+		Enabled:       true,
+		UsernameAttr:  usernameAttr,
+		EmailAttr:     emailAttr,
+		DefaultRole:   defaultRole,
+		AutoProvision: autoProvision,
 	}
 }
 
@@ -90,7 +90,7 @@ func Authenticate(cfg *Config, username, password string) (map[string]string, er
 
 	l, err := dialLDAP(cfg)
 	if err != nil {
-		log.Printf("LDAP dial error: %v", err)
+		slog.Error("ldap dial error", "error", err)
 		return nil, err
 	}
 	defer l.Close()
@@ -107,7 +107,7 @@ func Authenticate(cfg *Config, username, password string) (map[string]string, er
 	if cfg.BindDN != "" && cfg.BindPassword != "" {
 		err = l.Bind(cfg.BindDN, cfg.BindPassword)
 		if err != nil {
-			log.Printf("LDAP bind error: %v", err)
+			slog.Error("ldap bind error", "error", err)
 			return nil, err
 		}
 
@@ -122,7 +122,7 @@ func Authenticate(cfg *Config, username, password string) (map[string]string, er
 
 		sr, err := l.Search(searchReq)
 		if err != nil {
-			log.Printf("LDAP search error: %v", err)
+			slog.Error("ldap search error", "error", err)
 			return nil, err
 		}
 
@@ -134,7 +134,7 @@ func Authenticate(cfg *Config, username, password string) (map[string]string, er
 		entry := sr.Entries[0]
 		err = l.Bind(userDN, password)
 		if err != nil {
-			log.Printf("LDAP auth error: %v", err)
+			slog.Error("ldap auth error", "error", err)
 			return nil, err
 		}
 
@@ -152,7 +152,7 @@ func Authenticate(cfg *Config, username, password string) (map[string]string, er
 	} else {
 		err = l.Bind(username, password)
 		if err != nil {
-			log.Printf("LDAP auth error: %v", err)
+			slog.Error("ldap auth error", "error", err)
 			return nil, err
 		}
 		return map[string]string{"username": username}, nil

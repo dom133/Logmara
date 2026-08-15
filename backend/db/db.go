@@ -3,8 +3,9 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -19,15 +20,36 @@ func Connect(dsn string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to open db: %w", err)
 	}
 
-	db.SetMaxOpenConns(50)
-	db.SetMaxIdleConns(25)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	maxOpen := 100
+	maxIdle := 25
+	maxLifeTime := 30 * time.Minute
+	maxIdleTime := 5 * time.Minute
+
+	if v := os.Getenv("DB_MAX_OPEN_CONNS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err == nil && n > 0 {
+			maxOpen = n
+		}
+	}
+	if v := os.Getenv("DB_MAX_IDLE_CONNS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err == nil && n > 0 {
+			maxIdle = n
+		}
+	}
+
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxIdle)
+	db.SetConnMaxLifetime(maxLifeTime)
+	db.SetConnMaxIdleTime(maxIdleTime)
+
+	slog.Info("db pool configured", "max_open", maxOpen, "max_idle", maxIdle, "max_lifetime", maxLifeTime, "max_idle_time", maxIdleTime)
 
 	for i := 0; i < 5; i++ {
 		if err := db.Ping(); err == nil {
 			return db, nil
 		}
-		log.Printf("Waiting for database... attempt %d", i+1)
+		slog.Warn("waiting for database", "attempt", i+1)
 		time.Sleep(2 * time.Second)
 	}
 
@@ -61,6 +83,14 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='fromhost_ip') THEN ALTER TABLE syslog_logs ADD COLUMN fromhost_ip VARCHAR(255); END IF; END $$`,
 		`DROP INDEX IF EXISTS idx_syslog_parsed_fields`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_parsed_fields ON syslog_logs USING GIN (parsed_fields)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_fromhost_ip ON syslog_logs (fromhost_ip)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_fromhost_severity ON syslog_logs (fromhost_ip, severity)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_sev_errors ON syslog_logs (severity, timestamp) WHERE severity IN ('err', 'crit', 'alert', 'emerg')`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_ts_host ON syslog_logs (timestamp DESC, hostname)`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='search_vector') THEN ALTER TABLE syslog_logs ADD COLUMN search_vector TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', COALESCE(message, '') || ' ' || COALESCE(raw_message, ''))) STORED; END IF; END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_fts ON syslog_logs USING GIN (search_vector)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_dev_ts ON syslog_logs (fromhost_ip, timestamp DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_sev_ts ON syslog_logs (severity, timestamp DESC)`,
 		`CREATE TABLE IF NOT EXISTS users (
 			id SERIAL PRIMARY KEY,
 			username VARCHAR(100) UNIQUE NOT NULL,
@@ -150,6 +180,13 @@ func Migrate(db *sql.DB) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='auth_type') THEN ALTER TABLE users ADD COLUMN auth_type VARCHAR(20) DEFAULT 'local'; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='dashboards' AND column_name='updated_by') THEN ALTER TABLE dashboards ADD COLUMN updated_by INTEGER REFERENCES users(id); END IF; END $$`,
 		`UPDATE dashboards SET updated_by = owner_id WHERE updated_by IS NULL`,
+		`CREATE TABLE IF NOT EXISTS device_aliases (
+			fromhost_ip VARCHAR(255) PRIMARY KEY,
+			display_name VARCHAR(255) NOT NULL,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='device_aliases' AND column_name='old_hostname') THEN ALTER TABLE device_aliases ADD COLUMN old_hostname VARCHAR(255); END IF; END $$`,
 	}
 
 	for _, stmt := range statements {
@@ -159,14 +196,14 @@ func Migrate(db *sql.DB) error {
 	}
 
 	if err := seedParsers(db); err != nil {
-		log.Printf("Warning: seeding parsers failed: %v", err)
+		slog.Warn("seeding parsers failed", "error", err)
 	}
 
 	if err := seedSettings(db); err != nil {
-		log.Printf("Warning: seeding settings failed: %v", err)
+		slog.Warn("seeding settings failed", "error", err)
 	}
 
-	log.Println("Database migration completed")
+	slog.Info("database migration completed")
 	return nil
 }
 
@@ -259,26 +296,25 @@ func nullStrPtr(s string) *string {
 
 func seedSettings(db *sql.DB) error {
 	settings := map[string]string{
-		"retention_days":         "30",
-		"default_role":           "viewer",
-		"jwt_expiry":             "24",
-		"is_initialized":         "false",
-		"ldap_enabled":           "false",
-		"ldap_server":            "",
-		"ldap_port":              "389",
-		"ldap_use_tls":           "false",
-		"ldap_verify_cert":       "true",
-		"ldap_ca_cert":           "",
-		"ldap_base_dn":           "",
-		"ldap_bind_dn":           "",
-		"ldap_bind_password":     "",
-		"ldap_user_filter":       "(uid=%s)",
-		"ldap_username_attr":     "uid",
-		"ldap_email_attr":        "mail",
-		"ldap_default_role":      "viewer",
-		"ldap_auto_provision":    "true",
-		"encryption_key":         "",
-		"cors_origins":           "",
+		"retention_days":      "30",
+		"jwt_expiry":          "24",
+		"is_initialized":      "false",
+		"ldap_enabled":        "false",
+		"ldap_server":         "",
+		"ldap_port":           "389",
+		"ldap_use_tls":        "false",
+		"ldap_verify_cert":    "true",
+		"ldap_ca_cert":        "",
+		"ldap_base_dn":        "",
+		"ldap_bind_dn":        "",
+		"ldap_bind_password":  "",
+		"ldap_user_filter":    "(uid=%s)",
+		"ldap_username_attr":  "uid",
+		"ldap_email_attr":     "mail",
+		"ldap_default_role":   "viewer",
+		"ldap_auto_provision": "true",
+		"encryption_key":      "",
+		"cors_origins":        "",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -289,8 +325,6 @@ func seedSettings(db *sql.DB) error {
 		switch k {
 		case "retention_days":
 			desc = "Days to keep logs before auto-deletion"
-		case "default_role":
-			desc = "Default role for new users"
 		case "jwt_expiry":
 			desc = "JWT token expiry in hours"
 		case "is_initialized":
@@ -407,11 +441,24 @@ func GetAllSettings(db *sql.DB) (map[string]string, error) {
 
 // CleanupOldLogs deletes logs older than retentionDays
 func CleanupOldLogs(db *sql.DB, retentionDays int) (int64, error) {
-	result, err := db.Exec("DELETE FROM syslog_logs WHERE timestamp < NOW() - INTERVAL $1", fmt.Sprintf("%d days", retentionDays))
-	if err != nil {
-		return 0, err
+	const batchSize = 10000
+	var totalDeleted int64
+
+	for {
+		result, err := db.Exec(
+			"DELETE FROM syslog_logs WHERE ctid IN (SELECT ctid FROM syslog_logs WHERE timestamp < NOW() - INTERVAL $1 LIMIT $2)",
+			fmt.Sprintf("%d days", retentionDays), batchSize,
+		)
+		if err != nil {
+			return totalDeleted, err
+		}
+		affected, _ := result.RowsAffected()
+		totalDeleted += affected
+		if affected == 0 {
+			break
+		}
 	}
-	return result.RowsAffected()
+	return totalDeleted, nil
 }
 
 type User struct {
@@ -428,13 +475,13 @@ type User struct {
 }
 
 type AuditLog struct {
-	ID        int64      `json:"id"`
-	UserID    *int64     `json:"user_id"`
-	Username  string     `json:"username"`
-	Action    string     `json:"action"`
-	IP        *string    `json:"ip"`
-	Details   *string    `json:"details"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID        int64     `json:"id"`
+	UserID    *int64    `json:"user_id"`
+	Username  string    `json:"username"`
+	Action    string    `json:"action"`
+	IP        *string   `json:"ip"`
+	Details   *string   `json:"details"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 func GetAllUsers(db *sql.DB) ([]User, error) {
@@ -506,17 +553,17 @@ func ResetUserPassword(db *sql.DB, id int64, passwordHash string) error {
 	return err
 }
 
-func CreateLDAPUser(db *sql.DB, username, email, role string) (*User, error) {
+func CreateLDAPUser(db *sql.DB, username, email, role string, isAdmin bool) (*User, error) {
 	var id int64
 	var createdAt time.Time
 	err := db.QueryRow(
 		"INSERT INTO users (username, password_hash, email, is_admin, role, is_active, auth_type) VALUES ($1, '', $2, $3, $4, $5, 'ldap') RETURNING id, created_at",
-		username, email, role == "admin", role, true,
+		username, email, isAdmin, role, true,
 	).Scan(&id, &createdAt)
 	if err != nil {
 		return nil, err
 	}
-	return &User{ID: id, Username: username, Email: email, Role: role, AuthType: "ldap", IsAdmin: role == "admin", IsActive: true, CreatedAt: createdAt}, nil
+	return &User{ID: id, Username: username, Email: email, Role: role, AuthType: "ldap", IsAdmin: isAdmin, IsActive: true, CreatedAt: createdAt}, nil
 }
 
 func UpdateLastLogin(db *sql.DB, username string) error {

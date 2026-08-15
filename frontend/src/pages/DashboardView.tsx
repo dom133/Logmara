@@ -1,9 +1,10 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form, message } from 'antd'
-import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
-import { getDashboard, getDashboardData, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardDataResponse, LogEntry } from '../services/api'
+import { getDashboard, getDashboardData, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardDataResponse, LogEntry, getDevices, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
+import { useSSE } from '../hooks/useSSE'
 import SeverityTag from '../components/SeverityTag'
 import { SEVERITY_LABELS } from '../constants'
 import { useAuth } from '../services/auth'
@@ -25,8 +26,14 @@ export default function DashboardViewPage() {
   const [pageSize, setPageSize] = useState(50)
   const [searchOverride, setSearchOverride] = useState('')
   const [severityFilter, setSeverityFilter] = useState('')
+  const searchOverrideRef = useRef(searchOverride)
+  const severityRef = useRef(severityFilter)
+  useEffect(() => { searchOverrideRef.current = searchOverride }, [searchOverride])
+  useEffect(() => { severityRef.current = severityFilter }, [severityFilter])
   const [dateRange, setDateRange] = useState<[any, any] | null>(null)
   const [detailLog, setDetailLog] = useState<LogEntry | null>(null)
+  const [devices, setDevices] = useState<DeviceStats[]>([])
+  const [streaming, setStreaming] = useState(false)
   const { user } = useAuth()
   const isOwner = dashboard?.owner_id === user?.id
   const searchRef = useRef<InputRef>(null)
@@ -43,6 +50,21 @@ export default function DashboardViewPage() {
     ],
   )
 
+  const deviceMap = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const d of devices) {
+      const dn = resolveDeviceDisplayName(d)
+      if (d.fromhost_ip) m.set(d.fromhost_ip, dn)
+      if (d.hostname) m.set(d.hostname, dn)
+      if (d.old_hostname) m.set(d.old_hostname, dn)
+    }
+    return m
+  }, [devices])
+
+  const resolveHostname = (hostname: string, fromhost_ip?: string): string => {
+    return deviceMap.get(fromhost_ip || hostname || '') || hostname || '-'
+  }
+
   const loadDashboard = async () => {
     setLoading(true)
     try {
@@ -55,13 +77,41 @@ export default function DashboardViewPage() {
     }
   }
 
-  const loadLogs = useCallback(async () => {
+  const loadDevices = async () => {
+    const d = await getDevices()
+    setDevices(d)
+  }
+
+  const handleNewLogs = useCallback((newLogs: LogEntry[]) => {
+    setLogs(prev => {
+      const ids = new Set(prev.map(l => l.id))
+      const unique = newLogs.filter(l => !ids.has(l.id))
+      if (unique.length === 0) return prev
+      setTotal(t => t + unique.length)
+      const combined = [...unique, ...prev]
+      return combined.slice(0, pageSize * 3)
+    })
+  }, [pageSize])
+
+  const { connected } = useSSE({
+    onNewLogs: handleNewLogs,
+    filters: {
+      fromhost_ip: (dashboard?.config?.devices ?? []).join(',') || undefined,
+      severity: severityFilter || dashboard?.config?.filters?.severity || undefined,
+      search: searchOverride || dashboard?.config?.filters?.search || undefined,
+      from: dateRange?.[0]?.toISOString() || dashboard?.config?.filters?.from || undefined,
+      to: dateRange?.[1]?.toISOString() || dashboard?.config?.filters?.to || undefined,
+      require_parser: (dashboard?.config?.fields?.length ?? 0) > 0 ? 'true' : undefined,
+    },
+    enabled: streaming,
+  })
+
+  const loadLogs = useCallback(async (offset: number) => {
     setTableLoading(true)
-    setPage(1)
     try {
       const from = dateRange?.[0]?.toISOString() || ''
       const to = dateRange?.[1]?.toISOString() || ''
-      const data = await getDashboardData(dashboardId, pageSize, 0, searchOverride, severityFilter, from, to)
+      const data = await getDashboardData(dashboardId, pageSize, offset, searchOverrideRef.current, severityRef.current, from, to)
       setLogs(data.logs)
       setTotal(data.total)
     } catch (e) {
@@ -69,15 +119,18 @@ export default function DashboardViewPage() {
     } finally {
       setTableLoading(false)
     }
-  }, [dashboardId, pageSize, searchOverride, severityFilter, dateRange])
+  }, [dashboardId, pageSize, dateRange])
 
   useEffect(() => {
     loadDashboard()
+    loadDevices()
+    const interval = setInterval(loadDevices, 30000)
+    return () => clearInterval(interval)
   }, [dashboardId])
 
   useEffect(() => {
     if (dashboard) {
-      loadLogs()
+      loadLogs(0)
     }
   }, [dashboard, loadLogs])
 
@@ -115,10 +168,10 @@ export default function DashboardViewPage() {
   }
 
   const fields = dashboard?.config?.fields || []
-  const devices = dashboard?.config?.devices || []
+  const dashDevices = dashboard?.config?.devices || []
 
-  const buildCustomColumns = (): any[] => {
-    const cols: any[] = []
+  const buildCustomColumns = () => {
+    const cols = []
     if (fields.length > 0) {
       for (const field of fields) {
         cols.push({
@@ -126,7 +179,7 @@ export default function DashboardViewPage() {
           key: `pf_${field}`,
           width: 120,
           ellipsis: true,
-          render: (_: any, r: LogEntry) => {
+          render: (_v, r: LogEntry) => {
             const val = r.parsed_fields?.[field]
             return val ? <Tag color="geekblue" style={{ maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis' }}>{val}</Tag> : <Tag>-</Tag>
           },
@@ -136,7 +189,7 @@ export default function DashboardViewPage() {
     return cols
   }
 
-  const columns: any[] = [
+  const columns = [
     {
       title: 'Time',
       dataIndex: 'timestamp',
@@ -151,9 +204,9 @@ export default function DashboardViewPage() {
       dataIndex: 'hostname',
       key: 'hostname',
       width: 150,
-      render: (v: string) => <Tag color="blue">{v}</Tag>,
+      render: (v: string, r: LogEntry) => <Tag color="blue">{resolveHostname(v, r.fromhost_ip)}</Tag>,
       filters: Array.from(new Set(logs.map(l => l.hostname))).map(h => ({ text: h, value: h })),
-      onFilter: (v: any, record: LogEntry) => record.hostname === String(v),
+      onFilter: (v, record: LogEntry) => record.hostname === String(v),
     },
     {
       title: 'Severity',
@@ -162,7 +215,7 @@ export default function DashboardViewPage() {
       width: 100,
       render: (v: string) => <SeverityTag severity={v} />,
       filters: severities.map(s => ({ text: (SEVERITY_LABELS[s] || s).toUpperCase(), value: s })),
-      onFilter: (v: any, record: LogEntry) => record.severity === String(v),
+      onFilter: (v, record: LogEntry) => record.severity === String(v),
     },
     {
       title: 'App',
@@ -199,9 +252,9 @@ export default function DashboardViewPage() {
 
   const renderDetailContent = () => {
     if (!detailLog) return null
-    const items: { label: string; content: React.ReactNode; span?: number }[] = [
+    const items: { label: string; content: React.ReactNode }[] = [
       { label: 'Timestamp', content: new Date(detailLog.timestamp).toLocaleString() },
-      { label: 'Hostname', content: <Tag color="blue">{detailLog.hostname}</Tag> },
+      { label: 'Hostname', content: <Tag color="blue">{resolveHostname(detailLog.hostname, detailLog.fromhost_ip)}</Tag> },
       { label: 'Source IP', content: detailLog.fromhost_ip ? <Tag color="green">{detailLog.fromhost_ip}</Tag> : '-' },
       { label: 'Severity', content: <SeverityTag severity={detailLog.severity} /> },
       { label: 'Facility', content: detailLog.facility ?? '-' },
@@ -212,7 +265,7 @@ export default function DashboardViewPage() {
     if (fields.length > 0) {
       for (const field of fields) {
         const val = detailLog.parsed_fields?.[field]
-        items.push({ label: field, content: val ? <Tag color="geekblue">{val}</Tag> : '-', span: 1 })
+        items.push({ label: field, content: val ? <Tag color="geekblue">{val}</Tag> : '-' })
       }
     }
 
@@ -223,23 +276,10 @@ export default function DashboardViewPage() {
         : 'None',
     })
 
-    items.push({
-      label: 'Full Message',
-      content: (
-        <pre style={{
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          fontFamily: 'Consolas, Monaco, monospace',
-          fontSize: 12,
-          lineHeight: 1.4,
-          margin: 0,
-        }}>
-          {detailLog.raw_message || detailLog.message}
-        </pre>
-      ),
-    })
-
-    return items
+    return {
+      metadata: items,
+      message: detailLog.raw_message || detailLog.message,
+    }
   }
 
   if (loading) {
@@ -257,10 +297,10 @@ export default function DashboardViewPage() {
         <Breadcrumb.Item>{dashboard.name}</Breadcrumb.Item>
       </Breadcrumb>
 
-      <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
-        <Space>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/dashboards')}>Back</Button>
-          <Title level={3} style={{ margin: 0 }}>{dashboard.name}</Title>
+          <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>{dashboard.name}</Title>
           <Button
             icon={dashboard.pinned ? <PushpinFilled /> : <PushpinOutlined />}
             onClick={handleTogglePin}
@@ -274,35 +314,43 @@ export default function DashboardViewPage() {
             {dashboard.is_public ? 'Public' : 'Private'}
           </Button>}
           {!isOwner && dashboard.owner_username && <Tag color="blue">by {dashboard.owner_username}</Tag>}
-        </Space>
-        <Space wrap>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <Input
             ref={searchRef}
             placeholder="Search... (Ctrl+K)"
             value={searchOverride}
             onChange={e => setSearchOverride(e.target.value)}
-            onPressEnter={loadLogs}
-            style={{ minWidth: 180, flex: 1 }}
+            onPressEnter={() => loadLogs((page - 1) * pageSize)}
+            style={{ minWidth: 180, flex: '1 1 180px' }}
             prefix={<FilterOutlined />}
           />
           <Select
             placeholder="Severity"
             allowClear
-            style={{ minWidth: 140 }}
+            style={{ minWidth: 140, flex: '1 1 140px' }}
             value={severityFilter || undefined}
             onChange={(v) => setSeverityFilter(v || '')}
             options={severities.map(s => ({ label: SEVERITY_LABELS[s] || s, value: s }))}
           />
           <RangePicker
-            style={{ minWidth: 260 }}
+            style={{ minWidth: 260, flex: '1 1 260px' }}
             showTime
             value={dateRange}
             onChange={(dates) => setDateRange(dates as [any, any] | null)}
           />
-          <Button icon={<ReloadOutlined />} onClick={loadLogs} loading={tableLoading}>Apply</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => loadLogs((page - 1) * pageSize)} loading={tableLoading}>Apply</Button>
+          <Button
+            icon={<ThunderboltOutlined />}
+            type={streaming ? 'primary' : 'default'}
+            style={{ color: streaming && connected ? '#52c41a' : undefined }}
+            onClick={() => setStreaming(!streaming)}
+          >
+            {streaming ? (connected ? 'Live ●' : 'Connecting...') : 'Live'}
+          </Button>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset</Button>}
-        </Space>
-      </Space>
+        </div>
+      </div>
 
       {dashboard.description && (
         <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>{dashboard.description}</Typography.Paragraph>
@@ -316,7 +364,7 @@ export default function DashboardViewPage() {
         </Col>
         <Col xs={24} sm={12} md={8} lg={6}>
           <Card>
-            <Statistic title="Devices" value={devices.length || 'All'} />
+            <Statistic title="Devices" value={dashDevices.length || 'All'} />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={8} lg={6}>
@@ -331,18 +379,24 @@ export default function DashboardViewPage() {
         </Col>
       </Row>
 
-      {(devices.length > 0 || fields.length > 0) && (
-        <Descriptions bordered column={3} size="small" style={{ marginBottom: 16 }}>
-          <Descriptions.Item label="Devices" span={1}>
-            {devices.length ? devices.map(d => <Tag key={d}>{d}</Tag>) : <Tag>All</Tag>}
-          </Descriptions.Item>
-          <Descriptions.Item label="Active Fields" span={1}>
-            {fields.length ? fields.map(f => <Tag key={f} color="green">{f}</Tag>) : <Tag>Default</Tag>}
-          </Descriptions.Item>
-          <Descriptions.Item label="Severity Filter" span={1}>
-            <Tag>{dashboard.config.filters.severity || 'All'}</Tag>
-          </Descriptions.Item>
-        </Descriptions>
+      {(dashDevices.length > 0 || fields.length > 0) && (
+        <Row gutter={16} style={{ marginBottom: 16 }}>
+          <Col xs={24} md={8}>
+            <Card size="small" title="Devices">
+              {dashDevices.length ? dashDevices.map(d => <Tag key={d}>{d}</Tag>) : <Tag>All</Tag>}
+            </Card>
+          </Col>
+          <Col xs={24} md={8}>
+            <Card size="small" title="Active Fields">
+              {fields.length ? fields.map(f => <Tag key={f} color="green">{f}</Tag>) : <Tag>Default</Tag>}
+            </Card>
+          </Col>
+          <Col xs={24} md={8}>
+            <Card size="small" title="Severity Filter">
+              <Tag>{dashboard.config.filters.severity || 'All'}</Tag>
+            </Card>
+          </Col>
+        </Row>
       )}
 
       <Table
@@ -362,7 +416,7 @@ export default function DashboardViewPage() {
           total: total,
           showSizeChanger: true,
           showTotal: (t) => `${t} total`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps) },
+          onChange: (p, ps) => { setPage(p); setPageSize(ps); loadLogs((p - 1) * ps) },
         }}
       />
 
@@ -371,19 +425,35 @@ export default function DashboardViewPage() {
         open={!!detailLog}
         onCancel={() => setDetailLog(null)}
         footer={[
-          <Button key="close" onClick={() => setDetailLog(null)}>Close</Button>
+          <Button key="close" onClick={() => setDetailLog(null)} style={{ width: '100%' }}>Close</Button>
         ]}
         width={{ sm: '90%', md: 720 }}
       >
-        {detailLog && (
-          <Descriptions column={2} size="small" bordered>
-            {(renderDetailContent() ?? []).map((item, i) => (
-              <Descriptions.Item key={i} label={item.label} span={item.span || 1}>
-                {item.content}
+        {detailLog && (() => {
+          const detail = renderDetailContent()
+          if (!detail) return null
+          return (
+            <Descriptions bordered column={1} size="small">
+              {detail.metadata.map((item, i) => (
+                <Descriptions.Item key={i} label={item.label}>
+                  {item.content}
+                </Descriptions.Item>
+              ))}
+              <Descriptions.Item label="Full Message">
+                <pre style={{
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontFamily: 'Consolas, Monaco, monospace',
+                  fontSize: 12,
+                  lineHeight: 1.4,
+                  margin: 0,
+                }}>
+                  {detail.message}
+                </pre>
               </Descriptions.Item>
-            ))}
-          </Descriptions>
-        )}
+            </Descriptions>
+          )
+        })()}
       </Modal>
     </>
   )

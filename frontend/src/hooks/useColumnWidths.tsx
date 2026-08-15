@@ -4,7 +4,7 @@ interface ColumnDef {
   key: string;
   width?: number;
   title?: React.ReactNode;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 interface UseColumnWidthsReturn {

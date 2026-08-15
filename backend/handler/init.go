@@ -2,12 +2,14 @@ package handler
 
 import (
 	"database/sql"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 
 	"syslog-gui/auth"
 	"syslog-gui/db"
+	"syslog-gui/middleware"
+	"syslog-gui/model"
 	"syslog-gui/util"
 
 	"github.com/gin-gonic/gin"
@@ -15,29 +17,29 @@ import (
 
 type InitRequest struct {
 	Admin struct {
-		Username string `json:"username" binding:"required,min=3"`
-		Email    string `json:"email" binding:"required,email"`
-		Password string `json:"password" binding:"required,min=8"`
+		Username string `json:"username" binding:"required,min=3,max=100"`
+		Email    string `json:"email" binding:"required,email,max=256"`
+		Password string `json:"password" binding:"required,min=8,max=128"`
 	} `json:"admin" binding:"required"`
 	Database struct {
-		Host     string `json:"host" binding:"required"`
+		Host     string `json:"host" binding:"required,max=256"`
 		Port     int    `json:"port" binding:"required"`
-		Name     string `json:"name" binding:"required"`
-		User     string `json:"user" binding:"required"`
-		Password string `json:"password" binding:"required"`
+		Name     string `json:"name" binding:"required,max=128"`
+		User     string `json:"user" binding:"required,max=128"`
+		Password string `json:"password" binding:"required,max=256"`
 	} `json:"database" binding:"required"`
-	JWTSecret     string `json:"jwt_secret" binding:"required,min=16"`
-	EncryptionKey string `json:"encryption_key" binding:"required,min=16"`
-	CORSOrigins   string `json:"cors_origins"`
+	JWTSecret     string `json:"jwt_secret" binding:"required,min=16,max=512"`
+	EncryptionKey string `json:"encryption_key" binding:"required,min=16,max=512"`
+	CORSOrigins   string `json:"cors_origins" binding:"max=1024"`
 	LDAP          struct {
-		Server       string `json:"server"`
+		Server       string `json:"server" binding:"max=256"`
 		Port         int    `json:"port"`
 		UseTLS       bool   `json:"use_tls"`
 		VerifyCert   bool   `json:"verify_cert"`
-		CaCert       string `json:"ca_cert"`
-		BaseDN       string `json:"base_dn"`
-		BindDN       string `json:"bind_dn"`
-		BindPassword string `json:"bind_password"`
+		CaCert       string `json:"ca_cert" binding:"max=8192"`
+		BaseDN       string `json:"base_dn" binding:"max=512"`
+		BindDN       string `json:"bind_dn" binding:"max=512"`
+		BindPassword string `json:"bind_password" binding:"max=256"`
 	} `json:"ldap"`
 }
 
@@ -45,35 +47,39 @@ func Initialize(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		val := db.GetSetting(database, "is_initialized", "false")
 		if val == "true" {
-			c.JSON(http.StatusConflict, gin.H{"error": "Application already initialized"})
+			middleware.HandleError(c, model.NewConflict("Application already initialized", nil))
 			return
 		}
 
 		var req InitRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+			middleware.HandleError(c, model.NewBadRequest("Invalid request", err))
+			return
+		}
+		if err := auth.ValidatePassword(req.Admin.Password); err != nil {
+			middleware.HandleError(c, model.NewBadRequest(err.Error(), nil))
 			return
 		}
 
 		tx, err := database.Begin()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not start transaction"})
+			middleware.HandleError(c, model.NewInternal("Could not start transaction", err))
 			return
 		}
 		defer tx.Rollback()
 
 		hash, err := auth.HashPassword(req.Admin.Password)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not hash password"})
+			middleware.HandleError(c, model.NewInternal("Could not hash password", err))
 			return
 		}
 
 		_, err = tx.Exec(
 			"INSERT INTO users (username, password_hash, email, is_admin, role, is_active, auth_type) VALUES ($1, $2, $3, $4, $5, $6, 'local')",
-			req.Admin.Username, hash, req.Admin.Email, true, "admin", true,
+			req.Admin.Username, hash, req.Admin.Email, true, RoleAdmin, true,
 		)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not create admin user"})
+			middleware.HandleError(c, model.NewInternal("Could not create admin user", err))
 			return
 		}
 
@@ -144,17 +150,17 @@ func Initialize(database *sql.DB) gin.HandlerFunc {
 
 		for k, v := range settings {
 			if _, err := tx.Exec(insertSQL, k, v, descriptions[k]); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not save setting: " + k})
+				middleware.HandleError(c, model.NewInternal("Could not save setting: "+k, err))
 				return
 			}
 		}
 
 		if err := tx.Commit(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not commit transaction"})
+			middleware.HandleError(c, model.NewInternal("Could not commit transaction", err))
 			return
 		}
 
-		log.Printf("Application initialized by admin user: %s", req.Admin.Username)
+		slog.Info("application initialized", "admin", req.Admin.Username)
 		c.JSON(http.StatusOK, gin.H{"message": "Application initialized successfully"})
 	}
 }

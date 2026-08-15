@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Table, Input, InputRef, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Dropdown, Modal, Descriptions } from 'antd'
 import { RestOutlined, ColumnHeightOutlined, ClusterOutlined, UnorderedListOutlined, ThunderboltOutlined } from '@ant-design/icons'
-import { getLogs, getDevices, exportCSV, exportHTML, LogEntry } from '../services/api'
+import { getLogs, getDevices, exportCSV, exportHTML, LogEntry, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import dayjs from 'dayjs'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import { useSSE } from '../hooks/useSSE'
@@ -18,12 +18,14 @@ const severities = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info'
 export default function LogsViewer() {
   const [searchParams] = useSearchParams()
   const urlHostname = searchParams.get('hostname') || ''
+  const urlFromHostIP = searchParams.get('fromhost_ip') || ''
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
-  const [devices, setDevices] = useState<string[]>([])
+  const [devices, setDevices] = useState<DeviceStats[]>([])
   const [filters, setFilters] = useState({
     hostname: urlHostname,
+    fromhost_ip: urlFromHostIP,
     severity: '',
     search: '',
     from: '',
@@ -40,6 +42,21 @@ export default function LogsViewer() {
   const logsRef = useRef(logs)
   logsRef.current = logs
 
+  const deviceMap = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const d of devices) {
+      const dn = resolveDeviceDisplayName(d)
+      if (d.fromhost_ip) m.set(d.fromhost_ip, dn)
+      if (d.hostname) m.set(d.hostname, dn)
+      if (d.old_hostname) m.set(d.old_hostname, dn)
+    }
+    return m
+  }, [devices])
+
+  const resolveHostname = (hostname: string, fromhost_ip?: string): string => {
+    return deviceMap.get(fromhost_ip || hostname || '') || hostname || '-'
+  }
+
   const { enhanceColumns, hasChanges, reset } = useColumnWidths(
     'col_widths_logs',
     [
@@ -53,6 +70,8 @@ export default function LogsViewer() {
 
   useEffect(() => {
     loadDevices()
+    const interval = setInterval(loadDevices, 30000)
+    return () => clearInterval(interval)
   }, [])
 
   useEffect(() => {
@@ -71,6 +90,7 @@ export default function LogsViewer() {
       const ids = new Set(prev.map(l => l.id))
       const unique = newLogs.filter(l => !ids.has(l.id))
       if (unique.length === 0) return prev
+      setTotal(t => t + unique.length)
       const combined = [...unique, ...prev]
       return combined.slice(0, pagination.pageSize * 3)
     })
@@ -80,6 +100,7 @@ export default function LogsViewer() {
     onNewLogs: handleNewLogs,
     filters: {
       hostname: filters.hostname || undefined,
+      fromhost_ip: filters.fromhost_ip || undefined,
       severity: filters.severity || undefined,
       search: filters.search || undefined,
       from: filters.from || undefined,
@@ -114,7 +135,7 @@ export default function LogsViewer() {
     }
   }, [filters, pagination.pageSize])
 
-  const handleTableChange = (pag: any) => {
+  const handleTableChange = (pag) => {
     setPagination(pag)
     loadLogs((pag.current - 1) * pag.pageSize)
   }
@@ -123,7 +144,7 @@ export default function LogsViewer() {
     setFilters(f => ({ ...f, search: value }))
   }
 
-  const handleDateRange = (dates: any) => {
+  const handleDateRange = (dates) => {
     setFilters(f => ({
       ...f,
       from: dates?.[0]?.toISOString() || '',
@@ -134,6 +155,7 @@ export default function LogsViewer() {
   const handleExport = (format: 'csv' | 'html') => {
     const params: Record<string, string> = {}
     if (filters.hostname) params.hostname = filters.hostname
+    if (filters.fromhost_ip) params.fromhost_ip = filters.fromhost_ip
     if (filters.severity) params.severity = filters.severity
     if (filters.search) params.search = filters.search
     if (filters.from) params.from = filters.from
@@ -155,7 +177,7 @@ export default function LogsViewer() {
     let i = 0
     while (i < records.length) {
       let j = i + 1
-      while (j < records.length && records[j].hostname === records[i].hostname) j++
+      while (j < records.length && (records[j].fromhost_ip || '') === (records[i].fromhost_ip || '')) j++
       const span = j - i
       for (let k = i; k < j; k++) spans.set(k, k === i ? span : 0)
       i = j
@@ -169,9 +191,9 @@ export default function LogsViewer() {
       dataIndex: 'timestamp',
       key: 'timestamp',
       width: 180,
-      fixed: 'left' as const,
-      render: (v: string) => <Text style={{ fontFamily: 'monospace', fontSize: 12 }}>{new Date(v).toLocaleString()}</Text>,
-      sorter: true,
+      render: (v: string) => new Date(v).toLocaleString(),
+      sorter: (a: LogEntry, b: LogEntry) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+      defaultSortOrder: 'descend',
     },
     {
       title: 'Severity',
@@ -180,7 +202,7 @@ export default function LogsViewer() {
       width: 90,
       render: (v: string) => <SeverityTag severity={v} />,
       filters: severities.map(s => ({ text: s.toUpperCase(), value: s })),
-      onFilter: (v: any, record: LogEntry) => record.severity === String(v),
+      onFilter: (v, record: LogEntry) => record.severity === String(v),
     },
     {
       title: 'Device',
@@ -191,7 +213,7 @@ export default function LogsViewer() {
         const rowSpans = getRowSpans(logs)
         return {
           props: { rowSpan: rowSpans.get(index) },
-          children: v ? <Tag color="blue">{v}</Tag> : '-',
+          children: v ? <Tag color="blue">{resolveHostname(v, _record.fromhost_ip)}</Tag> : '-',
         }
       },
     },
@@ -229,8 +251,8 @@ export default function LogsViewer() {
 
   return (
     <>
-      <Space style={{ marginBottom: 16 }} align="center">
-        <Title level={3} style={{ margin: 0 }}>Logs</Title>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+        <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>Logs</Title>
         <Text type="secondary">({total.toLocaleString()} total)</Text>
         {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
         <Dropdown
@@ -272,29 +294,29 @@ export default function LogsViewer() {
         >
           {streaming ? (connected ? 'Live ●' : 'Connecting...') : 'Live'}
         </Button>
-      </Space>
+      </div>
 
       <Card style={{ marginBottom: 16 }} size="small">
-        <Space wrap>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <Input
             ref={searchRef}
             placeholder="Search messages... (Ctrl+K)"
-            style={{ minWidth: 200 }}
+            style={{ minWidth: 200, flex: '1 1 200px' }}
             allowClear
             onChange={e => handleSearch(e.target.value)}
             value={filters.search}
           />
           <Select
             placeholder="Device"
-            style={{ minWidth: 140 }}
+            style={{ minWidth: 140, flex: '1 1 140px' }}
             allowClear
-            options={devices.map(d => ({ label: d, value: d }))}
-            value={filters.hostname || undefined}
-            onChange={v => setFilters(f => ({ ...f, hostname: v || '' }))}
+            options={[{ label: 'Unknown', value: '__unknown__' }, ...devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))]}
+            value={filters.fromhost_ip || undefined}
+            onChange={v => setFilters(f => ({ ...f, fromhost_ip: v || '' }))}
           />
           <Select
             placeholder="Severity"
-            style={{ minWidth: 100 }}
+            style={{ minWidth: 100, flex: '1 1 100px' }}
             allowClear
             options={severities.map(s => ({ label: s.toUpperCase(), value: s }))}
             value={filters.severity || undefined}
@@ -302,7 +324,7 @@ export default function LogsViewer() {
           />
           <Select
             placeholder="Date Preset"
-            style={{ minWidth: 120 }}
+            style={{ minWidth: 120, flex: '1 1 120px' }}
             allowClear
             options={DATE_PRESETS}
             onChange={v => {
@@ -313,12 +335,12 @@ export default function LogsViewer() {
             }}
           />
           <RangePicker
-            style={{ minWidth: 240 }}
+            style={{ minWidth: 240, flex: '1 1 240px' }}
             onChange={handleDateRange}
           />
           <Select
             placeholder="Sort"
-            style={{ minWidth: 130 }}
+            style={{ minWidth: 130, flex: '1 1 130px' }}
             value={filters.sort}
             onChange={v => setFilters(f => ({ ...f, sort: v }))}
             options={[
@@ -334,7 +356,7 @@ export default function LogsViewer() {
           <Popconfirm title="Export as HTML?" onConfirm={() => handleExport('html')}>
             <Button>HTML</Button>
           </Popconfirm>
-        </Space>
+        </div>
       </Card>
 
       {!loading && logs.length === 0 ? (
@@ -342,7 +364,7 @@ export default function LogsViewer() {
           description="No logs found. Try adjusting your filters."
           actionLabel="Clear Filters"
           actionClick={() => {
-            setFilters({ hostname: '', severity: '', search: '', from: '', to: '', sort: 'timestamp_desc' })
+            setFilters({ hostname: '', fromhost_ip: '', severity: '', search: '', from: '', to: '', sort: 'timestamp_desc' })
             setPagination({ current: 1, pageSize: 50 })
           }}
         />
@@ -375,14 +397,16 @@ export default function LogsViewer() {
             title="Log Details"
             open={detailModalOpen}
             onCancel={() => setDetailModalOpen(false)}
-            footer={null}
+            footer={[
+              <Button key="close" onClick={() => setDetailModalOpen(false)} style={{ width: '100%' }}>Close</Button>
+            ]}
             width={{ sm: '90%', md: 700 }}
           >
             {selectedLog && (
               <Descriptions bordered column={1} size="small">
                 <Descriptions.Item label="Timestamp">{new Date(selectedLog.timestamp).toLocaleString()}</Descriptions.Item>
                 <Descriptions.Item label="Severity"><SeverityTag severity={selectedLog.severity} /></Descriptions.Item>
-                <Descriptions.Item label="Device"><Tag color="blue">{selectedLog.hostname}</Tag></Descriptions.Item>
+                <Descriptions.Item label="Device"><Tag color="blue">{resolveHostname(selectedLog.hostname, selectedLog.fromhost_ip)}</Tag></Descriptions.Item>
                 {selectedLog.fromhost_ip && <Descriptions.Item label="Source IP"><Tag color="green">{selectedLog.fromhost_ip}</Tag></Descriptions.Item>}
                 {selectedLog.app_name && <Descriptions.Item label="App">{selectedLog.app_name}</Descriptions.Item>}
                 <Descriptions.Item label="Message">

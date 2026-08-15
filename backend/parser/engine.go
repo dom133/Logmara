@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"regexp"
 	"strings"
 	"sync"
@@ -40,7 +40,7 @@ func (e *Engine) loadParsers() {
 		FROM parsers WHERE enabled = true ORDER BY id
 	`)
 	if err != nil {
-		log.Printf("Parser: failed to load parsers: %v", err)
+		slog.Error("failed to load parsers", "error", err)
 		return
 	}
 	defer rows.Close()
@@ -51,7 +51,7 @@ func (e *Engine) loadParsers() {
 		err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.DeviceType,
 			&p.MatchType, &p.MatchValue, &p.Regex, &p.Enabled, &p.IsBuiltin, &p.CreatedAt, &p.UpdatedAt)
 		if err != nil {
-			log.Printf("Parser: scan error: %v", err)
+			slog.Error("parser scan error", "error", err)
 			continue
 		}
 
@@ -76,7 +76,7 @@ func (e *Engine) loadParsers() {
 	e.parsers = parsers
 	e.mu.Unlock()
 
-	log.Printf("Parser: loaded %d enabled parsers", len(parsers))
+	slog.Info("loaded enabled parsers", "count", len(parsers))
 }
 
 func (e *Engine) runReloadLoop() {
@@ -112,6 +112,7 @@ func (e *Engine) Match(hostname, appName, message string) []model.Parser {
 
 		re, err := regexp.Compile(p.Regex)
 		if err != nil {
+			slog.Error("regex compile error", "parser", p.Name, "error", err)
 			continue
 		}
 
@@ -182,7 +183,7 @@ func (e *Engine) Extract(parser *model.Parser, message string) map[string]string
 
 	re, err := regexp.Compile(parser.Regex)
 	if err != nil {
-		log.Printf("Parser: compile error for %s: %v", parser.Name, err)
+		slog.Error("regex compile error", "parser", parser.Name, "error", err)
 		return nil
 	}
 
@@ -201,14 +202,14 @@ func (e *Engine) Extract(parser *model.Parser, message string) map[string]string
 }
 
 type ParseResult struct {
-	Fields    map[string]string
-	Parsers   []string
+	Fields  map[string]string
+	Parsers []string
 }
 
 func (e *Engine) Parse(hostname, appName, message string) *ParseResult {
 	matched := e.Match(hostname, appName, message)
 	if len(matched) == 0 {
-		log.Printf("Parser: no match for hostname=%s app=%s msg=%.80s", hostname, appName, message)
+		slog.Debug("no parser match", "hostname", hostname, "app", appName)
 		return nil
 	}
 
@@ -226,7 +227,6 @@ func (e *Engine) Parse(hostname, appName, message string) *ParseResult {
 		}
 	}
 
-	log.Printf("Parser: matched %d parsers for hostname=%s app=%s -> %v (%v)", len(matched), hostname, appName, merged, parserNames)
 	return &ParseResult{Fields: merged, Parsers: parserNames}
 }
 
@@ -320,8 +320,8 @@ func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.Parsed
 
 	parserIDs := make(map[int64]bool)
 
-	for _, hostname := range hostnames {
-		appRows, err := e.db.Query(`SELECT DISTINCT app_name FROM syslog_logs WHERE hostname = $1`, hostname)
+	for _, fromHostIP := range hostnames {
+		appRows, err := e.db.Query(`SELECT DISTINCT app_name FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1`, fromHostIP)
 		if err != nil {
 			continue
 		}
@@ -344,18 +344,58 @@ func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.Parsed
 			continue
 		}
 
+		// Collect sample messages for message-type parser matching
+		var messages []string
+		msgRows, err := e.db.Query(`SELECT message FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1 LIMIT 100`, fromHostIP)
+		if err == nil {
+			for msgRows.Next() {
+				var msg sql.NullString
+				if err := msgRows.Scan(&msg); err == nil && msg.Valid {
+					messages = append(messages, msg.String)
+				}
+			}
+			msgRows.Close()
+		}
+
+		// Collect hostnames for hostname-type parser matching
+		var hostnamesFromDevice []string
+		hnRows, err := e.db.Query(`SELECT DISTINCT hostname FROM syslog_logs WHERE COALESCE(fromhost_ip, '') = $1`, fromHostIP)
+		if err == nil {
+			for hnRows.Next() {
+				var hn sql.NullString
+				if err := hnRows.Scan(&hn); err == nil && hn.Valid {
+					hostnamesFromDevice = append(hostnamesFromDevice, hn.String)
+				}
+			}
+			hnRows.Close()
+		}
+
 		for _, p := range parsers {
 			switch p.MatchType {
 			case "all":
 				parserIDs[p.ID] = true
 			case "hostname":
-				if p.MatchValue != nil && *p.MatchValue != "" && matchGlob(*p.MatchValue, hostname) {
-					parserIDs[p.ID] = true
+				if p.MatchValue != nil && *p.MatchValue != "" {
+					for _, hn := range hostnamesFromDevice {
+						if matchGlob(*p.MatchValue, hn) {
+							parserIDs[p.ID] = true
+							break
+						}
+					}
 				}
 			case "app_name":
 				if p.MatchValue != nil && *p.MatchValue != "" {
 					for _, appName := range appNames {
 						if matchGlob(*p.MatchValue, appName) {
+							parserIDs[p.ID] = true
+							break
+						}
+					}
+				}
+			case "message":
+				if p.MatchValue != nil && *p.MatchValue != "" {
+					for _, msg := range messages {
+						if strings.Contains(msg, *p.MatchValue) {
 							parserIDs[p.ID] = true
 							break
 						}
@@ -438,7 +478,7 @@ func (e *Engine) ReparseUnparsed(hostname, from, to string, limit int) (*model.R
 	argIdx := 1
 
 	if hostname != "" {
-		query += fmt.Sprintf(" AND hostname = $%d", argIdx)
+		query += fmt.Sprintf(" AND COALESCE(fromhost_ip, '') = $%d", argIdx)
 		args = append(args, hostname)
 		argIdx++
 	}
@@ -497,17 +537,17 @@ func (e *Engine) ReparseUnparsed(hostname, from, to string, limit int) (*model.R
 
 		_, err = e.db.Exec(updateStmt, jsonData, result.Parsers, id)
 		if err != nil {
-			log.Printf("Parser: reparse update error: %v", err)
+			slog.Error("reparse update error", "error", err)
 			continue
 		}
 		updated++
 
 		if processed%1000 == 0 {
-			log.Printf("Parser: reparsed %d/%d (updated %d)", processed, processed, updated)
+			slog.Info("reparse progress", "processed", processed, "updated", updated)
 		}
 	}
 
 	resp := &model.ReparseResponse{Processed: processed, Updated: updated}
-	log.Printf("Parser: reparse complete: processed=%d, updated=%d", processed, updated)
+	slog.Info("reparse complete", "processed", processed, "updated", updated)
 	return resp, nil
 }

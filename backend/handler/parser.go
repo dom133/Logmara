@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"syslog-gui/middleware"
 	"syslog-gui/model"
 	"syslog-gui/parser"
 
@@ -15,7 +16,7 @@ func ListParsers(engine *parser.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		parsers, err := engine.GetAllParsers()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewInternal("Failed to list parsers", err))
 			return
 		}
 		c.JSON(http.StatusOK, parsers)
@@ -40,14 +41,14 @@ func CreateParser(engine *parser.Engine) gin.HandlerFunc {
 		}
 
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
 			return
 		}
 
 		db := engine.GetDB()
 		tx, err := db.Begin()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewInternal("Could not start transaction", err))
 			return
 		}
 		defer tx.Rollback()
@@ -59,7 +60,7 @@ func CreateParser(engine *parser.Engine) gin.HandlerFunc {
 		`, req.Name, req.Description, req.DeviceType, req.MatchType, req.MatchValue, req.Regex, req.Enabled, false).
 			Scan(&id)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewInternal("Failed to insert parser", err))
 			return
 		}
 
@@ -73,13 +74,13 @@ func CreateParser(engine *parser.Engine) gin.HandlerFunc {
 				VALUES ($1, $2, $3, $4)
 			`, id, f.Name, f.Label, ftype)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				middleware.HandleError(c, model.NewInternal("Failed to insert field", err))
 				return
 			}
 		}
 
 		if err := tx.Commit(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewInternal("Could not commit transaction", err))
 			return
 		}
 
@@ -90,24 +91,24 @@ func CreateParser(engine *parser.Engine) gin.HandlerFunc {
 
 func UpdateParser(engine *parser.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
 			return
 		}
 
 		var req struct {
-			Name        *string  `json:"name"`
-			Description *string  `json:"description"`
-			DeviceType  *string  `json:"device_type"`
-			MatchType   *string  `json:"match_type"`
-			MatchValue  *string  `json:"match_value"`
-			Regex       *string  `json:"regex"`
-			Enabled     *bool    `json:"enabled"`
+			Name        *string `json:"name"`
+			Description *string `json:"description"`
+			DeviceType  *string `json:"device_type"`
+			MatchType   *string `json:"match_type"`
+			MatchValue  *string `json:"match_value"`
+			Regex       *string `json:"regex"`
+			Enabled     *bool   `json:"enabled"`
 		}
 
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
 			return
 		}
 
@@ -154,7 +155,7 @@ func UpdateParser(engine *parser.Engine) gin.HandlerFunc {
 		}
 
 		if len(setClauses) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
+			middleware.HandleError(c, model.NewBadRequest("no fields to update", nil))
 			return
 		}
 
@@ -167,13 +168,13 @@ func UpdateParser(engine *parser.Engine) gin.HandlerFunc {
 		db.QueryRow("SELECT is_builtin FROM parsers WHERE id = $1", id).Scan(&isBuiltin)
 
 		if isBuiltin {
-			c.JSON(http.StatusForbidden, gin.H{"error": "cannot modify built-in parser"})
+			middleware.HandleError(c, model.NewForbidden("cannot modify built-in parser", nil))
 			return
 		}
 
 		_, err = db.Exec(query, args...)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewInternal("Failed to update parser", err))
 			return
 		}
 
@@ -184,9 +185,9 @@ func UpdateParser(engine *parser.Engine) gin.HandlerFunc {
 
 func DeleteParser(engine *parser.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
 			return
 		}
 
@@ -196,13 +197,13 @@ func DeleteParser(engine *parser.Engine) gin.HandlerFunc {
 		db.QueryRow("SELECT is_builtin FROM parsers WHERE id = $1", id).Scan(&isBuiltin)
 
 		if isBuiltin {
-			c.JSON(http.StatusForbidden, gin.H{"error": "cannot delete built-in parser"})
+			middleware.HandleError(c, model.NewForbidden("cannot delete built-in parser", nil))
 			return
 		}
 
 		_, err = db.Exec("DELETE FROM parsers WHERE id = $1", id)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewInternal("Failed to delete parser", err))
 			return
 		}
 
@@ -213,9 +214,9 @@ func DeleteParser(engine *parser.Engine) gin.HandlerFunc {
 
 func CloneParser(engine *parser.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
 			return
 		}
 
@@ -228,13 +229,13 @@ func CloneParser(engine *parser.Engine) gin.HandlerFunc {
 			"SELECT name, description, device_type, match_type, match_value, regex, enabled FROM parsers WHERE id = $1", id,
 		).Scan(&name, &description, &deviceType, &matchType, &matchValue, &regex, &enabled)
 		if err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "parser not found"})
+			middleware.HandleError(c, model.NewNotFound("parser not found", err))
 			return
 		}
 
 		tx, err := db.Begin()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewInternal("Could not start transaction", err))
 			return
 		}
 		defer tx.Rollback()
@@ -247,7 +248,7 @@ func CloneParser(engine *parser.Engine) gin.HandlerFunc {
 		`, cloneName, description, deviceType, matchType, matchValue, regex, enabled, false).
 			Scan(&newID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewInternal("Failed to clone parser", err))
 			return
 		}
 
@@ -256,12 +257,12 @@ func CloneParser(engine *parser.Engine) gin.HandlerFunc {
 			SELECT $1, field_name, field_label, field_type FROM parsed_fields_registry WHERE parser_id = $2
 		`, newID, id)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewInternal("Failed to clone fields", err))
 			return
 		}
 
 		if err := tx.Commit(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewInternal("Could not commit transaction", err))
 			return
 		}
 
@@ -275,13 +276,13 @@ func TestParser(engine *parser.Engine) gin.HandlerFunc {
 		var req model.ParserTestRequest
 
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewBadRequest("Invalid request body", err))
 			return
 		}
 
 		resp, err := engine.TestParser(req.Pattern, req.SampleLog)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewBadRequest("Parser test failed", err))
 			return
 		}
 
@@ -294,11 +295,11 @@ func ReparseUnparsed(engine *parser.Engine) gin.HandlerFunc {
 		var req model.ReparseRequest
 
 		if err := c.ShouldBindJSON(&req); err != nil {
-			req.Limit = 10000
+			req.Limit = DefaultParserLimit
 		}
 
 		if req.Limit <= 0 {
-			req.Limit = 10000
+			req.Limit = DefaultParserLimit
 		}
 
 		go func() {
@@ -319,7 +320,7 @@ func ListParsedFields(engine *parser.Engine) gin.HandlerFunc {
 			}
 			fields, err := engine.GetParsedFieldsForHostnames(hostnames)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				middleware.HandleError(c, model.NewInternal("Failed to get parsed fields", err))
 				return
 			}
 			c.JSON(http.StatusOK, fields)
@@ -327,7 +328,7 @@ func ListParsedFields(engine *parser.Engine) gin.HandlerFunc {
 		}
 		fields, err := engine.GetParsedFieldRegistry()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			middleware.HandleError(c, model.NewInternal("Failed to get field registry", err))
 			return
 		}
 		c.JSON(http.StatusOK, fields)

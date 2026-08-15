@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { Row, Col, Card, Table, Tag, Spin, Typography, Button } from 'antd'
 import { RestOutlined, FileTextOutlined, ClockCircleOutlined, CalendarOutlined, DesktopOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import { getDashboardStats, getTimeline, getSeverityStats } from '../services/api'
+import { getDashboardStats, getTimeline, getSeverityStats, getDevices, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import { DashboardStats, TimelinePoint } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import StatCard from '../components/StatCard'
@@ -15,6 +15,22 @@ export default function Dashboard() {
   const [timeline, setTimeline] = useState<TimelinePoint[]>([])
   const [severityData, setSeverityData] = useState<Array<{ severity: string; count: number }>>([])
   const [loading, setLoading] = useState(true)
+  const [devices, setDevices] = useState<DeviceStats[]>([])
+
+  const deviceMap = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const d of devices) {
+      const dn = resolveDeviceDisplayName(d)
+      if (d.fromhost_ip) m.set(d.fromhost_ip, dn)
+      if (d.hostname) m.set(d.hostname, dn)
+      if (d.old_hostname) m.set(d.old_hostname, dn)
+    }
+    return m
+  }, [devices])
+
+  const resolveHostname = (hostname: string, fromhost_ip?: string): string => {
+    return deviceMap.get(fromhost_ip || hostname || '') || hostname || '-'
+  }
 
   const { enhanceColumns: enhanceDevices, hasChanges: devChanged, reset: resetDevices } = useColumnWidths(
     'col_widths_dashboard_devs',
@@ -32,16 +48,23 @@ export default function Dashboard() {
     return () => clearInterval(interval)
   }, [])
 
+  const loadDevices = async () => {
+    const d = await getDevices()
+    setDevices(d)
+  }
+
   const loadData = async () => {
     try {
-      const [s, t, sv] = await Promise.all([
+      const [s, t, sv, dv] = await Promise.all([
         getDashboardStats(),
         getTimeline('1h'),
         getSeverityStats(),
+        getDevices(),
       ])
       setStats(s)
       setTimeline(t)
       setSeverityData(sv)
+      setDevices(dv)
     } finally {
       setLoading(false)
     }
@@ -86,13 +109,17 @@ export default function Dashboard() {
   }
 
   const topDevicesColumns = [
-    { title: 'Device', dataIndex: 'hostname', key: 'hostname', width: 160, render: (v: string) => <Tag color="blue">{v}</Tag> },
-    { title: 'Logs', dataIndex: 'count', key: 'count', width: 100, sorter: (a: any, b: any) => a.count - b.count },
+    { title: 'Device', dataIndex: 'hostname', key: 'hostname', width: 160, render: (v: string, record: DeviceStats) => (
+      <a onClick={() => window.location.href = `/logs?fromhost_ip=${encodeURIComponent(record.fromhost_ip)}`}><Tag color="blue">{resolveHostname(v, record.fromhost_ip)}</Tag></a>
+    )},
+    { title: 'Logs', dataIndex: 'count', key: 'count', width: 100, sorter: (a: DeviceStats, b: DeviceStats) => a.count - b.count },
   ]
 
   const topErrorsColumns = [
     { title: 'Message', dataIndex: 'message', key: 'message', width: 140, ellipsis: true },
-    { title: 'Source', dataIndex: 'hostname', key: 'hostname', width: 120, render: (v: string) => <Tag>{v}</Tag> },
+    { title: 'Source', dataIndex: 'hostname', key: 'hostname', width: 120, render: (v: string, record: { hostname: string; fromhost_ip?: string; count: number }) => (
+      <a onClick={() => window.location.href = `/logs?fromhost_ip=${encodeURIComponent(record.fromhost_ip)}`}><Tag color="blue">{resolveHostname(v, record.fromhost_ip)}</Tag></a>
+    )},
     { title: 'Count', dataIndex: 'count', key: 'count', width: 70 },
   ]
 
@@ -128,7 +155,7 @@ export default function Dashboard() {
       </Row>
 
       <Row gutter={16}>
-        <Col span={12}>
+        <Col xs={24} md={12}>
           <Card
             title="Top Devices"
             extra={devChanged ? <Button size="small" icon={<RestOutlined />} onClick={resetDevices}>Reset</Button> : undefined}
@@ -143,7 +170,7 @@ export default function Dashboard() {
             />
           </Card>
         </Col>
-        <Col span={12}>
+        <Col xs={24} md={12}>
           <Card
             title="Top Errors"
             extra={errChanged ? <Button size="small" icon={<RestOutlined />} onClick={resetErrors}>Reset</Button> : undefined}

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, message, Popconfirm, Typography, List } from 'antd'
+import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, message, Popconfirm, Typography, List, Spin } from 'antd'
 import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { getDashboards, createDashboard, updateDashboard, deleteDashboard, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardConfig, ParsedField } from '../services/api'
-import { getDevices, getParsedFields } from '../services/api'
+import { getDevices, getParsedFields, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import { useAuth } from '../services/auth'
+import { getErrorMessage } from '../utils/error'
 
 const { Title } = Typography
 
@@ -18,7 +19,7 @@ export default function DashboardsPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Dashboard | null>(null)
   const [form] = Form.useForm()
-  const [devices, setDevices] = useState<string[]>([])
+  const [devices, setDevices] = useState<DeviceStats[]>([])
   const [parsedFields, setParsedFields] = useState<ParsedField[]>([])
   const navigate = useNavigate()
   const prevDevices = useRef<string[]>([])
@@ -66,19 +67,19 @@ export default function DashboardsPage() {
     loadData()
   }, [])
 
-  const handleCreate = async (values: any) => {
+  const handleCreate = async (values: unknown) => {
     try {
       await createDashboard(values)
       message.success('Dashboard created')
       setModalOpen(false)
       form.resetFields()
       loadData()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to create dashboard')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to create dashboard'))
     }
   }
 
-  const handleUpdate = async (values: any) => {
+  const handleUpdate = async (values: unknown) => {
     if (!editing) return
     try {
       await updateDashboard(editing.id, values)
@@ -87,8 +88,8 @@ export default function DashboardsPage() {
       setEditing(null)
       form.resetFields()
       loadData()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to update dashboard')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to update dashboard'))
     }
   }
 
@@ -97,8 +98,8 @@ export default function DashboardsPage() {
       await deleteDashboard(id)
       message.success('Dashboard deleted')
       loadData()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to delete dashboard')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to delete dashboard'))
     }
   }
 
@@ -108,8 +109,8 @@ export default function DashboardsPage() {
       message.success(res.pinned ? 'Dashboard pinned' : 'Dashboard unpinned')
       loadData()
       window.dispatchEvent(new CustomEvent('dashboards-pinned-changed'))
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to toggle pin')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to toggle pin'))
     }
   }
 
@@ -118,8 +119,8 @@ export default function DashboardsPage() {
       const res = await togglePublicDashboard(id)
       message.success(res.is_public ? 'Dashboard is now public' : 'Dashboard is now private')
       loadData()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to toggle visibility')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to toggle public'))
     }
   }
 
@@ -168,7 +169,7 @@ export default function DashboardsPage() {
     {
       title: 'Devices',
       key: 'devices',
-      render: (_: any, r: Dashboard) => {
+      render: (_v, r: Dashboard) => {
         const devs = r.config?.devices || []
         return devs.length
           ? devs.slice(0, 3).map(d => <Tag key={d}>{d}</Tag>)
@@ -178,7 +179,7 @@ export default function DashboardsPage() {
     {
       title: 'Fields',
       key: 'fields',
-      render: (_: any, r: Dashboard) => {
+      render: (_v, r: Dashboard) => {
         const fs = r.config?.fields || []
         return fs.length ? fs.map(f => <Tag key={f} color="green">{f}</Tag>) : <Tag color="default">Default</Tag>
       },
@@ -198,7 +199,7 @@ export default function DashboardsPage() {
     {
       title: 'Last Modified',
       key: 'last_modified',
-      render: (_: any, r: Dashboard) => {
+      render: (_v, r: Dashboard) => {
         if (!r.updated_at) return '-'
         const date = new Date(r.updated_at).toLocaleDateString()
         const by = r.updated_by_username || r.owner_username
@@ -208,11 +209,11 @@ export default function DashboardsPage() {
     {
       title: 'Actions',
       key: 'actions',
-      render: (_: any, r: Dashboard) => {
+      render: (_v, r: Dashboard) => {
         const isOwner = r.owner_id === user?.id
         const canManage = isOwner && canEdit || isAdmin
         return (
-          <Space>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <Button size="small" icon={<EyeOutlined />} onClick={() => navigate(`/dashboards/${r.id}`)}>View</Button>
             {canManage && <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>Edit</Button>}
             <Button
@@ -232,7 +233,7 @@ export default function DashboardsPage() {
             {canManage && <Popconfirm title="Delete dashboard?" onConfirm={() => handleDelete(r.id)}>
               <Button size="small" danger icon={<DeleteOutlined />} />
             </Popconfirm>}
-          </Space>
+          </div>
         )
       },
     },
@@ -240,14 +241,19 @@ export default function DashboardsPage() {
 
   return (
     <>
-      <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
-        <Title level={3}>Custom Dashboards</Title>
-        <Space>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+        <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>Custom Dashboards</Title>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
           {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Dashboard</Button>}
-        </Space>
-      </Space>
+        </div>
+      </div>
 
+      {loading && dashboards.length === 0 && (
+        <div style={{ textAlign: 'center', padding: 48 }}>
+          <Spin size="large" tip="Loading dashboards..." />
+        </div>
+      )}
       {dashboards.length === 0 && !loading && (
         <Card style={{ marginBottom: 16 }}>
           <Typography.Paragraph>
@@ -323,7 +329,7 @@ export default function DashboardsPage() {
         await loadFieldsForDevices(newDevices)
       }
     }}>
-          <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Name is required' }]}>
+          <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Name is required' }, { max: 50, message: 'Name must be 50 characters or less' }]}>
             <Input placeholder="e.g. Firewall Monitoring" />
           </Form.Item>
           <Form.Item name="description" label="Description">
@@ -336,7 +342,7 @@ export default function DashboardsPage() {
                 mode="multiple"
                 placeholder="Select devices to monitor (leave empty for all)"
                 style={{ width: '100%' }}
-                options={devices.map(d => ({ label: d, value: d }))}
+                options={devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))}
               />
             </Form.Item>
           </Form.Item>

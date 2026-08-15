@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"syslog-gui/middleware"
 	"syslog-gui/model"
 
 	"github.com/gin-gonic/gin"
@@ -19,7 +20,7 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		flusher, ok := c.Writer.(http.Flusher)
 		if !ok {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Streaming not supported"})
+			middleware.HandleError(c, model.NewServiceUnavailable("Streaming not supported", nil))
 			return
 		}
 
@@ -31,10 +32,12 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 
 		since := c.DefaultQuery("since", time.Now().Format(time.RFC3339))
 		hostname := c.Query("hostname")
+		fromHostIP := c.Query("fromhost_ip")
 		severity := c.Query("severity")
 		search := c.Query("search")
 		from := c.Query("from")
 		to := c.Query("to")
+		requireParser := c.Query("require_parser") == "true"
 
 		ctx := c.Request.Context()
 
@@ -47,6 +50,16 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 				clauses = append(clauses, fmt.Sprintf("hostname = $%d", idx))
 				args = append(args, hostname)
 				idx++
+			}
+			if fromHostIP != "" {
+				ips := strings.Split(fromHostIP, ",")
+				placeholders := make([]string, len(ips))
+				for i, ip := range ips {
+					placeholders[i] = fmt.Sprintf("$%d", idx)
+					args = append(args, ip)
+					idx++
+				}
+				clauses = append(clauses, fmt.Sprintf("COALESCE(fromhost_ip, '') IN (%s)", strings.Join(placeholders, ", ")))
 			}
 			if severity != "" {
 				clauses = append(clauses, fmt.Sprintf("severity = $%d", idx))
@@ -67,6 +80,9 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 				clauses = append(clauses, fmt.Sprintf("timestamp <= $%d", idx))
 				args = append(args, to)
 				idx++
+			}
+			if requireParser {
+				clauses = append(clauses, "matched_parsers IS NOT NULL AND array_length(matched_parsers, 1) > 0")
 			}
 
 			return "WHERE " + strings.Join(clauses, " AND "), args

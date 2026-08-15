@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Layout, Card, Form, Input, Button, message, Typography, Steps, Space, Divider, Switch, Checkbox } from 'antd'
+import { UploadOutlined } from '@ant-design/icons'
 import { generateKeys, initialize, getDbConfig, InitRequest } from '../services/api'
+import { getErrorMessage } from '../utils/error'
 
 const { Title, Text } = Typography
 const { Step } = Steps
@@ -114,8 +116,8 @@ export default function SetupWizard() {
       await initialize(data)
       message.success('Application initialized! Redirecting...')
       setTimeout(() => { window.location.href = '/login' }, 1000)
-    } catch (e: any) {
-      message.error(e?.response?.data?.error || 'Initialization failed')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Initialization failed'))
       setLoading(false)
     }
   }
@@ -263,7 +265,33 @@ export default function SetupWizard() {
               <Switch />
             </Form.Item>
             <Form.Item name="ldap_ca_cert" label="CA Certificate (PEM)">
-              <Input.TextArea rows={2} placeholder="-----BEGIN CERTIFICATE-----..." />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <Input.TextArea rows={2} placeholder="-----BEGIN CERTIFICATE-----..." style={{ resize: 'none' }} />
+                <input
+                  type="file"
+                  accept=".pem,.crt,.cer"
+                  style={{ display: 'none' }}
+                  id="ca-cert-upload-wizard"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (!file) return
+                    const reader = new FileReader()
+                    reader.onload = (ev) => {
+                      const text = ev.target?.result
+                      if (typeof text === 'string') {
+                        form.setFieldValue('ldap_ca_cert', text)
+                        message.success('PEM file loaded')
+                      }
+                    }
+                    reader.onerror = () => message.error('Failed to read PEM file')
+                    reader.readAsText(file)
+                    e.target.value = ''
+                  }}
+                />
+                <Button icon={<UploadOutlined />} block onClick={() => { document.getElementById('ca-cert-upload-wizard')?.click() }}>
+                  Upload PEM
+                </Button>
+              </div>
             </Form.Item>
             <Form.Item name="ldap_base_dn" label="Base DN">
               <Input size="large" placeholder="dc=example,dc=com" />
@@ -332,7 +360,7 @@ export default function SetupWizard() {
         <Form form={form} layout="vertical">
           {renderStepContent()}
 
-          <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
             <Button disabled={current === 0} onClick={prev} size="large">
               {current === 4 ? 'Back' : 'Previous'}
             </Button>
@@ -344,7 +372,7 @@ export default function SetupWizard() {
             >
               {current === 4 ? 'Initialize' : current === 3 ? 'Review' : 'Next'}
             </Button>
-          </Space>
+          </div>
         </Form>
       </Card>
     </Layout>

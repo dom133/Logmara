@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, Switch, message, Popconfirm, Tooltip, Typography, Divider, Descriptions } from 'antd'
+import { Card, Table, Button, Tag, Space, Modal, Form, Input, Select, Switch, message, Popconfirm, Tooltip, Typography, Divider, Descriptions, Row, Col, Statistic } from 'antd'
 import { PlusOutlined, PlayCircleOutlined, ReloadOutlined, DeleteOutlined, EditOutlined, RestOutlined, CopyOutlined } from '@ant-design/icons'
 import { getParsers, createParser, updateParser, deleteParser, cloneParser, testParser, reparseUnparsed, getParsedFields, Parser, ParsedField } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import { useAuth } from '../services/auth'
+import { getErrorMessage } from '../utils/error'
 
 const { Title, Text } = Typography
 
@@ -53,19 +54,19 @@ export default function ParsersPage() {
     loadData()
   }, [])
 
-  const handleCreate = async (values: any) => {
+  const handleCreate = async (values: unknown) => {
     try {
       await createParser(values)
       message.success('Parser created')
       setModalOpen(false)
       form.resetFields()
       loadData()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to create parser')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to create parser'))
     }
   }
 
-  const handleUpdate = async (values: any) => {
+  const handleUpdate = async (values: unknown) => {
     if (!editing) return
     try {
       await updateParser(editing.id, values)
@@ -74,8 +75,8 @@ export default function ParsersPage() {
       setEditing(null)
       form.resetFields()
       loadData()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to update parser')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to update parser'))
     }
   }
 
@@ -84,8 +85,8 @@ export default function ParsersPage() {
       await deleteParser(id)
       message.success('Parser deleted')
       loadData()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to delete parser')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to delete parser'))
     }
   }
 
@@ -94,8 +95,8 @@ export default function ParsersPage() {
       await cloneParser(id)
       message.success('Parser cloned')
       loadData()
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to clone parser')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to clone parser'))
     }
   }
 
@@ -108,9 +109,10 @@ export default function ParsersPage() {
     try {
       const res = await testParser(pattern, sampleLog)
       setTestResult(res)
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Test failed')
-      setTestResult({ matched: false, parser_name: null, fields: null, message: e.response?.data?.error || 'Error' })
+    } catch (e: unknown) {
+      const msg = getErrorMessage(e, 'Test failed')
+      message.error(msg)
+      setTestResult({ matched: false, parser_name: null, fields: null, message: msg })
     } finally {
       setTestLoading(false)
     }
@@ -120,8 +122,8 @@ export default function ParsersPage() {
     try {
       await reparseUnparsed()
       message.success('Reparse started in background')
-    } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to start reparse')
+    } catch (e: unknown) {
+      message.error(getErrorMessage(e, 'Failed to start reparse'))
     }
   }
 
@@ -169,7 +171,7 @@ export default function ParsersPage() {
     {
       title: 'Match',
       key: 'match',
-      render: (_: any, r: Parser) => `${r.match_type}: ${r.match_value || '-'}`,
+      render: (_v, r: Parser) => `${r.match_type}: ${r.match_value || '-'}`,
     },
     {
       title: 'Regex',
@@ -181,7 +183,7 @@ export default function ParsersPage() {
     {
       title: 'Fields',
       key: 'fields',
-      render: (_: any, r: Parser) => {
+      render: (_v, r: Parser) => {
         const fs = parserFields(r.id)
         return fs.length ? fs.map(f => <Tag key={f.field_name}>{f.field_label}</Tag>) : <Text type="secondary">-</Text>
       },
@@ -195,8 +197,8 @@ export default function ParsersPage() {
     {
       title: 'Actions',
       key: 'actions',
-      render: (_: any, r: Parser) => (
-        <Space>
+      render: (_v, r: Parser) => (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {canEdit && <Tooltip title="Edit">
             <Button size="small" icon={<EditOutlined />} disabled={r.is_builtin} onClick={() => openEdit(r)} />
           </Tooltip>}
@@ -206,35 +208,37 @@ export default function ParsersPage() {
           {canEdit && <Popconfirm title="Delete parser?" onConfirm={() => handleDelete(r.id)} disabled={r.is_builtin}>
             <Button size="small" danger icon={<DeleteOutlined />} disabled={r.is_builtin} />
           </Popconfirm>}
-        </Space>
+        </div>
       ),
     },
   ]
 
   return (
     <>
-      <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
-        <Title level={3}>Parser Engine</Title>
-        <Space>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+        <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>Parser Engine</Title>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>Reset Columns</Button>}
           {canEdit && <Button icon={<ReloadOutlined />} onClick={handleReparse}>Reparse Unparsed</Button>}
           {canEdit && <Button icon={<PlayCircleOutlined />} onClick={() => setTestModalOpen(true)}>Test Regex</Button>}
           {canEdit && <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>New Parser</Button>}
-        </Space>
-      </Space>
+        </div>
+      </div>
 
-      <Descriptions
-        bordered
-        column={4}
-        size="small"
-        style={{ marginBottom: 16 }}
-        items={[
-          { key: 'total', label: 'Total Parsers', span: 1, children: parsers.length },
-          { key: 'builtin', label: 'Built-in', span: 1, children: parsers.filter(p => p.is_builtin).length },
-          { key: 'custom', label: 'Custom', span: 1, children: parsers.filter(p => !p.is_builtin).length },
-          { key: 'fields', label: 'Field Definitions', span: 1, children: fields.length },
-        ]}
-      />
+      <Row gutter={16} style={{ marginBottom: 16 }}>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small"><Statistic title="Total Parsers" value={parsers.length} /></Card>
+        </Col>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small"><Statistic title="Built-in" value={parsers.filter(p => p.is_builtin).length} /></Card>
+        </Col>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small"><Statistic title="Custom" value={parsers.filter(p => !p.is_builtin).length} /></Card>
+        </Col>
+        <Col xs={24} sm={12} md={6}>
+          <Card size="small"><Statistic title="Field Definitions" value={fields.length} /></Card>
+        </Col>
+      </Row>
 
       <Table
         dataSource={parsers}
@@ -281,7 +285,7 @@ export default function ParsersPage() {
             {(fieldsList, { add, remove }) => (
               <>
                 {fieldsList.map((field, index) => (
-                  <Space key={field.key} style={{ marginBottom: 8 }} align="baseline">
+                  <div key={field.key} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'baseline', marginBottom: 8 }}>
                     <Form.Item name={[index, 'name']} rules={[{ required: true }]}>
                       <Input placeholder="Field name" style={{ width: 150 }} />
                     </Form.Item>
@@ -292,7 +296,7 @@ export default function ParsersPage() {
                       <Select options={['string', 'number', 'ip', 'mac', 'duration'].map(t => ({ label: t, value: t }))} style={{ width: 120 }} />
                     </Form.Item>
                     <Button type="link" danger onClick={() => remove(index)}>Remove</Button>
-                  </Space>
+                  </div>
                 ))}
                 <Button type="dashed" onClick={() => add({ name: '', label: '', type: 'string' })} block>+ Add Field</Button>
               </>

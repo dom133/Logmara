@@ -100,7 +100,10 @@ export interface TimelinePoint {
 }
 
 export interface DeviceStats {
+  fromhost_ip: string
   hostname: string
+  old_hostname?: string
+  display_name?: string
   total_logs: number
   last_seen: string
   severity_count: Record<string, number>
@@ -112,6 +115,7 @@ export async function getLogs(params: {
   offset?: number
   limit?: number
   hostname?: string
+  fromhost_ip?: string
   severity?: string
   app_name?: string
   search?: string
@@ -135,7 +139,11 @@ export async function getTimeline(interval = '1h', from?: string, to?: string) {
 
 export async function getDevices() {
   const res = await api.get('/devices')
-  return ((res.data?.devices || []) as DeviceStats[]).map(d => d.hostname)
+  return (res.data?.devices || []) as DeviceStats[]
+}
+
+export function resolveDeviceDisplayName(device: DeviceStats): string {
+  return device.display_name || device.hostname || device.fromhost_ip || '-'
 }
 
 export async function getDeviceStats() {
@@ -143,25 +151,34 @@ export async function getDeviceStats() {
   return (res.data?.devices || []) as DeviceStats[]
 }
 
+export async function updateDeviceAlias(ip: string, displayName: string) {
+  const res = await api.put(`/admin/devices/${ip}/alias`, { display_name: displayName })
+  return res.data
+}
+
 export async function getSeverityStats(from?: string, to?: string) {
   const res = await api.get('/stats/severity', { params: { from, to } })
   return (res.data?.stats || []) as Array<{ severity: string; count: number }>
 }
 
-export function exportCSV(params: Record<string, string>) {
-  const url = new URL('/api/export/csv', window.location.href)
-  Object.entries(params).forEach(([k, v]) => {
-    if (v) url.searchParams.set(k, v)
-  })
-  window.open(url.toString(), '_blank')
+export async function exportCSV(params: Record<string, string>) {
+  const res = await api.get('/export/csv', { params, responseType: 'blob' })
+  const url = URL.createObjectURL(res.data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'syslog_export.csv'
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
-export function exportHTML(params: Record<string, string>) {
-  const url = new URL('/api/export/html', window.location.href)
-  Object.entries(params).forEach(([k, v]) => {
-    if (v) url.searchParams.set(k, v)
-  })
-  window.open(url.toString(), '_blank')
+export async function exportHTML(params: Record<string, string>) {
+  const res = await api.get('/export/html', { params, responseType: 'blob' })
+  const url = URL.createObjectURL(res.data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'syslog_report.html'
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 // --- Parser types ---
@@ -366,7 +383,7 @@ export async function getUsers() {
 	return (res.data || []) as User[]
 }
 
-export async function createUser(data: { username: string; email: string; password: string; role: string }) {
+export async function createUser(data: { username: string; email: string; password: string; role: string; auth_type: string }) {
 	const res = await api.post('/admin/users', data)
 	return res.data as User
 }
@@ -401,8 +418,18 @@ export async function cleanupLogs() {
 	return res.data
 }
 
-export async function purgeAllLogs() {
-	const res = await api.delete('/admin/logs')
+export async function purgeAllLogs(pauseDuringPurge: boolean) {
+	const res = await api.delete('/admin/logs', { data: { pause_during_purge: pauseDuringPurge } })
+	return res.data
+}
+
+export async function pauseIngestion() {
+	const res = await api.post('/admin/ingestion/pause')
+	return res.data
+}
+
+export async function resumeIngestion() {
+	const res = await api.post('/admin/ingestion/resume')
 	return res.data
 }
 

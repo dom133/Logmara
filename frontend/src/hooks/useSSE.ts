@@ -5,10 +5,12 @@ interface UseSSEOptions {
   onNewLogs: (logs: LogEntry[]) => void
   filters?: {
     hostname?: string
+    fromhost_ip?: string
     severity?: string
     search?: string
     from?: string
     to?: string
+    require_parser?: string
   }
   enabled?: boolean
 }
@@ -124,8 +126,8 @@ for (const evt of events) {
                }
              }
           }
-        } catch (e: any) {
-          if (e.name !== 'AbortError') {
+        } catch (e: unknown) {
+          if (!(e instanceof DOMException) || e.name !== 'AbortError') {
             console.error('SSE stream error:', e)
           }
         } finally {
@@ -136,8 +138,8 @@ for (const evt of events) {
           scheduleReconnect()
         }
       })
-      .catch((e: any) => {
-        if (e.name !== 'AbortError') {
+      .catch((e: unknown) => {
+        if ((e as Error)?.name !== 'AbortError') {
           setConnected(false)
           scheduleReconnect()
         }
