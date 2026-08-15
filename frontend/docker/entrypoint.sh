@@ -20,6 +20,14 @@ if [ ! -f "$NGINX_CONF_DIR/redirect.conf" ]; then
     touch "$NGINX_CONF_DIR/redirect.conf"
 fi
 
-busybox httpd -f -p 8081 -h /srv/reload-sidecar &
+if [ ! -f "$NGINX_CONF_DIR/https.conf" ]; then
+    # HTTPS is disabled by default; the backend writes the real 443 server
+    # block here once https_enabled is turned on (via settings or env).
+    touch "$NGINX_CONF_DIR/https.conf"
+fi
+
+# httpd lives in the separate busybox-extras binary, not the base busybox
+# (which only has the applets baked into Alpine's minimal `busybox` package).
+busybox-extras httpd -f -p 8081 -h /srv/reload-sidecar &
 
 exec /docker-entrypoint.sh nginx -g "daemon off;"

@@ -112,8 +112,23 @@ export interface DeviceStats {
   has_parsed: boolean
 }
 
+export interface LogsPage {
+  logs: LogEntry[]
+  has_more: boolean
+  next_cursor: string
+  limit: number
+}
+
+// Sorts that support cheap keyset pagination via `cursor`. Deep pagination
+// on the other sorts (severity/hostname) falls back to `offset`, which is
+// fine since those are rarely paged deeply.
+export function sortSupportsCursor(sort: string): boolean {
+  return sort === '' || sort === 'timestamp_desc' || sort === 'timestamp_asc'
+}
+
 export async function getLogs(params: {
   offset?: number
+  cursor?: string
   limit?: number
   hostname?: string
   fromhost_ip?: string
@@ -123,9 +138,9 @@ export async function getLogs(params: {
   from?: string
   to?: string
   sort?: string
-}) {
+}): Promise<LogsPage> {
   const res = await api.post('/logs', params)
-  return res.data || { logs: [], total: 0 }
+  return res.data || { logs: [], has_more: false, next_cursor: '', limit: params.limit || 50 }
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {
@@ -249,7 +264,8 @@ export interface Dashboard {
 
 export interface DashboardDataResponse {
   logs: LogEntry[]
-  total: number
+  has_more: boolean
+  next_cursor: string
   fields: string[]
   devices: string[]
 }
@@ -350,10 +366,10 @@ export async function deleteDashboard(id: number) {
   return res.data
 }
 
-export async function getDashboardData(id: number, limit = 100, offset = 0, search = '', severity = '', from = '', to = '') {
-	const res = await api.get(`/dashboards/${id}/data`, { params: { limit, offset, search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined } })
+export async function getDashboardData(id: number, limit = 100, cursor = '', search = '', severity = '', from = '', to = '') {
+	const res = await api.get(`/dashboards/${id}/data`, { params: { limit, cursor: cursor || undefined, search: search || undefined, severity: severity || undefined, from: from || undefined, to: to || undefined } })
 	const d = res.data || {}
-	return { logs: d.logs || [], total: d.total || 0, fields: d.fields || [], devices: d.devices || [] } as DashboardDataResponse
+	return { logs: d.logs || [], has_more: d.has_more || false, next_cursor: d.next_cursor || '', fields: d.fields || [], devices: d.devices || [] } as DashboardDataResponse
 }
 
 export async function togglePinDashboard(id: number) {

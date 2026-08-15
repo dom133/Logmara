@@ -10,15 +10,16 @@ import (
 	"time"
 )
 
-func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func()) {
+func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func()) {
 	vacuumInterval := getIntervalHours("VACUUM_INTERVAL_HOURS", "vacuum_interval_hours", 24)
 	mvInterval := getIntervalMinutes("MV_REFRESH_INTERVAL_MIN", "mv_refresh_interval_min", 30)
 
 	createPartitions(db)
 	stopVacuum := startVacuumScheduler(ctx, db, vacuumInterval)
 	stopMV := startMVScheduler(ctx, db, mvInterval)
+	stopTokenCleanup := startRefreshTokenCleanupScheduler(ctx, db, 1*time.Hour)
 
-	return stopVacuum, stopMV
+	return stopVacuum, stopMV, stopTokenCleanup
 }
 
 func startVacuumScheduler(ctx context.Context, db *sql.DB, interval time.Duration) func() {
@@ -65,19 +66,107 @@ func startMVScheduler(ctx context.Context, db *sql.DB, interval time.Duration) f
 	}
 }
 
-func runVacuumAnalyze(db *sql.DB) {
-	slog.Info("running VACUUM ANALYZE", "table", "syslog_logs")
-	_, err := db.Exec("VACUUM ANALYZE syslog_logs")
+func startRefreshTokenCleanupScheduler(ctx context.Context, db *sql.DB, interval time.Duration) func() {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		slog.Info("refresh token cleanup scheduler started", "interval_hours", interval.Hours())
+		cleanupExpiredRefreshTokens(db)
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("refresh token cleanup scheduler stopped")
+				close(done)
+				return
+			case <-ticker.C:
+				cleanupExpiredRefreshTokens(db)
+			}
+		}
+	}()
+	return func() {
+		<-done
+	}
+}
+
+// cleanupExpiredRefreshTokens prunes rows that can no longer be used to
+// refresh a session: naturally expired tokens, and tokens already consumed
+// by rotation (used=true) once they're well past the race-recovery grace
+// window. Without this the refresh_tokens table grows forever, since every
+// login and every refresh only ever inserts a new row.
+func cleanupExpiredRefreshTokens(db *sql.DB) {
+	res, err := db.Exec(
+		"DELETE FROM refresh_tokens WHERE expires_at < NOW() OR (used = true AND used_at < NOW() - INTERVAL '1 day')",
+	)
 	if err != nil {
-		slog.Error("vacuum analyze failed", "err", err)
+		slog.Error("refresh token cleanup failed", "err", err)
 		return
 	}
-	slog.Info("VACUUM ANALYZE completed", "table", "syslog_logs")
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		slog.Info("refresh token cleanup completed", "rows_deleted", n)
+	}
+}
+
+// runVacuumAnalyze targets only the currently-active partitions (this month
+// and last month), since those are the only ones still receiving writes and
+// therefore accumulating dead tuples/stale stats. Older partitions are
+// static once the month rolls over - a daily VACUUM ANALYZE across the
+// entire multi-month history is wasted I/O once the table is partitioned.
+func runVacuumAnalyze(db *sql.DB) {
+	partitions := activePartitionNames(db)
+	if len(partitions) == 0 {
+		slog.Info("running VACUUM ANALYZE", "table", "syslog_logs")
+		if _, err := db.Exec("VACUUM ANALYZE syslog_logs"); err != nil {
+			slog.Error("vacuum analyze failed", "err", err)
+			return
+		}
+		slog.Info("VACUUM ANALYZE completed", "table", "syslog_logs")
+		return
+	}
+
+	for _, name := range partitions {
+		slog.Info("running VACUUM ANALYZE", "table", name)
+		if _, err := db.Exec("VACUUM ANALYZE " + name); err != nil {
+			slog.Error("vacuum analyze failed", "table", name, "err", err)
+		}
+	}
+	if _, err := db.Exec("ANALYZE syslog_logs"); err != nil {
+		slog.Error("analyze parent failed", "err", err)
+	}
+	slog.Info("VACUUM ANALYZE completed", "partitions", partitions)
+}
+
+func activePartitionNames(db *sql.DB) []string {
+	var isPartitioned bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p')`).Scan(&isPartitioned); err != nil || !isPartitioned {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	names := make([]string, 0, 2)
+	for i := -1; i <= 0; i++ {
+		t := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, i, 0)
+		name := "syslog_logs_" + t.Format("2006_01")
+		var exists bool
+		if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = $1)", name).Scan(&exists); err == nil && exists {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 func RefreshMV(db *sql.DB) {
+	// Migrate() runs in its own goroutine and can take a while on a large
+	// table (index builds, mv_device_stats aggregation) - the periodic
+	// refresh tickers start immediately regardless, so without this guard
+	// they can fire before Migrate() has created the views they're trying
+	// to refresh.
+	if IsAppStarting() {
+		slog.Info("skipping materialized view refresh - migration still in progress")
+		return
+	}
 	slog.Info("refreshing materialized views")
-	for _, mv := range []string{"mv_dashboard_summary", "mv_dashboard_severity", "mv_timeline_hourly"} {
+	for _, mv := range []string{"mv_dashboard_summary", "mv_dashboard_severity", "mv_timeline_hourly", "mv_device_stats"} {
 		_, err := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY " + mv)
 		if err != nil {
 			slog.Error("mv refresh failed", "view", mv, "err", err)

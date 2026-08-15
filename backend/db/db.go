@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -84,47 +87,13 @@ func Migrate(db *sql.DB) error {
 			parsed_fields JSONB DEFAULT '{}',
 			created_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_hostname ON syslog_logs (hostname)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_severity ON syslog_logs (severity)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_app_name ON syslog_logs (app_name)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_composite ON syslog_logs (timestamp DESC, severity, hostname)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='parsed_fields') THEN ALTER TABLE syslog_logs ADD COLUMN parsed_fields JSONB DEFAULT '{}'; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='matched_parsers') THEN ALTER TABLE syslog_logs ADD COLUMN matched_parsers TEXT[] DEFAULT '{}'; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='fromhost_ip') THEN ALTER TABLE syslog_logs ADD COLUMN fromhost_ip VARCHAR(255); END IF; END $$`,
 		`DO $$ BEGIN EXECUTE 'DROP INDEX IF EXISTS idx_syslog_parsed_fields'; EXCEPTION WHEN OTHERS THEN NULL; END $$`,
 		`DO $$ BEGIN EXECUTE 'DROP INDEX IF EXISTS idx_syslog_timestamp'; EXCEPTION WHEN OTHERS THEN NULL; END $$`,
 		`DO $$ BEGIN EXECUTE 'DROP INDEX IF EXISTS idx_syslog_recent_7d'; EXCEPTION WHEN OTHERS THEN NULL; END $$`,
-		`DO $$ BEGIN CREATE INDEX idx_syslog_parsed_fields ON syslog_logs USING GIN (parsed_fields); EXCEPTION WHEN undefined_object THEN NULL; END $$`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_fromhost_ip ON syslog_logs (fromhost_ip)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_fromhost_severity ON syslog_logs (fromhost_ip, severity)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_sev_errors ON syslog_logs (severity, timestamp) WHERE severity IN ('err', 'crit', 'alert', 'emerg')`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_ts_host ON syslog_logs (timestamp DESC, hostname)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='syslog_logs' AND column_name='search_vector') THEN ALTER TABLE syslog_logs ADD COLUMN search_vector TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', COALESCE(message, '') || ' ' || COALESCE(raw_message, ''))) STORED; END IF; END $$`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_fts ON syslog_logs USING GIN (search_vector)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_dev_ts ON syslog_logs (fromhost_ip, timestamp DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_sev_ts ON syslog_logs (severity, timestamp DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_ts_sev_host_cover ON syslog_logs (timestamp DESC) INCLUDE (severity, hostname)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_ts_dev_cover ON syslog_logs (timestamp DESC) INCLUDE (fromhost_ip, hostname)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_dev_sev_cover ON syslog_logs (fromhost_ip) INCLUDE (hostname)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_sev_dev_cover ON syslog_logs (severity) INCLUDE (fromhost_ip, hostname)`,
-		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_summary AS
-			SELECT
-				NOW() as refreshed_at,
-				COUNT(*) as total_logs,
-				COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour') as logs_last_hour,
-				COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 day') as logs_last_day,
-				COUNT(DISTINCT hostname) as unique_devices,
-				COUNT(DISTINCT fromhost_ip) as unique_ips
-			FROM syslog_logs
-		`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_summary_key ON mv_dashboard_summary (refreshed_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_coalesce_fromhost_ip ON syslog_logs (COALESCE(fromhost_ip, ''))`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_coalesce_dev_ts ON syslog_logs (COALESCE(fromhost_ip, ''), timestamp DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_syslog_app_ts_cover ON syslog_logs (app_name, timestamp DESC) INCLUDE (hostname, severity)`,
-		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_severity AS
-			SELECT NOW() as refreshed_at, severity, COUNT(*) as cnt FROM syslog_logs GROUP BY severity
-		`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_severity_key ON mv_dashboard_severity (severity)`,
 		`CREATE TABLE IF NOT EXISTS users (
 			id SERIAL PRIMARY KEY,
 			username VARCHAR(100) UNIQUE NOT NULL,
@@ -221,6 +190,9 @@ func Migrate(db *sql.DB) error {
 			updated_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='device_aliases' AND column_name='old_hostname') THEN ALTER TABLE device_aliases ADD COLUMN old_hostname VARCHAR(255); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='used_at') THEN ALTER TABLE refresh_tokens ADD COLUMN used_at TIMESTAMPTZ; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='replaced_by') THEN ALTER TABLE refresh_tokens ADD COLUMN replaced_by VARCHAR(255); END IF; END $$`,
+		`DELETE FROM app_settings WHERE key = 'jwt_expiry'`,
 	}
 
 	for _, stmt := range statements {
@@ -279,7 +251,79 @@ END $$`,
 		}
 	}
 
+	// These indexes and materialized views all depend on syslog_logs, so they
+	// must be created here, AFTER the (possible) partitioning migration above -
+	// not in the main statements list. On a brand new database, the one-time
+	// partitioning step replaces syslog_logs via `DROP TABLE syslog_logs
+	// CASCADE`, which silently drops any index or materialized view still
+	// bound to the original (pre-partition) table object. Creating them
+	// against the final, stable table avoids losing them on first deploy.
 	postStmts := []string{
+		`CREATE INDEX IF NOT EXISTS idx_syslog_hostname ON syslog_logs (hostname)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_severity ON syslog_logs (severity)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_app_name ON syslog_logs (app_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_composite ON syslog_logs (timestamp DESC, severity, hostname)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_parsed_fields ON syslog_logs USING GIN (parsed_fields)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_fromhost_ip ON syslog_logs (fromhost_ip)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_fromhost_severity ON syslog_logs (fromhost_ip, severity)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_sev_errors ON syslog_logs (severity, timestamp) WHERE severity IN ('err', 'crit', 'alert', 'emerg')`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_ts_host ON syslog_logs (timestamp DESC, hostname)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_fts ON syslog_logs USING GIN (search_vector)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_dev_ts ON syslog_logs (fromhost_ip, timestamp DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_sev_ts ON syslog_logs (severity, timestamp DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_ts_sev_host_cover ON syslog_logs (timestamp DESC) INCLUDE (severity, hostname)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_ts_dev_cover ON syslog_logs (timestamp DESC) INCLUDE (fromhost_ip, hostname)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_dev_sev_cover ON syslog_logs (fromhost_ip) INCLUDE (hostname)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_sev_dev_cover ON syslog_logs (severity) INCLUDE (fromhost_ip, hostname)`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_summary AS
+			SELECT
+				NOW() as refreshed_at,
+				COUNT(*) as total_logs,
+				COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour') as logs_last_hour,
+				COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 day') as logs_last_day,
+				COUNT(DISTINCT hostname) as unique_devices,
+				COUNT(DISTINCT fromhost_ip) as unique_ips
+			FROM syslog_logs
+		`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_summary_key ON mv_dashboard_summary (refreshed_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_coalesce_fromhost_ip ON syslog_logs (COALESCE(fromhost_ip, ''))`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_coalesce_dev_ts ON syslog_logs (COALESCE(fromhost_ip, ''), timestamp DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_app_ts_cover ON syslog_logs (app_name, timestamp DESC) INCLUDE (hostname, severity)`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_severity AS
+			SELECT NOW() as refreshed_at, severity, COUNT(*) as cnt FROM syslog_logs GROUP BY severity
+		`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_severity_key ON mv_dashboard_severity (severity)`,
+		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
+		`CREATE INDEX IF NOT EXISTS idx_syslog_app_name_trgm ON syslog_logs USING GIN (app_name gin_trgm_ops)`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_device_stats AS
+			WITH dev_stats AS (
+				SELECT COALESCE(fromhost_ip, '') as fromhost_ip, MIN(hostname) as hostname,
+					COUNT(*) as total_logs, MAX(timestamp) as last_seen,
+					SUM(CASE WHEN severity = 'emergency' THEN 1 ELSE 0 END) as emergency,
+					SUM(CASE WHEN severity = 'alert' THEN 1 ELSE 0 END) as alert,
+					SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) as critical,
+					SUM(CASE WHEN severity = 'error' THEN 1 ELSE 0 END) as err_count,
+					SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) as warning,
+					SUM(CASE WHEN severity = 'notice' THEN 1 ELSE 0 END) as notice,
+					SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END) as info,
+					SUM(CASE WHEN severity = 'debug' THEN 1 ELSE 0 END) as debug
+				FROM syslog_logs
+				GROUP BY fromhost_ip
+			),
+			dev_parsers AS (
+				SELECT COALESCE(fromhost_ip, '') as fromhost_ip,
+					array_agg(DISTINCT elem) as parsers
+				FROM syslog_logs, unnest(matched_parsers) as elem
+				WHERE matched_parsers IS NOT NULL AND matched_parsers != '{}'
+				GROUP BY fromhost_ip
+			)
+			SELECT d.fromhost_ip, d.hostname, d.total_logs, d.last_seen,
+				d.emergency, d.alert, d.critical, d.err_count, d.warning, d.notice, d.info, d.debug,
+				COALESCE(p.parsers, '{}'::TEXT[]) as parsers
+			FROM dev_stats d
+			LEFT JOIN dev_parsers p ON p.fromhost_ip = d.fromhost_ip
+		`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_device_stats_key ON mv_device_stats (fromhost_ip)`,
 		`DO $$ BEGIN CREATE INDEX idx_syslog_timestamp ON syslog_logs USING BRIN (timestamp); EXCEPTION WHEN duplicate_object THEN NULL; WHEN undefined_object THEN NULL; END $$`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_timeline_hourly AS
 			SELECT date_trunc('hour', timestamp) AS hour, COUNT(*) AS cnt FROM syslog_logs GROUP BY 1 ORDER BY 1
@@ -398,7 +442,6 @@ func nullStrPtr(s string) *string {
 func seedSettings(db *sql.DB) error {
 	settings := map[string]string{
 		"retention_days":      "30",
-		"jwt_expiry":          "24",
 		"session_timeout_min": "15",
 		"is_initialized":      "false",
 		"ldap_enabled":        "false",
@@ -417,6 +460,7 @@ func seedSettings(db *sql.DB) error {
 		"ldap_auto_provision": "true",
 		"encryption_key":      "",
 		"cors_origins":        "",
+		"https_enabled":       "false",
 		"https_redirect":      "false",
 	}
 
@@ -428,8 +472,6 @@ func seedSettings(db *sql.DB) error {
 		switch k {
 		case "retention_days":
 			desc = "Days to keep logs before auto-deletion"
-		case "jwt_expiry":
-			desc = "JWT token expiry in hours"
 		case "session_timeout_min":
 			desc = "Session timeout in minutes"
 		case "is_initialized":
@@ -466,6 +508,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "AES-256 encryption key for sensitive data"
 		case "cors_origins":
 			desc = "Allowed CORS origins (comma-separated)"
+		case "https_enabled":
+			desc = "Enable HTTPS on the reverse proxy"
 		case "https_redirect":
 			desc = "Redirect HTTP traffic to HTTPS"
 		}
@@ -527,6 +571,55 @@ func getSettingRaw(db *sql.DB, key string) string {
 	return val
 }
 
+// envBoolSettings maps environment variables to the app_settings key they
+// override. Both default to disabled (see seedSettings); an operator can pin
+// either one via env for container/orchestrator-managed deployments.
+var envBoolSettings = map[string]string{
+	"HTTPS_ENABLED":  "https_enabled",
+	"HTTPS_REDIRECT": "https_redirect",
+}
+
+// ApplyEnvSettingOverrides applies HTTPS settings from environment variables,
+// if present, and persists them to app_settings so they show up (and stay
+// visible) in the admin Settings UI. A var is only applied when explicitly
+// set to a non-empty value; otherwise the stored/admin-configured value is
+// left untouched, so restarting a container without the var doesn't silently
+// revert a change made through the UI.
+func ApplyEnvSettingOverrides(db *sql.DB) {
+	for envVar, key := range envBoolSettings {
+		raw := strings.TrimSpace(os.Getenv(envVar))
+		if raw == "" {
+			continue
+		}
+		enabled, err := strconv.ParseBool(raw)
+		if err != nil {
+			slog.Warn("invalid boolean value for env setting override, ignoring", "env", envVar, "value", raw)
+			continue
+		}
+		value := strconv.FormatBool(enabled)
+		if err := UpdateSetting(db, key, value); err != nil {
+			slog.Warn("failed to apply env setting override", "env", envVar, "key", key, "error", err)
+			continue
+		}
+		slog.Info("applied setting from environment variable", "env", envVar, "key", key, "value", value)
+	}
+
+	if GetSetting(db, "https_enabled", "false") == "true" {
+		sslDir := os.Getenv("SSL_DIR")
+		if sslDir == "" {
+			sslDir = "/data/ssl"
+		}
+		certPath := filepath.Join(sslDir, "server.crt")
+		keyPath := filepath.Join(sslDir, "server.key")
+		if _, err := os.Stat(certPath); os.IsNotExist(err) {
+			slog.Warn("https_enabled is true but SSL certificate is missing", "path", certPath)
+		}
+		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+			slog.Warn("https_enabled is true but SSL private key is missing", "path", keyPath)
+		}
+	}
+}
+
 // GetAllSettings retrieves all settings as a map
 func GetAllSettings(db *sql.DB) (map[string]string, error) {
 	rows, err := db.Query("SELECT key, value FROM app_settings ORDER BY key")
@@ -546,8 +639,80 @@ func GetAllSettings(db *sql.DB) (map[string]string, error) {
 	return settings, rows.Err()
 }
 
-// CleanupOldLogs deletes logs older than retentionDays
+var partitionNameRe = regexp.MustCompile(`^syslog_logs_\d{4}_\d{2}$`)
+
+// CleanupOldLogs deletes logs older than retentionDays. When syslog_logs is
+// partitioned by month, whole partitions that fall entirely before the
+// retention cutoff are dropped outright - this is near-instant and avoids
+// scanning/vacuuming millions of rows one by one. Only the partition
+// straddling the cutoff (plus the default partition, if any) falls back to
+// batched row deletes.
 func CleanupOldLogs(db *sql.DB, retentionDays int) (int64, error) {
+	var isPartitioned bool
+	if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p')").Scan(&isPartitioned); err != nil {
+		return 0, fmt.Errorf("check partitioning: %w", err)
+	}
+
+	if !isPartitioned {
+		return deleteOldLogsBatched(db, retentionDays)
+	}
+
+	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
+
+	rows, err := db.Query(`
+		SELECT c.relname
+		FROM pg_inherits i
+		JOIN pg_class c ON c.oid = i.inhrelid
+		JOIN pg_class p ON p.oid = i.inhparent
+		WHERE p.relname = 'syslog_logs' AND c.relname ~ '^syslog_logs_\d{4}_\d{2}$'
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("list partitions: %w", err)
+	}
+	var partitions []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		partitions = append(partitions, name)
+	}
+	rows.Close()
+
+	var totalDeleted int64
+	for _, name := range partitions {
+		if !partitionNameRe.MatchString(name) {
+			continue
+		}
+		var y, m int
+		if _, err := fmt.Sscanf(name, "syslog_logs_%d_%d", &y, &m); err != nil {
+			continue
+		}
+		partEnd := time.Date(y, time.Month(m), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
+		if partEnd.After(cutoff) {
+			continue
+		}
+
+		var estRows float64
+		_ = db.QueryRow("SELECT reltuples FROM pg_class WHERE relname = $1", name).Scan(&estRows)
+
+		if _, err := db.Exec("DROP TABLE IF EXISTS " + name); err != nil {
+			slog.Error("failed to drop expired partition", "partition", name, "err", err)
+			continue
+		}
+		if estRows > 0 {
+			totalDeleted += int64(estRows)
+		}
+		slog.Info("dropped expired partition", "partition", name, "approx_rows", estRows)
+	}
+
+	deleted, err := deleteOldLogsBatched(db, retentionDays)
+	totalDeleted += deleted
+	return totalDeleted, err
+}
+
+func deleteOldLogsBatched(db *sql.DB, retentionDays int) (int64, error) {
 	const batchSize = 10000
 	var totalDeleted int64
 
@@ -694,8 +859,9 @@ func RefreshMaterializedViews(db *sql.DB) {
 	slog.Info("refreshing materialized views")
 	_, err1 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_summary")
 	_, err2 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_severity")
-	if err1 != nil || err2 != nil {
-		slog.Error("materialized view refresh failed", "err1", err1, "err2", err2)
+	_, err3 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_device_stats")
+	if err1 != nil || err2 != nil || err3 != nil {
+		slog.Error("materialized view refresh failed", "err1", err1, "err2", err2, "err3", err3)
 	}
 	slog.Info("materialized views refreshed")
 }

@@ -21,8 +21,20 @@ import (
 var jwtSecret []byte
 var authDB *sql.DB
 
-func Init(database *sql.DB) {
+// weakDefaultJWTSecret is the placeholder value shipped in docker-compose.yml
+// and .env.example. It must never be used to sign real tokens.
+const weakDefaultJWTSecret = "change-this-to-a-random-secret-key"
+
+func Init(database *sql.DB) error {
 	secret := os.Getenv("JWT_SECRET")
+	if secret == weakDefaultJWTSecret {
+		// docker-compose.yml falls back to this placeholder whenever JWT_SECRET
+		// isn't set in the environment/.env, so treat it as unset rather than
+		// failing startup — fall through to the persisted or generated secret.
+		secret = ""
+	} else if secret != "" && len(secret) < 16 {
+		return fmt.Errorf("JWT_SECRET is too short (%d chars); use at least 16 random characters", len(secret))
+	}
 	if secret == "" {
 		secret = db.GetSetting(database, "jwt_secret", "")
 	}
@@ -32,6 +44,7 @@ func Init(database *sql.DB) {
 	}
 	jwtSecret = []byte(secret)
 	authDB = database
+	return nil
 }
 
 func generateRandomKey() string {

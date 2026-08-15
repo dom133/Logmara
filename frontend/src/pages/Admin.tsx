@@ -73,7 +73,6 @@ export default function Admin() {
       formValues['ldap_auto_provision'] = data['ldap_auto_provision'] === 'true'
       if (data['ldap_port']) formValues['ldap_port'] = parseInt(data['ldap_port'], 10)
       if (data['retention_days']) formValues['retention_days'] = parseInt(data['retention_days'], 10)
-      if (data['jwt_expiry']) formValues['jwt_expiry'] = parseInt(data['jwt_expiry'], 10)
       if (data['session_timeout_min'] !== undefined && data['session_timeout_min'] !== '') formValues['session_timeout_min'] = parseInt(data['session_timeout_min'], 10)
       formValues['https_enabled'] = data['https_enabled'] === 'true'
       formValues['https_redirect'] = data['https_redirect'] === 'true'
@@ -408,9 +407,6 @@ const handleCleanup = async () => {
                 <Form form={settingsForm} layout="vertical" onFinish={handleSaveSettings}>
                   <Form.Item label="Log Retention (days)" name="retention_days">
                     <InputNumber min={1} max={3650} style={{ width: '100%' }} />
-                  </Form.Item>
-                  <Form.Item label="JWT Expiry (hours)" name="jwt_expiry">
-                    <InputNumber min={1} max={8760} style={{ width: '100%' }} />
                   </Form.Item>
 <Form.Item label="Session Timeout (minutes)" name="session_timeout_min">
                      <InputNumber min={1} max={10080} style={{ width: '100%' }} />

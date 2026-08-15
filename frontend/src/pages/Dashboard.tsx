@@ -179,7 +179,7 @@ export default function Dashboard() {
             <Table
               dataSource={stats?.top_devices || []}
               columns={enhanceDevices(topDevicesColumns)}
-              rowKey="hostname"
+              rowKey="fromhost_ip"
               pagination={false}
               size="small"
               scroll={{ x: 'max-content' }}

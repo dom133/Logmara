@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"fmt"
+	"html"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +15,20 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// csvSafe neutralizes leading characters that spreadsheet applications
+// (Excel, LibreOffice) interpret as the start of a formula, preventing
+// CSV/formula injection from attacker-influenced log content.
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
+}
 
 func ExportCSV(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -56,8 +71,8 @@ func ExportCSV(db *sql.DB) gin.HandlerFunc {
 			argIdx++
 		}
 		if search != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("(message ILIKE $%d OR raw_message ILIKE $%d)", argIdx, argIdx))
-			args = append(args, "%"+search+"%")
+			whereClauses = append(whereClauses, fmt.Sprintf("search_vector @@ websearch_to_tsquery('english', $%d)", argIdx))
+			args = append(args, search)
 			argIdx++
 		}
 
@@ -92,7 +107,7 @@ func ExportCSV(db *sql.DB) gin.HandlerFunc {
 			if appName != nil {
 				app = *appName
 			}
-			w.Write([]string{ts, hostname, app, severity, message})
+			w.Write([]string{ts, csvSafe(hostname), csvSafe(app), csvSafe(severity), csvSafe(message)})
 		}
 		w.Flush()
 	}
@@ -131,8 +146,8 @@ func ExportHTML(db *sql.DB) gin.HandlerFunc {
 			argIdx++
 		}
 		if search != "" {
-			whereClauses = append(whereClauses, fmt.Sprintf("(message ILIKE $%d OR raw_message ILIKE $%d)", argIdx, argIdx))
-			args = append(args, "%"+search+"%")
+			whereClauses = append(whereClauses, fmt.Sprintf("search_vector @@ websearch_to_tsquery('english', $%d)", argIdx))
+			args = append(args, search)
 			argIdx++
 		}
 
@@ -167,7 +182,8 @@ func ExportHTML(db *sql.DB) gin.HandlerFunc {
 			if app != nil {
 				a = *app
 			}
-			sb.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>", ts, hn, a, sev, msg))
+			sb.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>",
+				html.EscapeString(ts), html.EscapeString(hn), html.EscapeString(a), html.EscapeString(sev), html.EscapeString(msg)))
 		}
 
 		sb.WriteString("</table></body></html>")

@@ -307,7 +307,8 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		limitInt, offsetInt := parsePagination(c, DefaultPageLimit, MaxPageLimit)
+		limitInt, _ := parsePagination(c, DefaultPageLimit, MaxPageLimit)
+		cursor := c.Query("cursor")
 
 		severityFilter := firstNonEmpty(c.DefaultQuery("severity", ""), cfg.Filters.Severity)
 		fromFilter := firstNonEmpty(c.DefaultQuery("from", ""), cfg.Filters.From)
@@ -329,14 +330,27 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			argIdx++
 		}
 
+		if cursor != "" {
+			ts, id, err := decodeLogCursor(cursor)
+			if err != nil {
+				middleware.HandleError(c, model.NewBadRequest("invalid cursor", err))
+				return
+			}
+			whereClauses = append(whereClauses, fmt.Sprintf("(timestamp, id) < ($%d, $%d)", argIdx, argIdx+1))
+			args = append(args, ts, id)
+			argIdx += 2
+		}
+
 		whereSQL := buildWhereSQL(whereClauses)
 
+		// Fetch one extra row to detect more pages instead of a separate
+		// exact COUNT(*)/materialized-view lookup on every request.
 		logsQuery := fmt.Sprintf(
 			"SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at, '' "+
-				"FROM syslog_logs %s ORDER BY timestamp DESC LIMIT $%d OFFSET $%d",
-			whereSQL, argIdx, argIdx+1,
+				"FROM syslog_logs %s ORDER BY timestamp DESC, id DESC LIMIT $%d",
+			whereSQL, argIdx,
 		)
-		args = append(args, limitInt, offsetInt)
+		args = append(args, limitInt+1)
 
 		var logs []model.SyslogLog
 		_ = timedQuery("dashboard_data_logs", func() error {
@@ -350,34 +364,22 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			return nil
 		})
 
-		countOpts := LogFilterOptions{
-			Severity:  cfg.Filters.Severity,
-			From:      cfg.Filters.From,
-			To:        cfg.Filters.To,
-			Devices:   cfg.Devices,
-			HasFields: len(cfg.Fields) > 0,
+		hasMore := len(logs) > limitInt
+		if hasMore {
+			logs = logs[:limitInt]
 		}
-		countClauses, countArgs, _ := buildLogWhereClauses(countOpts)
-
-		if cfg.Filters.Search != "" {
-			countClauses = append(countClauses, fmt.Sprintf("search_vector @@ websearch_to_tsquery('english', $%d)", len(countArgs)+1))
-			countArgs = append(countArgs, cfg.Filters.Search)
+		nextCursor := ""
+		if hasMore && len(logs) > 0 {
+			last := logs[len(logs)-1]
+			nextCursor = encodeLogCursor(last.Timestamp, last.ID)
 		}
-
-		countSQL := buildWhereSQL(countClauses)
-		var total int64
-		_ = timedQuery("dashboard_data_count", func() error {
-			if len(countClauses) == 0 {
-				return db.QueryRow("SELECT total_logs FROM mv_dashboard_summary ORDER BY refreshed_at DESC LIMIT 1").Scan(&total)
-			}
-			return db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", countSQL), countArgs...).Scan(&total)
-		})
 
 		c.JSON(http.StatusOK, model.DashboardDataResponse{
-			Logs:    logs,
-			Total:   total,
-			Fields:  cfg.Fields,
-			Devices: cfg.Devices,
+			Logs:       logs,
+			HasMore:    hasMore,
+			NextCursor: nextCursor,
+			Fields:     cfg.Fields,
+			Devices:    cfg.Devices,
 		})
 	}
 }

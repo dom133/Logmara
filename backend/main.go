@@ -84,20 +84,42 @@ func main() {
 	defer database.Close()
 
 	db.SetAppStarting(true)
+	migrationDone := make(chan struct{})
 	go func() {
+		defer close(migrationDone)
 		if err := db.Migrate(database); err != nil {
 			slog.Error("failed to migrate database", "error", err)
 			os.Exit(1)
 		}
 		db.RefreshMaterializedViews(database)
+		db.ApplyEnvSettingOverrides(database)
 		db.SetAppStarting(false)
 		slog.Info("database migration and initialization complete")
 	}()
 
-	ctx, maintCancel := context.WithCancel(context.Background())
-	stopVacuum, stopMV := db.StartMaintenance(ctx, database)
+	// The frontend container only depends_on api starting (not api being
+	// healthy), and api starts well before frontend's entrypoint has
+	// generated its cert and brought up the reload sidecar - so a sync
+	// right after migration reliably hits connection-refused on a cold
+	// `docker compose up`. Retry in the background instead of blocking
+	// startup on it; nginx already defaults to HTTPS-off, so this only
+	// matters for applying an env-var override or a state left over from
+	// before a restart.
+	go func() {
+		<-migrationDone
+		const attempts = 10
+		const delay = 3 * time.Second
+		if err := handler.SyncNginxHTTPSWithRetry(database, attempts, delay); err != nil {
+			slog.Warn("failed to sync nginx HTTPS config at startup after retries", "attempts", attempts, "error", err)
+		}
+	}()
 
-	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive
+	ctx, maintCancel := context.WithCancel(context.Background())
+	stopVacuum, stopMV, stopTokenCleanup := db.StartMaintenance(ctx, database)
+
+	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive.
+	// RefreshMV itself skips while migration is in progress, so it's safe to
+	// start this ticker immediately.
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -113,7 +135,17 @@ func main() {
 		}
 	}()
 
-	auth.Init(database)
+	// auth.Init/parser.NewEngine/the tailer all query tables that only exist
+	// once db.Migrate has run (users, parsers, syslog_logs) - on a brand new
+	// database these queries can otherwise race ahead of table creation and
+	// fail. Everything below this point already ran sequentially after
+	// auth.Init anyway, so waiting here doesn't add any new startup latency.
+	<-migrationDone
+
+	if err := auth.Init(database); err != nil {
+		slog.Error("auth initialization failed", "error", err)
+		os.Exit(1)
+	}
 
 	engine := parser.NewEngine(database)
 	ic := control.NewIngestionController()
@@ -140,7 +172,6 @@ func main() {
 	r.POST("/api/auth/login", rateLimitMiddleware(loginLimiter), handler.Login(database))
 	r.POST("/api/auth/refresh", rateLimitMiddleware(refreshLimiter), handler.Refresh(database))
 	r.POST("/api/auth/logout", handler.Logout(database))
-	r.POST("/api/ingest/batch", handler.IngestBatch(database, engine, ic))
 	r.GET("/api/status/initialized", handler.CheckInitialized(database))
 	r.POST("/api/init", rateLimitMiddleware(initLimiter), handler.Initialize(database))
 	r.GET("/api/init/generate-keys", handler.GenerateKeys())
@@ -239,6 +270,7 @@ func main() {
 	maintCancel()
 	stopVacuum()
 	stopMV()
+	stopTokenCleanup()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

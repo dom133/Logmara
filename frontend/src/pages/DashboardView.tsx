@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { Card, Table, Button, Tag, Space, Breadcrumb, Spin, Typography, Input, InputRef, Select, Row, Col, Statistic, Descriptions, Modal, DatePicker, Form, message } from 'antd'
 import { ArrowLeftOutlined, ReloadOutlined, FilterOutlined, PushpinOutlined, PushpinFilled, RestOutlined, GlobalOutlined, ClockCircleOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
-import { getDashboard, getDashboardData, togglePinDashboard, togglePublicDashboard, Dashboard, DashboardDataResponse, LogEntry, getDevices, DeviceStats, resolveDeviceDisplayName } from '../services/api'
+import { getDashboard, getDashboardData, togglePinDashboard, togglePublicDashboard, Dashboard, LogEntry, getDevices, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import { SEVERITY_LABELS } from '../constants'
@@ -19,11 +19,15 @@ export default function DashboardViewPage() {
   const navigate = useNavigate()
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [logs, setLogs] = useState<LogEntry[]>([])
-  const [total, setTotal] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(true)
   const [tableLoading, setTableLoading] = useState(false)
-  const [page, setPage] = useState(1)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [pageSize, setPageSize] = useState(50)
+  // Keyset pagination cursor for "Load more" - the dashboard log list is
+  // always sorted by timestamp DESC, so a pure cursor works without any
+  // offset fallback (see LogsViewer for the mixed-sort variant).
+  const cursorRef = useRef('')
   const [searchOverride, setSearchOverride] = useState('')
   const [severityFilter, setSeverityFilter] = useState('')
   const searchOverrideRef = useRef(searchOverride)
@@ -89,34 +93,38 @@ export default function DashboardViewPage() {
   })
   const [appendMode, setAppendMode] = useState(true)
 
-  const loadLogs = useCallback(async (offset: number) => {
-    setTableLoading(true)
+  const loadLogs = useCallback(async (reset: boolean) => {
+    reset ? setTableLoading(true) : setLoadingMore(true)
     try {
       const from = dateRange?.[0]?.toISOString() || ''
       const to = dateRange?.[1]?.toISOString() || ''
-      const data = await getDashboardData(dashboardId, pageSize, offset, searchOverrideRef.current, severityRef.current, from, to)
-      setLogs(data.logs)
-      setTotal(data.total)
+      const data = await getDashboardData(dashboardId, pageSize, reset ? '' : cursorRef.current, searchOverrideRef.current, severityRef.current, from, to)
+      setLogs(prev => (reset ? data.logs : [...prev, ...data.logs]))
+      setHasMore(data.has_more)
+      cursorRef.current = data.next_cursor
     } catch (e) {
       // error handled by API
     } finally {
       setTableLoading(false)
+      setLoadingMore(false)
     }
   }, [dashboardId, pageSize, dateRange])
+
+  const handleLoadMore = () => loadLogs(false)
 
   const pollLogs = useCallback(async () => {
     if (!appendMode) return
     try {
       const from = dateRange?.[0]?.toISOString() || ''
       const to = dateRange?.[1]?.toISOString() || ''
-      const offset = (page - 1) * pageSize
-      const data = await getDashboardData(dashboardId, pageSize, offset, searchOverrideRef.current, severityRef.current, from, to)
-      setTotal(data.total)
+      const data = await getDashboardData(dashboardId, pageSize, '', searchOverrideRef.current, severityRef.current, from, to)
+      setHasMore(data.has_more)
+      cursorRef.current = data.next_cursor
       setLogs(data.logs)
     } catch (e) {
       // error handled by API
     }
-  }, [dashboardId, pageSize, page, dateRange, appendMode])
+  }, [dashboardId, pageSize, dateRange, appendMode])
 
   useEffect(() => {
     loadDashboard()
@@ -142,7 +150,7 @@ export default function DashboardViewPage() {
 
   useEffect(() => {
     if (dashboard) {
-      loadLogs(0)
+      loadLogs(true)
     }
   }, [dashboard, loadLogs])
 
@@ -345,7 +353,7 @@ export default function DashboardViewPage() {
             placeholder="Search... (Ctrl+K)"
             value={searchOverride}
             onChange={e => setSearchOverride(e.target.value)}
-            onPressEnter={() => loadLogs((page - 1) * pageSize)}
+            onPressEnter={() => loadLogs(true)}
             style={{ minWidth: 180, flex: '1 1 180px' }}
             prefix={<FilterOutlined />}
           />
@@ -363,7 +371,7 @@ export default function DashboardViewPage() {
             value={dateRange}
             onChange={(dates) => setDateRange(dates as [any, any] | null)}
           />
-          <Button icon={<ReloadOutlined />} onClick={() => loadLogs((page - 1) * pageSize)} loading={tableLoading}>Apply</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => loadLogs(true)} loading={tableLoading}>Apply</Button>
           <Select
             size="small"
             style={{ width: 100 }}
@@ -391,7 +399,7 @@ export default function DashboardViewPage() {
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col xs={24} sm={12} md={8} lg={6}>
           <Card>
-            <Statistic title="Matching Logs" value={total} />
+            <Statistic title="Loaded Logs" value={logs.length} />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={8} lg={6}>
@@ -442,15 +450,22 @@ export default function DashboardViewPage() {
           onClick: () => setDetailLog(record),
           style: { cursor: 'pointer' },
         })}
-        pagination={{
-          current: page,
-          pageSize: pageSize,
-          total: total,
-          showSizeChanger: true,
-          showTotal: (t) => `${t} total`,
-          onChange: (p, ps) => { setPage(p); setPageSize(ps); loadLogs((p - 1) * ps) },
-        }}
+        pagination={false}
       />
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8, marginTop: 16 }}>
+        <Select
+          size="small"
+          style={{ width: 100 }}
+          value={pageSize}
+          onChange={setPageSize}
+          options={['25', '50', '100', '200'].map(v => ({ label: `${v} / page`, value: parseInt(v) }))}
+        />
+        {hasMore ? (
+          <Button onClick={handleLoadMore} loading={loadingMore}>Load more</Button>
+        ) : (
+          <Text type="secondary">No more logs</Text>
+        )}
+      </div>
 
       <Modal
         title="Log Details"
