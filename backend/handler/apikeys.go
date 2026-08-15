@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"logmara/audit"
 	"logmara/middleware"
 	"logmara/model"
 
@@ -59,7 +60,7 @@ func hashAPIKey(key string) string {
 
 func CreateAPIKey(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userID := c.GetInt64("user_id")
+		userID, username := actorFromContext(c)
 
 		var req struct {
 			Name            string             `json:"name" binding:"required"`
@@ -114,6 +115,8 @@ func CreateAPIKey(database *sql.DB) gin.HandlerFunc {
 			c.AbortWithError(http.StatusInternalServerError, model.NewInternal("Failed to create API key", err))
 			return
 		}
+
+		audit.LogAudit(database, userID, username, "api_key_created", c.ClientIP(), fmt.Sprintf("name=%s, prefix=%s", req.Name, keyPrefix))
 
 		c.JSON(http.StatusCreated, gin.H{
 			"key":       key,
@@ -194,6 +197,7 @@ func ListAPIKeys(database *sql.DB) gin.HandlerFunc {
 
 func UpdateAPIKey(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		userID, username := actorFromContext(c)
 		idStr := c.Param("id")
 		id, _ := strconv.Atoi(idStr)
 
@@ -231,12 +235,14 @@ func UpdateAPIKey(database *sql.DB) gin.HandlerFunc {
 		}
 
 		setters := []string{}
+		changedFields := []string{}
 		args := []any{}
 		argCount := 0
 
 		if req.Name != nil {
 			argCount++
 			setters = append(setters, "name = $"+strconv.Itoa(argCount))
+			changedFields = append(changedFields, "name")
 			args = append(args, *req.Name)
 		}
 
@@ -244,6 +250,7 @@ func UpdateAPIKey(database *sql.DB) gin.HandlerFunc {
 			argCount++
 			permsJSON, _ := json.Marshal(*req.Permissions)
 			setters = append(setters, "permissions = $"+strconv.Itoa(argCount))
+			changedFields = append(changedFields, "permissions")
 			args = append(args, permsJSON)
 		}
 
@@ -251,24 +258,28 @@ func UpdateAPIKey(database *sql.DB) gin.HandlerFunc {
 			argCount++
 			scopeJSON, _ := json.Marshal(*req.ScopeFilters)
 			setters = append(setters, "scope_filters = $"+strconv.Itoa(argCount))
+			changedFields = append(changedFields, "scope_filters")
 			args = append(args, scopeJSON)
 		}
 
 		if req.AllowedIPs != nil {
 			argCount++
 			setters = append(setters, "allowed_ips = $"+strconv.Itoa(argCount))
+			changedFields = append(changedFields, "allowed_ips")
 			args = append(args, pq.Array(cleanedAllowedIPs))
 		}
 
 		if req.IsActive != nil {
 			argCount++
 			setters = append(setters, "is_active = $"+strconv.Itoa(argCount))
+			changedFields = append(changedFields, "is_active")
 			args = append(args, *req.IsActive)
 		}
 
 		if req.RateLimitPerMin != nil {
 			argCount++
 			setters = append(setters, "rate_limit_per_min = $"+strconv.Itoa(argCount))
+			changedFields = append(changedFields, "rate_limit_per_min")
 			args = append(args, *req.RateLimitPerMin)
 		}
 
@@ -280,6 +291,7 @@ func UpdateAPIKey(database *sql.DB) gin.HandlerFunc {
 				expiresAt = &t
 			}
 			setters = append(setters, "expires_at = $"+strconv.Itoa(argCount))
+			changedFields = append(changedFields, "expires_at")
 			args = append(args, expiresAt)
 		}
 
@@ -298,12 +310,15 @@ func UpdateAPIKey(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		audit.LogAudit(database, userID, username, "api_key_updated", c.ClientIP(), fmt.Sprintf("id=%d, fields=%s", id, strings.Join(changedFields, ",")))
+
 		c.JSON(http.StatusOK, gin.H{"message": "API key updated"})
 	}
 }
 
 func DeleteAPIKey(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		userID, username := actorFromContext(c)
 		idStr := c.Param("id")
 		id, _ := strconv.Atoi(idStr)
 
@@ -312,6 +327,8 @@ func DeleteAPIKey(database *sql.DB) gin.HandlerFunc {
 			c.AbortWithError(http.StatusInternalServerError, model.NewInternal("Failed to delete API key", err))
 			return
 		}
+
+		audit.LogAudit(database, userID, username, "api_key_deleted", c.ClientIP(), fmt.Sprintf("id=%d", id))
 		middleware.RemoveRateLimiter(id)
 
 		c.JSON(http.StatusOK, gin.H{"message": "API key deleted"})
@@ -320,6 +337,7 @@ func DeleteAPIKey(database *sql.DB) gin.HandlerFunc {
 
 func ResetAPIKey(database *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		userID, username := actorFromContext(c)
 		idStr := c.Param("id")
 		id, _ := strconv.Atoi(idStr)
 
@@ -332,6 +350,8 @@ func ResetAPIKey(database *sql.DB) gin.HandlerFunc {
 			c.AbortWithError(http.StatusInternalServerError, model.NewInternal("Failed to reset API key", err))
 			return
 		}
+
+		audit.LogAudit(database, userID, username, "api_key_reset", c.ClientIP(), fmt.Sprintf("id=%d, prefix=%s", id, keyPrefix))
 
 		c.JSON(http.StatusOK, gin.H{
 			"key":       key,

@@ -128,20 +128,29 @@ func (cfg *Config) ValidateToken(tokenString string) (*jwt.MapClaims, error) {
 	return nil, fmt.Errorf("invalid token")
 }
 
-// RememberedRefreshTokenTTL is how long a refresh token lives when the user
-// checked "remember this device" at login, versus the normal 7 days.
+// RememberedRefreshTokenTTL is the default max lifetime for a "remember this
+// device" refresh token. The actual value is loaded from the
+// session_remembered_max_days setting at runtime; this constant serves as
+// the fallback when the DB is unavailable.
 const RememberedRefreshTokenTTL = 60 * 24 * time.Hour
 const DefaultRefreshTokenTTL = 7 * 24 * time.Hour
 
 // GenerateRefreshToken returns a random refresh token. remember extends its
 // expiry from the normal 7 days to 60 days, for "remember this device" logins.
 func GenerateRefreshToken(userID int, remember bool) (string, time.Time) {
+	return GenerateRefreshTokenWithTTL(userID, remember, RememberedRefreshTokenTTL)
+}
+
+// GenerateRefreshTokenWithTTL is like GenerateRefreshToken but accepts a
+// custom TTL for remembered sessions, allowing the caller to read the value
+// from the database (session_remembered_max_days setting).
+func GenerateRefreshTokenWithTTL(userID int, remember bool, rememberedTTL time.Duration) (string, time.Time) {
 	b := make([]byte, 32)
 	rand.Read(b)
 	token := hex.EncodeToString(b)
 	ttl := DefaultRefreshTokenTTL
 	if remember {
-		ttl = RememberedRefreshTokenTTL
+		ttl = rememberedTTL
 	}
 	exp := time.Now().Add(ttl)
 	return token, exp

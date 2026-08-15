@@ -18,6 +18,12 @@ api.interceptors.request.use(config => {
       config.headers['X-CSRF-Token'] = csrfToken
     }
   }
+  if (!config.headers['X-Screen-Resolution']) {
+    config.headers['X-Screen-Resolution'] = `${window.screen.width}x${window.screen.height}`
+  }
+  if (!config.headers['X-Timezone']) {
+    config.headers['X-Timezone'] = Intl.DateTimeFormat().resolvedOptions().timeZone
+  }
   return config
 })
 
@@ -172,44 +178,48 @@ export async function getSeverityStats(from?: string, to?: string) {
 
 export async function exportCSV(params: Record<string, string>) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const res = await api.post('/export/csv', { ...params, tz }, { responseType: 'blob' })
+  const isUnlimited = params.limit === '' || params.limit === '0'
+  const res = await api.post('/export/csv', { ...params, tz }, { responseType: 'blob', timeout: isUnlimited ? 300000 : 30000 })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
-  a.download = 'syslog_export.csv'
+  a.download = 'syslog_logs.csv'
   a.click()
   URL.revokeObjectURL(url)
 }
 
 export async function exportHTML(params: Record<string, string>) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const res = await api.post('/export/html', { ...params, tz }, { responseType: 'blob' })
+  const isUnlimited = params.limit === '' || params.limit === '0'
+  const res = await api.post('/export/html', { ...params, tz }, { responseType: 'blob', timeout: isUnlimited ? 300000 : 30000 })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
-  a.download = 'syslog_report.html'
+  a.download = 'syslog_logs_report.html'
   a.click()
   URL.revokeObjectURL(url)
 }
 
-export async function exportDashboardCSV(id: number, params: Record<string, string>) {
+export async function exportDashboardCSV(id: number, params: Record<string, string>, dashboardName: string) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const res = await api.post(`/dashboards/${id}/export/csv`, { ...params, tz }, { responseType: 'blob' })
+  const isUnlimited = params.limit === '' || params.limit === '0'
+  const res = await api.post(`/dashboards/${id}/export/csv`, { ...params, tz }, { responseType: 'blob', timeout: isUnlimited ? 300000 : 30000 })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
-  a.download = 'syslog_export.csv'
+  a.download = `syslog_${dashboardName.replace(/[^a-zA-Z0-9_\-\s]/g, '_')}.csv`
   a.click()
   URL.revokeObjectURL(url)
 }
 
-export async function exportDashboardHTML(id: number, params: Record<string, string>) {
+export async function exportDashboardHTML(id: number, params: Record<string, string>, dashboardName: string) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const res = await api.post(`/dashboards/${id}/export/html`, { ...params, tz }, { responseType: 'blob' })
+  const isUnlimited = params.limit === '' || params.limit === '0'
+  const res = await api.post(`/dashboards/${id}/export/html`, { ...params, tz }, { responseType: 'blob', timeout: isUnlimited ? 300000 : 30000 })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url
-  a.download = 'syslog_report.html'
+  a.download = `syslog_${dashboardName.replace(/[^a-zA-Z0-9_\-\s]/g, '_')}_report.html`
   a.click()
   URL.revokeObjectURL(url)
 }
@@ -446,6 +456,8 @@ export interface Session {
 	last_used_at?: string | null
 	expires_at: string
 	is_current: boolean
+	screen_resolution?: string
+	timezone?: string
 }
 
 export async function getSessions() {
@@ -508,6 +520,11 @@ export async function resetPassword(id: number, password: string) {
 
 export async function unlockUser(id: number) {
 	const res = await api.post(`/admin/users/${id}/unlock`)
+	return res.data
+}
+
+export async function changePassword(currentPassword: string, newPassword: string) {
+	const res = await api.put('/auth/password', { current_password: currentPassword, new_password: newPassword })
 	return res.data
 }
 

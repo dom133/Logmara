@@ -62,22 +62,24 @@ export function SessionsModal({ open, onClose }: { open: boolean; onClose: () =>
               ].filter(Boolean)}
             >
               <List.Item.Meta
-                title={
-                  <span>
-                    {s.ip || t('sessions.unknownLocation')}
-                    {s.is_current && <Tag color="green" style={{ marginLeft: 8 }}>{t('sessions.thisDevice')}</Tag>}
-                    {s.remember && <Tag color="blue" style={{ marginLeft: 8 }}>{t('sessions.remembered')}</Tag>}
-                  </span>
-                }
-                description={
-                  <>
-                    <div style={{ wordBreak: 'break-all' }}>{s.user_agent || t('sessions.unknownBrowser')}</div>
-                    <div>
-                      {t('sessions.lastActive', { date: s.last_used_at ? new Date(s.last_used_at).toLocaleString() : new Date(s.created_at).toLocaleString() })}
-                    </div>
-                  </>
-                }
-              />
+                 title={
+                   <span>
+                     {s.ip || t('sessions.unknownLocation')}
+                     {s.is_current && <Tag color="green" style={{ marginLeft: 8 }}>{t('sessions.thisDevice')}</Tag>}
+                     {s.remember && <Tag color="blue" style={{ marginLeft: 8 }}>{t('sessions.remembered')}</Tag>}
+                   </span>
+                 }
+                 description={
+                   <>
+                     <div style={{ wordBreak: 'break-all' }}>{s.user_agent || t('sessions.unknownBrowser')}</div>
+                     {s.screen_resolution && <div>{t('sessions.screenResolution')}: {s.screen_resolution}</div>}
+                     {s.timezone && <div>{t('sessions.timezone')}: {s.timezone}</div>}
+                     <div>
+                       {t('sessions.lastActive', { date: s.last_used_at ? new Date(s.last_used_at).toLocaleString() : new Date(s.created_at).toLocaleString() })}
+                     </div>
+                   </>
+                 }
+               />
             </List.Item>
           )}
         />

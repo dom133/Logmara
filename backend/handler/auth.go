@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"logmara/audit"
@@ -25,7 +26,7 @@ const (
 	RefreshTokenCookieName = "refreshToken"
 	CSRFTokenCookieName    = "csrf_token"
 	DeviceIDCookieName     = "device_id"
-	deviceIDCookieMaxAge   = 400 * 24 * 60 * 60 // ~400 days, the practical cap browsers enforce on cookie lifetime
+	deviceIDCookieMaxAge   = 60 * 24 * 60 * 60 // 60 days, matches RememberedRefreshTokenTTL
 )
 
 // isHTTPS returns true if the request arrived over HTTPS, either directly
@@ -85,7 +86,7 @@ func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpi
 		MaxAge:   accessMaxAge,
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 	})
 
 	http.SetCookie(c.Writer, &http.Cookie{
@@ -96,7 +97,7 @@ func setAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpi
 		MaxAge:   refreshMaxAge,
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 	})
 }
 
@@ -121,7 +122,7 @@ func clearAuthCookies(c *gin.Context) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 	})
 
 	http.SetCookie(c.Writer, &http.Cookie{
@@ -132,7 +133,7 @@ func clearAuthCookies(c *gin.Context) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 	})
 }
 
@@ -167,29 +168,43 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 
 		var user *db.User
 
+		// Always run bcrypt to prevent timing-based user enumeration.
+		// Lockout and active checks happen AFTER password verification so
+		// that response timing doesn't leak whether an account exists, is
+		// locked, or is deactivated.
+		dummyHash := "$2b$14$AAAAAAAAAAAAAAAAAAAAAAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 		existing, err := db.GetUserByUsername(database, req.Username)
 		if err == nil {
-			if locked, _ := db.CheckUserLockout(database, existing.ID); locked {
-				audit.LogAudit(database, existing.ID, req.Username, "login_failed_lockout", c.ClientIP(), "account locked due to too many failed attempts")
-				c.JSON(http.StatusTooManyRequests, gin.H{"error": "Account temporarily locked due to too many failed login attempts. Try again later.", "error_key": "auth.accountLocked"})
-				return
-			}
-			if !existing.IsActive {
-				dummyHash := "$2b$14$AAAAAAAAAAAAAAAAAAAAAAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-				bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(req.Password))
-				audit.LogAudit(database, existing.ID, req.Username, "login_failed_inactive", c.ClientIP(), "account deactivated by admin")
-				c.JSON(http.StatusForbidden, gin.H{"error": "Your account has been deactivated. Contact your administrator.", "error_key": "auth.accountDeactivated"})
-				return
-			}
 			if err := bcrypt.CompareHashAndPassword([]byte(existing.PasswordHash), []byte(req.Password)); err == nil {
-				user = existing
+				// Password matched -- now check lockout and active status.
+				if locked, _ := db.CheckUserLockout(database, existing.ID); locked {
+					audit.LogAudit(database, existing.ID, req.Username, "login_failed_lockout", c.ClientIP(), "account locked due to too many failed attempts")
+				} else if !existing.IsActive {
+					audit.LogAudit(database, existing.ID, req.Username, "login_failed_inactive", c.ClientIP(), "account deactivated by admin")
+				} else {
+					user = existing
+				}
+			} else {
+				// Wrong password -- increment failure counter.
+				newFailed, locked, incrErr := db.IncrementFailedLogins(database, existing.ID)
+				if incrErr != nil {
+					slog.Error("failed to increment failed logins", "error", incrErr, "user_id", existing.ID)
+				}
+				if locked {
+					audit.LogAudit(database, existing.ID, req.Username, "user_locked", c.ClientIP(), fmt.Sprintf("account locked after %d failed attempts", newFailed))
+				}
 			}
+			// Consume dummy bcrypt so timing is identical to the "user not
+			// found" path.
+			bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(req.Password))
+		} else {
+			// User not found locally -- still run bcrypt for constant timing.
+			bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(req.Password))
 		}
 
+		// Try LDAP only if no local user authenticated successfully.
 		if user == nil {
-			dummyHash := "$2b$14$AAAAAAAAAAAAAAAAAAAAAAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-			bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(req.Password))
-
 			ldapCfg := ldap.LoadConfig(func(key, def string) string {
 				return db.GetSetting(database, key, def)
 			})
@@ -212,40 +227,42 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 							if err != nil {
 								slog.Error("ldap auto-provision failed", "error", err)
 								audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "auto-provision failed")
-								c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials", "error_key": "auth.invalidCredentials"})
-								return
+							} else {
+								user = u
 							}
-							user = u
 						} else {
 							audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "user not found locally")
-							c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials", "error_key": "auth.invalidCredentials"})
-							return
 						}
 					} else {
 						user = existing
 					}
 				}
 			}
+		}
 
-			if user == nil {
-				if existing != nil {
-					newFailed, locked, err := db.IncrementFailedLogins(database, existing.ID)
-					if err != nil {
-						slog.Error("failed to increment failed logins", "error", err, "user_id", existing.ID)
-					}
-					if locked {
-						audit.LogAudit(database, existing.ID, req.Username, "user_locked", c.ClientIP(), fmt.Sprintf("account locked after %d failed attempts", newFailed))
-					}
-				}
-				audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "invalid user or inactive")
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials", "error_key": "auth.invalidCredentials"})
-				return
-			}
+		if user == nil {
+			audit.LogAudit(database, 0, req.Username, "login_failed", c.ClientIP(), "invalid credentials")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials", "error_key": "auth.invalidCredentials"})
+			return
 		}
 
 		db.ResetFailedLogins(database, user.ID)
 		db.UpdateLastLogin(database, user.Username)
 		user.LastLoginAt = ptrTime(time.Now())
+
+		if user.AuthType == "local" {
+			if expired, _ := db.IsPasswordExpired(database, user.ID); expired {
+				audit.LogAudit(database, user.ID, user.Username, "login_password_expired", c.ClientIP(), "password expired, user must change")
+				c.JSON(http.StatusOK, gin.H{
+					"password_expired": true,
+					"user": gin.H{
+						"id":       user.ID,
+						"username": user.Username,
+					},
+				})
+				return
+			}
+		}
 
 		token, jti, accessExpiresAt, err := authCfg.GenerateToken(user.ID, user.Username, user.Role, req.Remember)
 		if err != nil {
@@ -253,17 +270,20 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			return
 		}
 
-		refreshToken, refreshExpiresAt := auth.GenerateRefreshToken(int(user.ID), req.Remember)
+		rememberedTTL := getRememberedTTL(database)
+		refreshToken, refreshExpiresAt := auth.GenerateRefreshTokenWithTTL(int(user.ID), req.Remember, rememberedTTL)
 		devID := deviceID(c)
 		if err := insertRefreshToken(database, refreshTokenParams{
-			userID:    int(user.ID),
-			token:     refreshToken,
-			expiresAt: refreshExpiresAt,
-			deviceID:  devID,
-			userAgent: c.Request.UserAgent(),
-			ip:        c.ClientIP(),
-			remember:  req.Remember,
-			jti:       jti,
+			userID:           int(user.ID),
+			token:            refreshToken,
+			expiresAt:        refreshExpiresAt,
+			deviceID:         devID,
+			userAgent:        c.Request.UserAgent(),
+			ip:               c.ClientIP(),
+			remember:         req.Remember,
+			jti:              jti,
+			screenResolution: c.GetHeader("X-Screen-Resolution"),
+			timezone:         c.GetHeader("X-Timezone"),
 		}); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
@@ -292,6 +312,12 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "true",
 		}
 
+		if user.AuthType == "local" {
+			if expDate, err := db.GetPasswordExpiryDate(database, user.ID); err == nil && expDate != nil {
+				userResp["password_expires_at"] = expDate.Unix()
+			}
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"user":       userResp,
 			"expires_at": accessExpiresAt.Unix(),
@@ -309,8 +335,9 @@ func ptrTime(t time.Time) *time.Time {
 // token). The first request rotates the token atomically; a second request
 // arriving within this window is handed the token that already won the race
 // instead of being logged out. Reuse outside this window is treated as a
-// real replay and rejected.
-const refreshReuseGraceWindow = 10 * time.Second
+// real replay and rejected. Increased to 30s to account for users switching
+// between multiple tabs that may have been backgrounded.
+const refreshReuseGraceWindow = 30 * time.Second
 
 func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -393,20 +420,23 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			return
 		}
 
-		newRefreshToken, newExpiresAt := auth.GenerateRefreshToken(userID, remember)
+		rememberedTTL := getRememberedTTL(database)
+		newRefreshToken, newExpiresAt := auth.GenerateRefreshTokenWithTTL(userID, remember, rememberedTTL)
 		if err := insertRefreshToken(database, refreshTokenParams{
-			userID:    userID,
-			token:     newRefreshToken,
-			expiresAt: newExpiresAt,
-			deviceID:  deviceIDVal.String,
-			userAgent: c.Request.UserAgent(),
-			ip:        c.ClientIP(),
-			remember:  remember,
-			jti:       newJTI,
+			userID:           userID,
+			token:            newRefreshToken,
+			expiresAt:        newExpiresAt,
+			deviceID:         deviceIDVal.String,
+			userAgent:        c.Request.UserAgent(),
+			ip:               c.ClientIP(),
+			remember:         remember,
+			jti:              newJTI,
+			screenResolution: c.GetHeader("X-Screen-Resolution"),
+			timezone:         c.GetHeader("X-Timezone"),
 		}); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
-		if _, err := database.Exec("UPDATE refresh_tokens SET replaced_by = $1 WHERE token_hash = $2", newRefreshToken, rh); err != nil {
+		if _, err := database.Exec("UPDATE refresh_tokens SET used = true, used_at = NOW(), replaced_by = $1 WHERE token_hash = $2", newRefreshToken, rh); err != nil {
 			slog.Error("failed to link rotated refresh token", "error", err)
 		}
 
@@ -515,13 +545,16 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 
 		userID := int((*mapClaims)["user_id"].(float64))
 		var isAdmin bool
-		err := database.QueryRow("SELECT is_admin FROM users WHERE id = $1", userID).Scan(&isAdmin)
+		var authType string
+		err := database.QueryRow("SELECT is_admin, auth_type FROM users WHERE id = $1", userID).Scan(&isAdmin, &authType)
 		if err != nil {
 			isAdmin = false
+			authType = "local"
 		}
 		exp := int64((*mapClaims)["exp"].(float64))
 		remembered, _ := (*mapClaims)["remember"].(bool)
-		c.JSON(http.StatusOK, gin.H{
+
+		resp := gin.H{
 			"id":                      userID,
 			"username":                username,
 			"role":                    role,
@@ -531,7 +564,18 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "true",
 			"expires_at":              exp,
 			"remembered":              remembered,
-		})
+		}
+
+		if authType == "local" {
+			if expired, _ := db.IsPasswordExpired(database, int64(userID)); expired {
+				resp["password_expired"] = true
+			}
+			if expDate, err := db.GetPasswordExpiryDate(database, int64(userID)); err == nil && expDate != nil {
+				resp["password_expires_at"] = expDate.Unix()
+			}
+		}
+
+		c.JSON(http.StatusOK, resp)
 	}
 }
 
@@ -609,22 +653,24 @@ func ChangePassword(database *sql.DB) gin.HandlerFunc {
 }
 
 type refreshTokenParams struct {
-	userID    int
-	token     string
-	expiresAt time.Time
-	deviceID  string
-	userAgent string
-	ip        string
-	remember  bool
-	jti       string
+	userID           int
+	token            string
+	expiresAt        time.Time
+	deviceID         string
+	userAgent        string
+	ip               string
+	remember         bool
+	jti              string
+	screenResolution string
+	timezone         string
 }
 
 func insertRefreshToken(db *sql.DB, p refreshTokenParams) error {
 	tokenHash := auth.HashRefreshToken(p.token)
 	_, err := db.Exec(
-		`INSERT INTO refresh_tokens (user_id, token, token_hash, expires_at, used, device_id, user_agent, ip, remember, jti, last_used_at)
-		 VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8, $9, NOW())`,
-		p.userID, p.token, tokenHash, p.expiresAt, p.deviceID, p.userAgent, p.ip, p.remember, p.jti,
+		`INSERT INTO refresh_tokens (user_id, token, token_hash, expires_at, used, device_id, user_agent, ip, remember, jti, last_used_at, screen_resolution, timezone)
+		 VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8, $9, NOW(), $10, $11)`,
+		p.userID, p.token, tokenHash, p.expiresAt, p.deviceID, p.userAgent, p.ip, p.remember, p.jti, p.screenResolution, p.timezone,
 	)
 	return err
 }
@@ -633,4 +679,13 @@ func getUserID(db *sql.DB, username string) (int64, error) {
 	var id int64
 	err := db.QueryRow("SELECT id FROM users WHERE username = $1", username).Scan(&id)
 	return id, err
+}
+
+func getRememberedTTL(database *sql.DB) time.Duration {
+	val := db.GetSetting(database, "session_remembered_max_days", "60")
+	days, err := strconv.Atoi(val)
+	if err != nil || days <= 0 || days > 365 {
+		return auth.RememberedRefreshTokenTTL
+	}
+	return time.Duration(days) * 24 * time.Hour
 }

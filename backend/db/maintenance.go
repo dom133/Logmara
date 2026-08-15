@@ -173,9 +173,10 @@ func cleanupExpiredRefreshTokens(db *sql.DB) {
 		slog.Info("refresh token cleanup completed", "rows_deleted", n)
 	}
 
-	// "Remember this device" tokens (remember = true) are exempt: they're
-	// meant to keep a session alive across days/weeks of not opening the
-	// app, not just within a single active-browsing window.
+	// "Remember this device" tokens (remember = true) are exempt from the
+	// short inactivity timeout: they're meant to keep a session alive
+	// across days/weeks of not opening the app, not just within a single
+	// active-browsing window.
 	timeoutMin := getInactivityTimeoutMin(db)
 	res, err = db.Exec(
 		"UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE used = false AND remember = false AND created_at < NOW() - ($1 || ' minutes')::INTERVAL",
@@ -188,6 +189,22 @@ func cleanupExpiredRefreshTokens(db *sql.DB) {
 	if n, err := res.RowsAffected(); err == nil && n > 0 {
 		slog.Info("inactive tokens expired", "rows_marked", n, "timeout_min", timeoutMin)
 	}
+
+	// Expire remembered sessions that have exceeded the configured max
+	// lifetime (session_remembered_max_days). This prevents a remembered
+	// token from living forever if the admin lowers the max TTL.
+	rememberedMaxDays := getRememberedMaxDays(db)
+	res, err = db.Exec(
+		"UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE used = false AND remember = true AND created_at < NOW() - ($1 || ' days')::INTERVAL",
+		rememberedMaxDays,
+	)
+	if err != nil {
+		slog.Error("remembered token max TTL expiry failed", "err", err)
+		return
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		slog.Info("remembered tokens expired by max TTL", "rows_marked", n, "max_days", rememberedMaxDays)
+	}
 }
 
 func getInactivityTimeoutMin(db *sql.DB) string {
@@ -195,6 +212,15 @@ func getInactivityTimeoutMin(db *sql.DB) string {
 	err := db.QueryRow("SELECT value FROM app_settings WHERE key = 'session_timeout_min'").Scan(&val)
 	if err != nil || !val.Valid {
 		return "15"
+	}
+	return val.String
+}
+
+func getRememberedMaxDays(db *sql.DB) string {
+	var val sql.NullString
+	err := db.QueryRow("SELECT value FROM app_settings WHERE key = 'session_remembered_max_days'").Scan(&val)
+	if err != nil || !val.Valid {
+		return "60"
 	}
 	return val.String
 }

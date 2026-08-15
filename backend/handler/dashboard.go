@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"logmara/middleware"
 	"logmara/model"
@@ -287,12 +288,12 @@ func DeleteDashboard(db *sql.DB) gin.HandlerFunc {
 }
 
 type DashboardFilterRequest struct {
-	Severity     string           `json:"severity"`
-	From         string           `json:"from"`
-	To           string           `json:"to"`
-	Search       string           `json:"search"`
-	FromHostIP   string           `json:"fromhost_ip"`
-	FieldFilters string           `json:"field_filters"`
+	Severity     string `json:"severity"`
+	From         string `json:"from"`
+	To           string `json:"to"`
+	Search       string `json:"search"`
+	FromHostIP   string `json:"fromhost_ip"`
+	FieldFilters string `json:"field_filters"`
 }
 
 // resolveDashboardFilters loads a dashboard's config and merges it with
@@ -349,6 +350,64 @@ func resolveDashboardFilters(db *sql.DB, c *gin.Context, req DashboardFilterRequ
 	return cfg, opts, nil
 }
 
+// resolveDashboardFiltersWithName is like resolveDashboardFilters but also
+// returns the dashboard's name for use in export filenames.
+func resolveDashboardFiltersWithName(db *sql.DB, c *gin.Context, req DashboardFilterRequest) (*model.DashboardConfig, LogFilterOptions, string, error) {
+	id, err := parseIDParam(c.Param("id"))
+	if err != nil {
+		return nil, LogFilterOptions{}, "", model.NewBadRequest("invalid id", nil)
+	}
+
+	userID := c.GetInt64("user_id")
+	isAdmin := getUserRole(c) == RoleAdmin
+
+	var dashName string
+	var configRaw json.RawMessage
+	if isAdmin {
+		err = db.QueryRow("SELECT name, config FROM dashboards WHERE id = $1", id).Scan(&dashName, &configRaw)
+	} else {
+		err = db.QueryRow("SELECT name, config FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE)", id, userID).Scan(&dashName, &configRaw)
+	}
+	if err != nil {
+		return nil, LogFilterOptions{}, "", model.NewNotFound("dashboard not found", err)
+	}
+
+	cfg, err := parseDashboardConfig(configRaw)
+	if err != nil {
+		return nil, LogFilterOptions{}, "", model.NewBadRequest("invalid dashboard config", err)
+	}
+
+	requiredParsers, err := resolveParsersForFields(db, cfg.Fields)
+	if err != nil {
+		return nil, LogFilterOptions{}, "", model.NewInternal("failed to resolve parsers for fields", err)
+	}
+
+	opts := LogFilterOptions{
+		Severity:        firstNonEmpty(req.Severity, cfg.Filters.Severity),
+		From:            firstNonEmpty(req.From, cfg.Filters.From),
+		To:              firstNonEmpty(req.To, cfg.Filters.To),
+		Search:          firstNonEmpty(req.Search, cfg.Filters.Search),
+		Devices:         cfg.Devices,
+		RequiredParsers: requiredParsers,
+		FieldFilters:    cfg.Filters.FieldFilters,
+	}
+
+	if ffStr := req.FieldFilters; ffStr != "" {
+		var ff []model.FieldFilter
+		if err := json.Unmarshal([]byte(ffStr), &ff); err == nil && len(ff) > 0 {
+			opts.FieldFilters = ff
+		}
+	}
+
+	if fromHostIP := req.FromHostIP; fromHostIP != "" {
+		if len(cfg.Devices) == 0 || containsString(cfg.Devices, fromHostIP) {
+			opts.Devices = []string{fromHostIP}
+		}
+	}
+
+	return cfg, opts, dashName, nil
+}
+
 func containsString(list []string, target string) bool {
 	for _, v := range list {
 		if v == target {
@@ -390,16 +449,16 @@ func resolveParsersForFields(db *sql.DB, fields []string) ([]string, error) {
 }
 
 type DashboardDataRequest struct {
-	Severity     string           `json:"severity"`
-	From         string           `json:"from"`
-	To           string           `json:"to"`
-	Search       string           `json:"search"`
-	FromHostIP   string           `json:"fromhost_ip"`
-	FieldFilters string           `json:"field_filters"`
-	Limit        string           `json:"limit"`
-	Offset       string           `json:"offset"`
-	Cursor       string           `json:"cursor"`
-	Sort         string           `json:"sort"`
+	Severity     string `json:"severity"`
+	From         string `json:"from"`
+	To           string `json:"to"`
+	Search       string `json:"search"`
+	FromHostIP   string `json:"fromhost_ip"`
+	FieldFilters string `json:"field_filters"`
+	Limit        string `json:"limit"`
+	Offset       string `json:"offset"`
+	Cursor       string `json:"cursor"`
+	Sort         string `json:"sort"`
 }
 
 func GetDashboardData(db *sql.DB) gin.HandlerFunc {
@@ -546,13 +605,13 @@ func GetDashboardDataCount(db *sql.DB) gin.HandlerFunc {
 // ExportDashboardCSV exports a dashboard's log view as CSV, honoring the
 // same device/field scoping and filter overrides as GetDashboardData.
 type DashboardExportRequest struct {
-	Severity     string           `json:"severity"`
-	From         string           `json:"from"`
-	To           string           `json:"to"`
-	Search       string           `json:"search"`
-	FromHostIP   string           `json:"fromhost_ip"`
-	FieldFilters string           `json:"field_filters"`
-	Limit        string           `json:"limit"`
+	Severity     string `json:"severity"`
+	From         string `json:"from"`
+	To           string `json:"to"`
+	Search       string `json:"search"`
+	FromHostIP   string `json:"fromhost_ip"`
+	FieldFilters string `json:"field_filters"`
+	Limit        string `json:"limit"`
 }
 
 func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
@@ -568,7 +627,7 @@ func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
 			FromHostIP:   req.FromHostIP,
 			FieldFilters: req.FieldFilters,
 		}
-		cfg, opts, err := resolveDashboardFilters(db, c, filterReq)
+		cfg, opts, dashName, err := resolveDashboardFiltersWithName(db, c, filterReq)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
@@ -579,15 +638,21 @@ func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
 			limitStr = "100000"
 		}
 		limit, err := strconv.Atoi(limitStr)
-		if err != nil || limit <= 0 {
+		if err != nil || limit < 0 {
 			limit = DefaultExportLimit
 		}
-		if limit > MaxExportLimit {
+		if limit > MaxExportLimit && limit != 0 {
 			limit = MaxExportLimit
 		}
 
+		if limit == 0 {
+			http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
+		} else {
+			http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(180 * time.Second))
+		}
+
 		whereClauses, args, _ := buildLogWhereClauses(opts)
-		writeCSVExport(c, db, buildWhereSQL(whereClauses), args, limit, cfg.Fields)
+		writeCSVExport(c, db, buildWhereSQL(whereClauses), args, limit, cfg.Fields, dashName)
 	}
 }
 
@@ -596,16 +661,17 @@ func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
 // GetDashboardData.
 func ExportDashboardHTML(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(180 * time.Second))
 		var req DashboardFilterRequest
 		_ = c.ShouldBindJSON(&req)
-		cfg, opts, err := resolveDashboardFilters(db, c, req)
+		cfg, opts, dashName, err := resolveDashboardFiltersWithName(db, c, req)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
 		}
 
 		whereClauses, args, _ := buildLogWhereClauses(opts)
-		writeHTMLExport(c, db, buildWhereSQL(whereClauses), args, 5000, cfg.Fields)
+		writeHTMLExport(c, db, buildWhereSQL(whereClauses), args, 5000, cfg.Fields, dashName)
 	}
 }
 

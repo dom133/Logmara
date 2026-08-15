@@ -17,6 +17,7 @@ import SyslogRelay from './pages/SyslogRelay'
 import SetupWizard from './pages/SetupWizard'
 import ErrorBoundary from './components/ErrorBoundary'
 import { SessionWarningModal } from './components/SessionWarningModal'
+import { PasswordExpiryWarning } from './components/PasswordExpiryWarning'
 import { SessionsModal } from './components/SessionsModal'
 import { NotificationBell } from './components/NotificationBell'
 import { AuthProvider, useAuth } from './services/auth'
@@ -316,6 +317,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
             </div>
           </Header>
           <Content style={{ margin: 16, padding: 24, background: token.colorBgContainer, borderRadius: 8 }}>
+            <PasswordExpiryWarning />
             <ErrorBoundary>{children}</ErrorBoundary>
           </Content>
           <Footer

@@ -52,7 +52,18 @@
     "loggedIn": "Logged in successfully",
     "loginFailed": "Login failed",
     "invalidCredentials": "Invalid credentials",
-    "language": "Language"
+    "language": "Language",
+    "passwordExpired": "Your password has expired",
+    "passwordExpiredDescription": "You must change your password before you can continue.",
+    "passwordExpiringSoon": "Your password will expire soon",
+    "passwordExpiresAt": "Password expires on",
+    "changePassword": "Change Password",
+    "currentPassword": "Current Password",
+    "newPassword": "New Password",
+    "confirmPassword": "Confirm Password",
+    "passwordChanged": "Password changed successfully",
+    "passwordChangeFailed": "Failed to change password",
+    "passwordMismatch": "Passwords do not match"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -80,6 +91,8 @@
     "appSettings": "Application Settings",
     "logRetention": "Log Retention (days)",
     "sessionTimeout": "Session Timeout (minutes)",
+    "rememberedMaxDays": "Remembered Session Max Lifetime (days)",
+    "rememberedMaxDaysTooltip": "Maximum days a 'remember this device' session stays valid. After this, the user must re-authenticate.",
     "security": "Security",
     "maxFailedAttempts": "Max Failed Login Attempts",
     "maxFailedAttemptsTooltip": "Number of failed login attempts before account lockout. Leave empty to use MAX_FAILED_ATTEMPTS env var or default (5).",
@@ -94,6 +107,8 @@
     "passwordRequireSpecial": "Require Special Character",
     "passwordHistoryCount": "Password History Count",
     "passwordHistoryCountTooltip": "Number of recent passwords to remember. Users cannot reuse any of these. Set to 0 to disable.",
+    "passwordExpiryDays": "Password Expiry (days)",
+    "passwordExpiryDaysTooltip": "How often passwords must be changed. Set to 0 to disable expiry.",
     "cors": "CORS",
     "corsOrigins": "Allowed CORS Origins",
     "corsOriginsTooltip": "Comma-separated list of origins allowed to call the API from a browser (e.g. http://localhost:3000,https://example.com). Leave empty to only allow the origin the app is served from.",
@@ -461,6 +476,11 @@
     "exporting": "Exporting...",
     "exportSuccess": "Logs exported successfully",
     "exportFailed": "Export failed",
+    "export.noLimit": "No limit",
+    "export.dateRangeRequired": "Date range is required",
+    "export.rowLimit": "Row Limit",
+    "export.rowLimitTooltip": "Maximum number of rows to export. Choose \"No limit\" for full export (may take longer).",
+    "export.activeFilters": "Active Filters",
     "autoRefresh": "Auto-refresh",
     "rowsPerPage": "Rows per page",
     "showRaw": "Show Raw",
@@ -767,7 +787,8 @@
     "message": "Your session is about to expire",
     "description": "Session will expire in {{seconds}} seconds. Extend it or log out now.",
     "logOut": "Log Out",
-    "extendSession": "Extend Session"
+    "extendSession": "Extend Session",
+    "earlyWarning": "Your session will expire soon. Stay active to keep it alive."
   },
   "channelForm": {
     "recipients": "Recipients",
@@ -807,7 +828,9 @@
     "thisDevice": "This device",
     "remembered": "Remembered",
     "unknownBrowser": "Unknown browser",
-    "lastActive": "Last active: {{date}}"
+    "lastActive": "Last active: {{date}}",
+    "screenResolution": "Screen",
+    "timezone": "Timezone"
   },
   "notifications": {
     "permissionDenied": "Notification permission was not granted",
@@ -1014,6 +1037,7 @@
     "auth.invalidCredentials": "Invalid username or password",
     "auth.accountLocked": "Account is temporarily locked. Try again later.",
     "auth.accountDeactivated": "Account is deactivated",
+    "auth.passwordExpired": "Your password has expired and must be changed",
     "auth.passwordRequirements": "Password does not meet requirements",
     "auth.tokenExpired": "Session expired. Please log in again.",
     "auth.refreshFailed": "Failed to refresh session",

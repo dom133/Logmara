@@ -115,7 +115,7 @@ func MigrateWithLock(db *sql.DB) error {
 // schema_version table already records this value, so a forgotten bump
 // means an already-deployed instance will never see the new statement
 // applied.
-const schemaVersion = 4
+const schemaVersion = 6
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -322,6 +322,11 @@ func runSchemaMigration(db *sql.DB) error {
 		// notice that blacklisting quickly rather than on its own schedule.
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='jti') THEN ALTER TABLE refresh_tokens ADD COLUMN jti VARCHAR(64); END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='token_hash') THEN ALTER TABLE refresh_tokens ADD COLUMN token_hash VARCHAR(64); END IF; END $$`,
+		// Screen resolution and timezone fingerprint for session identification
+		// in the "active sessions" list, helping users verify if a session
+		// belongs to their device.
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='screen_resolution') THEN ALTER TABLE refresh_tokens ADD COLUMN screen_resolution VARCHAR(20); END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='timezone') THEN ALTER TABLE refresh_tokens ADD COLUMN timezone VARCHAR(50); END IF; END $$`,
 		`CREATE TABLE IF NOT EXISTS password_history (
 			id BIGSERIAL PRIMARY KEY,
 			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -459,6 +464,8 @@ func runSchemaMigration(db *sql.DB) error {
 			created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
 		)`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='api_keys' AND column_name='allowed_ips') THEN ALTER TABLE api_keys ADD COLUMN allowed_ips TEXT[]; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='password_changed_at') THEN ALTER TABLE users ADD COLUMN password_changed_at TIMESTAMPTZ; END IF; END $$`,
+		`UPDATE users SET password_changed_at = created_at WHERE password_changed_at IS NULL`,
 	}
 
 	for _, stmt := range statements {
@@ -750,6 +757,7 @@ func seedSettings(db *sql.DB) error {
 	settings := map[string]string{
 		"retention_days":                "30",
 		"session_timeout_min":           "15",
+		"session_remembered_max_days":   "60",
 		"is_initialized":                "false",
 		"default_language":              "en",
 		"ldap_enabled":                  "false",
@@ -790,6 +798,7 @@ func seedSettings(db *sql.DB) error {
 		"security_password_require_digit":  "true",
 		"security_password_require_special":"true",
 		"security_password_history_count":  "12",
+		"security_password_expiry_days":    "90",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -802,6 +811,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "Days to keep logs before auto-deletion"
 		case "session_timeout_min":
 			desc = "Session timeout in minutes"
+		case "session_remembered_max_days":
+			desc = "Max lifetime in days for remembered sessions"
 		case "is_initialized":
 			desc = "Application initialization flag"
 		case "default_language":
@@ -882,6 +893,8 @@ func seedSettings(db *sql.DB) error {
 			desc = "Require at least one special character"
 		case "security_password_history_count":
 			desc = "Number of recent passwords to remember (0 = disabled)"
+		case "security_password_expiry_days":
+			desc = "Password expiry period in days (0 = disabled)"
 		}
 		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
 			return fmt.Errorf("seed setting %s: %w", k, err)
@@ -1137,6 +1150,7 @@ type User struct {
 	LastLoginAt         *time.Time `json:"last_login_at"`
 	FailedLoginAttempts int        `json:"failed_login_attempts"`
 	LockedUntil         *time.Time `json:"locked_until"`
+	PasswordChangedAt   *time.Time `json:"password_changed_at"`
 }
 
 type AuditLog struct {
@@ -1175,7 +1189,7 @@ func GetUserDirectory(db *sql.DB) ([]UserSummary, error) {
 }
 
 func GetAllUsers(db *sql.DB) ([]User, error) {
-	rows, err := db.Query("SELECT id, username, email, role, auth_type, is_admin, is_active, created_at, last_login_at, COALESCE(failed_login_attempts, 0), locked_until FROM users ORDER BY created_at DESC")
+	rows, err := db.Query("SELECT id, username, email, role, auth_type, is_admin, is_active, created_at, last_login_at, COALESCE(failed_login_attempts, 0), locked_until, password_changed_at FROM users ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -1184,7 +1198,7 @@ func GetAllUsers(db *sql.DB) ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.AuthType, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.FailedLoginAttempts, &u.LockedUntil); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.AuthType, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.FailedLoginAttempts, &u.LockedUntil, &u.PasswordChangedAt); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -1196,7 +1210,7 @@ func CreateUser(db *sql.DB, username, passwordHash, email string, isAdmin bool, 
 	var id int64
 	var createdAt time.Time
 	err := db.QueryRow(
-		"INSERT INTO users (username, password_hash, email, is_admin, role, is_active, auth_type) VALUES ($1, $2, $3, $4, $5, $6, 'local') RETURNING id, created_at",
+		"INSERT INTO users (username, password_hash, email, is_admin, role, is_active, auth_type, password_changed_at) VALUES ($1, $2, $3, $4, $5, $6, 'local', NOW()) RETURNING id, created_at",
 		username, passwordHash, email, isAdmin, role, true,
 	).Scan(&id, &createdAt)
 	if err != nil {
@@ -1239,7 +1253,7 @@ func DeleteUser(db *sql.DB, id int64) error {
 }
 
 func ResetUserPassword(db *sql.DB, id int64, passwordHash string) error {
-	_, err := db.Exec("UPDATE users SET password_hash = $1 WHERE id = $2", passwordHash, id)
+	_, err := db.Exec("UPDATE users SET password_hash = $1, password_changed_at = NOW() WHERE id = $2", passwordHash, id)
 	return err
 }
 
@@ -1277,6 +1291,53 @@ func TrimPasswordHistory(db *sql.DB, userID int64) error {
 		userID, keep,
 	)
 	return err
+}
+
+// GetPasswordExpiryDays reads the configured password expiry period in days.
+// A value of 0 means password expiry is disabled.
+func GetPasswordExpiryDays(db *sql.DB) int {
+	v := GetSetting(db, "security_password_expiry_days", "90")
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return n
+	}
+	return 0
+}
+
+// GetPasswordExpiryDate returns the date at which the user's password expires,
+// or nil if expiry is disabled or the user has no password_changed_at.
+func GetPasswordExpiryDate(db *sql.DB, userID int64) (*time.Time, error) {
+	expiryDays := GetPasswordExpiryDays(db)
+	if expiryDays == 0 {
+		return nil, nil
+	}
+	var changedAt *time.Time
+	err := db.QueryRow("SELECT password_changed_at FROM users WHERE id = $1", userID).Scan(&changedAt)
+	if err != nil {
+		return nil, err
+	}
+	if changedAt == nil {
+		return nil, nil
+	}
+	exp := changedAt.AddDate(0, 0, expiryDays)
+	return &exp, nil
+}
+
+// IsPasswordExpired returns true if the user's password has expired.
+// It returns false if expiry is disabled or the user has no password_changed_at.
+func IsPasswordExpired(db *sql.DB, userID int64) (bool, error) {
+	expiryDays := GetPasswordExpiryDays(db)
+	if expiryDays == 0 {
+		return false, nil
+	}
+	var changedAt *time.Time
+	err := db.QueryRow("SELECT password_changed_at FROM users WHERE id = $1", userID).Scan(&changedAt)
+	if err != nil {
+		return false, err
+	}
+	if changedAt == nil {
+		return false, nil
+	}
+	return time.Now().After(changedAt.AddDate(0, 0, expiryDays)), nil
 }
 
 func CreateLDAPUser(db *sql.DB, username, email, role string, isAdmin bool) (*User, error) {
@@ -1404,9 +1465,9 @@ func CleanupExpiredBlacklist(db *sql.DB) error {
 func GetUserByUsername(db *sql.DB, username string) (*User, error) {
 	var u User
 	err := db.QueryRow(
-		"SELECT id, username, email, password_hash, role, is_admin, is_active, created_at, last_login_at FROM users WHERE username = $1",
+		"SELECT id, username, email, password_hash, role, is_admin, is_active, created_at, last_login_at, password_changed_at FROM users WHERE username = $1",
 		username,
-	).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt)
+	).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.PasswordChangedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1416,9 +1477,9 @@ func GetUserByUsername(db *sql.DB, username string) (*User, error) {
 func GetUserByID(db *sql.DB, id int64) (*User, error) {
 	var u User
 	err := db.QueryRow(
-		"SELECT id, username, email, password_hash, role, is_admin, is_active, created_at, last_login_at FROM users WHERE id = $1",
+		"SELECT id, username, email, password_hash, role, is_admin, is_active, created_at, last_login_at, password_changed_at FROM users WHERE id = $1",
 		id,
-	).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt)
+	).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.Role, &u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.PasswordChangedAt)
 	if err != nil {
 		return nil, err
 	}

@@ -52,7 +52,18 @@
     "loggedIn": "Zalogowano pomyślnie",
     "loginFailed": "Logowanie nieudane",
     "invalidCredentials": "Nieprawidłowe dane logowania",
-    "language": "Język"
+    "language": "Język",
+    "passwordExpired": "Twoje hasło wygasło",
+    "passwordExpiredDescription": "Musisz zmienić hasło, aby kontynuować.",
+    "passwordExpiringSoon": "Twoje hasło wkrótce wygaśnie",
+    "passwordExpiresAt": "Hasło wygasa",
+    "changePassword": "Zmień hasło",
+    "currentPassword": "Obecne hasło",
+    "newPassword": "Nowe hasło",
+    "confirmPassword": "Potwierdź hasło",
+    "passwordChanged": "Hasło zmienione pomyślnie",
+    "passwordChangeFailed": "Nie udało się zmienić hasła",
+    "passwordMismatch": "Hasła nie są zgodne"
   },
   "nav": {
     "dashboard": "Panel główny",
@@ -80,6 +91,8 @@
     "appSettings": "Ustawienia aplikacji",
     "logRetention": "Czas przechowywania logów (dni)",
     "sessionTimeout": "Limit czasu sesji (minuty)",
+    "rememberedMaxDays": "Maks. czas życia zapamiętanej sesji (dni)",
+    "rememberedMaxDaysTooltip": "Maksymalna liczba dni, przez które sesja 'zapamiętaj to urządzenie' pozostaje ważna. Po tym czasie użytkownik musi się ponownie zalogować.",
     "security": "Bezpieczeństwo",
     "maxFailedAttempts": "Maks. nieudanych prób logowania",
     "maxFailedAttemptsTooltip": "Liczba nieudanych prób logowania przed zablokowaniem konta. Pozostaw puste, aby użyć zmiennej środowiskowej MAX_FAILED_ATTEMPTS lub wartości domyślnej (5).",
@@ -94,6 +107,8 @@
     "passwordRequireSpecial": "Wymagaj znak specjalny",
     "passwordHistoryCount": "Długość historii haseł",
     "passwordHistoryCountTooltip": "Liczba ostatnich haseł do zapamiętania. Użytkownicy nie mogą ponownie ich użyć. Ustaw 0 aby wyłączyć.",
+    "passwordExpiryDays": "Wygasanie hasła (dni)",
+    "passwordExpiryDaysTooltip": "Jak często hasła muszą być zmieniane. Ustaw 0 aby wyłączyć wygasanie.",
     "cors": "CORS",
     "corsOrigins": "Dozwolone źródła CORS",
     "corsOriginsTooltip": "Lista źródeł oddzielonych przecinkami, które mogą wywoływać API z przeglądarki (np. http://localhost:3000,https://example.com). Pozostaw puste, aby zezwolić tylko na źródło, z którego serwowana jest aplikacja.",
@@ -461,6 +476,11 @@
     "exporting": "Eksportowanie...",
     "exportSuccess": "Logi wyeksportowane pomyślnie",
     "exportFailed": "Eksport nieudany",
+    "export.noLimit": "Bez limitu",
+    "export.dateRangeRequired": "Zakres dat jest wymagany",
+    "export.rowLimit": "Limit wierszy",
+    "export.rowLimitTooltip": "Maksymalna liczba wierszy do eksportu. Wybierz \"Bez limitu\" dla pełnego eksportu (może to zająć dłużej).",
+    "export.activeFilters": "Aktywne filtry",
     "autoRefresh": "Auto-odświeżanie",
     "rowsPerPage": "Wierszy na stronę",
     "showRaw": "Pokaż surowe",
@@ -767,7 +787,8 @@
     "message": "Twoja sesja wkrótce wygaśnie",
     "description": "Sesja wygaśnie za {{seconds}} sekund. Przedłuż ją lub wyloguj się teraz.",
     "logOut": "Wyloguj się",
-    "extendSession": "Przedłuż sesję"
+    "extendSession": "Przedłuż sesję",
+    "earlyWarning": "Twoja sesja wygaśnie wkrótce. Pozostawaj aktywny, aby ją zachować."
   },
   "channelForm": {
     "recipients": "Odbiorcy",
@@ -807,7 +828,9 @@
     "thisDevice": "To urządzenie",
     "remembered": "Zapamiętane",
     "unknownBrowser": "Nieznana przeglądarka",
-    "lastActive": "Ostatnia aktywność: {{date}}"
+    "lastActive": "Ostatnia aktywność: {{date}}",
+    "screenResolution": "Ekran",
+    "timezone": "Strefa czasowa"
   },
   "notifications": {
     "permissionDenied": "Nie udzielono zgody na powiadomienia",
@@ -1014,6 +1037,7 @@
     "auth.invalidCredentials": "Nieprawidłowa nazwa użytkownika lub hasło",
     "auth.accountLocked": "Konto jest tymczasowo zablokowane. Spróbuj ponownie później.",
     "auth.accountDeactivated": "Konto jest dezaktywowane",
+    "auth.passwordExpired": "Twoje hasło wygasło i musi zostać zmienione",
     "auth.passwordRequirements": "Hasło nie spełnia wymagań",
     "auth.tokenExpired": "Sesja wygasła. Zaloguj się ponownie.",
     "auth.refreshFailed": "Nie udało się odświeżyć sesji",

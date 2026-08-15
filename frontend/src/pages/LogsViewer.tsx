@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
-import { Table, Input, InputRef, Select, DatePicker, Button, Space, Tag, Card, Typography, Popconfirm, message, Skeleton, Modal, Descriptions } from 'antd'
+import { Table, Input, InputRef, Select, DatePicker, Button, Space, Tag, Card, Typography, message, Skeleton, Modal, Descriptions } from 'antd'
 import { RestOutlined, UnorderedListOutlined, ClockCircleOutlined } from '@ant-design/icons'
 import { getLogs, getLogsCount, getDevices, exportCSV, exportHTML, LogEntry, DeviceStats, resolveDeviceDisplayName, sortSupportsCursor } from '../services/api'
 import dayjs, { type Dayjs } from 'dayjs'
@@ -9,6 +9,7 @@ import { useColumnWidths } from '../hooks/useColumnWidths'
 import SeverityTag from '../components/SeverityTag'
 import EmptyState from '../components/EmptyState'
 import LogTable, { useDeviceMap, buildDefaultColumns, resolveHostname } from '../components/LogTable'
+import ExportDialog from '../components/ExportDialog'
 import { getDatePresets } from '../constants'
 import { useAuth } from '../services/auth'
 
@@ -45,6 +46,8 @@ export default function LogsViewer() {
   const searchRef = useRef<InputRef>(null)
   const [detailModalOpen, setDetailModalOpen] = useState(false)
   const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null)
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportFormat, setExportFormat] = useState<'csv' | 'html'>('csv')
 
   const [refreshInterval, setRefreshInterval] = useState(() => {
     const saved = localStorage.getItem('logs_refresh_interval')
@@ -186,17 +189,15 @@ export default function LogsViewer() {
   }
 
   const handleExport = (format: 'csv' | 'html') => {
-    const params: Record<string, string> = {}
-    if (filters.hostname) params.hostname = filters.hostname
-    if (filters.fromhost_ip) params.fromhost_ip = filters.fromhost_ip
-    if (filters.severity) params.severity = filters.severity
-    if (filters.search) params.search = filters.search
-    if (filters.from) params.from = filters.from
-    if (filters.to) params.to = filters.to
+    setExportFormat(format)
+    setExportOpen(true)
+  }
 
-    if (format === 'csv') exportCSV(params)
-    else exportHTML(params)
-    message.success(t('dashboard.exporting', { format: format.toUpperCase() }))
+  const handleExportConfirm = async (params: Record<string, string>) => {
+    if (exportFormat === 'csv') await exportCSV(params)
+    else await exportHTML(params)
+    setExportOpen(false)
+    message.success(t('dashboard.exporting', { format: exportFormat.toUpperCase() }))
   }
 
   const handleRowClick = (record: LogEntry) => {
@@ -282,12 +283,8 @@ export default function LogsViewer() {
               { label: t('dashboard.byDevice'), value: 'hostname' },
             ]}
           />
-          <Popconfirm title={t('dashboard.exportCsv')} onConfirm={() => handleExport('csv')}>
-            <Button>{t('dashboard.csv')}</Button>
-          </Popconfirm>
-          <Popconfirm title={t('dashboard.exportHtml')} onConfirm={() => handleExport('html')}>
-            <Button>{t('dashboard.html')}</Button>
-          </Popconfirm>
+          <Button onClick={() => handleExport('csv')}>{t('dashboard.csv')}</Button>
+          <Button onClick={() => handleExport('html')}>{t('dashboard.html')}</Button>
         </div>
       </Card>
 
@@ -352,6 +349,14 @@ export default function LogsViewer() {
               </Descriptions>
             )}
           </Modal>
+          <ExportDialog
+            open={exportOpen}
+            onCancel={() => setExportOpen(false)}
+            format={exportFormat}
+            onExport={handleExportConfirm}
+            filters={filters}
+            deviceLabel={filters.fromhost_ip ? resolveDeviceDisplayName(devices.find(d => d.fromhost_ip === filters.fromhost_ip) || { fromhost_ip: filters.fromhost_ip } as DeviceStats) : undefined}
+          />
         </>
       )}
     </>
