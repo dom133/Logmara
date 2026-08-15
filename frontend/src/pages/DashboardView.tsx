@@ -12,6 +12,8 @@ import LogTable, { useDeviceMap, buildDefaultColumns, resolveHostname } from '..
 import ExportDialog from '../components/ExportDialog'
 import { getSeverityLabels } from '../constants'
 import { useAuth } from '../services/auth'
+import { useLive } from '../App'
+import { tokens } from '../theme/tokens'
 
 const { Title, Text } = Typography
 const { RangePicker } = DatePicker
@@ -23,6 +25,7 @@ export default function DashboardViewPage() {
   const { t } = useTranslation()
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { setLiveActive } = useLive()
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [totalLogs, setTotalLogs] = useState(0)
@@ -90,6 +93,11 @@ export default function DashboardViewPage() {
     return saved ? parseInt(saved, 10) : 5
   })
   const [appendMode, setAppendMode] = useState(true)
+
+  useEffect(() => {
+    setLiveActive(appendMode)
+    return () => setLiveActive(false)
+  }, [appendMode, setLiveActive])
 
   const loadLogs = useCallback(async (reset: boolean) => {
     if (reset) {

@@ -1,15 +1,19 @@
 import { useEffect, useState, createContext, useContext, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link as RouterLink } from 'react-router-dom'
-import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Space, Typography, Skeleton } from 'antd'
+import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Typography, Skeleton } from 'antd'
 import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, BellOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined, LogoutOutlined, UserOutlined, NodeIndexOutlined } from '@ant-design/icons'
 import { initI18n, initI18nFallback } from './i18n'
 import { useTranslation } from 'react-i18next'
+import { tokens } from './theme/tokens'
 import Login from './pages/Login'
 import ErrorBoundary from './components/ErrorBoundary'
 import { SessionWarningModal } from './components/SessionWarningModal'
 import { PasswordExpiryWarning } from './components/PasswordExpiryWarning'
 import { SessionsModal } from './components/SessionsModal'
 import { NotificationBell } from './components/NotificationBell'
+import BottomNav from './components/BottomNav'
+import LiveIndicator from './components/LiveIndicator'
+import PullToRefresh from './components/PullToRefresh'
 import { AuthProvider, useAuth } from './services/auth'
 import { getDashboards, getDashboard, Dashboard as DashboardType, checkInitialized, getVersion } from './services/api'
 import { useIsMobile } from './hooks/useIsMobile'
@@ -31,13 +35,50 @@ const SetupWizard = lazy(() => import('./pages/SetupWizard'))
 
 function RouteFallback() {
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', padding: '100px 0' }}>
-      <Spin size="large" />
+    <div style={{ padding: '60px 24px' }}>
+      <Skeleton active paragraph={{ rows: 8 }} avatar />
     </div>
   )
 }
 
 const { Sider, Content, Header, Footer } = Layout
+
+function NavLink({ to, isActive, onClick, icon, label, collapsed }: {
+  to: string
+  isActive: boolean
+  onClick?: () => void
+  icon: React.ReactNode
+  label: string
+  collapsed?: boolean
+}) {
+  const { token } = theme.useToken()
+  const { themeMode } = useTheme()
+  return (
+    <RouterLink
+      to={to}
+      onClick={onClick}
+      className="nav-link-transition"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '10px 14px',
+        textDecoration: 'none',
+        color: isActive ? tokens.colors.primary : token.colorText,
+        background: isActive ? tokens.colors.activeNav[themeMode] : 'transparent',
+        borderRadius: tokens.borderRadius.md,
+        margin: '2px 8px',
+        fontSize: 14,
+        fontWeight: isActive ? 600 : 400,
+        borderLeft: isActive ? `3px solid ${tokens.colors.primary}` : '3px solid transparent',
+        paddingLeft: isActive ? 11 : 14,
+      }}
+    >
+      <span style={{ fontSize: 18, minWidth: 20, textAlign: 'center' }}>{icon}</span>
+      {!collapsed && label}
+    </RouterLink>
+  )
+}
 
 function NavContent({ location, user, logout, isAdmin, pinnedDashboards, loadingDashboards, collapsed, onClose }: {
   location: ReturnType<typeof useLocation>
@@ -50,9 +91,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, loading
   onClose?: () => void
 }) {
   const { token } = theme.useToken()
-  const { themeMode } = useTheme()
   const { t } = useTranslation()
-  const activeBg = themeMode === 'dark' ? '#2a2a2a' : '#e6f7ff'
   const renderLinks = () => (
     <>
       <nav>
@@ -61,26 +100,15 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, loading
           !(item.hideWhenNotificationsDisabled && user?.notifications_enabled === false) &&
           !(item.hideWhenRelayDisabled && user?.relay_ingestion_enabled !== true)
         ).map(item => (
-          <RouterLink
+          <NavLink
             key={item.key}
             to={item.key}
+            isActive={location.pathname === item.key}
             onClick={onClose}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '12px 16px',
-              textDecoration: 'none',
-              color: location.pathname === item.key ? '#1890ff' : token.colorText,
-              background: location.pathname === item.key ? activeBg : 'transparent',
-              borderRadius: 4,
-              margin: '2px 8px',
-              fontSize: 14,
-            }}
-          >
-            <span style={{ fontSize: 18 }}>{item.icon}</span>
-            {!collapsed && t(item.labelKey)}
-          </RouterLink>
+            icon={item.icon}
+            label={t(item.labelKey)}
+            collapsed={collapsed}
+          />
         ))}
         {loadingDashboards ? (
           <div style={{ padding: '8px 16px' }}>
@@ -95,26 +123,15 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, loading
             </div>
           )}
             {pinnedDashboards.map(d => (
-              <RouterLink
+              <NavLink
                 key={`pin-${d.id}`}
                 to={`/dashboards/${d.id}`}
+                isActive={location.pathname === `/dashboards/${d.id}`}
                 onClick={onClose}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  padding: '12px 16px',
-                  textDecoration: 'none',
-                  color: location.pathname === `/dashboards/${d.id}` ? '#1890ff' : token.colorText,
-                  background: location.pathname === `/dashboards/${d.id}` ? activeBg : 'transparent',
-                  borderRadius: 4,
-                  margin: '2px 8px',
-                  fontSize: 14,
-                }}
-              >
-                <span style={{ fontSize: 18 }}><PushpinOutlined /></span>
-                {!collapsed && d.name}
-              </RouterLink>
+                icon={<PushpinOutlined />}
+                label={d.name}
+                collapsed={collapsed}
+              />
             ))}
           </>
         )}
@@ -124,8 +141,9 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, loading
 
   return (
     <>
-      <div style={{ padding: '20px 16px', fontSize: 20, fontWeight: 700, color: '#1890ff', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <img src="/icons/icon-192.png" alt="Logmara" style={{ width: 28, height: 28, borderRadius: 6 }} /> {!collapsed && 'Logmara'}
+      <div style={{ padding: '20px 16px', fontSize: 20, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <img src="/icons/icon-192.png" alt="Logmara" style={{ width: 28, height: 28, borderRadius: 6 }} />
+        {!collapsed && <span className="gradient-text">Logmara</span>}
       </div>
       {renderLinks()}
     </>
@@ -140,11 +158,22 @@ export function useTheme() {
   return useContext(ThemeContext)
 }
 
+// LiveContext — shared live/polling state, surfaced by LiveIndicator in the header
+const LiveContext = createContext<{ liveActive: boolean; setLiveActive: (v: boolean) => void }>({
+  liveActive: false,
+  setLiveActive: () => {},
+})
+
+export function useLive() {
+  return useContext(LiveContext)
+}
+
 function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     const saved = localStorage.getItem('syslog_theme')
     return (saved === 'dark' || saved === 'light') ? saved : 'light'
   })
+  const [liveActive, setLiveActive] = useState(false)
 
   const toggleTheme = () => {
     setThemeMode(prev => {
@@ -156,20 +185,37 @@ function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <ThemeContext.Provider value={{ themeMode, toggleTheme }}>
-      <ConfigProvider theme={{
-        algorithm: themeMode === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm,
-        token: { colorError: '#ff4d4f' },
-      }}>
-        <style>{`
-          html, body { margin: 0; padding: 0; height: 100%; width: 100%; }
-          body { background: ${themeMode === 'dark' ? '#141414' : '#f0f2f5'}; }
-          .ant-message-error .anticon { color: #ff4d4f !important; }
-          .ant-message-error .ant-message-notice-content { border-color: #ff4d4f !important; background: #fff2f0 !important; }
-          .ant-message-error { color: #ff4d4f !important; }
-          @media (max-width: 768px) { .navbar-text-label { display: none !important; } }
-        `}</style>
-        {children}
-      </ConfigProvider>
+      <LiveContext.Provider value={{ liveActive, setLiveActive }}>
+        <ConfigProvider theme={{
+          algorithm: themeMode === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm,
+          token: {
+            colorPrimary: tokens.colors.primary,
+            colorError: tokens.colors.error,
+            borderRadius: tokens.borderRadius.md,
+            wireframe: false,
+          },
+          components: {
+            Card: {
+              boxShadow: tokens.shadow.card,
+              colorBgContainer: themeMode === 'dark' ? '#1a1a1a' : '#ffffff',
+            },
+            Layout: {
+              headerHeight: 48,
+              siderBg: themeMode === 'dark' ? tokens.colors.sidebar.dark : tokens.colors.sidebar.light,
+            },
+          },
+        }}>
+          <style>{`
+            html, body { margin: 0; padding: 0; height: 100%; width: 100%; }
+            body { background: ${themeMode === 'dark' ? tokens.colors.background.dark : tokens.colors.background.light}; }
+            .ant-message-error .anticon { color: ${tokens.colors.error} !important; }
+            .ant-message-error .ant-message-notice-content { border-color: ${tokens.colors.error} !important; background: ${tokens.colors.errorBg} !important; }
+            .ant-message-error { color: ${tokens.colors.error} !important; }
+            @media (max-width: 768px) { .navbar-text-label { display: none !important; } }
+          `}</style>
+          {children}
+        </ConfigProvider>
+      </LiveContext.Provider>
     </ThemeContext.Provider>
   )
 }
@@ -244,6 +290,14 @@ function AppLayout({ children }: { children: React.ReactNode }) {
     }
   }, [location.pathname])
 
+  const getPageTitle = () => {
+    if (location.pathname === '/') return t('nav.dashboard')
+    const match = location.pathname.match(/^\/dashboards\/([^/]+)$/)?.[1]
+    if (match && dashboardTitle) return `${t('nav.dashboards')} / ${dashboardTitle}`
+    const key = `nav.${location.pathname.replace('/', '')}`
+    return t(key) || (location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'Logmara')
+  }
+
   return (
     <Layout style={{ minHeight: '100vh', background: token.colorBgContainer }}>
       <Layout>
@@ -253,10 +307,22 @@ function AppLayout({ children }: { children: React.ReactNode }) {
             collapsedWidth={80}
             collapsed={collapsed}
             onCollapse={setCollapsed}
-            style={{ background: token.colorBgContainer }}
+            style={{
+              background: themeMode === 'dark' ? tokens.colors.sidebar.dark : tokens.colors.sidebar.light,
+              transition: 'width 0.25s ease',
+              overflow: 'hidden',
+            }}
             theme={themeMode === 'dark' ? 'dark' : 'light'}
           >
-            <NavContent location={location} user={user ?? undefined} logout={logout} isAdmin={isAdmin} pinnedDashboards={pinnedDashboards} loadingDashboards={loadingDashboards} collapsed={collapsed} />
+            <NavContent
+              location={location}
+              user={user ?? undefined}
+              logout={logout}
+              isAdmin={isAdmin}
+              pinnedDashboards={pinnedDashboards}
+              loadingDashboards={loadingDashboards}
+              collapsed={collapsed}
+            />
           </Sider>
         )}
         {isMobile && (
@@ -274,31 +340,32 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           </Drawer>
         )}
         <Layout>
-          <Header style={{ background: token.colorBgContainer, padding: '0 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: 0 }}>
+          <Header
+            style={{
+              background: token.colorBgContainer,
+              padding: '0 16px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              borderBottom: `1px solid ${themeMode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'}`,
+            }}
+          >
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              {isMobile && (
+              {isMobile ? (
                 <Button
                   type="text"
                   icon={<MenuOutlined />}
                   onClick={() => setDrawerVisible(true)}
                 />
-              )}
-              {!isMobile && (
+              ) : (
                 <Button
                   type="text"
                   icon={<MenuOutlined />}
                   onClick={() => setCollapsed(!collapsed)}
                 />
               )}
-              <span style={{ fontSize: 16, fontWeight: 500 }}>
-                {(() => {
-                  if (location.pathname === '/') return t('nav.dashboard')
-                  const match = location.pathname.match(/^\/dashboards\/([^/]+)$/)?.[1]
-                  if (match && dashboardTitle) return `${t('nav.dashboards')} / ${dashboardTitle}`
-                  const key = `nav.${location.pathname.replace('/', '')}`
-                  return t(key) || (location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'Logmara')
-                })()}
-              </span>
+              <span style={{ fontSize: 16, fontWeight: 500 }}>{getPageTitle()}</span>
+              <LiveIndicator />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'nowrap', overflow: 'hidden' }}>
               <NotificationBell />
@@ -327,16 +394,25 @@ function AppLayout({ children }: { children: React.ReactNode }) {
               </Button>
             </div>
           </Header>
-          <Content style={{ margin: isMobile ? 8 : 16, padding: isMobile ? 12 : 24, background: token.colorBgContainer, borderRadius: 8 }}>
+          <Content
+            className="animate-fade-in"
+            style={{
+              margin: isMobile ? 8 : 16,
+              padding: isMobile ? 12 : 24,
+              paddingBottom: isMobile ? 80 : 24,
+              background: token.colorBgContainer,
+              borderRadius: tokens.borderRadius.md,
+            }}
+          >
             <PasswordExpiryWarning />
             <ErrorBoundary>{children}</ErrorBoundary>
           </Content>
           <Footer
             style={{
-              background: token.colorPrimaryBg,
-              color: token.colorPrimaryText,
+              background: 'transparent',
+              color: token.colorTextTertiary,
               fontSize: 12,
-              padding: '12px 16px',
+              padding: isMobile ? '12px 16px calc(72px + env(safe-area-inset-bottom, 0px))' : '12px 16px',
               display: 'flex',
               justifyContent: 'space-between',
               alignItems: 'center',
@@ -360,6 +436,8 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           </Footer>
         </Layout>
       </Layout>
+      {isMobile && <BottomNav />}
+      {isMobile && <div className="bottom-safe-spacer" />}
       {showSessionWarning && (
         <SessionWarningModal
           countdown={sessionWarningCountdown}
@@ -439,7 +517,7 @@ export default function App() {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flexDirection: 'column', gap: 16, height: '100vh' }}>
         <Spin size="large" />
-        <Typography.Text type="secondary">System starting... Please wait</Typography.Text>
+        <Typography.Text type="secondary" style={{ marginTop: 8 }}>System starting... Please wait</Typography.Text>
       </div>
     )
   }

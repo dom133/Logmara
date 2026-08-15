@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Layout, Card, Form, Input, Button, Checkbox, message, Typography, Select, Modal } from 'antd'
 import { useAuth } from '../services/auth'
 import { useTheme } from '../App'
+import { tokens } from '../theme/tokens'
 import { useTranslation } from 'react-i18next'
 import i18n from 'i18next'
 import { languageDisplayName, sortLanguagesEnglishFirst, onLanguagesChanged, getLoadedLanguages } from '../i18n'
@@ -78,12 +79,12 @@ export default function Login() {
   useEffect(() => onLanguagesChanged(langs => setLanguages(sortLanguagesEnglishFirst(langs))), [])
 
   return (
-    <Layout style={{ minHeight: '100vh', background: themeMode === 'dark' ? '#141414' : '#f0f2f5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <Card style={{ width: '100%', maxWidth: 400, boxShadow: '0 2px 8px rgba(0,0,0,0.1)', background: themeMode === 'dark' ? '#1f1f1f' : '#fff' }}>
+    <Layout style={{ minHeight: '100vh', background: themeMode === 'dark' ? tokens.colors.background.dark : tokens.colors.background.light, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <Card style={{ width: '100%', maxWidth: 400, boxShadow: tokens.shadow.elevated, background: themeMode === 'dark' ? tokens.colors.sidebar.dark : '#fff' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <Title level={3} style={{ margin: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-            <img src="/icons/icon-192.png" alt="Logmara" style={{ width: 28, height: 28, borderRadius: 6 }} />
-            Logmara
+            <img src="/icons/icon-192.png" alt="Logmara" style={{ width: 32, height: 32, borderRadius: tokens.borderRadius.md }} />
+            <span className="gradient-text">Logmara</span>
           </Title>
           <Text type="secondary">{t('login.subtitle')}</Text>
         </div>

@@ -10,8 +10,12 @@ import SeverityTag from '../components/SeverityTag'
 import EmptyState from '../components/EmptyState'
 import LogTable, { useDeviceMap, buildDefaultColumns, resolveHostname } from '../components/LogTable'
 import ExportDialog from '../components/ExportDialog'
+import PullToRefresh from '../components/PullToRefresh'
 import { getDatePresets } from '../constants'
 import { useAuth } from '../services/auth'
+import { useLive } from '../App'
+import { useIsMobile } from '../hooks/useIsMobile'
+import { tokens } from '../theme/tokens'
 
 const { Title, Text } = Typography
 const { RangePicker } = DatePicker
@@ -23,6 +27,8 @@ export default function LogsViewer() {
   const { t } = useTranslation()
   const [searchParams] = useSearchParams()
   const { user } = useAuth()
+  const { setLiveActive } = useLive()
+  const isMobile = useIsMobile()
   const urlHostname = searchParams.get('hostname') || ''
   const urlFromHostIP = searchParams.get('fromhost_ip') || ''
   const [logs, setLogs] = useState<LogEntry[]>([])
@@ -55,6 +61,11 @@ export default function LogsViewer() {
   })
 
   const [appendMode, setAppendMode] = useState(true)
+
+  useEffect(() => {
+    setLiveActive(appendMode)
+    return () => setLiveActive(false)
+  }, [appendMode, setLiveActive])
 
   useEffect(() => {
     localStorage.setItem('logs_refresh_interval', String(refreshInterval))
@@ -209,9 +220,13 @@ export default function LogsViewer() {
     setDetailModalOpen(true)
   }
 
+  const Wrapper = isMobile
+    ? ({ children }: { children: React.ReactNode }) => <PullToRefresh onRefresh={() => loadLogs(true)}>{children}</PullToRefresh>
+    : ({ children }: { children: React.ReactNode }) => <>{children}</>
+
   return (
-    <>
-      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+    <Wrapper>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: tokens.spacing.md }}>
         <Title level={3} style={{ margin: 0, whiteSpace: 'nowrap' }}>{t('nav.logs')}</Title>
         <Text type="secondary">({totalLogs.toLocaleString()} {t('logs.total')})</Text>
         {hasChanges && <Button size="small" icon={<RestOutlined />} onClick={reset}>{t('dashboards.resetColumns')}</Button>}
@@ -227,13 +242,13 @@ export default function LogsViewer() {
           size="small"
           icon={<UnorderedListOutlined />}
           onClick={() => setAppendMode(!appendMode)}
-          style={{ color: appendMode ? '#1890ff' : undefined }}
+          style={{ color: appendMode ? tokens.colors.primary : undefined }}
         >
           {t('dashboard.live')}
         </Button>
       </div>
 
-      <Card style={{ marginBottom: 16 }} size="small">
+      <Card style={{ marginBottom: tokens.spacing.md }} size="small">
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <Input
             ref={searchRef}
@@ -363,6 +378,6 @@ export default function LogsViewer() {
           />
         </>
       )}
-    </>
+      </Wrapper>
   )
 }

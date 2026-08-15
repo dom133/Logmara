@@ -13,6 +13,7 @@ import { SEVERITY_ORDER, SEVERITY_COLORS, getSeverityLabels } from '../constants
 import { useTranslation } from 'react-i18next'
 import { useIsMobile } from '../hooks/useIsMobile'
 import i18nInstance, { languageDisplayName, sortLanguagesEnglishFirst, getLoadedLanguages } from '../i18n'
+import { tokens } from '../theme/tokens'
 
 const { Option } = Select
 

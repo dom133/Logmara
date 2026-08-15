@@ -1,5 +1,6 @@
 import { TagProps } from 'antd';
 import { TFunction } from 'i18next';
+import { tokens } from './theme/tokens';
 
 export const SEVERITY_COLORS: Record<string, NonNullable<TagProps['color']>> = {
   emerg: 'magenta',
@@ -36,7 +37,7 @@ export const SEVERITY_HEX: Record<string, string> = {
   crit: '#f5222d',
   err: '#fa8c16',
   warning: '#faad14',
-  notice: '#1890ff',
+  notice: tokens.colors.primary,
   info: '#13c2c2',
   debug: '#8c8c8c',
 };

@@ -7,6 +7,7 @@ import { useColumnWidths } from '../hooks/useColumnWidths'
 import { useCrud } from '../hooks/useCRUD'
 import { useAuth } from '../services/auth'
 import { getErrorMessage } from '../utils/error'
+import { tokens } from '../theme/tokens'
 
 const { Title, Text } = Typography
 
@@ -197,7 +198,7 @@ export default function ParsersPage() {
         </div>
       </div>
 
-      <Row gutter={16} style={{ marginBottom: 16 }}>
+      <Row gutter={tokens.spacing.md} style={{ marginBottom: tokens.spacing.md }}>
         <Col xs={24} sm={12} md={6}>
           <Card size="small"><Statistic title={t('parsers.totalParsers')} value={parsers.length} /></Card>
         </Col>

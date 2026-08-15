@@ -18,6 +18,7 @@ import AlertFormModal from '../components/AlertFormModal'
 import ChannelFormModal from '../components/ChannelFormModal'
 import NotificationDetailModal from '../components/NotificationDetailModal'
 import { getRuleTypeLabels, getChannelTypeLabels, historyStatusColor, adminOnlyRuleTypes } from '../constants/alertConstants'
+import { tokens } from '../theme/tokens'
 import { HistoryGroup, groupHistoryEntries } from '../components/historyTypes'
 
 const { Title, Text } = Typography

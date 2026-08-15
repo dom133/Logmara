@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Row, Col, Card, Table, Tag, Spin, Typography, Button } from 'antd'
+import { Row, Col, Card, Table, Tag, Spin, Typography, Button, Skeleton } from 'antd'
 import { RestOutlined, FileTextOutlined, ClockCircleOutlined, CalendarOutlined, DesktopOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react/esm/core'
 import echarts from '../utils/echarts-core'
@@ -9,6 +9,7 @@ import { DashboardStats, TimelinePoint } from '../services/api'
 import { useColumnWidths } from '../hooks/useColumnWidths'
 import StatCard from '../components/StatCard'
 import { SEVERITY_HEX, getSeverityLabels, SEVERITY_ORDER } from '../constants'
+import { tokens } from '../theme/tokens'
 
 const { Title } = Typography
 
@@ -125,7 +126,7 @@ export default function Dashboard() {
       smooth: true,
       areaStyle: { opacity: 0.2 },
       lineStyle: { width: 2 },
-      itemStyle: { color: '#1890ff' },
+      itemStyle: { color: tokens.colors.primary },
     }],
     grid: { left: 50, right: 20, top: 30, bottom: 30 },
   }
@@ -171,7 +172,20 @@ export default function Dashboard() {
   }
 
   if (loading && !stats) {
-    return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.spacing.md }}>
+        <Skeleton active title={{ width: 200 }} paragraph={{ rows: 3 }} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: tokens.spacing.md }}>
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} active paragraph={{ rows: 4 }} avatar />
+          ))}
+        </div>
+        <Row gutter={16}>
+          <Col xs={24} lg={14}><Skeleton active paragraph={{ rows: 8 }} /></Col>
+          <Col xs={24} lg={10}><Skeleton active paragraph={{ rows: 8 }} /></Col>
+        </Row>
+      </div>
+    )
   }
 
   const topDevicesColumns = [
@@ -191,29 +205,29 @@ export default function Dashboard() {
 
   const fmt = (n: number) => n.toLocaleString('pl-PL')
   const statTiles = [
-    { title: t('dashboard.totalLogs'), value: fmt(stats?.total_logs || 0), icon: <FileTextOutlined />, color: '#1890ff' },
-    { title: t('dashboard.lastHour'), value: fmt(stats?.logs_last_hour || 0), icon: <ClockCircleOutlined />, color: '#3f8600' },
-    { title: t('dashboard.last24h'), value: fmt(stats?.logs_last_day || 0), icon: <CalendarOutlined />, color: '#cf1322' },
-    { title: t('dashboard.logsPerSec'), value: Math.round(logsPerSec), subtitle: t('dashboard.avgLast10s'), icon: <ThunderboltOutlined />, color: '#13c2c2' },
-    { title: t('dashboard.devices'), value: fmt(stats?.unique_devices || 0), icon: <DesktopOutlined />, color: '#722ed1' },
+    { title: t('dashboard.totalLogs'), value: fmt(stats?.total_logs || 0), icon: <FileTextOutlined />, color: tokens.colors.statBlue },
+    { title: t('dashboard.lastHour'), value: fmt(stats?.logs_last_hour || 0), icon: <ClockCircleOutlined />, color: tokens.colors.statGreen },
+    { title: t('dashboard.last24h'), value: fmt(stats?.logs_last_day || 0), icon: <CalendarOutlined />, color: tokens.colors.statRed },
+    { title: t('dashboard.logsPerSec'), value: Math.round(logsPerSec), subtitle: t('dashboard.avgLast10s'), icon: <ThunderboltOutlined />, color: tokens.colors.statCyan },
+    { title: t('dashboard.devices'), value: fmt(stats?.unique_devices || 0), icon: <DesktopOutlined />, color: tokens.colors.statPurple },
   ]
 
   return (
     <>
-      <Title level={3}>{t('dashboard.title')}</Title>
+      <Title level={3} style={{ marginBottom: tokens.spacing.md }}>{t('dashboard.title')}</Title>
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-        columnGap: 16,
-        rowGap: 24,
-        marginBottom: 24,
+        columnGap: tokens.spacing.md,
+        rowGap: tokens.spacing.lg,
+        marginBottom: tokens.spacing.lg,
       }}>
         {statTiles.map(c => (
           <StatCard key={c.title} title={c.title} value={c.value} subtitle={c.subtitle} icon={c.icon} color={c.color} />
         ))}
       </div>
 
-      <Row gutter={16} style={{ marginBottom: 24 }}>
+      <Row gutter={tokens.spacing.md} style={{ marginBottom: tokens.spacing.lg }}>
         <Col xs={24} lg={14}>
           <Card title={t('dashboard.logsTimeline')}>
             <ReactECharts echarts={echarts} option={timelineOption} style={{ height: 300 }} />
@@ -226,7 +240,7 @@ export default function Dashboard() {
         </Col>
       </Row>
 
-      <Row gutter={16}>
+      <Row gutter={tokens.spacing.md}>
         <Col xs={24} md={12}>
           <Card
             title={t('dashboard.topDevices')}

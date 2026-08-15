@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { unstableSetRender } from 'antd'
+import './styles/global.css'
 import App from './App'
 
 // antd's static functions (message.xxx, notification.xxx, Modal.confirm) mount

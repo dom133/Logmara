@@ -6,6 +6,7 @@ import i18n from '../i18n'
 import { LogEntry, DeviceStats, resolveDeviceDisplayName } from '../services/api'
 import SeverityTag from './SeverityTag'
 import { ColumnDef } from '../hooks/useColumnWidths'
+import { tokens } from '../theme/tokens'
 
 const { Text } = Typography
 
@@ -44,6 +45,16 @@ export function resolveHostname(
 ): string {
   if (displayName) return displayName
   return deviceMap.get(fromhost_ip || hostname || '') || hostname || '-'
+}
+
+// Time-based row opacity: fresher logs are more visible, older logs fade
+export function getRowOpacity(timestamp: string): number {
+  const ageMs = Date.now() - new Date(timestamp).getTime()
+  const ageMin = ageMs / 60000
+  if (ageMin < 1) return 1
+  if (ageMin < 60) return 0.88
+  if (ageMin < 1440) return 0.72
+  return 0.55
 }
 
 export function buildDefaultColumns(deviceMap: Map<string, string>): ColumnsType<LogEntry> {
@@ -146,7 +157,7 @@ export default function LogTable({
         size="small"
         onRow={(record) => ({
           onClick: () => onRowClick(record),
-          style: { cursor: 'pointer' },
+          style: { cursor: 'pointer', opacity: getRowOpacity(record.timestamp) },
         })}
       />
       <div
