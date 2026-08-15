@@ -471,6 +471,14 @@ type DashboardDataRequest struct {
 
 func GetDashboardData(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// filteredQueryTimeout (20s) can exceed the server's default
+		// WriteTimeout (15s, see main.go) on dashboards with many
+		// fields/large field filters, since matching on parsed fields can be
+		// slow. Without this, the server hard-closes the connection before
+		// the query context even has a chance to cancel or return, and the
+		// client sees a raw 502 from the reverse proxy instead of a clean
+		// JSON timeout error.
+		http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(filteredQueryTimeout + 5*time.Second))
 		database := pool.Get()
 		var req DashboardDataRequest
 		_ = c.ShouldBindJSON(&req)
@@ -588,6 +596,10 @@ func GetDashboardData(pool *db.DynamicPool) gin.HandlerFunc {
 // filter change instead of one per page (see GetLogsCount).
 func GetDashboardDataCount(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// See GetDashboardData: extend the write deadline past
+		// filteredQueryTimeout so a slow COUNT query times out cleanly
+		// instead of the server closing the connection first.
+		http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(filteredQueryTimeout + 5*time.Second))
 		database := pool.Get()
 		var req DashboardFilterRequest
 		_ = c.ShouldBindJSON(&req)

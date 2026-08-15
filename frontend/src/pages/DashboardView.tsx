@@ -135,8 +135,16 @@ export default function DashboardViewPage() {
 
   const handleLoadMore = () => loadLogs(false)
 
+  const isPollingRef = useRef(false)
+
   const pollLogs = useCallback(async () => {
     if (!appendMode) return
+    // setInterval fires on a fixed cadence regardless of whether the
+    // previous poll has returned; on a slow dashboard (many fields/large
+    // filters) that stacks up concurrent requests against the same
+    // expensive query instead of waiting for one to finish.
+    if (isPollingRef.current) return
+    isPollingRef.current = true
     try {
       const from = filters.from ? dayjs(filters.from).format() : ''
       const to = filters.to ? dayjs(filters.to).format() : ''
@@ -147,6 +155,8 @@ export default function DashboardViewPage() {
       setLogs(data.logs)
     } catch (e) {
       // error handled by API
+    } finally {
+      isPollingRef.current = false
     }
   }, [dashboardId, pageSize, filters, appendMode, fieldFilters])
 

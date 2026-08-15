@@ -125,7 +125,7 @@ func MigrateWithLock(db *sql.DB) error {
 // its DDL (see the comment there), and that only takes effect on an
 // already-migrated database if runSchemaMigration runs again, which only
 // happens when schemaVersion advances past what's recorded.
-const schemaVersion = 17
+const schemaVersion = 19
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -888,6 +888,27 @@ END $$`, g.name, toCharFmt)
 			END IF;
 		EXCEPTION WHEN insufficient_privilege THEN NULL;
 		END $$`,
+		// Dashboards with selected fields filter on `matched_parsers && $1`
+		// (see resolveParsersForFields/buildLogWhereClauses) to restrict rows
+		// to the parser(s) that own those fields. Without a GIN index on this
+		// TEXT[] column, that array-overlap check forces a full sequential
+		// scan of syslog_logs on every dashboard load, which times out (502)
+		// on dashboards with many fields/large tables.
+		`CREATE INDEX IF NOT EXISTS idx_syslog_matched_parsers ON syslog_logs USING GIN (matched_parsers)`,
+		// refresh_tokens lookups by jti/token_hash sit on the hottest path in
+		// the app: UpdateSessionActivity (middleware, every authenticated
+		// request) and CheckSession update by jti, and the refresh-token flow
+		// (auth.go) looks up/invalidates rows by token_hash on every access
+		// token renewal. Neither column had an index, so every one of those
+		// was a full scan of refresh_tokens.
+		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_jti ON refresh_tokens (jti)`,
+		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token_hash ON refresh_tokens (token_hash)`,
+		// GetAuditLogs (admin audit log view) always sorts by created_at and
+		// often filters by action; the Prometheus handler also runs a
+		// `WHERE action = 'slow_query'` COUNT on every scrape. Neither
+		// column was indexed.
+		`CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log (created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log (action)`,
 	}
 	for _, stmt := range postStmts {
 		if _, err := conn.ExecContext(ctx, stmt); err != nil {
