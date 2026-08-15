@@ -70,6 +70,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Bridges checkSessionExpiry -> extendSession without a circular useCallback
   // dependency (extendSession -> setupSessionWarning -> checkSessionExpiry).
   const extendSessionRef = useRef<((retryCount?: number) => Promise<void>)>(async () => {})
+  // Stable ref for setupSessionWarning so trySilentRefresh doesn't recreate
+  // on every checkSessionExpiry change, preventing loadUser/login from
+  // re-firing on minor internal updates.
+  const setupSessionWarningRef = useRef<((expiresAtUnix: number, noImmediateCheck?: boolean) => void)>(() => {})
 
   const clearAllTimers = useCallback(() => {
     if (checkIntervalRef.current) {
@@ -155,13 +159,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     checkIntervalRef.current = setInterval(checkSessionExpiry, adaptiveInterval)
   }, [logout, getAdaptiveInterval])
 
-  const setupSessionWarning = useCallback((expiresAtUnix: number) => {
+  const setupSessionWarning = useCallback((expiresAtUnix: number, noImmediateCheck?: boolean) => {
     clearAllTimers()
     const expiryMs = expiresAtUnix * 1000
     sessionExpiryRef.current = expiryMs
     localStorage.setItem(STORAGE_KEY_EXPIRY, expiryMs.toString())
     localStorage.setItem(STORAGE_KEY_LAST_ACTIVE, Date.now().toString())
-    checkSessionExpiry()
+    if (!noImmediateCheck) {
+      checkSessionExpiry()
+    }
     checkIntervalRef.current = setInterval(checkSessionExpiry, EXPIRY_CHECK_INTERVAL_NORMAL_MS)
   }, [clearAllTimers, checkSessionExpiry])
 
@@ -172,7 +178,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(meRes.data)
       rememberedRef.current = !!refreshRes.data.remembered
       if (refreshRes.data.expires_at) {
-        setupSessionWarning(refreshRes.data.expires_at)
+        // Skip immediate checkSessionExpiry: the token was just rotated,
+        // so it has a full TTL. Calling checkSessionExpiry right away
+        // would trigger extendSession if the access token TTL is under
+        // SILENT_EXTEND_LEAD_MS, causing a second rotation and a
+        // duplicate session row in the database.
+        setupSessionWarningRef.current(refreshRes.data.expires_at, true)
       }
       return true
     } catch (e) {
@@ -184,7 +195,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       return false
     }
-  }, [setupSessionWarning])
+  }, [])
 
   const loadUser = useCallback(async () => {
     try {
@@ -196,7 +207,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       rememberedRef.current = !!res.data.remembered
       const expiresAt = res.data.expires_at
       if (expiresAt) {
-        setupSessionWarning(expiresAt)
+        setupSessionWarningRef.current(expiresAt)
       }
       setLoading(false)
     } catch {
@@ -213,7 +224,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setLoading(false)
       }
     }
-  }, [resetToLoggedOut, setupSessionWarning, trySilentRefresh])
+  }, [resetToLoggedOut, trySilentRefresh])
 
   const login = useCallback(async (username: string, password: string, remember?: boolean) => {
     try {
@@ -234,26 +245,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         password_expires_at: res.data.user?.password_expires_at,
       })
       rememberedRef.current = !!res.data.remembered
-      setupSessionWarning(res.data.expires_at)
+      setupSessionWarningRef.current(res.data.expires_at)
       return { ok: true }
     } catch (error: any) {
       return { ok: false, error: getErrorMessage(error, t('login.loginFailed')) }
     }
-  }, [setupSessionWarning])
+  }, [])
 
   const extendSession = useCallback(async (retryCount = 0) => {
     extendingRef.current = true
     try {
       const res = await api.post('/auth/refresh', {})
       rememberedRef.current = !!res.data.remembered
-      setupSessionWarning(res.data.expires_at)
+      setupSessionWarningRef.current(res.data.expires_at)
       setIsSessionExpiringSoon(false)
       setShowSessionWarning(false)
       setSessionWarningCountdown(0)
     } catch (e) {
       console.error('Error extending session:', e)
       if (rememberedRef.current && retryCount < EXTEND_RETRY_MAX) {
-        extendingRef.current = false
+        // Keep extendingRef=true so checkSessionExpiry won't fire a
+        // second concurrent extend while the retry delay is pending.
         const delay = EXTEND_RETRY_BASE_MS * Math.pow(2, retryCount)
         setTimeout(() => extendSession(retryCount + 1), delay)
         return
@@ -264,11 +276,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         extendingRef.current = false
       }
     }
-  }, [setupSessionWarning, logout])
+  }, [logout])
 
   useEffect(() => {
     extendSessionRef.current = extendSession
   }, [extendSession])
+
+  useEffect(() => {
+    setupSessionWarningRef.current = setupSessionWarning
+  }, [setupSessionWarning])
 
   useEffect(() => {
     loadUser()
