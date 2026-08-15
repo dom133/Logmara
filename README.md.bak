@@ -1,4 +1,4 @@
-# SysLog GUI
+# Syslytics
 
 Web-based syslog monitoring, parsing, and visualization platform with Docker Compose deployment.
 
@@ -75,7 +75,7 @@ Copy `.env.example` and adjust values:
 ## Parser Creation Guide
 
 ### Overview
-The syslog-gui includes a powerful regex-based parser engine that allows you to extract structured data from raw syslog messages. Parsers can be created directly through the web interface or via API endpoints.
+Syslytics includes a powerful regex-based parser engine that allows you to extract structured data from raw syslog messages. Parsers can be created directly through the web interface or via API endpoints.
 
 ### Creating a Parser
 1. Navigate to the **Admin Panel** → **Parsers**
@@ -277,7 +277,7 @@ npm run dev
 
 ## Parser Engine
 
-The syslog-gui includes a robust parser engine that allows you to extract structured data from raw syslog messages using regular expressions.
+Syslytics includes a robust parser engine that allows you to extract structured data from raw syslog messages using regular expressions.
 
 ### How Parsers Work
 1. **Pattern Matching**: Parsers match incoming log messages based on hostname, IP address, or regex patterns

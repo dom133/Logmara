@@ -1,7 +1,7 @@
 import { useEffect, useState, createContext, useContext } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link as RouterLink } from 'react-router-dom'
 import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Space, Typography } from 'antd'
-import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, BellOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons'
+import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, BellOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined, LogoutOutlined, UserOutlined, NodeIndexOutlined } from '@ant-design/icons'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import LogsViewer from './pages/LogsViewer'
@@ -11,6 +11,7 @@ import DashboardViewPage from './pages/DashboardView'
 import AlertsPage from './pages/Alerts'
 
 import Admin from './pages/Admin'
+import SyslogRelay from './pages/SyslogRelay'
 import SetupWizard from './pages/SetupWizard'
 import ErrorBoundary from './components/ErrorBoundary'
 import { SessionWarningModal } from './components/SessionWarningModal'
@@ -23,7 +24,7 @@ const { Sider, Content, Header } = Layout
 
 function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collapsed, onClose }: {
   location: ReturnType<typeof useLocation>
-  user: { username?: string; notifications_enabled?: boolean } | undefined
+  user: { username?: string; notifications_enabled?: boolean; relay_ingestion_enabled?: boolean } | undefined
   logout: () => void
   isAdmin: boolean
   pinnedDashboards: DashboardType[]
@@ -38,7 +39,8 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collaps
       <nav>
         {navItems.filter(item =>
           !(item.adminOnly && !isAdmin) &&
-          !(item.hideWhenNotificationsDisabled && user?.notifications_enabled === false)
+          !(item.hideWhenNotificationsDisabled && user?.notifications_enabled === false) &&
+          !(item.hideWhenRelayDisabled && user?.relay_ingestion_enabled !== true)
         ).map(item => (
           <RouterLink
             key={item.key}
@@ -99,7 +101,7 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, collaps
   return (
     <>
       <div style={{ padding: '20px 16px', fontSize: 20, fontWeight: 700, color: '#1890ff', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <DashboardOutlined style={{ fontSize: 24 }} /> {!collapsed && 'SysLog GUI'}
+        <img src="/icons/icon-192.png" alt="Syslytics" style={{ width: 28, height: 28, borderRadius: 6 }} /> {!collapsed && 'Syslytics'}
       </div>
       {renderLinks()}
     </>
@@ -154,6 +156,7 @@ const navItems = [
   { key: '/parsers', label: 'Parsers', icon: <SettingOutlined /> },
   { key: '/dashboards', label: 'Dashboards', icon: <FundOutlined /> },
   { key: '/alerts', label: 'Alerts', icon: <BellOutlined />, hideWhenNotificationsDisabled: true },
+  { key: '/relay', label: 'Syslog Relay', icon: <NodeIndexOutlined />, adminOnly: true, hideWhenRelayDisabled: true },
   { key: '/admin', label: 'Admin', icon: <SafetyOutlined />, adminOnly: true },
 ]
 
@@ -255,7 +258,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
                 if (location.pathname === '/') return 'Dashboard'
                 const match = location.pathname.match(/^\/dashboards\/([^/]+)$/)?.[1]
                 if (match && dashboardTitle) return `Dashboards / ${dashboardTitle}`
-                return location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'SysLog GUI'
+                return location.pathname.replace('/', '').charAt(0).toUpperCase() + location.pathname.slice(2) || 'Syslytics'
               })()}
             </span>
           </div>
@@ -361,6 +364,7 @@ export default function App() {
               <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
               <Route path="/alerts" element={<PrivateRoute><AlertsPage /></PrivateRoute>} />
               <Route path="/admin" element={<PrivateRoute><Admin /></PrivateRoute>} />
+              <Route path="/relay" element={<PrivateRoute><SyslogRelay /></PrivateRoute>} />
               <Route path="*" element={<PrivateRoute><Result status="404" title="404" subTitle="Page not found" /></PrivateRoute>} />
             </>
           )}

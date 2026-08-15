@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"syslog-gui/middleware"
-	"syslog-gui/model"
+	"syslytics/middleware"
+	"syslytics/model"
 
 	"github.com/gin-gonic/gin"
 )

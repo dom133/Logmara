@@ -12,7 +12,7 @@ import (
 
 	"database/sql"
 
-	"syslog-gui/audit"
+	"syslytics/audit"
 
 	"github.com/gin-gonic/gin"
 )

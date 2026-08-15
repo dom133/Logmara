@@ -12,17 +12,17 @@ import (
 	"syscall"
 	"time"
 
-	"syslog-gui/alertengine"
-	"syslog-gui/audit"
-	"syslog-gui/auth"
-	"syslog-gui/control"
-	"syslog-gui/db"
-	"syslog-gui/handler"
-	"syslog-gui/middleware"
-	"syslog-gui/notifyhub"
-	"syslog-gui/parser"
-	"syslog-gui/sharedstate"
-	"syslog-gui/tailer"
+	"syslytics/alertengine"
+	"syslytics/audit"
+	"syslytics/auth"
+	"syslytics/control"
+	"syslytics/db"
+	"syslytics/handler"
+	"syslytics/middleware"
+	"syslytics/notifyhub"
+	"syslytics/parser"
+	"syslytics/sharedstate"
+	"syslytics/tailer"
 
 	"github.com/gin-gonic/gin"
 )
@@ -113,6 +113,12 @@ func main() {
 		slog.Info("redis shared state enabled")
 	}
 
+	// Feed every slow query recorded at the driver level (db.instrumentedConn)
+	// into the same admin slow-query log that handler.timedQuery writes to,
+	// so /admin/slow-queries covers all database access, not just the
+	// call sites explicitly wrapped in timedQuery.
+	db.SetSlowQueryHook(handler.RecordSlowQuery)
+
 	dsn := os.Getenv("DATABASE_URL")
 
 	var database *sql.DB
@@ -160,12 +166,31 @@ func main() {
 		}
 	}()
 
+	// Same reasoning as the nginx sync above: the rsyslog container's reload
+	// sidecar (see rsyslog/reload-sidecar) may not be up yet on a cold
+	// `docker compose up`, and /data/relay's PKI material + ACL live on the
+	// shared volume, not in the database, so they need to be re-applied on
+	// every restart regardless of whether relay_ingestion_enabled changed.
+	go func() {
+		<-migrationDone
+		const attempts = 10
+		const delay = 3 * time.Second
+		if err := handler.SyncRelayConfigWithRetry(database, attempts, delay); err != nil {
+			slog.Warn("failed to sync relay config at startup after retries", "attempts", attempts, "error", err)
+		}
+	}()
+
 	ctx, maintCancel := context.WithCancel(context.Background())
 	stopVacuum, stopMV, stopTokenCleanup := db.StartMaintenance(ctx, database)
 
-	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive.
-	// RefreshMV itself skips while migration is in progress, so it's safe to
-	// start this ticker immediately.
+	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive
+	// while someone is actually logged in to look at them. With nobody logged
+	// in, this tick is a single cheap EXISTS check against refresh_tokens
+	// instead of a full REFRESH MATERIALIZED VIEW CONCURRENTLY pass - the
+	// 30-minute scheduler in db.StartMaintenance keeps running regardless, so
+	// the views never go stale for more than that. RefreshMV itself skips
+	// while migration is in progress, so it's safe to start this ticker
+	// immediately.
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -176,7 +201,9 @@ func main() {
 				slog.Info("fast dashboard MV refresh stopped")
 				return
 			case <-ticker.C:
-				db.RefreshMV(database)
+				if db.HasActiveSession(database) {
+					db.RefreshMV(database)
+				}
 			}
 		}
 	}()
@@ -238,6 +265,28 @@ func main() {
 				return
 			case <-ticker.C:
 				alertEngine.CheckDeviceSilence(database)
+			}
+		}
+	}()
+
+	// Relay certificate expiry: hourly is more than enough resolution for a
+	// day-granularity warning window, and piggybacking SyncRelayConfig here
+	// (not just the expiry check) means the CA/server certificate's own
+	// in-place renewal (see relaypki.EnsureCA) keeps happening on a schedule
+	// even on a deployment that goes untouched for long stretches between
+	// relay whitelist/certificate changes and restarts.
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := handler.SyncRelayConfig(database); err != nil {
+					slog.Warn("relay config sync failed during periodic check", "error", err)
+				}
+				alertEngine.CheckRelayCertExpiring(database)
 			}
 		}
 	}()
@@ -345,9 +394,19 @@ func main() {
 			adminGroup.GET("/audit-log", handler.GetAuditLog(database))
 			adminGroup.GET("/slow-queries", handler.GetSlowQueries())
 			adminGroup.DELETE("/slow-queries", handler.ClearSlowQueriesHandler())
+			adminGroup.GET("/health/containers", handler.GetContainersHealth(database))
 			adminGroup.PUT("/devices/:ip/alias", handler.UpdateDeviceAlias(database))
 			adminGroup.POST("/ssl/upload", handler.UploadSSLCerts(database))
 			adminGroup.POST("/nginx-reload", handler.ReloadNginx(database))
+
+			adminGroup.GET("/relay/whitelist", handler.ListRelayWhitelist(database))
+			adminGroup.POST("/relay/whitelist", handler.CreateRelayWhitelistEntry(database))
+			adminGroup.DELETE("/relay/whitelist/:id", handler.DeleteRelayWhitelistEntry(database))
+			adminGroup.POST("/relay/whitelist/:id/certificate", handler.GenerateCertificateForWhitelistEntry(database))
+			adminGroup.GET("/relay/certificates", handler.ListRelayCertificates(database))
+			adminGroup.POST("/relay/certificates", handler.CreateRelayCertificate(database))
+			adminGroup.DELETE("/relay/certificates/:id", handler.RevokeRelayCertificate(database))
+			adminGroup.POST("/relay/certificates/:id/regenerate", handler.RegenerateRelayCertificate(database))
 
 			adminGroup.POST("/notification-channels", notificationsGate, handler.CreateNotificationChannel(database))
 			adminGroup.PUT("/notification-channels/:id", notificationsGate, handler.UpdateNotificationChannel(database))

@@ -10,8 +10,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"syslog-gui/model"
-	"syslog-gui/sharedstate"
+	"syslytics/model"
+	"syslytics/sharedstate"
 )
 
 const channelName = "notifications:new"

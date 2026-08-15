@@ -8,10 +8,25 @@ mkdir -p "$SSL_DIR" "$NGINX_CONF_DIR"
 
 if [ ! -f "$SSL_DIR/server.crt" ] || [ ! -f "$SSL_DIR/server.key" ]; then
     echo "No SSL certificate found, generating self-signed placeholder..."
+    # Modern browsers ignore the CN entirely and require a matching Subject
+    # Alternative Name - without one, every connection to this placeholder
+    # cert fails validation, and not just the page-load interstitial that's
+    # easy to click through: stricter paths like Service Worker script
+    # fetches enforce it with no override, which surfaces as an opaque SSL
+    # error with no indication the cert itself is the problem. Set
+    # SSL_PLACEHOLDER_SAN to add the IP/hostname this is actually reached
+    # on (e.g. "IP:10.1.10.20" or "DNS:syslog.example.com"). This is still
+    # just a temporary self-signed cert either way - replace it with a real
+    # one via Admin > Settings > SSL for anything beyond local testing.
+    SAN="DNS:localhost,IP:127.0.0.1"
+    if [ -n "$SSL_PLACEHOLDER_SAN" ]; then
+        SAN="$SAN,$SSL_PLACEHOLDER_SAN"
+    fi
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
         -keyout "$SSL_DIR/server.key" \
         -out "$SSL_DIR/server.crt" \
-        -subj "/CN=localhost" >/dev/null 2>&1
+        -subj "/CN=localhost" \
+        -addext "subjectAltName=$SAN" >/dev/null 2>&1
     chmod 644 "$SSL_DIR/server.crt"
     chmod 600 "$SSL_DIR/server.key"
 fi

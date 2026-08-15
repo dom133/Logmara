@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"syslog-gui/sharedstate"
+	"syslytics/sharedstate"
 )
 
 // counterStore tracks, per key, how many matching events have been seen

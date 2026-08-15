@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"time"
 
-	"syslog-gui/audit"
-	"syslog-gui/auth"
-	"syslog-gui/db"
-	"syslog-gui/ldap"
+	"syslytics/audit"
+	"syslytics/auth"
+	"syslytics/db"
+	"syslytics/ldap"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -116,6 +116,12 @@ func Login(database *sql.DB) gin.HandlerFunc {
 		}
 
 		audit.LogAudit(database, user.ID, user.Username, "login_success", c.ClientIP(), "")
+
+		// Refresh dashboard MVs right away instead of waiting for the next
+		// 30s tick, so stats aren't stale the moment someone logs back in
+		// after a stretch with nobody logged in (see main.go's fast MV
+		// refresh loop, which skips ticks while HasActiveSession is false).
+		go db.RefreshMV(database)
 
 		c.JSON(http.StatusOK, LoginResponse{
 			Token:        token,
@@ -277,6 +283,7 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 			"is_admin":              isAdmin,
 			"is_active":             true,
 			"notifications_enabled": db.GetSetting(database, "notifications_enabled", "true") == "true",
+			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "true",
 		})
 	}
 }

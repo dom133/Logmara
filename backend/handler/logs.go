@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"syslog-gui/middleware"
-	"syslog-gui/model"
-	"syslog-gui/sharedstate"
+	"syslytics/middleware"
+	"syslytics/model"
+	"syslytics/sharedstate"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"

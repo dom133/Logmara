@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"syslog-gui/model"
+	"syslytics/model"
 
 	"github.com/gin-gonic/gin"
 )

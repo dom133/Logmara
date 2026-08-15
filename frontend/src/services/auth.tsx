@@ -8,6 +8,7 @@ interface User {
   is_admin: boolean
   is_active: boolean
   notifications_enabled: boolean
+  relay_ingestion_enabled: boolean
 }
 
 interface AuthContextType {
@@ -24,6 +25,7 @@ interface AuthContextType {
   setShowSessionWarning: (show: boolean) => void
   sessionWarningCountdown: number
   extendSession: () => Promise<void>
+  refreshUser: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType>({} as AuthContextType)
@@ -68,7 +70,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
-      await api.post('/auth/logout')
+      const refreshToken = localStorage.getItem('refresh_token')
+      await api.post('/auth/logout', { refresh_token: refreshToken })
     } catch (e) {
       console.error('Error during logout:', e)
     }
@@ -239,7 +242,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       showSessionWarning,
       setShowSessionWarning,
       sessionWarningCountdown,
-      extendSession
+      extendSession,
+      refreshUser: loadUser
     }}>
       {children}
     </AuthContext.Provider>

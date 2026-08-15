@@ -1,6 +1,6 @@
 {
-  "name": "SysLog GUI",
-  "short_name": "SysLog GUI",
+  "name": "Syslytics",
+  "short_name": "Syslytics",
   "description": "Centralized syslog viewer, dashboards, parsers and alerting.",
   "start_url": "/",
   "scope": "/",

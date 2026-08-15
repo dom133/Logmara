@@ -590,6 +590,51 @@ export async function clearSlowQueries() {
 	return res.data
 }
 
+// --- Health (Admin > Health) ---
+
+export interface ContainerHealth {
+	name: string
+	image: string
+	state: string
+	status: string
+	health?: string
+	node?: string
+}
+
+export interface ServiceHealth {
+	name: string
+	mode: string
+	image: string
+	replicas_desired: number
+	replicas_running: number
+	tasks: ContainerHealth[]
+}
+
+export interface RelayHealth {
+	label: string
+	ip_address: string
+	cert_status: string
+	last_seen?: string
+	seconds_since_seen?: number
+	status: 'online' | 'stale' | 'never_seen' | 'cert_revoked'
+}
+
+export interface ContainersHealthResponse {
+	docker_available: boolean
+	mode: 'single' | 'swarm' | ''
+	scope: 'cluster' | 'node' | ''
+	containers?: ContainerHealth[]
+	services?: ServiceHealth[]
+	relays: RelayHealth[]
+	message?: string
+	refreshed_at: string
+}
+
+export async function getContainersHealth() {
+	const res = await api.get('/admin/health/containers')
+	return res.data as ContainersHealthResponse
+}
+
 export async function uploadSSLCerts(certFile: File, keyFile: File) {
 	const formData = new FormData()
 	formData.append('cert', certFile)
@@ -601,11 +646,130 @@ export async function uploadSSLCerts(certFile: File, keyFile: File) {
 	return res.data
 }
 
+// --- Syslog Relay (Admin > Syslog Relay) ---
+
+export interface RelayWhitelistEntry {
+	id: number
+	ip_address: string
+	label: string
+	relay_cert_id?: number
+	created_at: string
+	created_by?: number
+}
+
+export async function getRelayWhitelist() {
+	const res = await api.get('/admin/relay/whitelist')
+	return (res.data || []) as RelayWhitelistEntry[]
+}
+
+export async function addRelayWhitelistEntry(data: { ip_address: string; label: string }) {
+	const res = await api.post('/admin/relay/whitelist', data)
+	return res.data
+}
+
+export async function deleteRelayWhitelistEntry(id: number) {
+	const res = await api.delete(`/admin/relay/whitelist/${id}`)
+	return res.data
+}
+
+export interface RelayCertificate {
+	id: number
+	label: string
+	serial_hex: string
+	fingerprint_sha256: string
+	status: 'issued' | 'revoked'
+	issued_at: string
+	expires_at: string
+	issued_by?: number
+	revoked_at?: string | null
+}
+
+// Mirrors backend model.RelayCertRenewalWindowDays - how close to its own
+// expiry an "issued" certificate must be before the backend will allow
+// regenerateRelayCertificate to renew it.
+export const RELAY_CERT_RENEWAL_WINDOW_DAYS = 30
+
+export async function getRelayCertificates() {
+	const res = await api.get('/admin/relay/certificates')
+	return (res.data || []) as RelayCertificate[]
+}
+
+// responseType: 'blob' means an error response's JSON body arrives as a
+// Blob instead of being parsed - read it back out so getErrorMessage can
+// still surface the real "IP already whitelisted"-style message instead of
+// a generic fallback.
+async function normalizeBlobError(e: unknown): Promise<Error> {
+	if (e && typeof e === 'object' && 'response' in e) {
+		const resp = (e as { response?: { data?: unknown } }).response
+		if (resp?.data instanceof Blob) {
+			try {
+				const text = await resp.data.text()
+				const parsed = JSON.parse(text)
+				if (parsed?.error) return new Error(parsed.error)
+			} catch {
+				// not JSON - fall through to the generic error below
+			}
+		}
+	}
+	return e instanceof Error ? e : new Error('Request failed')
+}
+
+// downloadCertificateBundle POSTs to url and triggers a one-time browser
+// download of the resulting .tar.gz - shared by both ways of issuing a
+// relay certificate below. The API never lets the bundle be fetched again
+// after this call, so the caller must warn the user to save it now.
+async function downloadCertificateBundle(url: string, body: unknown, fallbackFilename: string) {
+	let res
+	try {
+		res = await api.post(url, body, { responseType: 'blob' })
+	} catch (e: unknown) {
+		throw await normalizeBlobError(e)
+	}
+	const disposition = res.headers['content-disposition'] as string | undefined
+	const match = disposition?.match(/filename="?([^"]+)"?/)
+	const filename = match ? match[1] : fallbackFilename
+	const downloadUrl = URL.createObjectURL(res.data)
+	const a = document.createElement('a')
+	a.href = downloadUrl
+	a.download = filename
+	a.click()
+	URL.revokeObjectURL(downloadUrl)
+	return { filename }
+}
+
+// Issues a new relay certificate and whitelists its IP in the same step.
+// Fails if the IP is already whitelisted - use
+// generateRelayCertificateForWhitelistEntry for that case instead.
+export async function generateRelayCertificate(data: { label: string; ip_address: string }) {
+	return downloadCertificateBundle('/admin/relay/certificates', data, `syslog-relay-${data.label}.tar.gz`)
+}
+
+// Issues a certificate for an IP that's already whitelisted (added via
+// "Add IP" without one, or whose previous certificate was revoked) and
+// links it to that entry.
+export async function generateRelayCertificateForWhitelistEntry(id: number, label: string) {
+	return downloadCertificateBundle(`/admin/relay/whitelist/${id}/certificate`, undefined, `syslog-relay-${label}.tar.gz`)
+}
+
+// Reissues a certificate for a revoked one's whitelist entry (found
+// server-side by reverse lookup) - the old, revoked row stays in the list
+// for the audit trail.
+export async function regenerateRelayCertificate(id: number, label: string) {
+	return downloadCertificateBundle(`/admin/relay/certificates/${id}/regenerate`, undefined, `syslog-relay-${label}.tar.gz`)
+}
+
+export async function revokeRelayCertificate(id: number) {
+	const res = await api.delete(`/admin/relay/certificates/${id}`)
+	return res.data
+}
+
 // --- Alerts & Notifications ---
 
-export type AlertRuleType = 'log_threshold' | 'device_silence' | 'config_change'
+export type AlertRuleType = 'log_threshold' | 'device_silence' | 'config_change' | 'relay_cert_expiring'
 export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app' | 'push'
 export type FieldConditionOperator = 'equals' | 'contains' | 'not_equals' | 'regex'
+
+export type FieldConditionsLogic = 'and' | 'or'
 
 export interface AlertFieldCondition {
 	id?: number
@@ -623,10 +787,12 @@ export interface Alert {
 	device_ips: string[]
 	parser_names: string[]
 	field_conditions: AlertFieldCondition[]
+	field_conditions_logic: FieldConditionsLogic
 	message_pattern?: string
 	threshold: number
 	window_minutes: number
 	cooldown_minutes: number
+	fire_on_every_match: boolean
 	audit_action_filter?: string
 	is_active: boolean
 	created_by?: number
@@ -644,10 +810,12 @@ export interface AlertRequest {
 	device_ips?: string[]
 	parser_names?: string[]
 	field_conditions?: AlertFieldCondition[]
+	field_conditions_logic?: FieldConditionsLogic
 	message_pattern?: string
 	threshold?: number
 	window_minutes?: number
 	cooldown_minutes?: number
+	fire_on_every_match?: boolean
 	audit_action_filter?: string
 	is_active?: boolean
 	channel_ids?: number[]
@@ -717,15 +885,28 @@ export async function testNotificationChannel(id: number) {
 	return res.data
 }
 
+export interface TriggerLogSnapshot {
+	timestamp: string
+	hostname: string
+	fromhost_ip: string
+	app_name?: string
+	severity: string
+	message: string
+}
+
 export interface NotificationLogEntry {
 	id: number
 	alert_id?: number
 	alert_name: string
+	firing_id?: string
 	channel_id?: number
 	channel_name: string
 	channel_type: string
-	status: 'sent' | 'failed'
+	status: 'sent' | 'partial' | 'failed' | 'no_channel'
 	detail?: string
+	trigger_log?: TriggerLogSnapshot
+	in_app_notification_id?: number
+	matched_conditions?: string[]
 	created_at: string
 }
 

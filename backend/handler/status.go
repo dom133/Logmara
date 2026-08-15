@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"syslog-gui/db"
+	"syslytics/db"
 
 	"github.com/gin-gonic/gin"
 )

@@ -1,4 +1,4 @@
-# SysLog GUI
+# Syslytics
 
 Web-based syslog monitoring, parsing, and visualization platform with Docker Compose deployment.
 
@@ -114,6 +114,7 @@ Copy `.env.example` and adjust values:
 | `LDAP_BASE_DN` | *(none)* | Base DN for user search |
 | `LDAP_BIND_DN` | *(none)* | Bind DN for LDAP queries |
 | `LDAP_BIND_PASSWORD` | *(none)* | Bind password for LDAP queries |
+| `DOCKER_PROXY_URL` | `http://docker-proxy:2375` | Base URL of the `docker-proxy` sidecar backing Admin > Health — see [Health Monitoring](#health-monitoring) |
 
 ## High Availability Deployment (Multi-Node, Optional)
 
@@ -234,15 +235,15 @@ ssh pg1
 git clone https://gitlab.dom133.xyz/dominik.kruszewski/syslog_gui.git
 cd syslog_gui
 
-export REGISTRY=registry.example.com/syslog-gui TAG=v1
-docker build -f Dockerfile.backend  -t $REGISTRY/syslog-gui-api:$TAG .
-docker build -f Dockerfile.rsyslog  -t $REGISTRY/syslog-gui-rsyslog:$TAG .
-docker build -f Dockerfile.frontend -t $REGISTRY/syslog-gui-frontend:$TAG .
-docker build -f Dockerfile.patroni  -t $REGISTRY/syslog-gui-patroni:$TAG .
-docker push $REGISTRY/syslog-gui-api:$TAG
-docker push $REGISTRY/syslog-gui-rsyslog:$TAG
-docker push $REGISTRY/syslog-gui-frontend:$TAG
-docker push $REGISTRY/syslog-gui-patroni:$TAG
+export REGISTRY=registry.example.com/syslytics TAG=v1
+docker build -f Dockerfile.backend  -t $REGISTRY/syslytics-api:$TAG .
+docker build -f Dockerfile.rsyslog  -t $REGISTRY/syslytics-rsyslog:$TAG .
+docker build -f Dockerfile.frontend -t $REGISTRY/syslytics-frontend:$TAG .
+docker build -f Dockerfile.patroni  -t $REGISTRY/syslytics-patroni:$TAG .
+docker push $REGISTRY/syslytics-api:$TAG
+docker push $REGISTRY/syslytics-rsyslog:$TAG
+docker push $REGISTRY/syslytics-frontend:$TAG
+docker push $REGISTRY/syslytics-patroni:$TAG
 ```
 
 #### 5. Initialize the swarm and join the other nodes
@@ -329,7 +330,7 @@ Sanity-check leader election worked: `docker exec -it $(docker ps -qf name=syslo
 Still on `pg1` (or wherever you're driving `docker stack deploy` from), export the values from step 7:
 
 ```bash
-export REGISTRY=registry.example.com/syslog-gui TAG=v1
+export REGISTRY=registry.example.com/syslytics TAG=v1
 export NFS_SERVER=10.0.0.30
 export JWT_SECRET=$(openssl rand -base64 48)
 export ADMIN_PASSWORD=$(openssl rand -base64 16)
@@ -368,6 +369,76 @@ Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizar
 - Kill the edge node currently holding the VIP → keepalived should fail over in 1-3s; confirm with `ip addr` on the new holder and by sending a test syslog message during the cutover.
 - Send syslog messages throughout each test and confirm no duplicates or gaps in the logs table, and that `/admin/slow-queries` and dashboard stats look the same regardless of which `api` replica answers the request.
 
+## Syslog Relay (Optional, Multi-VLAN)
+
+Lets one or more small, standalone rsyslog hosts sit in VLANs that don't route directly to the central server, collect syslog from local devices, and forward it over an authenticated, encrypted channel (mTLS on port 6514) to this server's normal ingestion pipeline. The central server keeps accepting direct syslog on 514 from its own VLAN exactly as in the Quick Start — relays are additive, not a replacement, and any number of them can point at the same central server. This works the same whether the central side is a single server (`docker-compose.yml`) or the [High Availability](#high-availability-deployment-multi-node-optional) multi-node stack above.
+
+```
+VLAN A (devices)          VLAN B (DMZ/relay)              VLAN C (central)
+ device1 ─┐
+ device2 ─┼─► syslog-relay ──mTLS 6514/tcp──► rsyslog ──► logs.jsonl ──► tailer
+ device3 ─┘   (small server,                      ▲        (unchanged)
+               forward-only)                       │
+VLAN D (DMZ/relay 2)                                │
+ device4 ──► syslog-relay-2 ──────mTLS 6514/tcp──────┘
+```
+
+Each relay reuses the same JSON conversion the central server already does locally (`rsyslog/syslog.conf`'s `JsonLines` template), so `fromhost_ip` stays the real device IP — the field parser matching and per-device stats rely on — instead of becoming the relay's own IP.
+
+### How it's secured
+
+- **mTLS**: the central server runs its own internal CA (generated automatically the first time you use this feature — see `backend/relaypki`). Every relay gets a client certificate signed by that CA; the central listener rejects any connection without a valid one.
+- **IP whitelist**: a valid certificate alone isn't enough — the peer's IP must also be on the whitelist (Admin > Syslog Relay > Whitelist IP). Together these mean only a relay you've explicitly approved, from an IP you've explicitly approved, gets in.
+- **Revocation is a real, immediate cutoff** — there's no X.509 CRL/OCSP at the TLS layer (a revoked certificate's private key is still, on its own, perfectly capable of completing a handshake), so instead the allow-list itself is certificate-aware: `allowed-relays.conf` only ever admits an IP whose *currently linked* certificate is "issued". Revoking one (Admin > Syslog Relay > Certificates > Revoke) regenerates that file without the entry's IP and reloads rsyslog, so the relay is shut out on the next connection attempt — not just marked revoked in the database.
+  - The whitelist entry itself is left in place either way, now shown as **Blocked** on the Whitelist IP tab, rather than deleted — generate a replacement certificate for it (from either tab) to restore access.
+  - Removing an IP from the **whitelist** entirely (Whitelist IP > delete) also revokes its certificate, since a device that's no longer allowed in shouldn't leave an "issued" certificate lying around either.
+  - The old, revoked certificate row is always kept for the audit trail — "Regenerate" on a revoked row issues a fresh certificate for the same entry without deleting its history.
+- The private key for a relay's certificate is generated on the server but **never stored** there — it's handed to you exactly once, in the `.tar.gz` bundle the browser downloads when you generate it. If you lose it, revoke (or regenerate from) that certificate; there's no way to re-download the old key.
+
+### Certificate expiry, renewal, and CA rotation
+
+- **Relay certificates** are valid 5 years from issuance; the Certificates tab shows each one's expiry date, with an amber "Expires in Nd" badge once it's within 30 days and a red "Expired" badge past that. A certificate in that window gets a **Renew** action (alongside Revoke) that issues a replacement for the same whitelist entry, downloads it once (same as generating a fresh one), and revokes the old certificate as soon as the new one is linked — no gap where the entry has no active certificate at all. Renewing outside that 30-day window isn't allowed; revoke the certificate first if you need to replace it early.
+- **Get warned before it happens**: add an Alert rule (Alerts > New Alert Rule) with type "Syslog relay certificate expiring" and a "Warn Before Expiry (days)" threshold — it's checked hourly against every relay certificate and fires (through whichever notification channels you assign, same as any other alert) once a certificate falls inside that window, subject to the rule's cooldown so it doesn't renotify every hour.
+- **The CA and the central listener's own server certificate renew themselves automatically** — the CA is valid 15 years, the server certificate 10, and neither needs any admin action: `relaypki.EnsureCA` checks both on every relay config sync (every whitelist/certificate change, plus an hourly background check — see `backend/main.go`) and re-signs whichever is within its renewal window (1 year out for the CA, 90 days for the server certificate). The CA specifically is re-signed **using the same private key**, just with a fresh validity window — TLS chain verification only needs the issuer's public key and a currently-valid, name-matching trust anchor, not the exact certificate object presented when a given relay certificate was originally signed, so every previously issued relay certificate keeps validating without being reissued or redistributed. This only handles ordinary expiry, not a suspected key compromise — that needs a real rotation (delete `/data/relay/ca.*` and `server.*`, restart, then reissue and redistribute a certificate to every relay), which isn't automatic and isn't something you should need to do on a routine basis.
+
+### Enabling it
+
+1. Admin > Settings > **Syslog Relay** > turn on "Enable Syslog Relay Ingestion". This starts accepting mTLS connections on port 6514 (still gated by the whitelist below, so nothing gets in until you add a relay).
+2. A new **Syslog Relay** entry appears in the sidebar. Either open **Certificates** > "Generate Certificate" and give the relay a label and the IP it will connect from directly, or first add the IP under **Whitelist IP** and generate a certificate for that entry afterwards (its "Generate Certificate" row action) — useful if you want the IP approved before a certificate exists for it. Either way, the browser downloads `syslog-relay-<label>.tar.gz` — save it now, this is the only copy.
+3. Copy that file to the small server you're deploying in the client VLAN, alongside `docker-compose.relay.yml` and `Dockerfile.rsyslog-relay` from this repo:
+   ```bash
+   mkdir -p relay-bundle && tar xzf syslog-relay-<label>.tar.gz -C relay-bundle
+   docker compose -f docker-compose.relay.yml up -d --build
+   ```
+4. Point the devices in that VLAN at the relay's IP on port 514 (tcp or udp), same as you would the central server directly.
+
+The target host baked into every generated `relay.conf` comes from, in order: the **Central Server Address** field under Admin > Settings > Syslog Relay (only editable once ingestion is enabled), then the `RELAY_CENTRAL_HOST` env var on the central server's `api` service, then `127.0.0.1` if neither is set — which only makes sense for same-host testing, so set one of the first two for any real cross-VLAN deployment.
+
+### Firewall
+
+The relay only ever needs one outbound rule: **relay → central, 6514/tcp**. It doesn't need to be reachable *from* the central VLAN at all. On the central side, only 6514/tcp needs to be reachable from the relay's VLAN — devices behind the relay never talk to the central server directly.
+
+### Limitations
+
+- One relay is a single small server with no built-in failover (unlike the edge nodes in the HA section above) — if it goes down, its VLAN stops forwarding until it's back. Run more than one relay (in different VLANs, or the same one) if that's not acceptable; each gets its own certificate and whitelist entry.
+- The relay buffers to disk (`queue.type="LinkedList"` with `queue.saveOnShutdown` in the generated `relay.conf`) if the link to the central server drops, and catches up once it's back — but a full disk stops accepting new logs until the backlog is delivered.
+- On a relay's very first boot, if the central server's own CA/server certificate hasn't been generated yet, `rsyslog/entrypoint.sh` on the central side generates a throwaway placeholder so its listener can still start; whichever of that script or the API's own cert generation runs first "wins" and both sides converge on the same CA. This only matters during the very first `docker compose up` after enabling the feature.
+
+## Health Monitoring
+
+Admin > Health shows the up/down status of every container the app depends on. It works the same way regardless of which deployment you're running:
+
+- **Single server (`docker-compose.yml`)**: the `docker-proxy` sidecar sees every container on the one host, which is the complete picture — `api`, `frontend`, `rsyslog`, `postgres`, all of it.
+- **Docker Swarm (`docker-stack.app.yml`)**: `docker-proxy` is placed on manager nodes only (`node.role == manager`) instead of alongside `api`/`frontend`/`rsyslog` on the `app=true` workers. This matters because Swarm's cluster-wide `/services` and `/tasks` endpoints only answer from a manager — a proxy colocated with `api` (a worker in the [example topology](#deployment-steps-from-scratch)) would only ever see its own node. Placed on a manager instead, it reports every service in the swarm (including the Postgres/Redis stacks `api` never runs alongside), not just the app tier.
+
+### Why a proxy instead of mounting the socket into `api`
+
+`api` never gets `/var/run/docker.sock` directly. Mounting it — even read-only — hands whatever's on the other end of that socket full control of the host: the `:ro` flag only stops writes to the socket *file*, not what the Docker Engine API on the other side of it will do for a caller with access to it. Instead, `/var/run/docker.sock` is mounted only into the small [`tecnativa/docker-socket-proxy`](https://github.com/Tecnativa/docker-socket-proxy) sidecar, which forwards just `GET /containers`, `/services`, `/tasks`, `/nodes`, `/info` and rejects everything else (`POST: 0`). It isn't published to the host — only reachable from other containers on `syslog_net`. A bug in the health handler (`backend/handler/health_docker.go`) can read container/service status and nothing more.
+
+### Syslog Relay is different
+
+A [relay](#syslog-relay-optional-multi-vlan) isn't on `syslog_net` and isn't reachable from the central server at all — by design, its only firewall rule is *outbound* 6514/tcp to the central server (see [Firewall](#firewall)). There's no socket, network path, or open port for the central server to check its container status through. The Health tab shows relay **liveness** instead, derived from data the app already has: whether a log has arrived recently from its whitelisted IP (`mv_device_stats.last_seen`, same rollup the Devices tab and device-silence alerts use) and whether its certificate is still `issued` rather than `revoked`. This is a proxy for "is it up and forwarding," not a container health check — a relay that's up but has nothing to forward will look identical to one that's down.
+
 ## Features
 
 - **Live Log Viewer** �?" Browse, filter, and search ingested syslog messages in real-time
@@ -383,11 +454,12 @@ Open `http://<vip-or-any-app-node-ip>` in a browser and complete the Setup Wizar
 - **CORS Protection** �?" Configurable allowed origins
 - **Setup Wizard** �?" Guided initial configuration with admin account, database, security keys, and optional LDAP/CORS
 - **Admin Panel** �?" User management, settings, audit log viewer, LDAP connection test
+- **Health Monitoring** �?" Container/Swarm service status and syslog relay liveness in one place (see [Health Monitoring](#health-monitoring))
 
 ## Parser Creation Guide
 
 ### Overview
-The syslog-gui includes a powerful regex-based parser engine that allows you to extract structured data from raw syslog messages. Parsers can be created directly through the web interface or via API endpoints.
+Syslytics includes a powerful regex-based parser engine that allows you to extract structured data from raw syslog messages. Parsers can be created directly through the web interface or via API endpoints.
 
 ### Creating a Parser
 1. Navigate to the **Admin Panel** → **Parsers**
@@ -531,35 +603,41 @@ POST /api/parsers/test
 | DELETE | `/api/admin/logs` | Purge all logs |
 | GET | `/api/admin/audit-log` | View audit log entries |
 | POST | `/api/admin/ldap/test` | Test LDAP connection |
+| GET | `/api/admin/health/containers` | Container/Swarm service status + relay liveness (see [Health Monitoring](#health-monitoring)) |
 
 
 ## Project Structure
 
 ```
 ├── docker-compose.yml
+├── docker-compose.relay.yml  # Standalone compose for a remote syslog relay host
 ├── Dockerfile.backend
 ├── Dockerfile.frontend
 ├── Dockerfile.rsyslog
+├── Dockerfile.rsyslog-relay   # Image for the standalone relay host
 ├── .env.example
 ├── backend/
 │   ├── main.go              # Entry point, route setup, rate limiter, CORS
 │   ├── auth/                 # JWT middleware, refresh tokens, bcrypt
 │   ├── db/                   # Database connection, migrations, builtin parsers
-│   ├── handler/              # HTTP handlers (auth, logs, parsers, dashboards, admin, init)
+│   ├── handler/              # HTTP handlers (auth, logs, parsers, dashboards, admin, init, relay)
 │   ├── ldap/                 # LDAP/AD authentication with TLS
 │   ├── model/                # Go structs for DB models
 │   ├── parser/               # Regex parser engine
+│   ├── relaypki/              # Internal CA + relay certificate issuance (mTLS)
 │   ├── tailer/               # File tailer for rsyslog JSONL
 │   └── util/                 # Key generation, encryption utilities
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx           # Main layout with pinned sidebar
-│   │   ├── pages/            # Page components (including SetupWizard)
+│   │   ├── pages/            # Page components (including SetupWizard, SyslogRelay)
 │   │   └── services/         # API client with 401 interceptor, auth context
 │   ├── nginx.conf
 │   └── vite.config.ts
 └── rsyslog/
-    └── syslog.conf           # rsyslog template + output config
+    ├── syslog.conf            # rsyslog template + output config, incl. the mTLS relay listener
+    ├── entrypoint.sh           # Generates a placeholder relay CA/cert if missing, starts the reload sidecar
+    └── reload-sidecar/         # HTTP sidecar that HUPs rsyslogd on relay config changes
 ```
 
 ## Security
@@ -589,7 +667,7 @@ npm run dev
 
 ## Parser Engine
 
-The syslog-gui includes a robust parser engine that allows you to extract structured data from raw syslog messages using regular expressions.
+Syslytics includes a robust parser engine that allows you to extract structured data from raw syslog messages using regular expressions.
 
 ### How Parsers Work
 1. **Pattern Matching**: Parsers match incoming log messages based on hostname, IP address, or regex patterns

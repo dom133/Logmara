@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"syslog-gui/model"
+	"syslytics/model"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
@@ -20,7 +20,7 @@ var (
 	dashboardCache     model.DashboardStats
 	dashboardCacheMu   sync.RWMutex
 	dashboardCacheTime time.Time
-	dashboardTTL       = 30 * time.Second
+	dashboardTTL       = 1 * time.Minute
 
 	deviceStatsCache     []model.DeviceStats
 	deviceStatsCacheMu   sync.RWMutex
@@ -91,29 +91,25 @@ type filteredAggregates struct {
 	TopErrors     []model.ErrorMessage
 }
 
-// queryFilteredAggregates computes scalar counts (optionally), the severity
-// breakdown (optionally), and the top-10 devices/errors for whereBase in one
-// query. The "filtered" CTE is marked MATERIALIZED so Postgres scans
-// syslog_logs exactly once and reuses that result for every branch below,
-// instead of re-running whereBase once per aggregate (previously 2-4
-// independent full scans of the same range on every dashboard load).
-func queryFilteredAggregates(db *sql.DB, whereBase string, args []interface{}, includeScalarAndSeverity bool) filteredAggregates {
+// queryFilteredAggregates computes scalar counts, the severity breakdown,
+// and the top-10 devices/errors for whereBase in one query. Only used for a
+// custom (from/to) date range - the unfiltered dashboard load is served
+// entirely from materialized views kept fresh by the background scheduler
+// (see buildDashboardStats). The "filtered" CTE is marked MATERIALIZED so
+// Postgres scans syslog_logs exactly once and reuses that result for every
+// branch below, instead of re-running whereBase once per aggregate.
+func queryFilteredAggregates(db *sql.DB, whereBase string, args []interface{}) filteredAggregates {
 	result := filteredAggregates{Severity: make(map[string]int64)}
 
-	branches := []string{}
-	if includeScalarAndSeverity {
-		branches = append(branches,
-			"SELECT 'scalar'::text AS kind, 'total_logs'::text AS key1, NULL::text AS key2, NULL::text AS key3, COUNT(*)::bigint AS cnt FROM filtered",
-			"SELECT 'scalar'::text, 'logs_last_hour'::text, NULL::text, NULL::text, COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour')::bigint FROM filtered",
-			"SELECT 'scalar'::text, 'logs_last_day'::text, NULL::text, NULL::text, COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 day')::bigint FROM filtered",
-			"SELECT 'scalar'::text, 'unique_devices'::text, NULL::text, NULL::text, COUNT(DISTINCT fromhost_ip)::bigint FROM filtered",
-			"SELECT 'severity'::text, severity::text, NULL::text, NULL::text, COUNT(*)::bigint FROM filtered GROUP BY severity",
-		)
-	}
-	branches = append(branches,
+	branches := []string{
+		"SELECT 'scalar'::text AS kind, 'total_logs'::text AS key1, NULL::text AS key2, NULL::text AS key3, COUNT(*)::bigint AS cnt FROM filtered",
+		"SELECT 'scalar'::text, 'logs_last_hour'::text, NULL::text, NULL::text, COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour')::bigint FROM filtered",
+		"SELECT 'scalar'::text, 'logs_last_day'::text, NULL::text, NULL::text, COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 day')::bigint FROM filtered",
+		"SELECT 'scalar'::text, 'unique_devices'::text, NULL::text, NULL::text, COUNT(DISTINCT fromhost_ip)::bigint FROM filtered",
+		"SELECT 'severity'::text, severity::text, NULL::text, NULL::text, COUNT(*)::bigint FROM filtered GROUP BY severity",
 		"SELECT * FROM (SELECT 'device'::text AS kind, COALESCE(fromhost_ip,'')::text AS key1, MIN(hostname)::text AS key2, NULL::text AS key3, COUNT(*)::bigint AS cnt FROM filtered GROUP BY fromhost_ip ORDER BY cnt DESC LIMIT 10) d",
 		"SELECT * FROM (SELECT 'error'::text AS kind, LEFT(message, 100)::text AS key1, COALESCE(fromhost_ip,'')::text AS key2, MIN(hostname)::text AS key3, COUNT(*)::bigint AS cnt FROM filtered WHERE severity IN ('err', 'crit', 'alert', 'emerg') GROUP BY LEFT(message, 100), fromhost_ip ORDER BY cnt DESC LIMIT 10) e",
-	)
+	}
 
 	query := fmt.Sprintf(
 		"WITH filtered AS MATERIALIZED (SELECT timestamp, hostname, fromhost_ip, severity, message FROM syslog_logs %s) %s",
@@ -181,22 +177,12 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 
 	useMV := from == "" && to == ""
 
-	// Use materialized views for scalar/severity stats when no custom time
-	// range is requested - refreshed on a schedule, so this avoids scanning
-	// syslog_logs at all for the common (unfiltered) dashboard load.
+	// Unfiltered dashboard load: served entirely from materialized views, no
+	// live query against syslog_logs at all. All four MVs are kept fresh by
+	// the background scheduler (main.go's 30s "fast dashboard MV refresh"
+	// loop and db.StartMaintenance's periodic scheduler), so the request
+	// path never blocks on a REFRESH or a multi-second aggregate scan.
 	if useMV {
-		_ = timedQuery("dashboard_stats_refresh_mv", func() error {
-			_, err := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_summary")
-			if err != nil {
-				return err
-			}
-			_, err = db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_severity")
-			if err != nil {
-				return err
-			}
-			_, err = db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_timeline_hourly")
-			return err
-		})
 		err := timedQuery("dashboard_stats_scalar_mv", func() error {
 			var refreshedAt pq.NullTime
 			// unique_ips (COUNT DISTINCT fromhost_ip) is used as the device count
@@ -227,28 +213,7 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 			}
 			return nil
 		})
-	}
-
-	var agg filteredAggregates
-	_ = timedQuery("dashboard_stats_filtered_aggregates", func() error {
-		agg = queryFilteredAggregates(db, whereBase, args, !useMV)
-		return nil
-	})
-
-	if !useMV {
-		stats.TotalLogs = agg.TotalLogs
-		stats.LogsLastHour = agg.LogsLastHour
-		stats.LogsLastDay = agg.LogsLastDay
-		stats.UniqueDevices = agg.UniqueDevices
-		stats.SeverityCounts = agg.Severity
-	}
-	stats.TopDevices = agg.TopDevices
-	if useMV {
-		// whereBase restricts the "filtered" CTE to the last 7 days even on the
-		// unfiltered dashboard load (see above), so agg.TopDevices would miss
-		// devices quiet for longer than that. Read the same all-time,
-		// fromhost_ip-grouped rollup the Admin Devices tab uses instead, so the
-		// two lists always agree when no custom date range is requested.
+		stats.TopDevices = []model.DeviceCount{}
 		_ = timedQuery("dashboard_stats_top_devices_mv", func() error {
 			rows, err := db.Query(
 				`SELECT fromhost_ip, hostname, total_logs FROM mv_device_stats ORDER BY total_logs DESC LIMIT 10`,
@@ -267,8 +232,39 @@ func buildDashboardStats(db *sql.DB, from, to string) model.DashboardStats {
 			stats.TopDevices = topDevices
 			return nil
 		})
+		stats.TopErrors = []model.ErrorMessage{}
+		_ = timedQuery("dashboard_stats_top_errors_mv", func() error {
+			rows, err := db.Query(
+				`SELECT message, fromhost_ip, hostname, cnt FROM mv_dashboard_top_errors ORDER BY cnt DESC LIMIT 10`,
+			)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			topErrors := []model.ErrorMessage{}
+			for rows.Next() {
+				var e model.ErrorMessage
+				if rows.Scan(&e.Message, &e.FromHostIP, &e.Hostname, &e.Count) == nil {
+					topErrors = append(topErrors, e)
+				}
+			}
+			stats.TopErrors = topErrors
+			return nil
+		})
+	} else {
+		var agg filteredAggregates
+		_ = timedQuery("dashboard_stats_filtered_aggregates", func() error {
+			agg = queryFilteredAggregates(db, whereBase, args)
+			return nil
+		})
+		stats.TotalLogs = agg.TotalLogs
+		stats.LogsLastHour = agg.LogsLastHour
+		stats.LogsLastDay = agg.LogsLastDay
+		stats.UniqueDevices = agg.UniqueDevices
+		stats.SeverityCounts = agg.Severity
+		stats.TopDevices = agg.TopDevices
+		stats.TopErrors = agg.TopErrors
 	}
-	stats.TopErrors = agg.TopErrors
 
 	if stats.TopDevices == nil {
 		stats.TopDevices = []model.DeviceCount{}

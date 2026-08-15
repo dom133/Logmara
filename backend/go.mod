@@ -1,4 +1,4 @@
-module syslog-gui
+module syslytics
 
 go 1.24.0
 

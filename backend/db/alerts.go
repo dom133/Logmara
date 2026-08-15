@@ -2,13 +2,15 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/lib/pq"
 
-	"syslog-gui/model"
-	"syslog-gui/util"
+	"syslytics/model"
+	"syslytics/util"
 )
 
 func encryptionKey(db *sql.DB) string {
@@ -31,14 +33,17 @@ func CreateAlert(db *sql.DB, req model.AlertRequest, createdBy int64) (*model.Al
 	if req.CooldownMinutes <= 0 {
 		req.CooldownMinutes = 15
 	}
+	if req.FieldConditionsLogic != model.FieldConditionsLogicOr {
+		req.FieldConditionsLogic = model.FieldConditionsLogicAnd
+	}
 
 	var id int64
 	err := db.QueryRow(
-		`INSERT INTO alerts (name, description, rule_type, severity, device_ips, parser_names, message_pattern, threshold, window_minutes, cooldown_minutes, audit_action_filter, is_active, created_by, updated_at)
-		 VALUES ($1, $2, $3, NULLIF($4,''), $5, $6, NULLIF($7,''), $8, $9, $10, NULLIF($11,''), $12, $13, NOW())
+		`INSERT INTO alerts (name, description, rule_type, severity, device_ips, parser_names, message_pattern, threshold, window_minutes, cooldown_minutes, fire_on_every_match, field_conditions_logic, audit_action_filter, is_active, created_by, updated_at)
+		 VALUES ($1, $2, $3, NULLIF($4,''), $5, $6, NULLIF($7,''), $8, $9, $10, $11, $12, NULLIF($13,''), $14, $15, NOW())
 		 RETURNING id`,
 		req.Name, req.Description, req.RuleType, req.Severity, pq.Array(req.DeviceIPs), pq.Array(req.ParserNames), req.MessagePattern,
-		req.Threshold, req.WindowMinutes, req.CooldownMinutes, req.AuditActionFilter, isActive, createdBy,
+		req.Threshold, req.WindowMinutes, req.CooldownMinutes, req.FireOnEveryMatch, req.FieldConditionsLogic, req.AuditActionFilter, isActive, createdBy,
 	).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("create alert: %w", err)
@@ -65,13 +70,16 @@ func UpdateAlert(db *sql.DB, id int64, req model.AlertRequest) (*model.Alert, er
 	if req.CooldownMinutes <= 0 {
 		req.CooldownMinutes = 15
 	}
+	if req.FieldConditionsLogic != model.FieldConditionsLogicOr {
+		req.FieldConditionsLogic = model.FieldConditionsLogicAnd
+	}
 
 	_, err := db.Exec(
 		`UPDATE alerts SET name=$1, description=$2, rule_type=$3, severity=NULLIF($4,''), device_ips=$5,
 		 parser_names=$6, message_pattern=NULLIF($7,''), threshold=$8, window_minutes=$9, cooldown_minutes=$10,
-		 audit_action_filter=NULLIF($11,''), is_active=$12, updated_at=NOW() WHERE id=$13`,
+		 fire_on_every_match=$11, field_conditions_logic=$12, audit_action_filter=NULLIF($13,''), is_active=$14, updated_at=NOW() WHERE id=$15`,
 		req.Name, req.Description, req.RuleType, req.Severity, pq.Array(req.DeviceIPs), pq.Array(req.ParserNames), req.MessagePattern,
-		req.Threshold, req.WindowMinutes, req.CooldownMinutes, req.AuditActionFilter, isActive, id,
+		req.Threshold, req.WindowMinutes, req.CooldownMinutes, req.FireOnEveryMatch, req.FieldConditionsLogic, req.AuditActionFilter, isActive, id,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update alert: %w", err)
@@ -117,7 +125,7 @@ func scanAlert(row *sql.Rows) (model.Alert, error) {
 	var createdBy sql.NullInt64
 	var lastFiredAt sql.NullTime
 	err := row.Scan(&a.ID, &a.Name, &description, &a.RuleType, &severity, pq.Array(&a.DeviceIPs), pq.Array(&a.ParserNames), &messagePattern,
-		&threshold, &a.WindowMinutes, &a.CooldownMinutes, &auditActionFilter, &a.IsActive, &createdBy, &a.CreatedAt, &a.UpdatedAt, &lastFiredAt)
+		&threshold, &a.WindowMinutes, &a.CooldownMinutes, &a.FireOnEveryMatch, &a.FieldConditionsLogic, &auditActionFilter, &a.IsActive, &createdBy, &a.CreatedAt, &a.UpdatedAt, &lastFiredAt)
 	if err != nil {
 		return a, err
 	}
@@ -142,7 +150,7 @@ func scanAlert(row *sql.Rows) (model.Alert, error) {
 }
 
 const alertColumns = `id, name, description, rule_type, severity, device_ips, parser_names, message_pattern,
-	threshold, window_minutes, cooldown_minutes, audit_action_filter, is_active, created_by, created_at, updated_at, last_fired_at`
+	threshold, window_minutes, cooldown_minutes, fire_on_every_match, field_conditions_logic, audit_action_filter, is_active, created_by, created_at, updated_at, last_fired_at`
 
 func GetAllAlerts(db *sql.DB) ([]model.Alert, error) {
 	rows, err := db.Query(`SELECT ` + alertColumns + ` FROM alerts ORDER BY created_at DESC`)
@@ -473,12 +481,37 @@ func DecryptChannelSecret(database *sql.DB, id int64) (string, error) {
 // ---- Notification log ----
 
 func LogNotification(db *sql.DB, entry model.NotificationLogEntry) error {
+	var triggerLog, matchedConditions []byte
+	if entry.TriggerLog != nil {
+		triggerLog, _ = json.Marshal(entry.TriggerLog)
+	}
+	if len(entry.MatchedConditions) > 0 {
+		matchedConditions, _ = json.Marshal(entry.MatchedConditions)
+	}
 	_, err := db.Exec(
-		`INSERT INTO notification_log (alert_id, alert_name, channel_id, channel_name, channel_type, status, detail)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		entry.AlertID, entry.AlertName, entry.ChannelID, entry.ChannelName, entry.ChannelType, entry.Status, entry.Detail,
+		`INSERT INTO notification_log (alert_id, alert_name, firing_id, channel_id, channel_name, channel_type, status, detail, trigger_log, matched_conditions, in_app_notification_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		entry.AlertID, entry.AlertName, nullableString(entry.FiringID), entry.ChannelID, entry.ChannelName, entry.ChannelType, entry.Status, entry.Detail,
+		nullableJSON(triggerLog), nullableJSON(matchedConditions), entry.InAppNotificationID,
 	)
 	return err
+}
+
+// nullableString turns an empty string into a real SQL NULL.
+func nullableString(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// nullableJSON turns a nil/empty marshaled payload into a real SQL NULL
+// instead of storing the literal string "null" in a JSONB column.
+func nullableJSON(b []byte) interface{} {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
 }
 
 func GetNotificationHistory(db *sql.DB, limit int) ([]model.NotificationLogEntry, error) {
@@ -486,7 +519,7 @@ func GetNotificationHistory(db *sql.DB, limit int) ([]model.NotificationLogEntry
 		limit = 100
 	}
 	rows, err := db.Query(
-		`SELECT id, alert_id, alert_name, channel_id, channel_name, channel_type, status, detail, created_at
+		`SELECT id, alert_id, alert_name, firing_id, channel_id, channel_name, channel_type, status, detail, trigger_log, matched_conditions, in_app_notification_id, created_at
 		 FROM notification_log ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list notification history: %w", err)
@@ -496,11 +529,19 @@ func GetNotificationHistory(db *sql.DB, limit int) ([]model.NotificationLogEntry
 	var entries []model.NotificationLogEntry
 	for rows.Next() {
 		var e model.NotificationLogEntry
-		var detail sql.NullString
-		if err := rows.Scan(&e.ID, &e.AlertID, &e.AlertName, &e.ChannelID, &e.ChannelName, &e.ChannelType, &e.Status, &detail, &e.CreatedAt); err != nil {
+		var detail, firingID sql.NullString
+		var triggerLog, matchedConditions []byte
+		if err := rows.Scan(&e.ID, &e.AlertID, &e.AlertName, &firingID, &e.ChannelID, &e.ChannelName, &e.ChannelType, &e.Status, &detail, &triggerLog, &matchedConditions, &e.InAppNotificationID, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan notification history entry: %w", err)
 		}
 		e.Detail = detail.String
+		e.FiringID = firingID.String
+		if len(triggerLog) > 0 {
+			_ = json.Unmarshal(triggerLog, &e.TriggerLog)
+		}
+		if len(matchedConditions) > 0 {
+			_ = json.Unmarshal(matchedConditions, &e.MatchedConditions)
+		}
 		entries = append(entries, e)
 	}
 	return entries, nil
@@ -513,13 +554,19 @@ func ClearNotificationHistory(db *sql.DB) error {
 
 // ---- In-app notifications ----
 
-func CreateInAppNotification(db *sql.DB, alertID *int64, title, message, severity string) (int64, error) {
+// CreateInAppNotification inserts the notification and returns the id and
+// created_at Postgres actually assigned (DEFAULT NOW()) - callers need the
+// real value, not time.Now() from the app server, so the copy fanned out
+// over SSE shows the same timestamp GetInAppNotifications later returns for
+// the same row.
+func CreateInAppNotification(db *sql.DB, alertID *int64, title, message, severity string) (int64, time.Time, error) {
 	var id int64
+	var createdAt time.Time
 	err := db.QueryRow(
-		`INSERT INTO in_app_notifications (alert_id, title, message, severity) VALUES ($1, $2, $3, $4) RETURNING id`,
+		`INSERT INTO in_app_notifications (alert_id, title, message, severity) VALUES ($1, $2, $3, $4) RETURNING id, created_at`,
 		alertID, title, message, severity,
-	).Scan(&id)
-	return id, err
+	).Scan(&id, &createdAt)
+	return id, createdAt, err
 }
 
 func GetInAppNotifications(db *sql.DB, sinceID int64, limit int) ([]model.InAppNotification, error) {

@@ -5,7 +5,9 @@ import {
   getNotifications, markNotificationsRead, streamNotifications, InAppNotification,
   getVapidPublicKey, subscribePush, unsubscribePush,
 } from '../services/api'
+import { emitLiveNotification } from '../services/notificationEvents'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { getErrorMessage } from '../utils/error'
 
 const severityColor: Record<string, string> = {
   critical: 'red',
@@ -29,6 +31,18 @@ function urlBase64ToUint8Array(base64String: string) {
   const outputArray = new Uint8Array(rawData.length)
   for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i)
   return outputArray
+}
+
+// A stuck service worker, an unreachable VAPID endpoint, or a browser push
+// service that never responds to subscribe() all resolve to the same silent
+// failure mode: the enable-push promise chain just never settles, so the
+// switch spins forever with no error. Race every step against a timeout so
+// there's always a concrete answer instead of an indefinite hang.
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`Timed out ${label} (${ms / 1000}s)`)), ms)),
+  ])
 }
 
 export function NotificationBell() {
@@ -56,6 +70,7 @@ export function NotificationBell() {
         stopStream = streamNotifications((n) => {
           setItems(prev => [n, ...prev].slice(0, 50))
           setUnreadCount(prev => prev + 1)
+          emitLiveNotification(n)
         })
       }
     }).catch(() => { /* ignore */ })
@@ -81,22 +96,38 @@ export function NotificationBell() {
   const handleTogglePush = async (checked: boolean) => {
     setPushBusy(true)
     try {
-      const reg = await navigator.serviceWorker.ready
       if (checked) {
+        // Request permission first, as the very first await in this
+        // handler - it needs to run on the click's user-activation, and
+        // waiting on anything else (like serviceWorker.ready) beforehand
+        // risks losing that on stricter mobile browsers, or hanging here
+        // indefinitely if the service worker is stuck installing.
         const permission = await Notification.requestPermission()
         if (permission !== 'granted') {
           message.warning('Notification permission was not granted')
           return
         }
-        const publicKey = await getVapidPublicKey()
-        const sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(publicKey),
-        })
-        await subscribePush(sub.toJSON())
+        // Register explicitly here rather than relying on the fire-and-
+        // forget call in main.tsx: that one only console.warns on failure,
+        // which nobody sees on a phone - if registration itself is broken
+        // (insecure origin, script blocked, wrong MIME type), this makes
+        // that error land in the toast instead of a 10s "waiting" timeout
+        // for a worker that was never going to show up.
+        let reg = await navigator.serviceWorker.getRegistration()
+        if (!reg) {
+          reg = await withTimeout(navigator.serviceWorker.register('/sw.js'), 10_000, 'registering the service worker')
+        }
+        reg = await withTimeout(navigator.serviceWorker.ready, 10_000, 'waiting for the service worker')
+        const publicKey = await withTimeout(getVapidPublicKey(), 10_000, 'fetching the VAPID key from the server')
+        const sub = await withTimeout(
+          reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) }),
+          15_000, 'subscribing with the browser push service',
+        )
+        await withTimeout(subscribePush(sub.toJSON()), 10_000, 'saving the subscription on the server')
         setPushSubscribed(true)
         message.success('Push notifications enabled')
       } else {
+        const reg = await withTimeout(navigator.serviceWorker.ready, 10_000, 'waiting for the service worker')
         const sub = await reg.pushManager.getSubscription()
         if (sub) {
           await unsubscribePush(sub.endpoint)
@@ -105,8 +136,9 @@ export function NotificationBell() {
         setPushSubscribed(false)
         message.success('Push notifications disabled')
       }
-    } catch {
-      message.error('Failed to update push notification setting')
+    } catch (e) {
+      console.error('push notification toggle failed', e)
+      message.error(getErrorMessage(e, 'Failed to update push notification setting'))
     } finally {
       setPushBusy(false)
     }
@@ -128,13 +160,26 @@ export function NotificationBell() {
     setUnreadCount(0)
   }
 
+  // Jumps to the alert History tab and opens the same "Details" view this
+  // notification's dispatch produced there - see HistoryTab's focus-by-id
+  // handling in Alerts.tsx, matched via in_app_notification_id. A full
+  // navigation (not react-router) matches how other cross-page links in
+  // this app already work (e.g. device name -> filtered Logs view).
+  const goToHistoryDetail = (notificationId: number) => {
+    setOpen(false)
+    window.location.href = `/alerts?tab=history&notification=${notificationId}`
+  }
+
   const panelBody = items.length === 0 ? (
     <Empty description="No notifications" style={{ padding: 24 }} />
   ) : (
     <List
       dataSource={items}
       renderItem={(n) => (
-        <List.Item style={{ padding: '10px 16px', display: 'block' }}>
+        <List.Item
+          style={{ padding: '10px 16px', display: 'block', cursor: 'pointer' }}
+          onClick={() => goToHistoryDetail(n.id)}
+        >
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
             <Typography.Text strong style={{ fontSize: 13 }}>{n.title}</Typography.Text>
             <Tag color={severityColor[n.severity] || 'default'} style={{ marginRight: 0 }}>{n.severity}</Tag>

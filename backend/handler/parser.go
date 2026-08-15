@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	"syslog-gui/middleware"
-	"syslog-gui/model"
-	"syslog-gui/parser"
+	"syslytics/middleware"
+	"syslytics/model"
+	"syslytics/parser"
 
 	"github.com/gin-gonic/gin"
 )

@@ -15,8 +15,8 @@ import (
 
 	_ "github.com/lib/pq"
 
-	"syslog-gui/db/parsers"
-	"syslog-gui/util"
+	"syslytics/db/parsers"
+	"syslytics/util"
 )
 
 var appStarting atomic.Bool
@@ -30,7 +30,7 @@ func IsAppStarting() bool {
 }
 
 func Connect(dsn string) (*sql.DB, error) {
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("postgres-instrumented", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open db: %w", err)
 	}
@@ -279,6 +279,11 @@ func Migrate(db *sql.DB) error {
 			created_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_notification_log_created ON notification_log (created_at DESC)`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='notification_log' AND column_name='trigger_log') THEN ALTER TABLE notification_log ADD COLUMN trigger_log JSONB; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='notification_log' AND column_name='matched_conditions') THEN ALTER TABLE notification_log ADD COLUMN matched_conditions JSONB; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='notification_log' AND column_name='in_app_notification_id') THEN ALTER TABLE notification_log ADD COLUMN in_app_notification_id BIGINT; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='notification_log' AND column_name='firing_id') THEN ALTER TABLE notification_log ADD COLUMN firing_id VARCHAR(36); END IF; END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_notification_log_firing_id ON notification_log (firing_id)`,
 		`CREATE TABLE IF NOT EXISTS in_app_notifications (
 			id BIGSERIAL PRIMARY KEY,
 			alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
@@ -301,6 +306,27 @@ func Migrate(db *sql.DB) error {
 			created_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions (user_id)`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='fire_on_every_match') THEN ALTER TABLE alerts ADD COLUMN fire_on_every_match BOOLEAN NOT NULL DEFAULT FALSE; END IF; END $$`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alerts' AND column_name='field_conditions_logic') THEN ALTER TABLE alerts ADD COLUMN field_conditions_logic VARCHAR(10) NOT NULL DEFAULT 'and'; END IF; END $$`,
+		`CREATE TABLE IF NOT EXISTS relay_certificates (
+			id SERIAL PRIMARY KEY,
+			label VARCHAR(255) NOT NULL,
+			serial_hex VARCHAR(64) NOT NULL,
+			fingerprint_sha256 VARCHAR(64) NOT NULL,
+			status VARCHAR(20) NOT NULL DEFAULT 'issued',
+			issued_at TIMESTAMPTZ DEFAULT NOW(),
+			issued_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			revoked_at TIMESTAMPTZ
+		)`,
+		`CREATE TABLE IF NOT EXISTS relay_whitelist (
+			id SERIAL PRIMARY KEY,
+			ip_address VARCHAR(64) UNIQUE NOT NULL,
+			label VARCHAR(255) NOT NULL,
+			relay_cert_id INTEGER REFERENCES relay_certificates(id) ON DELETE SET NULL,
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+		)`,
+		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='relay_certificates' AND column_name='expires_at') THEN ALTER TABLE relay_certificates ADD COLUMN expires_at TIMESTAMPTZ; END IF; END $$`,
 	}
 
 	for _, stmt := range statements {
@@ -401,6 +427,16 @@ END $$`,
 			SELECT NOW() as refreshed_at, severity, COUNT(*) as cnt FROM syslog_logs GROUP BY severity
 		`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_severity_key ON mv_dashboard_severity (severity)`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dashboard_top_errors AS
+			SELECT NOW() as refreshed_at, LEFT(message, 100) as message,
+				COALESCE(fromhost_ip, '') as fromhost_ip, MIN(hostname) as hostname, COUNT(*) as cnt
+			FROM syslog_logs
+			WHERE severity IN ('err', 'crit', 'alert', 'emerg') AND timestamp >= NOW() - INTERVAL '7 days'
+			GROUP BY LEFT(message, 100), fromhost_ip
+			ORDER BY cnt DESC
+			LIMIT 10
+		`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dashboard_top_errors_key ON mv_dashboard_top_errors (message, fromhost_ip)`,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_app_name_trgm ON syslog_logs USING GIN (app_name gin_trgm_ops)`,
 		`CREATE MATERIALIZED VIEW IF NOT EXISTS mv_device_stats AS
@@ -584,6 +620,8 @@ func seedSettings(db *sql.DB) error {
 		"smtp_from":                    "",
 		"smtp_use_tls":                 "true",
 		"device_silence_check_minutes": "5",
+		"relay_ingestion_enabled":      "false",
+		"relay_central_host":           "",
 	}
 
 	insertSQL := `INSERT INTO app_settings (key, value, description) VALUES ($1, $2, $3)
@@ -652,6 +690,10 @@ func seedSettings(db *sql.DB) error {
 			desc = "Use STARTTLS for the SMTP connection"
 		case "device_silence_check_minutes":
 			desc = "How often to check for silent devices (minutes)"
+		case "relay_ingestion_enabled":
+			desc = "Accept syslog forwarded by remote relays over mTLS (Admin > Syslog Relay)"
+		case "relay_central_host":
+			desc = "This server's hostname/IP as reachable from a relay's VLAN, pre-filled into generated relay.conf bundles"
 		}
 		if _, err := db.Exec(insertSQL, k, v, desc); err != nil {
 			return fmt.Errorf("seed setting %s: %w", k, err)
@@ -719,16 +761,23 @@ var envBoolSettings = map[string]string{
 	"HTTPS_REDIRECT": "https_redirect",
 }
 
-// ApplyEnvSettingOverrides applies HTTPS settings from environment variables,
-// if present, and persists them to app_settings so they show up (and stay
-// visible) in the admin Settings UI. A var is only applied when explicitly
-// set to a non-empty value; otherwise the stored/admin-configured value is
-// left untouched, so restarting a container without the var doesn't silently
-// revert a change made through the UI.
+// ApplyEnvSettingOverrides seeds HTTPS settings from environment variables
+// the first time each is ever present, and persists them to app_settings so
+// they show up (and stay visible) in the admin Settings UI. A var is only
+// applied once per key, ever - tracked via a "<key>_env_applied" marker -
+// not on every startup: seedSettings has already given these rows a default
+// value by the time this runs, so re-applying the env var unconditionally
+// on every restart would silently stomp any change an admin made through
+// the UI since. A var is only applied at all when explicitly set to a
+// non-empty value.
 func ApplyEnvSettingOverrides(db *sql.DB) {
 	for envVar, key := range envBoolSettings {
 		raw := strings.TrimSpace(os.Getenv(envVar))
 		if raw == "" {
+			continue
+		}
+		appliedMarker := key + "_env_applied"
+		if GetSetting(db, appliedMarker, "false") == "true" {
 			continue
 		}
 		enabled, err := strconv.ParseBool(raw)
@@ -741,7 +790,10 @@ func ApplyEnvSettingOverrides(db *sql.DB) {
 			slog.Warn("failed to apply env setting override", "env", envVar, "key", key, "error", err)
 			continue
 		}
-		slog.Info("applied setting from environment variable", "env", envVar, "key", key, "value", value)
+		if err := UpdateSetting(db, appliedMarker, "true"); err != nil {
+			slog.Warn("failed to record env setting override as applied", "env", envVar, "key", key, "error", err)
+		}
+		slog.Info("applied setting from environment variable (first run only)", "env", envVar, "key", key, "value", value)
 	}
 
 	if GetSetting(db, "https_enabled", "false") == "true" {
@@ -1000,8 +1052,9 @@ func RefreshMaterializedViews(db *sql.DB) {
 	_, err1 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_summary")
 	_, err2 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_severity")
 	_, err3 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_device_stats")
-	if err1 != nil || err2 != nil || err3 != nil {
-		slog.Error("materialized view refresh failed", "err1", err1, "err2", err2, "err3", err3)
+	_, err4 := db.Exec("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dashboard_top_errors")
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		slog.Error("materialized view refresh failed", "err1", err1, "err2", err2, "err3", err3, "err4", err4)
 	}
 	slog.Info("materialized views refreshed")
 }

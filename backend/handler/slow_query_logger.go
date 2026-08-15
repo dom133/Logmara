@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"syslog-gui/sharedstate"
+	"syslytics/sharedstate"
 )
 
 type SlowQueryRecord struct {
@@ -44,6 +44,13 @@ func recordSlowQuery(name string, duration time.Duration) {
 		Duration: duration.Milliseconds(),
 		TS:       time.Now().Format(time.RFC3339),
 	})
+}
+
+// RecordSlowQuery is the same recorder, exported so db.SetSlowQueryHook can
+// feed driver-level slow queries (every query run through *sql.DB, not just
+// the ones wrapped in timedQuery) into the same admin slow-query log.
+func RecordSlowQuery(name string, duration time.Duration) {
+	recordSlowQuery(name, duration)
 }
 
 func GetSlowQueryRecords() []SlowQueryRecord {

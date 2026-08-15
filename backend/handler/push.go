@@ -4,9 +4,9 @@ import (
 	"database/sql"
 	"net/http"
 
-	"syslog-gui/db"
-	"syslog-gui/middleware"
-	"syslog-gui/model"
+	"syslytics/db"
+	"syslytics/middleware"
+	"syslytics/model"
 
 	"github.com/gin-gonic/gin"
 )

@@ -3,7 +3,7 @@ package alertengine
 import (
 	"testing"
 
-	"syslog-gui/model"
+	"syslytics/model"
 )
 
 func TestMatchDevice(t *testing.T) {
@@ -48,24 +48,33 @@ func TestMatchFieldConditions(t *testing.T) {
 	cases := []struct {
 		name  string
 		conds []model.AlertFieldCondition
+		logic string
 		want  bool
 	}{
-		{"no conditions", nil, true},
-		{"equals match", []model.AlertFieldCondition{{FieldName: "action", Operator: model.FieldOpEquals, Value: "DENY"}}, true},
-		{"equals mismatch", []model.AlertFieldCondition{{FieldName: "action", Operator: model.FieldOpEquals, Value: "ALLOW"}}, false},
-		{"contains", []model.AlertFieldCondition{{FieldName: "src_ip", Operator: model.FieldOpContains, Value: "10.0.0"}}, true},
-		{"not_equals", []model.AlertFieldCondition{{FieldName: "action", Operator: model.FieldOpNotEquals, Value: "ALLOW"}}, true},
-		{"regex", []model.AlertFieldCondition{{FieldName: "src_ip", Operator: model.FieldOpRegex, Value: `^10\.0\.0\.\d+$`}}, true},
-		{"missing field", []model.AlertFieldCondition{{FieldName: "dst_ip", Operator: model.FieldOpEquals, Value: "1.2.3.4"}}, false},
+		{"no conditions", nil, "", true},
+		{"equals match", []model.AlertFieldCondition{{FieldName: "action", Operator: model.FieldOpEquals, Value: "DENY"}}, "", true},
+		{"equals mismatch", []model.AlertFieldCondition{{FieldName: "action", Operator: model.FieldOpEquals, Value: "ALLOW"}}, "", false},
+		{"contains", []model.AlertFieldCondition{{FieldName: "src_ip", Operator: model.FieldOpContains, Value: "10.0.0"}}, "", true},
+		{"not_equals", []model.AlertFieldCondition{{FieldName: "action", Operator: model.FieldOpNotEquals, Value: "ALLOW"}}, "", true},
+		{"regex", []model.AlertFieldCondition{{FieldName: "src_ip", Operator: model.FieldOpRegex, Value: `^10\.0\.0\.\d+$`}}, "", true},
+		{"missing field", []model.AlertFieldCondition{{FieldName: "dst_ip", Operator: model.FieldOpEquals, Value: "1.2.3.4"}}, "", false},
 		{"all must match (AND)", []model.AlertFieldCondition{
 			{FieldName: "action", Operator: model.FieldOpEquals, Value: "DENY"},
 			{FieldName: "src_ip", Operator: model.FieldOpEquals, Value: "wrong"},
-		}, false},
+		}, "", false},
+		{"any must match (OR)", []model.AlertFieldCondition{
+			{FieldName: "action", Operator: model.FieldOpEquals, Value: "wrong"},
+			{FieldName: "src_ip", Operator: model.FieldOpEquals, Value: "10.0.0.5"},
+		}, model.FieldConditionsLogicOr, true},
+		{"OR with none matching", []model.AlertFieldCondition{
+			{FieldName: "action", Operator: model.FieldOpEquals, Value: "wrong"},
+			{FieldName: "src_ip", Operator: model.FieldOpEquals, Value: "wrong"},
+		}, model.FieldConditionsLogicOr, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := matchFieldConditions(c.conds, fields); got != c.want {
-				t.Errorf("matchFieldConditions(%v, %v) = %v, want %v", c.conds, fields, got, c.want)
+			if got := matchFieldConditions(c.conds, fields, c.logic); got != c.want {
+				t.Errorf("matchFieldConditions(%v, %v, %q) = %v, want %v", c.conds, fields, c.logic, got, c.want)
 			}
 		})
 	}

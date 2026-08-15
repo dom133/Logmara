@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"syslog-gui/audit"
-	"syslog-gui/auth"
-	"syslog-gui/control"
-	"syslog-gui/db"
-	"syslog-gui/ldap"
+	"syslytics/audit"
+	"syslytics/auth"
+	"syslytics/control"
+	"syslytics/db"
+	"syslytics/ldap"
 
 	"github.com/gin-gonic/gin"
 )
@@ -230,7 +230,7 @@ func GetSettings(database *sql.DB) gin.HandlerFunc {
 		}
 		// Not used by the frontend and not worth exposing: encryption keys and
 		// the one-time DB connection settings captured during setup.
-		for _, k := range []string{"jwt_secret", "encryption_key", "db_host", "db_port", "db_name", "db_user", "db_password", "vapid_public_key", "vapid_private_key"} {
+		for _, k := range []string{"jwt_secret", "encryption_key", "db_host", "db_port", "db_name", "db_user", "db_password", "vapid_public_key", "vapid_private_key", "https_enabled_env_applied", "https_redirect_env_applied"} {
 			delete(settings, k)
 		}
 		if v, ok := settings["ldap_bind_password"]; ok && v != "" {
@@ -254,10 +254,28 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 		oldHttpsEnabled := db.GetSetting(database, "https_enabled", "false")
 		oldHttpsRedirect := db.GetSetting(database, "https_redirect", "false")
 		oldCorsOrigins := db.GetSetting(database, "cors_origins", "")
+		oldRelayEnabled := db.GetSetting(database, "relay_ingestion_enabled", "false")
 
+		// Callers (e.g. the Syslog Relay page) may submit a partial settings
+		// map containing only the key(s) they actually changed - default each
+		// of these to its current value rather than "" when absent, so an
+		// unrelated partial update can't be misread as "turn this off" below.
 		newHttpsEnabled := settings["https_enabled"]
+		if _, ok := settings["https_enabled"]; !ok {
+			newHttpsEnabled = oldHttpsEnabled
+		}
 		newHttpsRedirect := settings["https_redirect"]
+		if _, ok := settings["https_redirect"]; !ok {
+			newHttpsRedirect = oldHttpsRedirect
+		}
 		newCorsOrigins := settings["cors_origins"]
+		if _, ok := settings["cors_origins"]; !ok {
+			newCorsOrigins = oldCorsOrigins
+		}
+		newRelayEnabled := settings["relay_ingestion_enabled"]
+		if _, ok := settings["relay_ingestion_enabled"]; !ok {
+			newRelayEnabled = oldRelayEnabled
+		}
 
 		if newHttpsEnabled == "true" && oldHttpsEnabled != "true" {
 			sslDir := os.Getenv("SSL_DIR")
@@ -299,6 +317,17 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 				c.JSON(http.StatusOK, gin.H{
 					"message":            "Settings updated",
 					"nginx_reload_error": err.Error(),
+				})
+				return
+			}
+		}
+
+		if newRelayEnabled != "" && newRelayEnabled != oldRelayEnabled {
+			if err := SyncRelayConfig(database); err != nil {
+				slog.Warn("relay config sync failed after settings update", "error", err)
+				c.JSON(http.StatusOK, gin.H{
+					"message":            "Settings updated",
+					"relay_reload_error": err.Error(),
 				})
 				return
 			}

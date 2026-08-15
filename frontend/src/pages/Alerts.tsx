@@ -1,15 +1,18 @@
 import { useEffect, useState } from 'react'
-import { Card, Table, Button, Tag, Space, Modal, Form, Input, InputNumber, Select, Switch, message, Popconfirm, Tabs, Typography, Descriptions } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined, EyeOutlined } from '@ant-design/icons'
+import { useSearchParams } from 'react-router-dom'
+import { Card, Table, Button, Tag, Space, Modal, Form, Input, InputNumber, Select, Switch, message, Popconfirm, Tabs, Typography, Descriptions, List, Empty } from 'antd'
+import { PlusOutlined, DeleteOutlined, EditOutlined, ExperimentOutlined, EyeOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import {
   getAlerts, createAlert, updateAlert, deleteAlert, Alert, AlertRequest, AlertRuleType, FieldConditionOperator,
   getNotificationChannels, createNotificationChannel, updateNotificationChannel, deleteNotificationChannel, testNotificationChannel,
   NotificationChannel, NotificationChannelRequest, NotificationChannelType,
-  getNotificationHistory, clearNotificationHistory, NotificationLogEntry,
+  getNotificationHistory, clearNotificationHistory, NotificationLogEntry, TriggerLogSnapshot,
   getDevices, DeviceStats, resolveDeviceDisplayName, getParsers, Parser, getParsedFields, ParsedField,
 } from '../services/api'
 import { useAuth } from '../services/auth'
+import { onLiveNotification } from '../services/notificationEvents'
 import { getErrorMessage } from '../utils/error'
+import SeverityTag from '../components/SeverityTag'
 
 const { Title, Text } = Typography
 
@@ -17,6 +20,7 @@ const ruleTypeLabels: Record<AlertRuleType, string> = {
   log_threshold: 'Log threshold',
   device_silence: 'Device silence',
   config_change: 'Config change',
+  relay_cert_expiring: 'Syslog relay certificate expiring',
 }
 
 const channelTypeLabels: Record<NotificationChannelType, string> = {
@@ -35,7 +39,7 @@ const operatorLabels: Record<FieldConditionOperator, string> = {
   regex: 'Regex',
 }
 
-function RulesTab({ canEdit }: { canEdit: boolean }) {
+function RulesTab({ canEdit, active }: { canEdit: boolean; active: boolean }) {
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [channels, setChannels] = useState<NotificationChannel[]>([])
   const [devices, setDevices] = useState<DeviceStats[]>([])
@@ -46,17 +50,19 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
   const [editing, setEditing] = useState<Alert | null>(null)
   const [form] = Form.useForm()
   const ruleType = Form.useWatch('rule_type', form)
+  const fireOnEveryMatch = Form.useWatch('fire_on_every_match', form)
   const selectedParsers: string[] = Form.useWatch('parser_names', form) || []
+  const selectedDevices: string[] = Form.useWatch('device_ips', form) || []
+  const selectedDevicesKey = selectedDevices.join(',')
 
   const loadData = async () => {
     setLoading(true)
     try {
-      const [a, c, d, p, pf] = await Promise.all([getAlerts(), getNotificationChannels(), getDevices(), getParsers(), getParsedFields()])
+      const [a, c, d, p] = await Promise.all([getAlerts(), getNotificationChannels(), getDevices(), getParsers()])
       setAlerts(a)
       setChannels(c)
       setDevices(d)
       setParsers(p)
-      setParsedFields(pf)
     } catch {
       message.error('Failed to load alerts')
     } finally {
@@ -66,8 +72,35 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
 
   useEffect(() => { loadData() }, [])
 
+  // A firing alert updates this rule's last_fired_at - refresh the list
+  // live while this tab is the one actually showing, rather than making the
+  // user switch away and back to see it.
+  useEffect(() => {
+    if (!active) return
+    return onLiveNotification(() => { loadData() })
+  }, [active])
+
+  // Refetch the field registry scoped to the selected device(s) whenever
+  // that selection changes, so "Field Conditions" only offers fields that
+  // parsers have actually extracted from those devices' logs (falls back to
+  // every known field when no device is selected).
+  useEffect(() => {
+    getParsedFields(selectedDevices.length > 0 ? selectedDevices : undefined)
+      .then(setParsedFields)
+      .catch(() => { /* keep the previous list rather than blanking the form */ })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDevicesKey])
+
   const deviceOptions = devices.map(d => ({ label: resolveDeviceDisplayName(d), value: d.fromhost_ip }))
-  const parserOptions = parsers.map(p => ({ label: p.name, value: p.name }))
+  // Only parsers that have actually matched a log from at least one of the
+  // selected device(s) - an empty selection means "all devices", so show
+  // every parser, same as before this was device-scoped.
+  const availableParserNames = selectedDevices.length === 0
+    ? null
+    : new Set(devices.filter(d => selectedDevices.includes(d.fromhost_ip)).flatMap(d => d.matched_parsers || []))
+  const parserOptions = parsers
+    .filter(p => availableParserNames === null || availableParserNames.has(p.name))
+    .map(p => ({ label: p.name, value: p.name }))
   const fieldOptions = Array.from(
     new Map(
       parsedFields
@@ -80,8 +113,8 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
     setEditing(null)
     form.resetFields()
     form.setFieldsValue({
-      rule_type: 'log_threshold', is_active: true, window_minutes: 5, cooldown_minutes: 15, threshold: 5,
-      channel_ids: [], device_ips: [], parser_names: [], field_conditions: [],
+      rule_type: 'log_threshold', is_active: true, window_minutes: 5, cooldown_minutes: 15, threshold: 5, fire_on_every_match: false,
+      channel_ids: [], device_ips: [], parser_names: [], field_conditions: [], field_conditions_logic: 'and',
     })
     setModalOpen(true)
   }
@@ -137,6 +170,9 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
         }
         if (r.rule_type === 'device_silence') {
           return `silent for ${r.threshold}m on ${scope}`
+        }
+        if (r.rule_type === 'relay_cert_expiring') {
+          return `warn ${r.threshold || 30} day(s) before a relay certificate expires`
         }
         return r.audit_action_filter ? `action = ${r.audit_action_filter}` : 'any config change'
       },
@@ -195,17 +231,25 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
               <Form.Item name="severity" label="Minimum Severity" tooltip="Leave empty to match any severity">
                 <Select allowClear options={['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug'].map(s => ({ value: s, label: s }))} />
               </Form.Item>
-              <Form.Item name="parser_names" label="Parsers" tooltip="Which parser(s) must have matched the log entry; leave empty to match any parser (including unparsed logs)">
+              <Form.Item name="parser_names" label="Parsers" tooltip="Which parser(s) must have matched the log entry; leave empty to match any parser (including unparsed logs). Narrowed to parsers actually seen on the selected device(s) once you pick one.">
                 <Select mode="multiple" allowClear placeholder="Any parser" options={parserOptions} />
               </Form.Item>
               <Form.Item name="message_pattern" label="Message Pattern" tooltip="Substring or glob (*) match against the raw log message">
                 <Input placeholder="failed login" />
               </Form.Item>
 
-              <Form.Item label="Field Conditions" tooltip="All conditions must match (AND). Fields come from the parsers selected above, or all known fields if none are selected.">
+              <Form.Item label="Field Conditions" tooltip="Fields come from the parsers selected above, or all fields seen on the selected device(s) if no parser is selected, or every known field if neither is selected.">
                 <Form.List name="field_conditions">
                   {(fields, { add, remove }) => (
                     <>
+                      {fields.length > 1 && (
+                        <Form.Item name="field_conditions_logic" label="Combine conditions with" initialValue="and" style={{ maxWidth: 220 }}>
+                          <Select options={[
+                            { value: 'and', label: 'AND (all must match)' },
+                            { value: 'or', label: 'OR (any must match)' },
+                          ]} />
+                        </Form.Item>
+                      )}
                       {fields.map((field) => (
                         <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }} wrap>
                           <Form.Item name={[field.name, 'field_name']} rules={[{ required: true, message: 'Field required' }]} noStyle>
@@ -226,14 +270,20 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
                 </Form.List>
               </Form.Item>
 
-              <Space.Compact block>
-                <Form.Item name="threshold" label="Threshold (matches)" style={{ flex: 1 }} rules={[{ required: true }]}>
-                  <InputNumber min={1} style={{ width: '100%' }} />
-                </Form.Item>
-                <Form.Item name="window_minutes" label="Window (minutes)" style={{ flex: 1 }} rules={[{ required: true }]}>
-                  <InputNumber min={1} style={{ width: '100%' }} />
-                </Form.Item>
-              </Space.Compact>
+              <Form.Item name="fire_on_every_match" label="Fire on every match" valuePropName="checked" tooltip="Notify for every matching log entry as it arrives, instead of counting matches against a threshold. Ignores Threshold, Window, and Cooldown below.">
+                <Switch />
+              </Form.Item>
+
+              {!fireOnEveryMatch && (
+                <Space.Compact block>
+                  <Form.Item name="threshold" label="Threshold (matches)" style={{ flex: 1 }} rules={[{ required: true }]}>
+                    <InputNumber min={1} style={{ width: '100%' }} />
+                  </Form.Item>
+                  <Form.Item name="window_minutes" label="Window (minutes)" style={{ flex: 1 }} rules={[{ required: true }]}>
+                    <InputNumber min={1} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Space.Compact>
+              )}
             </>
           )}
 
@@ -249,9 +299,17 @@ function RulesTab({ canEdit }: { canEdit: boolean }) {
             </Form.Item>
           )}
 
-          <Form.Item name="cooldown_minutes" label="Cooldown (minutes)" tooltip="Minimum time between repeat notifications for this rule" rules={[{ required: true }]}>
-            <InputNumber min={1} style={{ width: '100%' }} />
-          </Form.Item>
+          {ruleType === 'relay_cert_expiring' && (
+            <Form.Item name="threshold" label="Warn Before Expiry (days)" tooltip="Fires once per relay certificate that's within this many days of its own expiry (checked hourly), subject to the cooldown below" rules={[{ required: true }]}>
+              <InputNumber min={1} style={{ width: '100%' }} />
+            </Form.Item>
+          )}
+
+          {!(ruleType === 'log_threshold' && fireOnEveryMatch) && (
+            <Form.Item name="cooldown_minutes" label="Cooldown (minutes)" tooltip="Minimum time between repeat notifications for this rule" rules={[{ required: true }]}>
+              <InputNumber min={1} style={{ width: '100%' }} />
+            </Form.Item>
+          )}
           <Form.Item name="channel_ids" label="Notification Channels">
             <Select mode="multiple" options={channels.map(c => ({ value: c.id, label: `${c.name} (${channelTypeLabels[c.type]})` }))} />
           </Form.Item>
@@ -437,15 +495,56 @@ function ChannelsTab({ canEdit }: { canEdit: boolean }) {
 
 const historyStatusColor: Record<string, string> = {
   sent: 'green',
+  partial: 'orange',
   failed: 'red',
   no_channel: 'orange',
 }
 
-function HistoryTab({ isAdmin }: { isAdmin: boolean }) {
+// One rule firing dispatches to every one of its channels, each writing its
+// own notification_log row (same firing_id) - group those back into a
+// single history entry per firing, so the table shows one row per alert
+// covering all of its channels, with the per-channel breakdown moved into
+// the Details view.
+interface HistoryGroup {
+  key: string
+  alertName: string
+  alertId?: number
+  createdAt: string
+  triggerLog?: TriggerLogSnapshot
+  matchedConditions?: string[]
+  channels: NotificationLogEntry[]
+}
+
+function groupHistoryEntries(entries: NotificationLogEntry[]): HistoryGroup[] {
+  const groups = new Map<string, HistoryGroup>()
+  for (const e of entries) {
+    // Rows written before firing_id existed have no grouping key to share
+    // with anything else - fall back to the row's own id, so each becomes
+    // its own single-channel group instead of colliding with unrelated rows.
+    const key = e.firing_id || `single-${e.id}`
+    const group = groups.get(key)
+    if (group) {
+      group.channels.push(e)
+    } else {
+      groups.set(key, {
+        key,
+        alertName: e.alert_name,
+        alertId: e.alert_id,
+        createdAt: e.created_at,
+        triggerLog: e.trigger_log,
+        matchedConditions: e.matched_conditions,
+        channels: [e],
+      })
+    }
+  }
+  return Array.from(groups.values())
+}
+
+function HistoryTab({ isAdmin, active, focusInAppId, onFocusConsumed }: { isAdmin: boolean; active: boolean; focusInAppId?: number; onFocusConsumed: () => void }) {
   const [entries, setEntries] = useState<NotificationLogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
-  const [viewing, setViewing] = useState<NotificationLogEntry | null>(null)
+  const [viewing, setViewing] = useState<HistoryGroup | null>(null)
 
   const loadData = () => {
     setLoading(true)
@@ -453,6 +552,32 @@ function HistoryTab({ isAdmin }: { isAdmin: boolean }) {
   }
 
   useEffect(() => { loadData() }, [])
+
+  const groups = groupHistoryEntries(entries)
+
+  // A new notification means a new row in notification_log - refresh the
+  // list live while this tab is the one actually showing.
+  useEffect(() => {
+    if (!active) return
+    return onLiveNotification(() => { loadData() })
+  }, [active])
+
+  // Coming from a bell notification click (see NotificationBell's
+  // goToHistoryDetail): open the same firing's Details view automatically,
+  // as if the user had clicked "Details" on it themselves. Only the most
+  // recent 100 history rows are fetched, and test notifications are never
+  // recorded in history at all - either way, tell the user instead of
+  // silently leaving the tab with nothing selected.
+  useEffect(() => {
+    if (!focusInAppId || loading) return
+    const match = groups.find((g) => g.channels.some((c) => c.in_app_notification_id === focusInAppId))
+    if (match) {
+      setViewing(match)
+    } else {
+      message.info('No matching history entry was found for that notification (it may be too old, or a test notification, which is never recorded in history).')
+    }
+    onFocusConsumed()
+  }, [focusInAppId, loading, entries, onFocusConsumed])
 
   const handleClear = async () => {
     setClearing(true)
@@ -468,15 +593,22 @@ function HistoryTab({ isAdmin }: { isAdmin: boolean }) {
   }
 
   const columns = [
-    { title: 'Time', dataIndex: 'created_at', key: 'created_at', render: (v: string) => new Date(v).toLocaleString() },
-    { title: 'Alert', dataIndex: 'alert_name', key: 'alert_name' },
-    { title: 'Channel', dataIndex: 'channel_name', key: 'channel_name', render: (v: string, r: NotificationLogEntry) => `${v} (${r.channel_type})` },
-    { title: 'Status', dataIndex: 'status', key: 'status', render: (v: string) => <Tag color={historyStatusColor[v] || 'default'}>{v}</Tag> },
-    { title: 'Detail', dataIndex: 'detail', key: 'detail', ellipsis: true },
+    { title: 'Time', dataIndex: 'createdAt', key: 'createdAt', render: (v: string) => new Date(v).toLocaleString() },
+    { title: 'Alert', dataIndex: 'alertName', key: 'alertName' },
+    {
+      title: 'Channels', key: 'channels',
+      render: (_v: unknown, g: HistoryGroup) => (
+        <Space size={4} wrap>
+          {g.channels.map((c) => (
+            <Tag key={c.id} color={historyStatusColor[c.status] || 'default'}>{c.channel_name}</Tag>
+          ))}
+        </Space>
+      ),
+    },
     {
       title: 'Actions', key: 'actions',
-      render: (_v: unknown, r: NotificationLogEntry) => (
-        <Button size="small" icon={<EyeOutlined />} onClick={() => setViewing(r)}>Details</Button>
+      render: (_v: unknown, g: HistoryGroup) => (
+        <Button size="small" icon={<EyeOutlined />} onClick={() => setViewing(g)}>Details</Button>
       ),
     },
   ]
@@ -491,13 +623,13 @@ function HistoryTab({ isAdmin }: { isAdmin: boolean }) {
         </div>
       )}
       <Table
-        dataSource={entries}
+        dataSource={groups}
         columns={columns}
-        rowKey="id"
+        rowKey="key"
         loading={loading}
         size="small"
         scroll={{ x: 'max-content' }}
-        onRow={(r) => ({ onClick: () => setViewing(r), style: { cursor: 'pointer' } })}
+        onRow={(g) => ({ onClick: () => setViewing(g), style: { cursor: 'pointer' } })}
       />
 
       <Modal
@@ -505,22 +637,88 @@ function HistoryTab({ isAdmin }: { isAdmin: boolean }) {
         open={!!viewing}
         onCancel={() => setViewing(null)}
         footer={<Button onClick={() => setViewing(null)}>Close</Button>}
-        width={{ sm: '90%', md: 560 }}
+        width={{ sm: '90%', md: 640 }}
       >
         {viewing && (
-          <Descriptions column={1} bordered size="small">
-            <Descriptions.Item label="Time">{new Date(viewing.created_at).toLocaleString()}</Descriptions.Item>
-            <Descriptions.Item label="Alert">{viewing.alert_name || '—'}</Descriptions.Item>
-            <Descriptions.Item label="Channel">{viewing.channel_name} ({viewing.channel_type})</Descriptions.Item>
-            <Descriptions.Item label="Status">
-              <Tag color={historyStatusColor[viewing.status] || 'default'}>{viewing.status}</Tag>
-            </Descriptions.Item>
-            <Descriptions.Item label="Detail">
-              <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable={!!viewing.detail}>
-                {viewing.detail || '—'}
-              </Typography.Paragraph>
-            </Descriptions.Item>
-          </Descriptions>
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Descriptions column={1} bordered size="small">
+              <Descriptions.Item label="Time">{new Date(viewing.createdAt).toLocaleString()}</Descriptions.Item>
+              <Descriptions.Item label="Alert">{viewing.alertName || '—'}</Descriptions.Item>
+            </Descriptions>
+
+            <div>
+              <Text strong>Delivery by channel</Text>
+              <div style={{ marginTop: 8 }}>
+                <List
+                  size="small"
+                  bordered
+                  dataSource={viewing.channels}
+                  renderItem={(c) => (
+                    <List.Item>
+                      <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                        <Space>
+                          <Text strong>{c.channel_name}</Text>
+                          <Text type="secondary">({c.channel_type})</Text>
+                          <Tag color={historyStatusColor[c.status] || 'default'}>{c.status}</Tag>
+                        </Space>
+                        {c.detail && (
+                          <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable>
+                            {c.detail}
+                          </Typography.Paragraph>
+                        )}
+                      </Space>
+                    </List.Item>
+                  )}
+                />
+              </div>
+            </div>
+
+            <div>
+              <Text strong>Triggering log</Text>
+              <div style={{ marginTop: 8 }}>
+                {viewing.triggerLog ? (
+                  <Descriptions column={1} bordered size="small">
+                    <Descriptions.Item label="Time">{new Date(viewing.triggerLog.timestamp).toLocaleString()}</Descriptions.Item>
+                    <Descriptions.Item label="Severity"><SeverityTag severity={viewing.triggerLog.severity} /></Descriptions.Item>
+                    <Descriptions.Item label="Host">{viewing.triggerLog.hostname} ({viewing.triggerLog.fromhost_ip})</Descriptions.Item>
+                    {viewing.triggerLog.app_name && (
+                      <Descriptions.Item label="App">{viewing.triggerLog.app_name}</Descriptions.Item>
+                    )}
+                    <Descriptions.Item label="Message">
+                      <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable>
+                        {viewing.triggerLog.message}
+                      </Typography.Paragraph>
+                    </Descriptions.Item>
+                  </Descriptions>
+                ) : (
+                  <Empty description="No log entry associated with this notification (e.g. a config-change alert)" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                )}
+              </div>
+            </div>
+
+            <div>
+              <Text strong>Conditions met</Text>
+              <div style={{ marginTop: 8 }}>
+                {viewing.matchedConditions && viewing.matchedConditions.length > 0 ? (
+                  <List
+                    size="small"
+                    bordered
+                    dataSource={viewing.matchedConditions}
+                    renderItem={(item) => (
+                      <List.Item>
+                        <Space align="start">
+                          <CheckCircleOutlined style={{ color: '#52c41a', marginTop: 4 }} />
+                          <span>{item}</span>
+                        </Space>
+                      </List.Item>
+                    )}
+                  />
+                ) : (
+                  <Empty description="No condition breakdown recorded for this notification" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                )}
+              </div>
+            </div>
+          </Space>
         )}
       </Modal>
     </>
@@ -532,17 +730,36 @@ export default function AlertsPage() {
   const canEdit = user?.role === 'admin' || user?.role === 'editor'
   const isAdmin = user?.role === 'admin'
 
+  // Deep-linked from a notification bell click (see NotificationBell's
+  // goToHistoryDetail): ?tab=history&notification=<in_app_notification_id>
+  // opens straight to History with that entry's Details already showing.
+  const [searchParams] = useSearchParams()
+  const initialTab = searchParams.get('tab') === 'history' ? 'history' : 'rules'
+  const initialFocusID = Number(searchParams.get('notification')) || undefined
+  const [activeTab, setActiveTab] = useState(initialTab)
+  const [focusInAppId, setFocusInAppId] = useState<number | undefined>(initialFocusID)
+
   const items = [
-    { key: 'rules', label: 'Alert Rules', children: <RulesTab canEdit={canEdit} /> },
+    { key: 'rules', label: 'Alert Rules', children: <RulesTab canEdit={canEdit} active={activeTab === 'rules'} /> },
     { key: 'channels', label: 'Notification Channels', children: <ChannelsTab canEdit={isAdmin} /> },
-    { key: 'history', label: 'History', children: <HistoryTab isAdmin={isAdmin} /> },
+    {
+      key: 'history', label: 'History',
+      children: (
+        <HistoryTab
+          isAdmin={isAdmin}
+          active={activeTab === 'history'}
+          focusInAppId={focusInAppId}
+          onFocusConsumed={() => setFocusInAppId(undefined)}
+        />
+      ),
+    },
   ]
 
   return (
     <>
       <Title level={3} style={{ marginTop: 0 }}>Alerts &amp; Notifications</Title>
       <Card>
-        <Tabs items={items} />
+        <Tabs items={items} activeKey={activeTab} onChange={setActiveTab} />
       </Card>
     </>
   )

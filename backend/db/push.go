@@ -6,7 +6,7 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 
-	"syslog-gui/model"
+	"syslytics/model"
 )
 
 // GetOrCreateVAPIDKeys returns the VAPID key pair used to sign Web Push

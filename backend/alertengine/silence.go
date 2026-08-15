@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"syslog-gui/db"
-	"syslog-gui/model"
-	"syslog-gui/notify"
+	"syslytics/db"
+	"syslytics/model"
+	"syslytics/notify"
 )
 
 type deviceLastSeen struct {

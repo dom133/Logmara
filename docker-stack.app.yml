@@ -7,10 +7,10 @@
 # Swarm `docker stack deploy` does NOT build images (no `build:` support),
 # so images must be built and pushed to a registry every node can pull from
 # first:
-#   docker build -f Dockerfile.backend  -t ${REGISTRY:?}/syslog-gui-api:${TAG:-latest} .
-#   docker build -f Dockerfile.rsyslog  -t ${REGISTRY:?}/syslog-gui-rsyslog:${TAG:-latest} .
-#   docker build -f Dockerfile.frontend -t ${REGISTRY:?}/syslog-gui-frontend:${TAG:-latest} .
-#   docker push ${REGISTRY:?}/syslog-gui-api:${TAG:-latest}   (repeat for the other two)
+#   docker build -f Dockerfile.backend  -t ${REGISTRY:?}/syslytics-api:${TAG:-latest} .
+#   docker build -f Dockerfile.rsyslog  -t ${REGISTRY:?}/syslytics-rsyslog:${TAG:-latest} .
+#   docker build -f Dockerfile.frontend -t ${REGISTRY:?}/syslytics-frontend:${TAG:-latest} .
+#   docker push ${REGISTRY:?}/syslytics-api:${TAG:-latest}   (repeat for the other two)
 #
 # `api` and `frontend` run 2 replicas each (see API_REPLICAS/FRONTEND_
 # REPLICAS below to change that). This requires docker-stack.redis.yml to
@@ -60,8 +60,46 @@ version: "3.8"
 # ordering, not as a readiness gate.
 
 services:
+  # Read-only, allow-listed view onto the Docker Engine API, used by
+  # Admin > Health (backend/handler/health_docker.go) to show container /
+  # Swarm service status. Placed on manager nodes only (node.role ==
+  # manager) - unlike a single-host /containers/json call, Swarm's
+  # /services and /tasks endpoints return the *entire* cluster's state from
+  # any one manager, including nodes that never run api itself (the
+  # Postgres/Redis managers) - so this, unlike mounting the socket into api
+  # directly on app=true workers, is what actually gives full cluster
+  # visibility. api reaches it through the docker-proxy service DNS name,
+  # which load-balances across every manager replica. Not published - only
+  # reachable from other syslog_net containers. See the matching comment in
+  # docker-compose.yml for why this proxy exists instead of a raw socket
+  # mount on api.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      CONTAINERS: 1
+      SERVICES: 1
+      TASKS: 1
+      NODES: 1
+      INFO: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - syslog_net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      mode: global
+      placement:
+        constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+
   rsyslog:
-    image: ${REGISTRY:?set REGISTRY to your image registry}/syslog-gui-rsyslog:${TAG:-latest}
+    image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-rsyslog:${TAG:-latest}
     environment:
       - TZ=${TZ:-Europe/Warsaw}
     volumes:
@@ -75,6 +113,13 @@ services:
       - target: 514
         published: 514
         protocol: udp
+        mode: host
+      # mTLS listener for remote syslog relays (Admin > Settings > enable
+      # relay ingestion). Safe to leave published even when unused - see the
+      # matching comment in docker-compose.yml.
+      - target: 6514
+        published: 6514
+        protocol: tcp
         mode: host
     networks:
       - syslog_net
@@ -99,7 +144,7 @@ services:
         condition: on-failure
 
   api:
-    image: ${REGISTRY:?set REGISTRY to your image registry}/syslog-gui-api:${TAG:-latest}
+    image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-api:${TAG:-latest}
     environment:
       # api reads these directly via os.Getenv (backend/auth/auth.go:29 etc.)
       # — unlike the spilo Postgres image, this backend has no _FILE/Docker-
@@ -123,6 +168,15 @@ services:
       HTTPS_ENABLED: ${HTTPS_ENABLED:-}
       HTTPS_REDIRECT: ${HTTPS_REDIRECT:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # rsyslog runs `mode: global` across every edge=true node (see the
+      # comment above), so a relay ACL/whitelist change must reload all of
+      # them, not just whichever one currently holds the keepalived VIP -
+      # same reasoning as tasks.frontend for nginx above.
+      RSYSLOG_RELOAD_TARGETS_HOST: tasks.rsyslog
+      RSYSLOG_RELOAD_PORT: "8082"
+      RELAY_CENTRAL_HOST: ${RELAY_CENTRAL_HOST:-}
+      # Backs Admin > Health - see the docker-proxy service above.
+      DOCKER_PROXY_URL: http://docker-proxy:2375
       # Must match the redis_password secret used by docker-stack.redis.yml.
       REDIS_SENTINEL_ADDRS: sentinel1:26379,sentinel2:26379,sentinel3:26379
       REDIS_MASTER_NAME: mymaster
@@ -155,7 +209,7 @@ services:
           memory: 512M
 
   frontend:
-    image: ${REGISTRY:?set REGISTRY to your image registry}/syslog-gui-frontend:${TAG:-latest}
+    image: ${REGISTRY:?set REGISTRY to your image registry}/syslytics-frontend:${TAG:-latest}
     volumes:
       - log_data:/data
     ports:
