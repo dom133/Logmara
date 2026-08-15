@@ -78,6 +78,9 @@ export default function Admin() {
       if (data['session_timeout_min'] !== undefined && data['session_timeout_min'] !== '') formValues['session_timeout_min'] = parseInt(data['session_timeout_min'], 10)
       formValues['https_enabled'] = data['https_enabled'] === 'true'
       formValues['https_redirect'] = data['https_redirect'] === 'true'
+      formValues['notifications_enabled'] = data['notifications_enabled'] === 'true'
+      formValues['smtp_use_tls'] = data['smtp_use_tls'] === 'true'
+      if (data['smtp_port']) formValues['smtp_port'] = parseInt(data['smtp_port'], 10)
       settingsForm.setFieldsValue(formValues)
       setLdapEnabled(data['ldap_enabled'] === 'true')
       setLdapAutoProvision(data['ldap_auto_provision'] === 'true')
@@ -488,6 +491,28 @@ const handleCleanup = async () => {
                       >
                         {sslUploading ? 'Uploading...' : 'Upload Certificates'}
                       </Button>
+                    </Form.Item>
+                    <Divider orientation="left">Notifications (SMTP)</Divider>
+                    <Form.Item label="Enable Notifications" name="notifications_enabled" valuePropName="checked">
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item label="SMTP Host" name="smtp_host">
+                      <Input placeholder="smtp.example.com" />
+                    </Form.Item>
+                    <Form.Item label="SMTP Port" name="smtp_port">
+                      <InputNumber min={1} max={65535} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item label="SMTP Username" name="smtp_username">
+                      <Input placeholder="notifications@example.com" />
+                    </Form.Item>
+                    <Form.Item label="SMTP Password" name="smtp_password">
+                      <Input.Password />
+                    </Form.Item>
+                    <Form.Item label="From Address" name="smtp_from">
+                      <Input placeholder="syslog-gui@example.com" />
+                    </Form.Item>
+                    <Form.Item label="Use STARTTLS" name="smtp_use_tls" valuePropName="checked">
+                      <Switch />
                     </Form.Item>
                     {certInfo && (
                       <Result

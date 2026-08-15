@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"syslog-gui/audit"
 	"syslog-gui/auth"
 	"syslog-gui/control"
 	"syslog-gui/db"
@@ -81,6 +82,8 @@ func CreateUser(database *sql.DB) gin.HandlerFunc {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 				return
 			}
+			actorID, actorName := actorFromContext(c)
+			audit.LogAudit(database, actorID, actorName, "user_created", c.ClientIP(), fmt.Sprintf("created %s user %s", authType, req.Username))
 			c.JSON(http.StatusCreated, user)
 			return
 		}
@@ -107,6 +110,8 @@ func CreateUser(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		actorID, actorName := actorFromContext(c)
+		audit.LogAudit(database, actorID, actorName, "user_created", c.ClientIP(), fmt.Sprintf("created local user %s", req.Username))
 		c.JSON(http.StatusCreated, user)
 	}
 }
@@ -146,6 +151,8 @@ func UpdateUser(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		actorID, actorName := actorFromContext(c)
+		audit.LogAudit(database, actorID, actorName, "user_updated", c.ClientIP(), fmt.Sprintf("updated user %s", user.Username))
 		c.JSON(http.StatusOK, user)
 	}
 }
@@ -163,6 +170,8 @@ func DeleteUser(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		actorID, actorName := actorFromContext(c)
+		audit.LogAudit(database, actorID, actorName, "user_deleted", c.ClientIP(), fmt.Sprintf("deleted user id %d", id))
 		c.JSON(http.StatusOK, gin.H{"message": "User deleted"})
 	}
 }
@@ -176,16 +185,16 @@ func ResetPassword(database *sql.DB) gin.HandlerFunc {
 		}
 
 		var req ResetPasswordRequest
-if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	if err := auth.ValidatePassword(req.Password); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := auth.ValidatePassword(req.Password); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 
-	var authType string
+		var authType string
 		if err := database.QueryRow("SELECT auth_type FROM users WHERE id = $1", id).Scan(&authType); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "User not found"})
 			return
@@ -206,6 +215,8 @@ if err := c.ShouldBindJSON(&req); err != nil {
 			return
 		}
 
+		actorID, actorName := actorFromContext(c)
+		audit.LogAudit(database, actorID, actorName, "password_reset_by_admin", c.ClientIP(), fmt.Sprintf("reset password for user id %d", id))
 		c.JSON(http.StatusOK, gin.H{"message": "Password reset successful"})
 	}
 }
@@ -224,6 +235,9 @@ func GetSettings(database *sql.DB) gin.HandlerFunc {
 		}
 		if v, ok := settings["ldap_bind_password"]; ok && v != "" {
 			settings["ldap_bind_password"] = "****"
+		}
+		if v, ok := settings["smtp_password"]; ok && v != "" {
+			settings["smtp_password"] = "****"
 		}
 		c.JSON(http.StatusOK, settings)
 	}
@@ -269,6 +283,9 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 			}
 		}
 
+		actorID, actorName := actorFromContext(c)
+		audit.LogAudit(database, actorID, actorName, "settings_updated", c.ClientIP(), "")
+
 		nginxConfigChanged := oldHttpsEnabled != newHttpsEnabled || oldHttpsRedirect != newHttpsRedirect || oldCorsOrigins != newCorsOrigins
 
 		if nginxConfigChanged {
@@ -280,7 +297,7 @@ func UpdateSettings(database *sql.DB) gin.HandlerFunc {
 			if err := reloadNginxWithRetry(newHttpsEnabled == "true", newHttpsRedirect == "true", newCorsOrigins, 5, 2*time.Second); err != nil {
 				slog.Warn("nginx reload failed after settings update", "error", err)
 				c.JSON(http.StatusOK, gin.H{
-					"message":             "Settings updated",
+					"message":            "Settings updated",
 					"nginx_reload_error": err.Error(),
 				})
 				return
@@ -308,7 +325,7 @@ const httpsServerBlock = `server {
         try_files $uri $uri/ /index.html;
     }
 
-    location /api/logs/stream {
+    location /api/notifications/stream {
         add_header Access-Control-Allow-Origin $cors_allow_origin always;
         add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, PATCH, OPTIONS" always;
         add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
@@ -596,6 +613,8 @@ func PurgeAllLogs(database *sql.DB, ic control.IngestionController) gin.HandlerF
 			slog.Info("ingestion resumed")
 		}
 
+		actorID, actorName := actorFromContext(c)
+		audit.LogAudit(database, actorID, actorName, "logs_purged", c.ClientIP(), fmt.Sprintf("purged %d log entries", count))
 		c.JSON(http.StatusOK, gin.H{
 			"message":       "All logs purged",
 			"deleted_count": count,

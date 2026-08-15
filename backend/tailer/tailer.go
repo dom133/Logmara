@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+	"syslog-gui/alertengine"
 	"syslog-gui/control"
 	"syslog-gui/model"
 	"syslog-gui/parser"
@@ -33,15 +34,15 @@ const (
 // NFS), only the replica that currently holds the elected lock actually
 // tails/flushes/compacts; the others wait, ready to take over the moment
 // the lock becomes available (leader crash, node loss, etc.).
-func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector) {
+func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine) {
 	if elector == nil {
-		runIngestionLoop(ctx, db, filePath, engine, ic)
+		runIngestionLoop(ctx, db, filePath, engine, ic, alerts)
 		return
 	}
-	runWithLeaderElection(ctx, db, filePath, engine, ic, elector)
+	runWithLeaderElection(ctx, db, filePath, engine, ic, elector, alerts)
 }
 
-func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector) {
+func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, elector *sharedstate.LeaderElector, alerts *alertengine.Engine) {
 	const retryInterval = 5 * time.Second
 	const renewInterval = 5 * time.Second
 
@@ -62,7 +63,7 @@ func runWithLeaderElection(ctx context.Context, db *sql.DB, filePath string, eng
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			runIngestionLoop(leaderCtx, db, filePath, engine, ic)
+			runIngestionLoop(leaderCtx, db, filePath, engine, ic, alerts)
 		}()
 
 	renewLoop:
@@ -97,7 +98,7 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController) {
+func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine) {
 	slog.Info("file tailer started", "path", filePath)
 	batchSize := 500
 	batchInterval := 2 * time.Second
@@ -214,6 +215,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 					} else {
 						flushedPos = batchStartPos
 						savePosition(posFile, flushedPos)
+						alerts.EvaluateBatch(db, entries)
 					}
 				}
 				entries = entries[:0]

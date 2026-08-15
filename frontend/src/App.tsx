@@ -1,18 +1,20 @@
 import { useEffect, useState, createContext, useContext } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link as RouterLink } from 'react-router-dom'
 import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Space, Typography } from 'antd'
-import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons'
+import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, BellOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import LogsViewer from './pages/LogsViewer'
 import ParsersPage from './pages/Parsers'
 import DashboardsPage from './pages/Dashboards'
 import DashboardViewPage from './pages/DashboardView'
+import AlertsPage from './pages/Alerts'
 
 import Admin from './pages/Admin'
 import SetupWizard from './pages/SetupWizard'
 import ErrorBoundary from './components/ErrorBoundary'
 import { SessionWarningModal } from './components/SessionWarningModal'
+import { NotificationBell } from './components/NotificationBell'
 import { AuthProvider, useAuth } from './services/auth'
 import { getDashboards, getDashboard, Dashboard as DashboardType, checkInitialized } from './services/api'
 
@@ -161,6 +163,7 @@ const navItems = [
   { key: '/logs', label: 'Logs', icon: <FileTextOutlined /> },
   { key: '/parsers', label: 'Parsers', icon: <SettingOutlined /> },
   { key: '/dashboards', label: 'Dashboards', icon: <FundOutlined /> },
+  { key: '/alerts', label: 'Alerts', icon: <BellOutlined /> },
   { key: '/admin', label: 'Admin', icon: <SafetyOutlined />, adminOnly: true },
 ]
 
@@ -267,6 +270,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'nowrap', overflow: 'hidden' }}>
+            <NotificationBell />
             <span style={{ fontSize: 13, color: token.colorTextSecondary, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
               <UserOutlined /> {user?.username}
             </span>
@@ -365,6 +369,7 @@ export default function App() {
               <Route path="/parsers" element={<PrivateRoute><ParsersPage /></PrivateRoute>} />
               <Route path="/dashboards" element={<PrivateRoute><DashboardsPage /></PrivateRoute>} />
               <Route path="/dashboards/:id" element={<PrivateRoute><DashboardViewPage /></PrivateRoute>} />
+              <Route path="/alerts" element={<PrivateRoute><AlertsPage /></PrivateRoute>} />
               <Route path="/admin" element={<PrivateRoute><Admin /></PrivateRoute>} />
               <Route path="*" element={<PrivateRoute><Result status="404" title="404" subTitle="Page not found" /></PrivateRoute>} />
             </>

@@ -600,3 +600,199 @@ export async function uploadSSLCerts(certFile: File, keyFile: File) {
 	})
 	return res.data
 }
+
+// --- Alerts & Notifications ---
+
+export type AlertRuleType = 'log_threshold' | 'device_silence' | 'config_change'
+export type NotificationChannelType = 'email' | 'webhook' | 'slack' | 'teams' | 'in_app'
+
+export interface Alert {
+	id: number
+	name: string
+	description: string
+	rule_type: AlertRuleType
+	severity?: string
+	hostname_pattern?: string
+	app_name_pattern?: string
+	message_pattern?: string
+	threshold: number
+	window_minutes: number
+	cooldown_minutes: number
+	audit_action_filter?: string
+	is_active: boolean
+	created_by?: number
+	created_at: string
+	updated_at: string
+	last_fired_at?: string
+	channel_ids: number[]
+}
+
+export interface AlertRequest {
+	name: string
+	description?: string
+	rule_type: AlertRuleType
+	severity?: string
+	hostname_pattern?: string
+	app_name_pattern?: string
+	message_pattern?: string
+	threshold?: number
+	window_minutes?: number
+	cooldown_minutes?: number
+	audit_action_filter?: string
+	is_active?: boolean
+	channel_ids?: number[]
+}
+
+export async function getAlerts() {
+	const res = await api.get('/alerts')
+	return (res.data || []) as Alert[]
+}
+
+export async function createAlert(data: AlertRequest) {
+	const res = await api.post('/alerts', data)
+	return res.data as Alert
+}
+
+export async function updateAlert(id: number, data: AlertRequest) {
+	const res = await api.put(`/alerts/${id}`, data)
+	return res.data as Alert
+}
+
+export async function deleteAlert(id: number) {
+	const res = await api.delete(`/alerts/${id}`)
+	return res.data
+}
+
+export interface NotificationChannel {
+	id: number
+	name: string
+	type: NotificationChannelType
+	config: Record<string, unknown>
+	has_secret: boolean
+	enabled: boolean
+	created_at: string
+	updated_at: string
+}
+
+export interface NotificationChannelRequest {
+	name: string
+	type: NotificationChannelType
+	config?: Record<string, unknown>
+	secret?: string
+	enabled?: boolean
+}
+
+export async function getNotificationChannels() {
+	const res = await api.get('/admin/notification-channels')
+	return (res.data || []) as NotificationChannel[]
+}
+
+export async function createNotificationChannel(data: NotificationChannelRequest) {
+	const res = await api.post('/admin/notification-channels', data)
+	return res.data as NotificationChannel
+}
+
+export async function updateNotificationChannel(id: number, data: NotificationChannelRequest) {
+	const res = await api.put(`/admin/notification-channels/${id}`, data)
+	return res.data as NotificationChannel
+}
+
+export async function deleteNotificationChannel(id: number) {
+	const res = await api.delete(`/admin/notification-channels/${id}`)
+	return res.data
+}
+
+export async function testNotificationChannel(id: number) {
+	const res = await api.post(`/admin/notification-channels/${id}/test`)
+	return res.data
+}
+
+export interface NotificationLogEntry {
+	id: number
+	alert_id?: number
+	alert_name: string
+	channel_id?: number
+	channel_name: string
+	channel_type: string
+	status: 'sent' | 'failed'
+	detail?: string
+	created_at: string
+}
+
+export async function getNotificationHistory(limit = 100) {
+	const res = await api.get('/admin/notifications/history', { params: { limit } })
+	return (res.data || []) as NotificationLogEntry[]
+}
+
+export interface InAppNotification {
+	id: number
+	alert_id?: number
+	title: string
+	message: string
+	severity: string
+	created_at: string
+}
+
+export async function getNotifications() {
+	const res = await api.get('/notifications')
+	return res.data as { unread_count: number; last_id: number; notifications: InAppNotification[] }
+}
+
+export async function markNotificationsRead(lastReadId: number) {
+	const res = await api.post('/notifications/mark-read', { last_read_id: lastReadId })
+	return res.data
+}
+
+// Opens the SSE notification stream via fetch (not EventSource) so the JWT
+// can travel in the Authorization header instead of a URL query param.
+// Calls onNotification for each event and returns a function that aborts
+// the stream. Silently stops retrying once `stop()` has been called.
+export function streamNotifications(onNotification: (n: InAppNotification) => void): () => void {
+	const controller = new AbortController()
+	let stopped = false
+
+	const connect = async () => {
+		while (!stopped) {
+			try {
+				const token = localStorage.getItem('token')
+				const res = await fetch('/api/notifications/stream', {
+					headers: token ? { Authorization: `Bearer ${token}` } : {},
+					signal: controller.signal,
+				})
+				if (!res.ok || !res.body) throw new Error(`stream failed: ${res.status}`)
+
+				const reader = res.body.getReader()
+				const decoder = new TextDecoder()
+				let buffer = ''
+
+				while (!stopped) {
+					const { done, value } = await reader.read()
+					if (done) break
+					buffer += decoder.decode(value, { stream: true })
+
+					let sepIndex
+					while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {
+						const rawEvent = buffer.slice(0, sepIndex)
+						buffer = buffer.slice(sepIndex + 2)
+						const dataLine = rawEvent.split('\n').find(l => l.startsWith('data: '))
+						if (!dataLine) continue
+						try {
+							onNotification(JSON.parse(dataLine.slice(6)) as InAppNotification)
+						} catch {
+							// ignore malformed event
+						}
+					}
+				}
+			} catch {
+				if (stopped) return
+			}
+			if (!stopped) await new Promise(r => setTimeout(r, 3000))
+		}
+	}
+
+	connect()
+	return () => {
+		stopped = true
+		controller.abort()
+	}
+}
