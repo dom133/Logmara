@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"logmara/db"
 	"logmara/model"
 
 	"strings"
@@ -44,7 +45,7 @@ type ScopeFilters struct {
 	MatchMode string `json:"match_mode"`
 }
 
-func APIKeyAuth(database *sql.DB) gin.HandlerFunc {
+func APIKeyAuth(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -68,6 +69,7 @@ func APIKeyAuth(database *sql.DB) gin.HandlerFunc {
 		keyPrefix := apiKey[:8]
 		keyHash := hashAPIKey(apiKey)
 
+		database := pool.Get()
 		row := database.QueryRow(`
 			SELECT id, key_hash, is_active, permissions, scope_filters, rate_limit_per_min, expires_at, allowed_ips
 			FROM api_keys

@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"database/sql"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -13,7 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func CheckInitialized(database *sql.DB) gin.HandlerFunc {
+func CheckInitialized(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		starting := db.IsAppStarting()
 		if starting {
@@ -24,7 +23,7 @@ func CheckInitialized(database *sql.DB) gin.HandlerFunc {
 			})
 			return
 		}
-		val := db.GetSetting(database, "is_initialized", "false")
+		val := db.GetSetting(pool.Get(), "is_initialized", "false")
 		c.JSON(http.StatusOK, gin.H{
 			"initialized":     val == "true",
 			"starting":        false,
@@ -48,13 +47,13 @@ func CheckInitializedStandalone() gin.HandlerFunc {
 
 // GetDbConfig backs the setup wizard's Database step. It exposes the
 // (password-free) connection details derived from DATABASE_URL so the wizard
-// can pre-fill the form. Pass a live *sql.DB to gate it once the app is
+// can pre-fill the form. Pass a live *db.DynamicPool to gate it once the app is
 // initialized - after setup there's no legitimate caller, and leaving it open
 // would leak the DB host/name/user to unauthenticated clients. Pass nil in the
 // pre-database wizard server, where no such check is possible or needed.
-func GetDbConfig(database *sql.DB) gin.HandlerFunc {
+func GetDbConfig(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if database != nil && db.GetSetting(database, "is_initialized", "false") == "true" {
+		if pool != nil && db.GetSetting(pool.Get(), "is_initialized", "false") == "true" {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Application already initialized", "error_key": "init.alreadyInitialized"})
 			return
 		}

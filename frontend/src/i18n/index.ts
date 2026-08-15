@@ -71,7 +71,7 @@ export function sortLanguagesEnglishFirst(languages: string[]): string[] {
 
 async function detectLanguages(): Promise<string[]> {
   try {
-    const indexRes = await fetch(`${LANGUAGE_PATH}/index.json`)
+    const indexRes = await fetch(`${LANGUAGE_PATH}/index.json?t=${Date.now()}`)
     if (!indexRes.ok) return ['en']
     const index: string[] = await indexRes.json()
     return index.length > 0 ? index : ['en']
@@ -82,7 +82,7 @@ async function detectLanguages(): Promise<string[]> {
 
 async function loadLanguage(lang: string): Promise<{ lang: string; data: Record<string, unknown> } | null> {
   try {
-    const res = await fetch(`${LANGUAGE_PATH}/${lang}/translation.json`)
+    const res = await fetch(`${LANGUAGE_PATH}/${lang}/translation.json?t=${Date.now()}`)
     if (res.ok) {
       const data = await res.json()
       return { lang, data }
@@ -93,7 +93,7 @@ async function loadLanguage(lang: string): Promise<{ lang: string; data: Record<
 
 async function getDefaultLanguage(): Promise<string | null> {
   try {
-    const res = await fetch('/api/settings/default-language')
+    const res = await fetch(`/api/settings/default-language?t=${Date.now()}`)
     if (!res.ok) return null
     const data: { default_language?: string } = await res.json()
     return data.default_language || null

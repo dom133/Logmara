@@ -30,7 +30,7 @@ type APIExportRequest struct {
 	TZ         string `json:"tz"`
 }
 
-func ExportJSON(database *sql.DB) gin.HandlerFunc {
+func ExportJSON(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !middleware.CheckPermission(c, "export_json") {
 			c.AbortWithError(http.StatusForbidden, model.NewForbiddenKey("forbidden", "Missing permission: export_json", nil))
@@ -69,7 +69,7 @@ func ExportJSON(database *sql.DB) gin.HandlerFunc {
 			tz = "UTC"
 		}
 
-		logs, hasMore, nextCursor := queryLogs(database, whereSQL, args, limit, req.Cursor, tz)
+		logs, hasMore, nextCursor := queryLogs(pool, whereSQL, args, limit, req.Cursor, tz)
 
 		c.JSON(http.StatusOK, gin.H{
 			"logs":       logs,
@@ -79,7 +79,7 @@ func ExportJSON(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func ExportParsedJSON(database *sql.DB) gin.HandlerFunc {
+func ExportParsedJSON(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !middleware.CheckPermission(c, "export_parsed") {
 			c.AbortWithError(http.StatusForbidden, model.NewForbiddenKey("forbidden", "Missing permission: export_parsed", nil))
@@ -119,7 +119,7 @@ func ExportParsedJSON(database *sql.DB) gin.HandlerFunc {
 			tz = "UTC"
 		}
 
-		logs, hasMore, nextCursor := queryLogs(database, whereSQL, args, limit, req.Cursor, tz)
+		logs, hasMore, nextCursor := queryLogs(pool, whereSQL, args, limit, req.Cursor, tz)
 
 		c.JSON(http.StatusOK, gin.H{
 			"logs":       logs,
@@ -129,8 +129,9 @@ func ExportParsedJSON(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func ExportStats(database *sql.DB) gin.HandlerFunc {
+func ExportStats(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		if !middleware.CheckPermission(c, "view_stats") {
 			c.AbortWithError(http.StatusForbidden, model.NewForbiddenKey("forbidden", "Missing permission: view_stats", nil))
 			return
@@ -179,7 +180,7 @@ func ExportStats(database *sql.DB) gin.HandlerFunc {
 		}
 
 		var severityCounts []gin.H
-		rows, err := database.Query("SELECT severity, COUNT(*) FROM syslog_logs "+whereSQL+" GROUP BY severity ORDER BY COUNT(*) DESC", args...)
+		rows, err := pool.Get().Query("SELECT severity, COUNT(*) FROM syslog_logs "+whereSQL+" GROUP BY severity ORDER BY COUNT(*) DESC", args...)
 		if err != nil {
 			c.AbortWithError(http.StatusInternalServerError, model.NewInternal("Query failed", err))
 			return
@@ -197,7 +198,7 @@ func ExportStats(database *sql.DB) gin.HandlerFunc {
 		}
 
 		var hostCounts []gin.H
-		hostRows, err := database.Query("SELECT hostname, COUNT(*) FROM syslog_logs "+whereSQL+" GROUP BY hostname ORDER BY COUNT(*) DESC LIMIT 20", args...)
+		hostRows, err := pool.Get().Query("SELECT hostname, COUNT(*) FROM syslog_logs "+whereSQL+" GROUP BY hostname ORDER BY COUNT(*) DESC LIMIT 20", args...)
 		if err != nil {
 			c.AbortWithError(http.StatusInternalServerError, model.NewInternal("Query failed", err))
 			return
@@ -222,7 +223,7 @@ func ExportStats(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func queryLogs(database *sql.DB, whereSQL string, args []interface{}, limit int, cursor string, tz string) ([]gin.H, bool, string) {
+func queryLogs(pool *db.DynamicPool, whereSQL string, args []interface{}, limit int, cursor string, tz string) ([]gin.H, bool, string) {
 	var logs []gin.H
 	var hasMore bool
 	var nextCursor string
@@ -245,7 +246,7 @@ func queryLogs(database *sql.DB, whereSQL string, args []interface{}, limit int,
 		)
 
 		fullArgs := append(args, tz, ts, ts, id, limit)
-		rows, err := database.Query(query, fullArgs...)
+		rows, err := pool.Get().Query(query, fullArgs...)
 		if err != nil {
 			slog.Error("export API: cursor query failed", "error", err)
 			return []gin.H{}, false, ""
@@ -264,7 +265,7 @@ func queryLogs(database *sql.DB, whereSQL string, args []interface{}, limit int,
 		)
 
 		fullArgs := append(args, tz, limit)
-		rows, err := database.Query(query, fullArgs...)
+		rows, err := pool.Get().Query(query, fullArgs...)
 		if err != nil {
 			slog.Error("export API: query failed", "error", err)
 			return []gin.H{}, false, ""

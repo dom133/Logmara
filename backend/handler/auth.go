@@ -179,8 +179,9 @@ type ChangePasswordRequest struct {
 	NewPassword     string `json:"new_password" binding:"required,min=8,max=128"`
 }
 
-func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
+func Login(pool *db.DynamicPool, authCfg *auth.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var req LoginRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request", "error_key": "error.invalidRequest"})
@@ -291,10 +292,10 @@ func Login(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			return
 		}
 
-		rememberedTTL := getRememberedTTL(database)
+		rememberedTTL := getRememberedTTL(pool)
 		refreshToken, refreshExpiresAt := auth.GenerateRefreshTokenWithTTL(int(user.ID), req.Remember, rememberedTTL)
 		devID := deviceID(c)
-		if err := insertRefreshToken(database, refreshTokenParams{
+		if err := insertRefreshToken(pool, refreshTokenParams{
 			userID:           int(user.ID),
 			token:            refreshToken,
 			expiresAt:        refreshExpiresAt,
@@ -360,8 +361,9 @@ func ptrTime(t time.Time) *time.Time {
 // between multiple tabs that may have been backgrounded.
 const refreshReuseGraceWindow = 30 * time.Second
 
-func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
+func Refresh(pool *db.DynamicPool, authCfg *auth.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		refreshToken, err := c.Cookie(RefreshTokenCookieName)
 		if err != nil || refreshToken == "" {
 			var req RefreshRequest
@@ -409,7 +411,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		var replacementExpiry time.Time
 		var recoveredDeviceID string
 		if claimErr != nil {
-			recoveredUserID, recoveredToken, recoveredExpiry, recoveredRemember, recoveredDID, recovered := recoverRacedRefresh(database, refreshToken)
+			recoveredUserID, recoveredToken, recoveredExpiry, recoveredRemember, recoveredDID, recovered := recoverRacedRefresh(pool, refreshToken)
 			if !recovered {
 				clearAuthCookies(c)
 				audit.LogAudit(database, 0, "", "refresh_failed", c.ClientIP(), "invalid, expired, or reused refresh token")
@@ -435,7 +437,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			finalDeviceID = deviceID(c)
 		}
 
-		user, err := getUserByID(database, userID)
+		user, err := getUserByID(pool, userID)
 		if err != nil {
 			clearAuthCookies(c)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found", "error_key": "auth.userNotFound"})
@@ -455,9 +457,9 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 			return
 		}
 
-		rememberedTTL := getRememberedTTL(database)
+		rememberedTTL := getRememberedTTL(pool)
 		newRefreshToken, newExpiresAt := auth.GenerateRefreshTokenWithTTL(userID, remember, rememberedTTL)
-		if err := insertRefreshToken(database, refreshTokenParams{
+		if err := insertRefreshToken(pool, refreshTokenParams{
 			userID:           userID,
 			token:            newRefreshToken,
 			expiresAt:        newExpiresAt,
@@ -471,7 +473,7 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 		}); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
-		if _, err := database.Exec("UPDATE refresh_tokens SET used = true, used_at = NOW(), replaced_by = $1 WHERE token_hash = $2", newRefreshToken, rh); err != nil {
+		if _, err := pool.Get().Exec("UPDATE refresh_tokens SET used = true, used_at = NOW(), replaced_by = $1 WHERE token_hash = $2", newRefreshToken, rh); err != nil {
 			slog.Error("failed to link rotated refresh token", "error", err)
 		}
 
@@ -486,7 +488,8 @@ func Refresh(database *sql.DB, authCfg *auth.Config) gin.HandlerFunc {
 // rotated moments ago (used=true, linked to a replacement) and, if so,
 // within the grace window, hands back the replacement token instead of
 // treating this as a stale/replayed refresh token.
-func recoverRacedRefresh(database *sql.DB, token string) (userID int, replacementToken string, replacementExpiry time.Time, remember bool, deviceID string, ok bool) {
+func recoverRacedRefresh(pool *db.DynamicPool, token string) (userID int, replacementToken string, replacementExpiry time.Time, remember bool, deviceID string, ok bool) {
+	database := pool.Get()
 	rh := auth.HashRefreshToken(token)
 	var replacedBy sql.NullString
 	var usedAt sql.NullTime
@@ -515,7 +518,8 @@ func recoverRacedRefresh(database *sql.DB, token string) (userID int, replacemen
 	return userID, replacedBy.String, expiresAt, remember, devID.String, true
 }
 
-func getUserByID(database *sql.DB, userID int) (*db.User, error) {
+func getUserByID(pool *db.DynamicPool, userID int) (*db.User, error) {
+	database := pool.Get()
 	var user db.User
 	err := database.QueryRow(
 		"SELECT id, username, email, password_hash, role, is_admin, is_active, created_at, last_login_at FROM users WHERE id = $1",
@@ -524,8 +528,9 @@ func getUserByID(database *sql.DB, userID int) (*db.User, error) {
 	return &user, err
 }
 
-func Logout(database *sql.DB) gin.HandlerFunc {
+func Logout(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		jti, _ := c.Get("jti")
 		if jtiStr, ok := jti.(string); ok && jtiStr != "" {
 			db.BlacklistJTI(database, jtiStr)
@@ -544,7 +549,7 @@ func Logout(database *sql.DB) gin.HandlerFunc {
 			// other device/browser too, including any "remember this device"
 			// session that's supposed to survive independently of this one.
 			rh := auth.HashRefreshToken(refreshToken)
-			database.Exec("UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE token_hash = $1 AND used = false", rh)
+			pool.Get().Exec("UPDATE refresh_tokens SET used = true, used_at = NOW() WHERE token_hash = $1 AND used = false", rh)
 		}
 		clearAuthCookies(c)
 		c.JSON(http.StatusOK, gin.H{"message": "Logged out"})
@@ -567,12 +572,12 @@ func Logout(database *sql.DB) gin.HandlerFunc {
 // the response is sent. The async middleware can silently fail if the DB
 // connection pool is exhausted or the goroutine is preempted - this path
 // ensures at least one reliable update per polling cycle.
-func CheckSession(database *sql.DB) gin.HandlerFunc {
+func CheckSession(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		jti, ok := c.Get("jti")
 		if ok {
 			if jtiStr, ok := jti.(string); ok && jtiStr != "" {
-				database.Exec(
+				pool.Get().Exec(
 					"UPDATE refresh_tokens SET last_used_at = NOW() WHERE jti = $1 AND used = false",
 					jtiStr,
 				)
@@ -586,14 +591,15 @@ func CheckSession(database *sql.DB) gin.HandlerFunc {
 // (click, keydown, scroll). The middleware UpdateSessionActivity already
 // updated last_used_at asynchronously - this handler just returns 200 so the
 // frontend can confirm the heartbeat went through.
-func Activity(database *sql.DB) gin.HandlerFunc {
+func Activity(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
 }
 
-func GetMe(database *sql.DB) gin.HandlerFunc {
+func GetMe(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		claims, exists := c.Get("claims")
 		if !exists {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required", "error_key": "auth.required"})
@@ -640,8 +646,9 @@ func GetMe(database *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func ChangePassword(database *sql.DB) gin.HandlerFunc {
+func ChangePassword(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		claims, _ := c.Get("claims")
 		userClaims := claims.(*jwt.MapClaims)
 		username := (*userClaims)["username"].(string)
@@ -681,7 +688,7 @@ func ChangePassword(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		uid, err := getUserID(database, username)
+		uid, err := getUserID(pool, username)
 		if err != nil {
 			slog.Error("failed to get user ID", "username", username, "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to look up user", "error_key": "auth.userLookupFailed"})
@@ -726,9 +733,10 @@ type refreshTokenParams struct {
 	timezone         string
 }
 
-func insertRefreshToken(db *sql.DB, p refreshTokenParams) error {
+func insertRefreshToken(pool *db.DynamicPool, p refreshTokenParams) error {
+	database := pool.Get()
 	tokenHash := auth.HashRefreshToken(p.token)
-	_, err := db.Exec(
+	_, err := database.Exec(
 		`INSERT INTO refresh_tokens (user_id, token, token_hash, expires_at, used, device_id, user_agent, ip, remember, jti, last_used_at, screen_resolution, timezone)
 		 VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8, $9, NOW(), $10, $11)`,
 		p.userID, p.token, tokenHash, p.expiresAt, p.deviceID, p.userAgent, p.ip, p.remember, p.jti, p.screenResolution, p.timezone,
@@ -736,13 +744,15 @@ func insertRefreshToken(db *sql.DB, p refreshTokenParams) error {
 	return err
 }
 
-func getUserID(db *sql.DB, username string) (int64, error) {
+func getUserID(pool *db.DynamicPool, username string) (int64, error) {
+	database := pool.Get()
 	var id int64
-	err := db.QueryRow("SELECT id FROM users WHERE username = $1", username).Scan(&id)
+	err := database.QueryRow("SELECT id FROM users WHERE username = $1", username).Scan(&id)
 	return id, err
 }
 
-func getRememberedTTL(database *sql.DB) time.Duration {
+func getRememberedTTL(pool *db.DynamicPool) time.Duration {
+	database := pool.Get()
 	val := db.GetSetting(database, "session_remembered_max_days", "60")
 	days, err := strconv.Atoi(val)
 	if err != nil || days <= 0 || days > 365 {

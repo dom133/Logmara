@@ -26,6 +26,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"logmara/alertengine"
 	"logmara/control"
+	"logmara/db"
 	"logmara/model"
 	"logmara/parser"
 	"logmara/sharedstate"
@@ -169,6 +170,8 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 			PipelineActive: true,
 			NumWorkers:     m.NumWorkers,
 			QueueDepth:     m.QueueDepth,
+			QueueMaxLen:    m.QueueMaxLen,
+			QueueFull:      m.QueueFull,
 			FlushedPos:     m.FlushedPos,
 			FlushedSeq:     m.FlushedSeq,
 			LogsPerSec:     m.LogsPerSec,
@@ -177,6 +180,8 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 				NodeID:        "local",
 				NumWorkers:    m.NumWorkers,
 				QueueDepth:    m.QueueDepth,
+				QueueMaxLen:   m.QueueMaxLen,
+				QueueFull:     m.QueueFull,
 				FlushedPos:    m.FlushedPos,
 				FlushedSeq:    m.FlushedSeq,
 				LogsPerSec:    m.LogsPerSec,
@@ -201,12 +206,15 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 
 	var replicas []ReplicaTailerMetrics
 	var totalWorkers int
-	var totalLogsPerSec float64
+	var logsPerSec float64
 	var allWorkerMetrics []WorkerMetricsPublic
 	var queueDepth int64
+	var queueMaxLen int64
+	var queueFull bool
 	var flushedPos int64
 	var flushedSeq int64
 	var latestUpdate time.Time
+	var haveSharedState bool
 
 	for _, nodeID := range replicaIDs {
 		data, err := currentSharedClient.Raw().Get(ctx, replicaMetricsKey(nodeID)).Bytes()
@@ -222,6 +230,8 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 			NodeID:        nodeID,
 			NumWorkers:    m.NumWorkers,
 			QueueDepth:    m.QueueDepth,
+			QueueMaxLen:   m.QueueMaxLen,
+			QueueFull:     m.QueueFull,
 			FlushedPos:    m.FlushedPos,
 			FlushedSeq:    m.FlushedSeq,
 			LogsPerSec:    m.LogsPerSec,
@@ -230,16 +240,23 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 		})
 
 		totalWorkers += m.NumWorkers
-		totalLogsPerSec += m.LogsPerSec
 		allWorkerMetrics = append(allWorkerMetrics, m.WorkerMetrics...)
 		if m.UpdatedAt.After(latestUpdate) {
 			latestUpdate = m.UpdatedAt
 		}
-		// Queue depth, flushed pos/seq are shared state - take from first valid replica
-		if queueDepth == 0 {
+		// Queue depth, flushed pos/seq and logs/sec are all shared/global
+		// state (one RabbitMQ queue, one flush tracker, one Redis rate
+		// counter - see sharedstate.NewRateCounter) that every replica
+		// reports identically, so take it once from the first valid replica
+		// instead of summing it Nx across replicas.
+		if !haveSharedState {
 			queueDepth = m.QueueDepth
+			queueMaxLen = m.QueueMaxLen
+			queueFull = m.QueueFull
 			flushedPos = m.FlushedPos
 			flushedSeq = m.FlushedSeq
+			logsPerSec = m.LogsPerSec
+			haveSharedState = true
 		}
 	}
 
@@ -265,9 +282,11 @@ func GetTailerMetricsAggregated() *AggregatedTailerMetrics {
 		PipelineActive: true,
 		NumWorkers:     totalWorkers,
 		QueueDepth:     queueDepth,
+		QueueMaxLen:    queueMaxLen,
+		QueueFull:      queueFull,
 		FlushedPos:     flushedPos,
 		FlushedSeq:     flushedSeq,
-		LogsPerSec:     totalLogsPerSec,
+		LogsPerSec:     logsPerSec,
 		WorkerMetrics:  allWorkerMetrics,
 		Replicas:       replicas,
 		UpdatedAt:      latestUpdate,
@@ -405,15 +424,16 @@ type pipeline struct {
 // single-replica deployments), it runs the ingestion loop directly.
 // When sharedClient is set (multiple api replicas over NFS), it uses
 // the distributed pipeline with RabbitMQ.
-func Run(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+func Run(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
 	if sharedClient == nil {
-		runIngestionLoop(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, nil)
+		runIngestionLoop(ctx, pool.Get(), filePath, engine, ic, alerts, rate, reopenLogFile, nil)
 		return
 	}
-	runWithVIPElection(ctx, db, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
+	runWithVIPElection(ctx, pool, filePath, engine, ic, alerts, rate, reopenLogFile, sharedClient)
 }
 
-func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+func runWithVIPElection(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController, alerts *alertengine.Engine, rate sharedstate.RateCounter, reopenLogFile func() error, sharedClient *sharedstate.Client) {
+	db := pool.Get()
 	// myNode identifies the physical Swarm node this task runs on. It's used
 	// below ONLY to compare against the VIP marker file, which keepalived
 	// (notify_vip.sh) stamps with `hostname` - i.e. also the node, not the
@@ -442,7 +462,7 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 
 	// All replicas start the consumer pipeline (RabbitMQ queue + WorkerPool).
 	// This allows every replica to consume and execute tasks from the queue.
-	pipeline := startConsumerPipeline(ctx, db, filePath, engine, ic, alerts, rate, sharedClient, taskID)
+	pipeline := startConsumerPipeline(ctx, pool, filePath, engine, ic, alerts, rate, sharedClient, taskID)
 
 	// If RabbitMQ is unavailable, the fallback local ingestion loop is running.
 	if pipeline.queue == nil {
@@ -542,8 +562,9 @@ func runWithVIPElection(ctx context.Context, db *sql.DB, filePath string, engine
 	}
 }
 
-func startConsumerPipeline(ctx context.Context, db *sql.DB, filePath string, engine *parser.Engine, ic control.IngestionController,
+func startConsumerPipeline(ctx context.Context, pool *db.DynamicPool, filePath string, engine *parser.Engine, ic control.IngestionController,
 	alerts *alertengine.Engine, rate sharedstate.RateCounter, sharedClient *sharedstate.Client, nodeID string) *pipeline {
+	db := pool.Get()
 
 	rabbitmqURL := util.ResolveRabbitMQURL()
 	if rabbitmqURL == "" {
@@ -561,7 +582,7 @@ func startConsumerPipeline(ctx context.Context, db *sql.DB, filePath string, eng
 	}
 
 	flushTrk := sharedstate.NewFlushTracker(sharedClient)
-	workerPool := NewWorkerPool(0, db, alerts, rate, flushTrk, queue, ic)
+	workerPool := NewWorkerPool(0, pool, alerts, rate, flushTrk, queue, ic)
 	metricsColl := NewTailerMetricsCollector(queue, flushTrk, rate, workerPool, sharedClient, nodeID)
 
 	workerPool.Start(ctx)
@@ -645,6 +666,15 @@ func GetTailerQueueLength() int64 {
 	return currentPipeline.queue.Len(context.Background())
 }
 
+// GetQueueConnected returns true if the RabbitMQ connection is currently
+// established and healthy.
+func GetQueueConnected() bool {
+	if currentPipeline == nil || currentPipeline.queue == nil {
+		return false
+	}
+	return !currentPipeline.queue.IsClosed()
+}
+
 func stopPipeline(p *pipeline) {
 	if p == nil {
 		return
@@ -724,7 +754,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			if err := flushBatch(db, entries, rate); err != nil {
 				slog.Error("final flush error", "error", err)
 			} else {
-				alerts.EvaluateBatch(db, entries)
+				alerts.EvaluateBatch(entries)
 			}
 		}
 		savePosition(posFile, filePos, filePath, sharedClient)
@@ -859,7 +889,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 					Severity:  "error",
 					Message:   fmt.Sprintf("%s %s", tag, sanitizedLine),
 				}
-				alerts.EvaluateMalformedJSON(db, sanitizedLine)
+				alerts.EvaluateMalformedJSON(sanitizedLine)
 			}
 
 			entry.Hostname = sanitizeForPostgres(entry.Hostname)
@@ -909,7 +939,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 					if err := flushBatch(db, entries, rate); err != nil {
 						slog.Error("flush error", "error", err)
 					} else {
-						alerts.EvaluateBatch(db, entries)
+						alerts.EvaluateBatch(entries)
 					}
 				}
 				flushedPos = curFilePos
@@ -933,7 +963,7 @@ func runIngestionLoop(ctx context.Context, db *sql.DB, filePath string, engine *
 			if err := flushBatch(db, entries, rate); err != nil {
 				slog.Error("flush error", "error", err)
 			} else {
-				alerts.EvaluateBatch(db, entries)
+				alerts.EvaluateBatch(entries)
 			}
 			flushedPos = curFilePos
 			savePosition(posFile, flushedPos, filePath, sharedClient)

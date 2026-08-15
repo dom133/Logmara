@@ -3,7 +3,6 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -29,7 +28,7 @@ type Config struct {
 	secretMu           sync.RWMutex
 	jwtSecretPrimary   []byte // signing + validation
 	jwtSecretSecondary []byte // validation only (grace period during rotation)
-	db                 *sql.DB
+	pool               *db.DynamicPool
 }
 
 // weakDefaultJWTSecret is the placeholder value that used to ship in
@@ -39,14 +38,14 @@ const weakDefaultJWTSecret = "change-this-to-a-random-secret-key"
 
 // Init resolves the JWT secret from the environment and returns a ready-to-use
 // Config. The secret is never read from or written to the database.
-func Init(database *sql.DB) (*Config, error) {
+func Init(pool *db.DynamicPool) (*Config, error) {
 	secret, err := ResolveJWTSecret()
 	if err != nil {
 		return nil, err
 	}
 	return &Config{
 		jwtSecretPrimary: []byte(secret),
-		db:               database,
+		pool:             pool,
 	}, nil
 }
 
@@ -80,8 +79,8 @@ func (cfg *Config) getJWTExpiryMin() int {
 			return t
 		}
 	}
-	if cfg.db != nil {
-		timeoutStr = db.GetSetting(cfg.db, "session_timeout_min", "15")
+	if cfg.pool != nil {
+		timeoutStr = db.GetSetting(cfg.pool.Get(), "session_timeout_min", "15")
 	}
 	if t, err := strconv.Atoi(timeoutStr); err == nil && t > 0 {
 		return t
@@ -319,8 +318,8 @@ func (cfg *Config) JWTRequired() gin.HandlerFunc {
 		}
 
 		jti := extractJTI(claims)
-		if jti != "" && cfg.db != nil {
-			if blacklisted, err := db.IsJTIBlacklisted(cfg.db, jti); err == nil && blacklisted {
+		if jti != "" && cfg.pool != nil {
+			if blacklisted, err := db.IsJTIBlacklisted(cfg.pool.Get(), jti); err == nil && blacklisted {
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "token revoked", "error_key": "auth.tokenRevoked"})
 				c.Abort()
 				return
@@ -358,6 +357,13 @@ func (cfg *Config) ClearSecondarySecret() {
 	slog.Info("auth: JWT secondary key cleared")
 }
 
+// HasSecondarySecret returns true if a secondary (grace period) key is active.
+func (cfg *Config) HasSecondarySecret() bool {
+	cfg.secretMu.RLock()
+	defer cfg.secretMu.RUnlock()
+	return len(cfg.jwtSecretSecondary) > 0
+}
+
 // GetPrimarySecret returns the current primary JWT secret as a string.
 func (cfg *Config) GetPrimarySecret() string {
 	cfg.secretMu.RLock()
@@ -387,9 +393,9 @@ func (cfg *Config) RoleRequired(roles ...string) gin.HandlerFunc {
 			}
 		}
 
-		if cfg.db != nil {
+		if cfg.pool != nil {
 			go func() {
-				audit.LogAudit(cfg.db, int64(userID), username, "access_denied", c.ClientIP(), fmt.Sprintf("insufficient permissions; required=%v, user_role=%s", roles, userRole))
+				audit.LogAudit(cfg.pool.Get(), int64(userID), username, "access_denied", c.ClientIP(), fmt.Sprintf("insufficient permissions; required=%v, user_role=%s", roles, userRole))
 			}()
 		}
 
@@ -414,9 +420,9 @@ func (cfg *Config) AdminRequired() gin.HandlerFunc {
 		userID, _ := (*mapClaims)["user_id"].(float64)
 
 		if userRole != "admin" {
-			if cfg.db != nil {
+			if cfg.pool != nil {
 				go func() {
-					audit.LogAudit(cfg.db, int64(userID), username, "access_denied", c.ClientIP(), fmt.Sprintf("admin access required; user_role=%s", userRole))
+					audit.LogAudit(cfg.pool.Get(), int64(userID), username, "access_denied", c.ClientIP(), fmt.Sprintf("admin access required; user_role=%s", userRole))
 				}()
 			}
 

@@ -37,7 +37,7 @@ local flushedSeq = tonumber(redis.call('HGET', key, '_flushed_seq')) or 0
 local flushedPos = tonumber(redis.call('HGET', key, '_flushed_pos')) or 0
 
 -- Store reported positions
-for i = 2, #ARGV, 2 do
+for i = 1, #ARGV, 2 do
     local seq = ARGV[i]
     local pos = ARGV[i + 1]
     redis.call('HSETNX', key, seq, pos)
@@ -93,14 +93,13 @@ func (ft *FlushTracker) ReportFlushed(ctx context.Context, entries []QueueEntry)
 		return seq, pos, nil
 	}
 
-	// Build arguments: seq1, pos1, seq2, pos2, ...
-	args := make([]string, 0, 2*len(entries)+1)
-	args = append(args, flushTrackerKey)
+	// Build ARGV: seq1, pos1, seq2, pos2, ...
+	args := make([]interface{}, 0, 2*len(entries))
 	for _, e := range entries {
-		args = append(args, strconv.FormatInt(e.Seq, 10), strconv.FormatInt(e.NextPos, 10))
+		args = append(args, e.Seq, e.NextPos)
 	}
 
-	res, err := ft.script.Run(ctx, ft.client.Raw(), args).Result()
+	res, err := ft.script.Run(ctx, ft.client.Raw(), []string{flushTrackerKey}, args...).Result()
 	if err != nil {
 		slog.Error("flush tracker: report error", "error", err)
 		return 0, 0, err

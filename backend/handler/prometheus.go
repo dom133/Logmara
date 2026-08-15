@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"database/sql"
 	"fmt"
 	"net/http"
 	"runtime"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"logmara/db"
 	"logmara/util"
 )
 
@@ -16,10 +16,11 @@ var appStartTime = time.Now()
 
 // PrometheusMetrics exposes /metrics in Prometheus text exposition format.
 // It includes app uptime, goroutines, DB pool stats, and slow query count.
-func PrometheusMetrics(database *sql.DB) gin.HandlerFunc {
+func PrometheusMetrics(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 
+		database := pool.Get()
 		stats := database.Stats()
 		up := time.Since(appStartTime).Seconds()
 

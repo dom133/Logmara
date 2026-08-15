@@ -104,13 +104,13 @@ func KeysConfigured() bool {
 // createAdminAndSettings creates the initial admin user and persists the
 // submitted settings. It's shared by Initialize (DB already connected via
 // env) and InitializeStandalone (DB connected from wizard-submitted config).
-func createAdminAndSettings(database *sql.DB, req *InitRequest) *model.AppError {
-	val := db.GetSetting(database, "is_initialized", "false")
+func createAdminAndSettings(pool *db.DynamicPool, req *InitRequest) *model.AppError {
+	val := db.GetSetting(pool.Get(), "is_initialized", "false")
 	if val == "true" {
 		return model.NewConflict("Application already initialized", nil)
 	}
 
-	tx, err := database.Begin()
+	tx, err := pool.Get().Begin()
 	if err != nil {
 		return model.NewInternal("Could not start transaction", err)
 	}
@@ -209,14 +209,14 @@ func createAdminAndSettings(database *sql.DB, req *InitRequest) *model.AppError 
 // Initialize handles setup-wizard submission when a database connection is
 // already established (DATABASE_URL was set at startup). Any submitted
 // Database fields are ignored - the live connection is authoritative.
-func Initialize(database *sql.DB) gin.HandlerFunc {
+func Initialize(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		req, ok := bindInitRequest(c)
 		if !ok {
 			return
 		}
 
-		if appErr := createAdminAndSettings(database, req); appErr != nil {
+		if appErr := createAdminAndSettings(pool, req); appErr != nil {
 			middleware.HandleError(c, appErr)
 			return
 		}
@@ -276,7 +276,7 @@ func TestDatabaseConfig() gin.HandlerFunc {
 // connects using the submitted database settings, migrates the schema, and
 // creates the admin account, then hands the live connection to main() over
 // ready so the full application can come up on it.
-func InitializeStandalone(ready chan<- *sql.DB) gin.HandlerFunc {
+func InitializeStandalone(ready chan<- *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		req, ok := bindInitRequest(c)
 		if !ok {
@@ -301,14 +301,20 @@ func InitializeStandalone(ready chan<- *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		if appErr := createAdminAndSettings(database, req); appErr != nil {
+		pool, poolErr := db.NewDynamicPool(buildDSN(d))
+		if poolErr != nil {
+			database.Close()
+			middleware.HandleError(c, model.NewInternalKey("init.dbPoolFailed", "Failed to create database pool", poolErr))
+			return
+		}
+		if appErr := createAdminAndSettings(pool, req); appErr != nil {
 			database.Close()
 			middleware.HandleError(c, appErr)
 			return
 		}
 
 		c.JSON(http.StatusOK, gin.H{"message": "Application initialized successfully"})
-		ready <- database
+		ready <- pool
 	}
 }
 

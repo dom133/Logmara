@@ -1,7 +1,6 @@
 package parser
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,11 +11,12 @@ import (
 
 	"github.com/lib/pq"
 
+	"logmara/db"
 	"logmara/model"
 )
 
 type Engine struct {
-	db       *sql.DB
+	pool     *db.DynamicPool
 	parsers  []model.Parser
 	mu       sync.RWMutex
 	reloadCh chan struct{}
@@ -44,9 +44,9 @@ func compileCached(pattern string) (*regexp.Regexp, error) {
 	return re, nil
 }
 
-func NewEngine(db *sql.DB) *Engine {
+func NewEngine(pool *db.DynamicPool) *Engine {
 	e := &Engine{
-		db:       db,
+		pool:     pool,
 		reloadCh: make(chan struct{}, 1),
 	}
 	e.loadParsers()
@@ -54,12 +54,12 @@ func NewEngine(db *sql.DB) *Engine {
 	return e
 }
 
-func (e *Engine) GetDB() *sql.DB {
-	return e.db
+func (e *Engine) GetPool() *db.DynamicPool {
+	return e.pool
 }
 
 func (e *Engine) loadParsers() {
-	rows, err := e.db.Query(`
+	rows, err := e.pool.Get().Query(`
 		SELECT id, name, description, device_type, match_type, match_value, regex, enabled, is_builtin, created_at, updated_at
 		FROM parsers WHERE enabled = true ORDER BY id
 	`)
@@ -79,7 +79,7 @@ func (e *Engine) loadParsers() {
 			continue
 		}
 
-		fieldRows, err := e.db.Query(`
+		fieldRows, err := e.pool.Get().Query(`
 			SELECT id, parser_id, field_name, field_label, field_type
 			FROM parsed_fields_registry WHERE parser_id = $1 ORDER BY id
 		`, p.ID)
@@ -255,7 +255,7 @@ func (e *Engine) Parse(hostname, appName, message string) *ParseResult {
 }
 
 func (e *Engine) GetAllParsers() ([]model.Parser, error) {
-	rows, err := e.db.Query(`
+	rows, err := e.pool.Get().Query(`
 		SELECT id, name, description, device_type, match_type, match_value, regex, enabled, is_builtin, created_at, updated_at
 		FROM parsers ORDER BY device_type, id
 	`)
@@ -273,7 +273,7 @@ func (e *Engine) GetAllParsers() ([]model.Parser, error) {
 			continue
 		}
 
-		fieldRows, err := e.db.Query(`
+		fieldRows, err := e.pool.Get().Query(`
 			SELECT id, parser_id, field_name, field_label, field_type
 			FROM parsed_fields_registry WHERE parser_id = $1 ORDER BY id
 		`, p.ID)
@@ -294,7 +294,7 @@ func (e *Engine) GetAllParsers() ([]model.Parser, error) {
 }
 
 func (e *Engine) GetParsedFieldRegistry() ([]model.ParsedField, error) {
-	rows, err := e.db.Query(`
+	rows, err := e.pool.Get().Query(`
 		SELECT f.id, f.parser_id, f.field_name, f.field_label, f.field_type, p.name as parser_name
 		FROM parsed_fields_registry f
 		JOIN parsers p ON f.parser_id = p.id
@@ -323,11 +323,11 @@ func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.Parsed
 	}
 
 	// Use the actual per-message match history (matched_parsers, populated at
-	// ingest time) rather than re-matching a sample of messages live: a live
-	// sample can miss infrequent message types (e.g. a WiFi-connect event
-	// among thousands of other log lines) and wrongly report zero fields for
-	// a parser the device genuinely has logs for.
-	rows, err := e.db.Query(`
+		// ingest time) rather than re-matching a sample of messages live: a live
+		// sample can miss infrequent message types (e.g. a WiFi-connect event
+		// among thousands of other log lines) and wrongly report zero fields for
+		// a parser the device genuinely has logs for.
+		rows, err := e.pool.Get().Query(`
 		SELECT DISTINCT elem
 		FROM syslog_logs, unnest(matched_parsers) as elem
 		WHERE COALESCE(fromhost_ip, '') = ANY($1)
@@ -350,7 +350,7 @@ func (e *Engine) GetParsedFieldsForHostnames(hostnames []string) ([]model.Parsed
 		return []model.ParsedField{}, nil
 	}
 
-	fieldRows, err := e.db.Query(`
+	fieldRows, err := e.pool.Get().Query(`
 		SELECT f.id, f.parser_id, f.field_name, f.field_label, f.field_type, p.name as parser_name
 		FROM parsed_fields_registry f
 		JOIN parsers p ON f.parser_id = p.id
@@ -433,7 +433,7 @@ func (e *Engine) ReparseUnparsed(hostname, from, to string, limit int) (*model.R
 		query += " LIMIT 10000"
 	}
 
-	rows, err := e.db.Query(query, args...)
+	rows, err := e.pool.Get().Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -469,7 +469,7 @@ func (e *Engine) ReparseUnparsed(hostname, from, to string, limit int) (*model.R
 			continue
 		}
 
-		_, err = e.db.Exec(updateStmt, jsonData, pq.StringArray(result.Parsers), id)
+		_, err = e.pool.Get().Exec(updateStmt, jsonData, pq.StringArray(result.Parsers), id)
 		if err != nil {
 			slog.Error("reparse update error", "error", err)
 			continue

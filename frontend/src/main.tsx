@@ -38,3 +38,42 @@ if ('serviceWorker' in navigator) {
     })
   })
 }
+
+// Detect stale assets (e.g. old index.html referencing a chunk that no
+// longer exists after a deployment). When a dynamic import fails to fetch
+// a chunk, the page is in an unrecoverable state — the only fix is a full
+// reload so the browser fetches a fresh index.html with correct hashes.
+let staleReloadScheduled = false
+window.addEventListener('unhandledrejection', (e) => {
+  const msg = String(e.reason ?? '')
+  if (
+    msg.includes('Failed to fetch') ||
+    msg.includes('dynamic import') ||
+    msg.includes('Chunk load error')
+  ) {
+    if (staleReloadScheduled) return
+    staleReloadScheduled = true
+    console.warn('Stale asset detected, reloading page to fetch fresh assets')
+    // Small delay so the user sees the console warning in devtools
+    setTimeout(() => {
+      window.location.reload()
+    }, 500)
+  }
+})
+
+// Also catch synchronous errors (some bundlers throw instead of reject)
+window.addEventListener('error', (e) => {
+  const msg = String(e.message ?? '')
+  if (
+    msg.includes('Failed to fetch') ||
+    msg.includes('dynamic import') ||
+    msg.includes('Chunk load error')
+  ) {
+    if (staleReloadScheduled) return
+    staleReloadScheduled = true
+    console.warn('Stale asset detected, reloading page to fetch fresh assets')
+    setTimeout(() => {
+      window.location.reload()
+    }, 500)
+  }
+})

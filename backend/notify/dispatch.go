@@ -1,7 +1,6 @@
 package notify
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -13,13 +12,13 @@ import (
 )
 
 // BuildNotifier constructs the Sender for a channel given its decrypted
-// secret (empty string if the channel has none). database is only needed to
+// secret (empty string if the channel has none). pool is only needed to
 // read the shared SMTP relay settings for email channels - individual email
 // channels only carry a recipient list, not their own SMTP credentials.
-func BuildNotifier(database *sql.DB, channel model.NotificationChannel, secret string) (Notifier, error) {
+func BuildNotifier(pool *db.DynamicPool, channel model.NotificationChannel, secret string) (Notifier, error) {
 	switch channel.Type {
 	case model.ChannelTypeEmail:
-		if db.GetSetting(database, "smtp_enabled", "false") != "true" {
+		if db.GetSetting(pool.Get(), "smtp_enabled", "false") != "true" {
 			return nil, fmt.Errorf("SMTP is disabled (enable it under Admin > Settings)")
 		}
 		var cfg struct {
@@ -32,12 +31,12 @@ func BuildNotifier(database *sql.DB, channel model.NotificationChannel, secret s
 		}
 		return &EmailNotifier{
 			SMTP: SMTPConfig{
-				Host:     db.GetSetting(database, "smtp_host", ""),
-				Port:     db.GetSetting(database, "smtp_port", "587"),
-				Username: db.GetSetting(database, "smtp_username", ""),
-				Password: db.GetSetting(database, "smtp_password", ""),
-				From:     db.GetSetting(database, "smtp_from", ""),
-				UseTLS:   db.GetSetting(database, "smtp_use_tls", "true") == "true",
+				Host:     db.GetSetting(pool.Get(), "smtp_host", ""),
+				Port:     db.GetSetting(pool.Get(), "smtp_port", "587"),
+				Username: db.GetSetting(pool.Get(), "smtp_username", ""),
+				Password: db.GetSetting(pool.Get(), "smtp_password", ""),
+				From:     db.GetSetting(pool.Get(), "smtp_from", ""),
+				UseTLS:   db.GetSetting(pool.Get(), "smtp_use_tls", "true") == "true",
 			},
 			To: cfg.To,
 		}, nil
@@ -83,18 +82,18 @@ func BuildNotifier(database *sql.DB, channel model.NotificationChannel, secret s
 // Dispatcher fans a firing alert out to all of its assigned channels and
 // records the outcome of each attempt in notification_log.
 type Dispatcher struct {
-	DB *sql.DB
+	Pool *db.DynamicPool
 	// OnInApp, if set, is called after an in-app notification is persisted so
 	// the caller can fan it out to connected clients (e.g. over SSE).
 	OnInApp func(model.InAppNotification)
 }
 
-func NewDispatcher(database *sql.DB) *Dispatcher {
-	return &Dispatcher{DB: database}
+func NewDispatcher(pool *db.DynamicPool) *Dispatcher {
+	return &Dispatcher{Pool: pool}
 }
 
 func (d *Dispatcher) DispatchAlert(alert model.Alert, payload Payload) {
-	channels, err := db.GetChannelsForAlert(d.DB, alert.ID)
+	channels, err := db.GetChannelsForAlert(d.Pool.Get(), alert.ID)
 	if err != nil {
 		return
 	}
@@ -121,7 +120,7 @@ func (d *Dispatcher) DispatchAlert(alert model.Alert, payload Payload) {
 	if len(channels) == 0 {
 		// The rule fired but has nothing to deliver to - record that it fired
 		// at all, otherwise there is no trace of it anywhere in the history.
-		_ = db.LogNotification(d.DB, model.NotificationLogEntry{
+		_ = db.LogNotification(d.Pool.Get(), model.NotificationLogEntry{
 			AlertID: &alertID, AlertName: alert.Name, FiringID: firingID,
 			ChannelName: "(none)", Status: "no_channel", Detail: "Rule fired but has no notification channels attached",
 			TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions, RuleType: payload.AlertRuleType,
@@ -195,7 +194,7 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName, firingID string, ch 
 	var inAppID *int64
 
 	if ch.Type == model.ChannelTypeInApp {
-		id, createdAt, err := db.CreateInAppNotification(d.DB, alertID, payload.Title, payload.Message, payload.Severity, payload.AlertRuleType, targetUserIds)
+		id, createdAt, err := db.CreateInAppNotification(d.Pool.Get(), alertID, payload.Title, payload.Message, payload.Severity, payload.AlertRuleType, targetUserIds)
 		if err != nil {
 			status, detail = "failed", "internal app notification failed"
 		} else {
@@ -205,19 +204,19 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName, firingID string, ch 
 			}
 		}
 	} else if ch.Type == model.ChannelTypePush {
-		status, detail = sendPushChannel(d.DB, payload, targetUserIds)
+		status, detail = sendPushChannel(d.Pool, payload, targetUserIds)
 	} else {
-		secret, err := db.DecryptChannelSecret(d.DB, ch.ID)
+		secret, err := db.DecryptChannelSecret(d.Pool.Get(), ch.ID)
 		if err != nil {
 			status, detail = "failed", "decrypt channel secret failed"
-		} else if notifier, err := BuildNotifier(d.DB, ch, secret); err != nil {
+		} else if notifier, err := BuildNotifier(d.Pool, ch, secret); err != nil {
 			status, detail = "failed", "build notifier failed"
 		} else if err := notifier.Send(payload); err != nil {
 			status, detail = "failed", "send notification failed"
 		}
 	}
 
-	_ = db.LogNotification(d.DB, model.NotificationLogEntry{
+	_ = db.LogNotification(d.Pool.Get(), model.NotificationLogEntry{
 		AlertID: alertID, AlertName: alertName, FiringID: firingID, ChannelID: &ch.ID, ChannelName: ch.Name, ChannelType: ch.Type,
 		Status: status, Detail: detail,
 		TriggerLog: payload.TriggerLog, MatchedConditions: payload.MatchedConditions, RuleType: payload.AlertRuleType,
@@ -228,8 +227,8 @@ func (d *Dispatcher) dispatchOne(alertID *int64, alertName, firingID string, ch 
 // sendPushChannel fans a payload out to every subscribed browser and
 // collapses the per-device results into the single status/detail pair the
 // notification_log records for this channel.
-func sendPushChannel(database *sql.DB, payload Payload, targetUserIds []int64) (status, detail string) {
-	res, err := dispatchPush(database, payload, targetUserIds)
+func sendPushChannel(pool *db.DynamicPool, payload Payload, targetUserIds []int64) (status, detail string) {
+		res, err := dispatchPush(pool, payload, targetUserIds)
 	if err != nil {
 		return "failed", err.Error()
 	}
@@ -248,7 +247,7 @@ func sendPushChannel(database *sql.DB, payload Payload, targetUserIds []int64) (
 // so the caller can fan the test notification out over SSE the same way a
 // real alert firing would - otherwise it would only ever show up after the
 // browser reloads and re-fetches the recent list.
-func TestChannel(database *sql.DB, channel model.NotificationChannel, onInApp func(model.InAppNotification)) error {
+func TestChannel(pool *db.DynamicPool, channel model.NotificationChannel, onInApp func(model.InAppNotification)) error {
 	payload := Payload{
 		Title:    "Test notification",
 		Message:  "This is a test notification from Logmara.",
@@ -265,7 +264,7 @@ func TestChannel(database *sql.DB, channel model.NotificationChannel, onInApp fu
 	}
 
 	if channel.Type == model.ChannelTypeInApp {
-		id, createdAt, err := db.CreateInAppNotification(database, nil, payload.Title, payload.Message, payload.Severity, "", targetUserIds)
+		id, createdAt, err := db.CreateInAppNotification(pool.Get(), nil, payload.Title, payload.Message, payload.Severity, "", targetUserIds)
 		if err != nil {
 			return err
 		}
@@ -276,7 +275,7 @@ func TestChannel(database *sql.DB, channel model.NotificationChannel, onInApp fu
 	}
 
 	if channel.Type == model.ChannelTypePush {
-		res, err := dispatchPush(database, payload, targetUserIds)
+	res, err := dispatchPush(pool, payload, targetUserIds)
 		if err != nil {
 			return err
 		}
@@ -286,11 +285,11 @@ func TestChannel(database *sql.DB, channel model.NotificationChannel, onInApp fu
 		return nil
 	}
 
-	secret, err := db.DecryptChannelSecret(database, channel.ID)
+	secret, err := db.DecryptChannelSecret(pool.Get(), channel.ID)
 	if err != nil {
 		return fmt.Errorf("decrypt channel secret: %w", err)
 	}
-	notifier, err := BuildNotifier(database, channel, secret)
+	notifier, err := BuildNotifier(pool, channel, secret)
 	if err != nil {
 		return err
 	}

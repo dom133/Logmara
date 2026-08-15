@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"database/sql"
 	"net/http"
 
 	"logmara/db"
@@ -14,8 +13,9 @@ import (
 // GetVAPIDPublicKey returns the server's VAPID public key, generating the
 // key pair on first call. The browser needs this to create a push
 // subscription via PushManager.subscribe().
-func GetVAPIDPublicKey(database *sql.DB) gin.HandlerFunc {
+func GetVAPIDPublicKey(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		publicKey, _, err := db.GetOrCreateVAPIDKeys(database)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("push.failedToLoadVapidKey", "Failed to load VAPID key", err))
@@ -27,8 +27,9 @@ func GetVAPIDPublicKey(database *sql.DB) gin.HandlerFunc {
 
 // SubscribePush registers (or re-registers) a browser's push subscription
 // for the signed-in user.
-func SubscribePush(database *sql.DB) gin.HandlerFunc {
+func SubscribePush(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var req model.PushSubscribeRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 		middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))
@@ -46,8 +47,9 @@ func SubscribePush(database *sql.DB) gin.HandlerFunc {
 
 // UnsubscribePush removes a browser's push subscription, e.g. when the user
 // turns push notifications off.
-func UnsubscribePush(database *sql.DB) gin.HandlerFunc {
+func UnsubscribePush(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var req model.PushUnsubscribeRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			middleware.HandleError(c, model.NewBadRequestKey("error.invalidRequestBody", "Invalid request body", err))

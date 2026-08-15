@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -15,7 +16,15 @@ func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func(), 
 	mvInterval := getIntervalMinutes("MV_REFRESH_INTERVAL_MIN", "mv_refresh_interval_min", 30)
 	partitionInterval := getIntervalHours("PARTITION_CREATE_INTERVAL_HOURS", "partition_create_interval_hours", 24)
 
-	createPartitions(db)
+	// StartMaintenance itself runs synchronously on main's startup path,
+	// before the real HTTP listener binds (see main.go's <-schemaReady wait)
+	// - createPartitions can take anywhere from milliseconds to minutes
+	// depending on lock contention on syslog_logs (autovacuum, MV refresh,
+	// insert traffic), so calling it inline here would make replica startup
+	// (and therefore /api/health) hostage to that. Fire the initial run the
+	// same way the recurring scheduler does: in the background, off this
+	// call's critical path.
+	go createPartitions(db)
 	stopPartitions := startPartitionScheduler(ctx, db, partitionInterval)
 	stopVacuum := startVacuumScheduler(ctx, db, vacuumInterval)
 	stopMV := startMVScheduler(ctx, db, mvInterval)
@@ -293,7 +302,7 @@ func activePartitionNames(db *sql.DB) []string {
 		return nil
 	}
 
-	g := configuredPartitionGranularity()
+	g := activePartitionGranularity(db)
 	current := g.truncate(time.Now().UTC())
 	names := make([]string, 0, 2)
 	for _, t := range []time.Time{g.previous(current), current} {
@@ -366,13 +375,32 @@ func getIntervalMinutes(envKey, settingKey string, defaultMinutes int) time.Dura
 	return time.Duration(defaultMinutes) * time.Minute
 }
 
-// createPartitions pre-creates syslog_logs partitions from the current
-// period through granularity.aheadCount periods ahead, so inserts never fall
-// back to the unpartitioned default partition just because nobody's created
-// tomorrow's (or next month's) table yet. Called once at startup and then on
-// a recurring schedule (see startPartitionScheduler) - the ahead window is a
-// buffer against a long-running process, not something startup alone can
-// keep filled at daily granularity.
+// partitionLockKey is a separate advisory lock key from migrationLockKey (see
+// db.go) - createPartitions and the schema migration are independent
+// operations that shouldn't block on each other, just serialize against
+// concurrent copies of themselves.
+const partitionLockKey = 8743012
+
+// createPartitions pre-creates syslog_logs partitions, under whichever
+// granularity is already active (see activePartitionGranularity - not
+// necessarily PARTITION_INTERVAL's current value), from the current period
+// through granularity.aheadCount periods ahead. That keeps inserts from
+// falling back to the unpartitioned default partition just because nobody's
+// created tomorrow's (or next month's) table yet. Called once at startup on
+// every replica and then on a recurring schedule (see
+// startPartitionScheduler) - the ahead window is a buffer against a
+// long-running process, not something startup alone can keep filled at
+// daily granularity.
+//
+// pg_try_advisory_lock serializes this against the same call on other
+// replicas: CREATE TABLE ... PARTITION OF takes a lock on the syslog_logs
+// parent, so replicas racing to create (or, more often once ahead-of-time
+// partitions already exist, to redundantly no-op against) the same
+// partitions were observed queuing behind each other for 60-140s+ per
+// attempt. Only one replica doing the work at a time, with the rest
+// skipping the cycle outright, avoids that pile-up; anything a skipped
+// replica would have created is already covered by the winner within the
+// same cycle, and the next scheduled run picks up regardless.
 func createPartitions(db *sql.DB) {
 	isPartitioned := false
 	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = 'syslog_logs' AND relkind = 'p')`).Scan(&isPartitioned)
@@ -380,14 +408,37 @@ func createPartitions(db *sql.DB) {
 		return
 	}
 
-	g := configuredPartitionGranularity()
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		slog.Error("partition creation: acquire connection failed", "err", err)
+		return
+	}
+	defer conn.Close()
+
+	var acquired bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", partitionLockKey).Scan(&acquired); err != nil {
+		slog.Error("partition creation: advisory lock check failed", "err", err)
+		return
+	}
+	if !acquired {
+		slog.Info("partition maintenance already running on another replica, skipping this cycle")
+		return
+	}
+	defer func() {
+		if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", partitionLockKey); err != nil {
+			slog.Warn("failed to release partition advisory lock", "err", err)
+		}
+	}()
+
+	g := activePartitionGranularity(db)
 	partStart := g.truncate(time.Now().UTC())
 
 	for i := 0; i <= g.aheadCount; i++ {
 		partEnd := g.next(partStart)
 		partName := g.partitionName(partStart)
 
-		_, err := db.Exec(
+		_, err := conn.ExecContext(ctx,
 			fmt.Sprintf(
 				"CREATE TABLE IF NOT EXISTS %s PARTITION OF syslog_logs FOR VALUES FROM (%s) TO (%s)",
 				partName,
@@ -396,7 +447,20 @@ func createPartitions(db *sql.DB) {
 			),
 		)
 		if err != nil {
-			slog.Error("partition creation failed", "partition", partName, "err", err)
+			// A database that switched PARTITION_INTERVAL (e.g. month -> day)
+			// still has its old, coarser partition covering "now" until that
+			// partition's own end date - a day/week/etc. within it isn't
+			// missing a partition, it's already covered by the wider one, and
+			// Postgres reports that as an overlap rather than IF NOT EXISTS
+			// treating it as a no-op (the names differ, so IF NOT EXISTS
+			// doesn't apply). Not an actual problem: inserts land in the
+			// existing partition fine, and this stops erroring on its own
+			// once "now" advances past the old partition's end.
+			if strings.Contains(err.Error(), "would overlap partition") {
+				slog.Info("partition range already covered by an existing partition, skipping", "partition", partName, "err", err)
+			} else {
+				slog.Error("partition creation failed", "partition", partName, "err", err)
+			}
 		} else {
 			slog.Info("partition ensured", "partition", partName)
 		}

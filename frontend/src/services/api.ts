@@ -1220,11 +1220,14 @@ export interface WorkerMetrics {
   parse_errors: number
   db_inserts: number
   last_flush_at: string
+  reconnect_count: number
 }
 
 export interface TailerMetrics {
   NumWorkers: number
   QueueDepth: number
+  QueueMaxLen: number
+  QueueFull: boolean
   FlushedPos: number
   FlushedSeq: number
   LogsPerSec: number
@@ -1236,6 +1239,8 @@ export interface ReplicaTailerMetrics {
   NodeID: string
   NumWorkers: number
   QueueDepth: number
+  QueueMaxLen: number
+  QueueFull: boolean
   FlushedPos: number
   FlushedSeq: number
   LogsPerSec: number
@@ -1247,6 +1252,8 @@ export interface AggregatedTailerMetrics {
   PipelineActive: boolean
   NumWorkers: number
   QueueDepth: number
+  QueueMaxLen: number
+  QueueFull: boolean
   FlushedPos: number
   FlushedSeq: number
   LogsPerSec: number
@@ -1263,5 +1270,39 @@ export interface TailerMetricsResponse {
 
 export async function getTailerMetrics(): Promise<TailerMetricsResponse> {
   const res = await api.get('/admin/tailer-metrics')
+  return res.data
+}
+
+// Rotation status types
+export interface SecretRotationStatus {
+  name: string
+  last_rotated_at: string | null
+  last_result: string
+  last_error: string
+  has_secondary_key: boolean
+  rabbitmq_connected?: boolean
+}
+
+export interface RotationStatus {
+  vault_enabled: boolean
+  rotation_interval: string
+  last_rotation_at: string | null
+  next_rotation_at: string | null
+  manual_triggered: boolean
+  secrets: SecretRotationStatus[]
+}
+
+export interface RotationTriggerResponse {
+  status: string
+  message: string
+}
+
+export async function getRotationStatus(): Promise<RotationStatus> {
+  const res = await api.get('/admin/rotation/status')
+  return res.data
+}
+
+export async function triggerRotation(): Promise<RotationTriggerResponse> {
+  const res = await api.post('/admin/rotation/trigger')
   return res.data
 }

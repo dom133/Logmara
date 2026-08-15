@@ -10,16 +10,15 @@ import (
 	"os"
 	"path/filepath"
 
-	"database/sql"
-
 	"logmara/audit"
+	"logmara/db"
 	"logmara/middleware"
 	"logmara/model"
 
 	"github.com/gin-gonic/gin"
 )
 
-func UploadSSLCerts(database *sql.DB) gin.HandlerFunc {
+func UploadSSLCerts(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		certFile, certHeader, err := c.Request.FormFile("cert")
 		if err != nil {
@@ -72,6 +71,7 @@ func UploadSSLCerts(database *sql.DB) gin.HandlerFunc {
 		slog.Info("SSL certificates uploaded", "cert", certPath, "key", keyPath)
 
 		actorID, actorName := actorFromContext(c)
+		database := pool.Get()
 		audit.LogAudit(database, actorID, actorName, "ssl_cert_uploaded", c.ClientIP(), "")
 
 		certMeta := parseCertMetadata(certPath)

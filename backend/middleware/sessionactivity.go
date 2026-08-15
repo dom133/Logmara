@@ -1,8 +1,9 @@
 package middleware
 
 import (
-	"database/sql"
 	"log/slog"
+
+	"logmara/db"
 
 	"github.com/gin-gonic/gin"
 )
@@ -10,7 +11,7 @@ import (
 // UpdateSessionActivity marks the current session as active by updating
 // last_used_at on the refresh_tokens row matching the JWT's jti.
 // Runs asynchronously so it does not block the response.
-func UpdateSessionActivity(database *sql.DB) gin.HandlerFunc {
+func UpdateSessionActivity(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		jti, ok := c.Get("jti")
 		if !ok {
@@ -23,7 +24,7 @@ func UpdateSessionActivity(database *sql.DB) gin.HandlerFunc {
 			return
 		}
 		go func() {
-			_, err := database.Exec(
+			_, err := pool.Get().Exec(
 				"UPDATE refresh_tokens SET last_used_at = NOW() WHERE jti = $1 AND used = false",
 				jtiStr,
 			)

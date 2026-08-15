@@ -31,15 +31,16 @@ func getUserRole(c *gin.Context) string {
 	return ""
 }
 
-func ListDashboards(db *sql.DB) gin.HandlerFunc {
+func ListDashboards(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		userID := c.GetInt64("user_id")
 		isAdmin := getUserRole(c) == RoleAdmin
 
 		var rows *sql.Rows
 		var err error
 		if isAdmin {
-			rows, err = db.Query(`
+			rows, err = database.Query(`
 				SELECT d.id, d.name, d.description, d.owner_id, u.username,
 					COALESCE(up.dashboard_id IS NOT NULL, FALSE),
 					d.is_public, d.config, d.created_at, d.updated_at,
@@ -51,7 +52,7 @@ func ListDashboards(db *sql.DB) gin.HandlerFunc {
 				ORDER BY up.dashboard_id IS NOT NULL DESC, d.created_at DESC
 			`, userID)
 		} else {
-			rows, err = db.Query(`
+			rows, err = database.Query(`
 				SELECT d.id, d.name, d.description, d.owner_id, u.username,
 					COALESCE(up.dashboard_id IS NOT NULL, FALSE),
 					d.is_public, d.config, d.created_at, d.updated_at,
@@ -94,8 +95,9 @@ func ListDashboards(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func CreateDashboard(db *sql.DB) gin.HandlerFunc {
+func CreateDashboard(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		userID := c.GetInt64("user_id")
 
 		var req struct {
@@ -119,7 +121,7 @@ func CreateDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		var id int64
-		err := db.QueryRow(`
+		err := database.QueryRow(`
 			INSERT INTO dashboards (name, description, owner_id, config, updated_by)
 			VALUES ($1, $2, $3, $4, $5) RETURNING id
 		`, req.Name, req.Description, userID, req.Config, userID).Scan(&id)
@@ -132,8 +134,9 @@ func CreateDashboard(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func GetDashboard(db *sql.DB) gin.HandlerFunc {
+func GetDashboard(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
@@ -151,7 +154,7 @@ func GetDashboard(db *sql.DB) gin.HandlerFunc {
 		if isAdmin {
 			whereClause = "d.id = $1"
 		}
-		err = db.QueryRow(fmt.Sprintf(`
+		err = database.QueryRow(fmt.Sprintf(`
 			SELECT d.id, d.name, d.description, d.owner_id, u.username,
 				up.dashboard_id IS NOT NULL,
 				d.is_public, d.config, d.created_at, d.updated_at,
@@ -180,8 +183,9 @@ func GetDashboard(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func UpdateDashboard(db *sql.DB) gin.HandlerFunc {
+func UpdateDashboard(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
@@ -204,9 +208,9 @@ func UpdateDashboard(db *sql.DB) gin.HandlerFunc {
 
 		exists := false
 		if isAdmin {
-			db.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1)", id).Scan(&exists)
+			database.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1)", id).Scan(&exists)
 		} else {
-			db.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1 AND owner_id = $2)", id, userID).Scan(&exists)
+			database.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1 AND owner_id = $2)", id, userID).Scan(&exists)
 		}
 		if !exists {
 			middleware.HandleError(c, model.NewNotFound("dashboard not found", nil))
@@ -246,7 +250,7 @@ func UpdateDashboard(db *sql.DB) gin.HandlerFunc {
 
 		query := "UPDATE dashboards SET " + joinStrings(setClauses, ", ") + " WHERE id = $" + strconv.Itoa(argIdx)
 
-		_, err = db.Exec(query, args...)
+		_, err = database.Exec(query, args...)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to update dashboard", err))
 			return
@@ -256,8 +260,9 @@ func UpdateDashboard(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-func DeleteDashboard(db *sql.DB) gin.HandlerFunc {
+func DeleteDashboard(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
@@ -269,9 +274,9 @@ func DeleteDashboard(db *sql.DB) gin.HandlerFunc {
 
 		var result sql.Result
 		if isAdmin {
-			result, err = db.Exec("DELETE FROM dashboards WHERE id = $1", id)
+			result, err = database.Exec("DELETE FROM dashboards WHERE id = $1", id)
 		} else {
-			result, err = db.Exec("DELETE FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID)
+			result, err = database.Exec("DELETE FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID)
 		}
 		if err != nil {
 			middleware.HandleError(c, model.NewInternalKey("dashboard.deleteFailed", "Failed to delete dashboard", err))
@@ -300,7 +305,7 @@ type DashboardFilterRequest struct {
 // resolveDashboardFilters loads a dashboard's config and merges it with
 // the POST body overrides, returning filter options ready for
 // buildLogWhereClauses.
-func resolveDashboardFilters(db *sql.DB, c *gin.Context, req DashboardFilterRequest) (*model.DashboardConfig, LogFilterOptions, error) {
+func resolveDashboardFilters(pool *db.DynamicPool, c *gin.Context, req DashboardFilterRequest) (*model.DashboardConfig, LogFilterOptions, error) {
 
 	id, err := parseIDParam(c.Param("id"))
 	if err != nil {
@@ -310,7 +315,7 @@ func resolveDashboardFilters(db *sql.DB, c *gin.Context, req DashboardFilterRequ
 	userID := c.GetInt64("user_id")
 	isAdmin := getUserRole(c) == RoleAdmin
 
-	configRaw, err := getDashboardConfig(db, id, userID, isAdmin)
+	configRaw, err := getDashboardConfig(pool, id, userID, isAdmin)
 	if err != nil {
 		return nil, LogFilterOptions{}, model.NewNotFound("dashboard not found", err)
 	}
@@ -320,7 +325,7 @@ func resolveDashboardFilters(db *sql.DB, c *gin.Context, req DashboardFilterRequ
 		return nil, LogFilterOptions{}, model.NewBadRequest("invalid dashboard config", err)
 	}
 
-	requiredParsers, err := resolveParsersForFields(db, cfg.Fields)
+	requiredParsers, err := resolveParsersForFields(pool, cfg.Fields)
 	if err != nil {
 		return nil, LogFilterOptions{}, model.NewInternal("failed to resolve parsers for fields", err)
 	}
@@ -353,7 +358,8 @@ func resolveDashboardFilters(db *sql.DB, c *gin.Context, req DashboardFilterRequ
 
 // resolveDashboardFiltersWithName is like resolveDashboardFilters but also
 // returns the dashboard's name for use in export filenames.
-func resolveDashboardFiltersWithName(db *sql.DB, c *gin.Context, req DashboardFilterRequest) (*model.DashboardConfig, LogFilterOptions, string, error) {
+func resolveDashboardFiltersWithName(pool *db.DynamicPool, c *gin.Context, req DashboardFilterRequest) (*model.DashboardConfig, LogFilterOptions, string, error) {
+	database := pool.Get()
 	id, err := parseIDParam(c.Param("id"))
 	if err != nil {
 		return nil, LogFilterOptions{}, "", model.NewBadRequest("invalid id", nil)
@@ -365,9 +371,9 @@ func resolveDashboardFiltersWithName(db *sql.DB, c *gin.Context, req DashboardFi
 	var dashName string
 	var configRaw json.RawMessage
 	if isAdmin {
-		err = db.QueryRow("SELECT name, config FROM dashboards WHERE id = $1", id).Scan(&dashName, &configRaw)
+		err = database.QueryRow("SELECT name, config FROM dashboards WHERE id = $1", id).Scan(&dashName, &configRaw)
 	} else {
-		err = db.QueryRow("SELECT name, config FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE)", id, userID).Scan(&dashName, &configRaw)
+		err = database.QueryRow("SELECT name, config FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE)", id, userID).Scan(&dashName, &configRaw)
 	}
 	if err != nil {
 		return nil, LogFilterOptions{}, "", model.NewNotFound("dashboard not found", err)
@@ -378,7 +384,7 @@ func resolveDashboardFiltersWithName(db *sql.DB, c *gin.Context, req DashboardFi
 		return nil, LogFilterOptions{}, "", model.NewBadRequest("invalid dashboard config", err)
 	}
 
-	requiredParsers, err := resolveParsersForFields(db, cfg.Fields)
+	requiredParsers, err := resolveParsersForFields(pool, cfg.Fields)
 	if err != nil {
 		return nil, LogFilterOptions{}, "", model.NewInternal("failed to resolve parsers for fields", err)
 	}
@@ -422,12 +428,13 @@ func containsString(list []string, target string) bool {
 // the parser(s) that own them, so log rows can be checked against
 // matched_parsers (verifying they were actually parsed by that parser)
 // rather than just showing up because they matched some unrelated parser.
-func resolveParsersForFields(db *sql.DB, fields []string) ([]string, error) {
+func resolveParsersForFields(pool *db.DynamicPool, fields []string) ([]string, error) {
+	database := pool.Get()
 	if len(fields) == 0 {
 		return nil, nil
 	}
 
-	rows, err := db.Query(`
+	rows, err := database.Query(`
 		SELECT DISTINCT p.name
 		FROM parsed_fields_registry f
 		JOIN parsers p ON f.parser_id = p.id
@@ -462,8 +469,9 @@ type DashboardDataRequest struct {
 	Sort         string `json:"sort"`
 }
 
-func GetDashboardData(db *sql.DB) gin.HandlerFunc {
+func GetDashboardData(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var req DashboardDataRequest
 		_ = c.ShouldBindJSON(&req)
 
@@ -475,7 +483,7 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 			FromHostIP:   req.FromHostIP,
 			FieldFilters: req.FieldFilters,
 		}
-		cfg, opts, err := resolveDashboardFilters(db, c, filterReq)
+		cfg, opts, err := resolveDashboardFilters(pool, c, filterReq)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
@@ -545,7 +553,7 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 
 		var logs []model.SyslogLog
 		_ = timedQuery("dashboard_data_logs", func() error {
-			rows, err := db.QueryContext(ctx, logsQuery, args...)
+			rows, err := database.QueryContext(ctx, logsQuery, args...)
 			if err != nil {
 				return err
 			}
@@ -578,11 +586,12 @@ func GetDashboardData(db *sql.DB) gin.HandlerFunc {
 // GetDashboardDataCount returns the exact number of rows matching the same
 // filters as GetDashboardData, without paginating - a single COUNT(*) per
 // filter change instead of one per page (see GetLogsCount).
-func GetDashboardDataCount(database *sql.DB) gin.HandlerFunc {
+func GetDashboardDataCount(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		var req DashboardFilterRequest
 		_ = c.ShouldBindJSON(&req)
-		_, opts, err := resolveDashboardFilters(database, c, req)
+		_, opts, err := resolveDashboardFilters(pool, c, req)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
@@ -626,7 +635,7 @@ type DashboardExportRequest struct {
 	Limit        string `json:"limit"`
 }
 
-func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
+func ExportDashboardCSV(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req DashboardExportRequest
 		_ = c.ShouldBindJSON(&req)
@@ -639,7 +648,7 @@ func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
 			FromHostIP:   req.FromHostIP,
 			FieldFilters: req.FieldFilters,
 		}
-		cfg, opts, dashName, err := resolveDashboardFiltersWithName(db, c, filterReq)
+		cfg, opts, dashName, err := resolveDashboardFiltersWithName(pool, c, filterReq)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
@@ -664,31 +673,32 @@ func ExportDashboardCSV(db *sql.DB) gin.HandlerFunc {
 		}
 
 		whereClauses, args, _ := buildLogWhereClauses(opts)
-		writeCSVExport(c, db, buildWhereSQL(whereClauses), args, limit, cfg.Fields, dashName)
+		writeCSVExport(c, pool, buildWhereSQL(whereClauses), args, limit, cfg.Fields, dashName)
 	}
 }
 
 // ExportDashboardHTML exports a dashboard's log view as an HTML report,
 // honoring the same device/field scoping and filter overrides as
 // GetDashboardData.
-func ExportDashboardHTML(db *sql.DB) gin.HandlerFunc {
+func ExportDashboardHTML(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(180 * time.Second))
 		var req DashboardFilterRequest
 		_ = c.ShouldBindJSON(&req)
-		cfg, opts, dashName, err := resolveDashboardFiltersWithName(db, c, req)
+		cfg, opts, dashName, err := resolveDashboardFiltersWithName(pool, c, req)
 		if err != nil {
 			middleware.HandleError(c, err)
 			return
 		}
 
 		whereClauses, args, _ := buildLogWhereClauses(opts)
-		writeHTMLExport(c, db, buildWhereSQL(whereClauses), args, 5000, cfg.Fields, dashName)
+		writeHTMLExport(c, pool, buildWhereSQL(whereClauses), args, 5000, cfg.Fields, dashName)
 	}
 }
 
-func TogglePinDashboard(db *sql.DB) gin.HandlerFunc {
+func TogglePinDashboard(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
@@ -700,9 +710,9 @@ func TogglePinDashboard(db *sql.DB) gin.HandlerFunc {
 
 		exists := false
 		if isAdmin {
-			err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1)", id).Scan(&exists)
+			err = database.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1)", id).Scan(&exists)
 		} else {
-			err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE))", id, userID).Scan(&exists)
+			err = database.QueryRow("SELECT EXISTS(SELECT 1 FROM dashboards WHERE id = $1 AND (owner_id = $2 OR is_public = TRUE))", id, userID).Scan(&exists)
 		}
 		if err != nil || !exists {
 			middleware.HandleError(c, model.NewNotFound("dashboard not found", err))
@@ -710,24 +720,25 @@ func TogglePinDashboard(db *sql.DB) gin.HandlerFunc {
 		}
 
 		var pinned bool
-		err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM user_dashboard_pins WHERE user_id = $1 AND dashboard_id = $2)", userID, id).Scan(&pinned)
+		err = database.QueryRow("SELECT EXISTS(SELECT 1 FROM user_dashboard_pins WHERE user_id = $1 AND dashboard_id = $2)", userID, id).Scan(&pinned)
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Query failed", err))
 			return
 		}
 
 		if pinned {
-			db.Exec("DELETE FROM user_dashboard_pins WHERE user_id = $1 AND dashboard_id = $2", userID, id)
+			database.Exec("DELETE FROM user_dashboard_pins WHERE user_id = $1 AND dashboard_id = $2", userID, id)
 		} else {
-			db.Exec("INSERT INTO user_dashboard_pins (user_id, dashboard_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", userID, id)
+			database.Exec("INSERT INTO user_dashboard_pins (user_id, dashboard_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", userID, id)
 		}
 
 		c.JSON(http.StatusOK, gin.H{"pinned": !pinned})
 	}
 }
 
-func TogglePublicDashboard(db *sql.DB) gin.HandlerFunc {
+func TogglePublicDashboard(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		database := pool.Get()
 		id, err := parseIDParam(c.Param("id"))
 		if err != nil {
 			middleware.HandleError(c, model.NewBadRequest("invalid id", nil))
@@ -739,9 +750,9 @@ func TogglePublicDashboard(db *sql.DB) gin.HandlerFunc {
 
 		var isPublic bool
 		if isAdmin {
-			err = db.QueryRow("SELECT is_public FROM dashboards WHERE id = $1", id).Scan(&isPublic)
+			err = database.QueryRow("SELECT is_public FROM dashboards WHERE id = $1", id).Scan(&isPublic)
 		} else {
-			err = db.QueryRow("SELECT is_public FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID).Scan(&isPublic)
+			err = database.QueryRow("SELECT is_public FROM dashboards WHERE id = $1 AND owner_id = $2", id, userID).Scan(&isPublic)
 		}
 		if err != nil {
 			middleware.HandleError(c, model.NewNotFound("dashboard not found", err))
@@ -750,9 +761,9 @@ func TogglePublicDashboard(db *sql.DB) gin.HandlerFunc {
 
 		newPublic := !isPublic
 		if isAdmin {
-			_, err = db.Exec("UPDATE dashboards SET is_public = $1, updated_at = NOW() WHERE id = $2", newPublic, id)
+			_, err = database.Exec("UPDATE dashboards SET is_public = $1, updated_at = NOW() WHERE id = $2", newPublic, id)
 		} else {
-			_, err = db.Exec("UPDATE dashboards SET is_public = $1, updated_at = NOW() WHERE id = $2 AND owner_id = $3", newPublic, id, userID)
+			_, err = database.Exec("UPDATE dashboards SET is_public = $1, updated_at = NOW() WHERE id = $2 AND owner_id = $3", newPublic, id, userID)
 		}
 		if err != nil {
 			middleware.HandleError(c, model.NewInternal("Failed to update dashboard", err))
