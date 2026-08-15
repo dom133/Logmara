@@ -237,7 +237,6 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           collapsedWidth={80}
           collapsed={collapsed}
           onCollapse={setCollapsed}
-          responsive
           style={{ background: token.colorBgContainer }}
           theme={themeMode === 'dark' ? 'dark' : 'light'}
         >
@@ -250,7 +249,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
           placement="left"
           onClose={() => setDrawerVisible(false)}
           open={drawerVisible}
-          width={[280, '85%']}
+          width="85%"
           styles={{ body: { padding: 0 } }}
         >
           <div style={{ background: token.colorBgContainer, height: '100%' }}>

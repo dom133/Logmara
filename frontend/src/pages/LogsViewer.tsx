@@ -376,13 +376,14 @@ export default function LogsViewer() {
             open={detailModalOpen}
             onCancel={() => setDetailModalOpen(false)}
             footer={null}
-            width={[700, '90%']}
+            width={{ sm: '90%', md: 700 }}
           >
             {selectedLog && (
               <Descriptions bordered column={1} size="small">
                 <Descriptions.Item label="Timestamp">{new Date(selectedLog.timestamp).toLocaleString()}</Descriptions.Item>
                 <Descriptions.Item label="Severity"><SeverityTag severity={selectedLog.severity} /></Descriptions.Item>
                 <Descriptions.Item label="Device"><Tag color="blue">{selectedLog.hostname}</Tag></Descriptions.Item>
+                {selectedLog.fromhost_ip && <Descriptions.Item label="Source IP"><Tag color="green">{selectedLog.fromhost_ip}</Tag></Descriptions.Item>}
                 {selectedLog.app_name && <Descriptions.Item label="App">{selectedLog.app_name}</Descriptions.Item>}
                 <Descriptions.Item label="Message">
                   <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'Consolas, Monaco, monospace', fontSize: 12, lineHeight: 1.4 }}>

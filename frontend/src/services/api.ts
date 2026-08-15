@@ -71,6 +71,7 @@ export interface LogEntry {
   id: number
   timestamp: string
   hostname: string
+  fromhost_ip?: string
   app_name?: string
   process_id?: string
   msg_id?: string

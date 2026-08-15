@@ -505,7 +505,7 @@ export default function Admin() {
         onOk={handleCreate}
         okText="Create"
         cancelText="Cancel"
-        width={[500, '90%']}
+        width={{ sm: '90%', md: 500 }}
       >
         <Form form={form} layout="vertical">
           <Form.Item name="username" label="Username" rules={[{ required: true, message: 'Required' }]}>
@@ -534,7 +534,7 @@ export default function Admin() {
         onOk={handleEditSave}
         okText="Save"
         cancelText="Cancel"
-        width={[500, '90%']}
+        width={{ sm: '90%', md: 500 }}
       >
         <Form form={editForm} layout="vertical">
           <Form.Item label="Username">

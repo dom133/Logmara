@@ -251,7 +251,7 @@ export default function ParsersPage() {
         open={modalOpen}
         onCancel={() => { setModalOpen(false); setEditing(null) }}
         onOk={() => { form.validateFields().then(values => editing ? handleUpdate(values) : handleCreate(values)) }}
-        width={[700, '90%']}
+        width={{ sm: '90%', md: 700 }}
       >
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="Name" rules={[{ required: true }]}>
@@ -306,7 +306,7 @@ export default function ParsersPage() {
         open={testModalOpen}
         onCancel={() => { setTestModalOpen(false); setTestResult(null) }}
         footer={null}
-        width={[800, '95%']}
+        width={{ sm: '95%', md: 800 }}
       >
         <Form layout="vertical">
           <Form.Item label="Regex Pattern">

@@ -313,7 +313,7 @@ export default function DashboardsPage() {
         open={modalOpen}
         onCancel={() => { setModalOpen(false); setEditing(null) }}
         onOk={() => { form.validateFields().then(values => editing ? handleUpdate(values) : handleCreate(values)) }}
-        width={[700, '90%']}
+        width={{ sm: '90%', md: 700 }}
       >
         <Form form={form} layout="vertical" onValuesChange={async (changed, allValues) => {
       const newDevices = allValues.config?.devices || []

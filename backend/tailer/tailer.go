@@ -125,8 +125,8 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 	}
 	defer tx.Rollback()
 
-	query := `INSERT INTO syslog_logs (timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers)
-		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
+	query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers)
+		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
 	stmt, err := tx.Prepare(query)
 	if err != nil {
 		return fmt.Errorf("prepare: %w", err)
@@ -140,6 +140,7 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 			ts = time.Now()
 		}
 
+		fromHostIP := nullStr(entry.FromHostIP)
 		appName := nullStr(entry.AppName)
 		processID := nullStr(entry.ProcessID)
 		msgID := nullStr(entry.MsgID)
@@ -150,7 +151,7 @@ func flushBatch(db *sql.DB, entries []model.IngestEntry) error {
 			parsedFields = entry.ParsedFields
 		}
 
-		_, err = stmt.Exec(ts, entry.Hostname, appName, processID, msgID,
+		_, err = stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
 			entry.Severity, facility, entry.Message, rawMsg, parsedFields, pq.StringArray(entry.MatchedParsers))
 		if err != nil {
 			log.Printf("Tailer: insert error: %v", err)

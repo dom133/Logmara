@@ -45,8 +45,8 @@ func IngestBatch(db *sql.DB, engine *parser.Engine) gin.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-query := `INSERT INTO syslog_logs (timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers)
-	          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
+query := `INSERT INTO syslog_logs (timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers)
+		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
 		stmt, err := tx.Prepare(query)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not prepare statement"})
@@ -62,6 +62,7 @@ query := `INSERT INTO syslog_logs (timestamp, hostname, app_name, process_id, ms
 				ts = time.Now()
 			}
 
+			fromHostIP := nullStr(entry.FromHostIP)
 			appName := nullStr(entry.AppName)
 			processID := nullStr(entry.ProcessID)
 			msgID := nullStr(entry.MsgID)
@@ -71,7 +72,7 @@ query := `INSERT INTO syslog_logs (timestamp, hostname, app_name, process_id, ms
 			result := engine.Parse(entry.Hostname, entry.AppName, entry.Message)
 			if result == nil {
 				parsedJSON := []byte("null")
-				_, err = stmt.Exec(ts, entry.Hostname, appName, processID, msgID,
+				_, err = stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
 					entry.Severity, facility, entry.Message, rawMsg, parsedJSON, pq.StringArray(nil))
 				if err != nil {
 					log.Printf("Insert error: %v", err)
@@ -84,7 +85,7 @@ query := `INSERT INTO syslog_logs (timestamp, hostname, app_name, process_id, ms
 				parsedJSON = []byte("null")
 			}
 
-			_, err = stmt.Exec(ts, entry.Hostname, appName, processID, msgID,
+			_, err = stmt.Exec(ts, entry.Hostname, fromHostIP, appName, processID, msgID,
 				entry.Severity, facility, entry.Message, rawMsg, parsedJSON, pq.StringArray(result.Parsers))
 			if err != nil {
 				log.Printf("Insert error: %v", err)
@@ -187,7 +188,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 
 		// Fetch logs
 		logsQuery := fmt.Sprintf(
-			"SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at "+
+			"SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at "+
 				"FROM syslog_logs %s ORDER BY %s LIMIT $%d OFFSET $%d",
 			whereSQL, orderClause, argIdx, argIdx+1,
 		)
@@ -206,7 +207,7 @@ func GetLogs(db *sql.DB) gin.HandlerFunc {
 			var rawParsed json.RawMessage
 			var parsers pq.StringArray
 			err := rows.Scan(
-				&l.ID, &l.Timestamp, &l.Hostname, &l.AppName,
+				&l.ID, &l.Timestamp, &l.Hostname, &l.FromHostIP, &l.AppName,
 				&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
 				&l.Message, &l.RawMessage, &rawParsed, &parsers, &l.CreatedAt,
 			)

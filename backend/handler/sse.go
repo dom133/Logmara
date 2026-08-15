@@ -82,7 +82,7 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 			case <-ticker.C:
 				whereSQL, args := buildWhere()
 				query := fmt.Sprintf(
-					"SELECT id, timestamp, hostname, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at "+
+					"SELECT id, timestamp, hostname, fromhost_ip, app_name, process_id, msg_id, severity, facility, message, raw_message, parsed_fields, matched_parsers, created_at "+
 						"FROM syslog_logs %s ORDER BY timestamp ASC LIMIT 100",
 					whereSQL,
 				)
@@ -98,7 +98,7 @@ func StreamLogs(db *sql.DB) gin.HandlerFunc {
 					var rawParsed json.RawMessage
 					var parsers pq.StringArray
 					if err := rows.Scan(
-						&l.ID, &l.Timestamp, &l.Hostname, &l.AppName,
+						&l.ID, &l.Timestamp, &l.Hostname, &l.FromHostIP, &l.AppName,
 						&l.ProcessID, &l.MsgID, &l.Severity, &l.Facility,
 						&l.Message, &l.RawMessage, &rawParsed, &parsers, &l.CreatedAt,
 					); err != nil {

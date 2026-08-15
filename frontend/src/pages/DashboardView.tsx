@@ -202,6 +202,7 @@ export default function DashboardViewPage() {
     const items: { label: string; content: React.ReactNode; span?: number }[] = [
       { label: 'Timestamp', content: new Date(detailLog.timestamp).toLocaleString() },
       { label: 'Hostname', content: <Tag color="blue">{detailLog.hostname}</Tag> },
+      { label: 'Source IP', content: detailLog.fromhost_ip ? <Tag color="green">{detailLog.fromhost_ip}</Tag> : '-' },
       { label: 'Severity', content: <SeverityTag severity={detailLog.severity} /> },
       { label: 'Facility', content: detailLog.facility ?? '-' },
       { label: 'App', content: detailLog.app_name ?? '-' },
@@ -372,7 +373,7 @@ export default function DashboardViewPage() {
         footer={[
           <Button key="close" onClick={() => setDetailLog(null)}>Close</Button>
         ]}
-        width={[720, '90%']}
+        width={{ sm: '90%', md: 720 }}
       >
         {detailLog && (
           <Descriptions column={2} size="small" bordered>
