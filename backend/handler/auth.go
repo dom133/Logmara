@@ -296,6 +296,9 @@ func Login(pool *db.DynamicPool, authCfg *auth.Config) gin.HandlerFunc {
 		rememberedTTL := getRememberedTTL(pool)
 		refreshToken, refreshExpiresAt := auth.GenerateRefreshTokenWithTTL(int(user.ID), req.Remember, rememberedTTL)
 		devID := deviceID(c)
+		if err := db.InvalidateDeviceSessions(database, user.ID, devID); err != nil {
+			slog.Error("failed to invalidate previous device sessions", "error", err)
+		}
 		if err := insertRefreshToken(pool, refreshTokenParams{
 			userID:           int(user.ID),
 			token:            refreshToken,

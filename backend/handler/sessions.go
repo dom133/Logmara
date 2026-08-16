@@ -23,7 +23,15 @@ func ListSessions(pool *db.DynamicPool) gin.HandlerFunc {
 			return
 		}
 
-		currentDeviceID, _ := c.Cookie(DeviceIDCookieName)
+		// The access-token JTI issued alongside the caller's current refresh
+		// token is the only thing that identifies *this* session - device_id
+		// is a long-lived per-browser cookie shared by every login from that
+		// browser (including old, superseded ones), so comparing against it
+		// used to mark every session sharing the device as "current".
+		var currentJTI string
+		if jti, ok := c.Get("jti"); ok {
+			currentJTI, _ = jti.(string)
+		}
 
 		sessions, err := db.ListUserSessions(database, uid)
 		if err != nil {
@@ -37,7 +45,7 @@ func ListSessions(pool *db.DynamicPool) gin.HandlerFunc {
 		}
 		resp := make([]sessionResp, 0, len(sessions))
 		for _, s := range sessions {
-			resp = append(resp, sessionResp{Session: s, IsCurrent: currentDeviceID != "" && s.DeviceID == currentDeviceID})
+			resp = append(resp, sessionResp{Session: s, IsCurrent: currentJTI != "" && s.JTI == currentJTI})
 		}
 		c.JSON(http.StatusOK, resp)
 	}
