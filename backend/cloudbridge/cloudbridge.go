@@ -30,9 +30,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
@@ -55,11 +55,28 @@ func Enabled() bool {
 var (
 	stateMu sync.Mutex
 	pool    *db.DynamicPool
-	router  http.Handler // set once by Start; read (never written) by every replay() call after
 
 	connMu    sync.RWMutex
 	connected bool
 )
+
+// frontendUpstream is where every tunneled request gets forwarded -
+// deliberately the existing frontend container, not this backend's own
+// router. That container already serves the SPA's static build AND
+// reverse-proxies /api to this backend for ordinary LAN browser access
+// (see frontend/nginx.conf) - so replaying a tunneled request against it
+// is the SAME code path a real browser already takes, not a second one
+// this package has to keep in sync. Whether a request is "the app" or
+// "the API" is nginx's routing table's job here, exactly as it is for
+// every other client - cloudbridge itself stays completely ignorant of
+// it, so a future change to that routing (a new API prefix, a rewrite
+// rule) never requires touching this package.
+func frontendUpstream() string {
+	if v := os.Getenv("CLOUD_BRIDGE_FRONTEND_UPSTREAM"); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	return "http://frontend"
+}
 
 // Status is what the admin API/UI show - see handler.GetCloudBridgeStatus.
 type Status struct {
@@ -105,13 +122,10 @@ func setConnected(v bool) {
 // Start wires this package to the running instance and, if a previous
 // run already enrolled (state persisted in Postgres, survives restarts -
 // see model.CloudBridgeState), reconnects immediately. Call exactly once
-// from main(), only when Enabled() - r is the same *gin.Engine the real
-// HTTP listener is bound to, reused here to replay tunneled requests
-// in-process (see replay) rather than opening a second network listener.
-func Start(p *db.DynamicPool, r http.Handler) {
+// from main(), only when Enabled().
+func Start(p *db.DynamicPool) {
 	stateMu.Lock()
 	pool = p
-	router = r
 	stateMu.Unlock()
 
 	state, err := db.GetCloudBridgeState(p.Get())
@@ -323,32 +337,51 @@ func handleRequestFrame(conn *websocket.Conn, writeMu *sync.Mutex, frame Frame) 
 	}
 }
 
-// replay runs a tunneled request through the local Gin router in-process
-// (httptest.NewRecorder + ServeHTTP) - no network hop, no new listening
-// port. Whatever auth the mobile app's original request carried (session
-// cookie, API key) rides through in frame.Headers unchanged and is
-// enforced by this installation's own existing middleware exactly as if
-// the request had arrived over the LAN.
-func replay(frame Frame) Frame {
-	stateMu.Lock()
-	r := router
-	stateMu.Unlock()
+// replayClient is reused across every replay() call - a fresh http.Client
+// per request would open a fresh TCP connection to the frontend container
+// each time; this one keeps a small connection pool warm via the default
+// Transport.
+var replayClient = &http.Client{Timeout: 30 * time.Second}
 
-	req := httptest.NewRequest(frame.Method, frame.Path, bytes.NewReader(frame.Body))
+// replay forwards a tunneled request to frontendUpstream() - see that
+// function's doc comment for why this is a plain HTTP hop to the existing
+// frontend container rather than anything specific to this package.
+// Whatever auth the caller's original request carried (session cookie,
+// API key) rides through in frame.Headers unchanged and is enforced by
+// this installation's own existing middleware exactly as it would be for
+// any other client of that container.
+func replay(frame Frame) Frame {
+	req, err := http.NewRequest(frame.Method, frontendUpstream()+frame.Path, bytes.NewReader(frame.Body))
+	if err != nil {
+		return errorResponse(frame.ID, fmt.Sprintf("build request: %v", err))
+	}
 	for k, values := range frame.Headers {
 		for _, v := range values {
 			req.Header.Add(k, v)
 		}
 	}
 
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
+	resp, err := replayClient.Do(req)
+	if err != nil {
+		return errorResponse(frame.ID, fmt.Sprintf("reach local app: %v", err))
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return errorResponse(frame.ID, fmt.Sprintf("read response: %v", err))
+	}
 
 	return Frame{
 		ID:      frame.ID,
 		Type:    "response",
-		Status:  rec.Code,
-		Headers: rec.Header(),
-		Body:    rec.Body.Bytes(),
+		Status:  resp.StatusCode,
+		Headers: resp.Header,
+		Body:    body,
 	}
+}
+
+func errorResponse(id, message string) Frame {
+	body, _ := json.Marshal(map[string]string{"error": message})
+	return Frame{ID: id, Type: "response", Status: http.StatusBadGateway, Headers: map[string][]string{"Content-Type": {"application/json"}}, Body: body}
 }

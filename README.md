@@ -1112,11 +1112,18 @@ action, not automatic:
    re-pairing path, only reconnecting with the same identity after a
    restart) and whether the tunnel is currently connected.
 
-Once paired, tunneled requests from the mobile app are replayed against
-this installation's own API **in-process** (no new listening port, no
-second network hop) and go through the exact same authentication/
-authorization middleware as a request arriving over the LAN would -
-Cloud Bridge is a transport, not a new trust boundary.
+Once paired, every tunneled request - whether it's the mobile app calling
+the API or a browser loading the full app through a Logmara Cloud
+instance link - is forwarded to the **frontend container**
+(`CLOUD_BRIDGE_FRONTEND_UPSTREAM`, defaults to `http://frontend`, the
+same service the browser already talks to on the LAN), not replayed
+against this backend directly. That container already knows how to serve
+the app's static build and proxy `/api` to this backend
+(`frontend/nginx.conf`) - Cloud Bridge reuses that exact routing instead
+of duplicating it, so a future change to the frontend or its API routes
+never needs a matching change here. Either way, requests go through the
+exact same authentication/authorization the app already enforces for a
+LAN request - Cloud Bridge is a transport, not a new trust boundary.
 
 > [!NOTE]
 > The pairing link is single-use and expires after 7 days if never

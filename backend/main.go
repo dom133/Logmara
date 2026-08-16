@@ -1016,12 +1016,12 @@ r := gin.New()
 
 	// Cloud Bridge: opt-in, off by default (see backend/cloudbridge's doc
 	// comment on why this is an env var and not a relay_ingestion_enabled-
-	// style database setting). r is the same router the real HTTP listener
-	// below binds to - reused in-process to replay tunneled requests, no
-	// second port. Must come after every route above is registered, since
-	// a tunneled request could be replayed against any of them.
+	// style database setting). Forwards every tunneled request to the
+	// frontend container (CLOUD_BRIDGE_FRONTEND_UPSTREAM, default
+	// http://frontend) rather than this router - see
+	// cloudbridge.frontendUpstream's doc comment.
 	if cloudbridge.Enabled() {
-		cloudbridge.Start(dynamicPool, r)
+		cloudbridge.Start(dynamicPool)
 	}
 
 	// The real listener only needs the schema (ready since <-schemaReady
