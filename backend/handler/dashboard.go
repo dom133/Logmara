@@ -626,8 +626,15 @@ func GetDashboardDataCount(pool *db.DynamicPool) gin.HandlerFunc {
 				return err
 			})
 		} else {
+			cacheKey := "dash:" + c.Param("id") + ":" + whereSQL + fmt.Sprint(args...)
 			_ = timedQuery("dashboard_data_count", func() error {
-				return database.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL), args...).Scan(&total)
+				var err error
+				total, err = cachedFilteredCount(cacheKey, func() (int64, error) {
+					var t int64
+					err := database.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL), args...).Scan(&t)
+					return t, err
+				})
+				return err
 			})
 		}
 

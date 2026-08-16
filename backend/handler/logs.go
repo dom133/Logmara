@@ -228,8 +228,15 @@ func GetLogsCount(pool *db.DynamicPool) gin.HandlerFunc {
 				return err
 			})
 		} else {
+			cacheKey := "logs:" + whereSQL + fmt.Sprint(args...)
 			_ = timedQuery("logs_count", func() error {
-				return database.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL), args...).Scan(&total)
+				var err error
+				total, err = cachedFilteredCount(cacheKey, func() (int64, error) {
+					var t int64
+					err := database.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM syslog_logs %s", whereSQL), args...).Scan(&t)
+					return t, err
+				})
+				return err
 			})
 		}
 

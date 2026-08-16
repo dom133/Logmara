@@ -102,6 +102,7 @@ func startMVScheduler(ctx context.Context, db *sql.DB, interval time.Duration) f
 				return
 			case <-ticker.C:
 				RefreshMV(ctx, db)
+				RefreshDeviceStatsMV(ctx, db)
 			}
 		}
 	}()
@@ -347,13 +348,78 @@ func RefreshMV(ctx context.Context, db *sql.DB) {
 		slog.Info("skipping materialized view refresh - migration still in progress")
 		return
 	}
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		slog.Error("mv refresh: acquire connection failed", "err", err)
+		return
+	}
+	defer conn.Close()
+
+	var acquired bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", mvRefreshLockKey).Scan(&acquired); err != nil {
+		slog.Error("mv refresh: advisory lock check failed", "err", err)
+		return
+	}
+	if !acquired {
+		slog.Info("mv refresh already running elsewhere, skipping this cycle")
+		return
+	}
+	defer func() {
+		if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", mvRefreshLockKey); err != nil {
+			slog.Warn("failed to release mv refresh advisory lock", "err", err)
+		}
+	}()
+
 	slog.Info("refreshing materialized views")
-	for _, mv := range []string{"mv_dashboard_summary", "mv_dashboard_severity", "mv_timeline_hourly", "mv_device_stats", "mv_dashboard_top_errors"} {
+	// mv_device_stats refreshes on its own cadence (see RefreshDeviceStatsMV)
+	// - its dev_parsers CTE (unnest+array_agg over every row) is far more
+	// expensive than these four, so bundling it into the same cycle meant it
+	// was very often still running when the next 30s tick fired.
+	for _, mv := range []string{"mv_dashboard_summary", "mv_dashboard_severity", "mv_timeline_hourly", "mv_dashboard_top_errors"} {
 		if err := refreshMaterializedView(ctx, db, mv); err != nil {
 			slog.Error("mv refresh failed", "view", mv, "err", err)
 		} else {
 			slog.Info("materialized view refreshed", "view", mv)
 		}
+	}
+}
+
+// RefreshDeviceStatsMV refreshes mv_device_stats behind its own advisory
+// lock, separate from RefreshMV's four lighter views - see the comment on
+// deviceStatsMVRefreshLockKey and the call site in main.go for why it runs
+// on a longer, independent cadence.
+func RefreshDeviceStatsMV(ctx context.Context, db *sql.DB) {
+	if IsAppStarting() {
+		return
+	}
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		slog.Error("device stats mv refresh: acquire connection failed", "err", err)
+		return
+	}
+	defer conn.Close()
+
+	var acquired bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", deviceStatsMVRefreshLockKey).Scan(&acquired); err != nil {
+		slog.Error("device stats mv refresh: advisory lock check failed", "err", err)
+		return
+	}
+	if !acquired {
+		slog.Info("device stats mv refresh already running elsewhere, skipping this cycle")
+		return
+	}
+	defer func() {
+		if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", deviceStatsMVRefreshLockKey); err != nil {
+			slog.Warn("failed to release device stats mv refresh advisory lock", "err", err)
+		}
+	}()
+
+	if err := refreshMaterializedView(ctx, db, "mv_device_stats"); err != nil {
+		slog.Error("mv refresh failed", "view", "mv_device_stats", "err", err)
+	} else {
+		slog.Info("materialized view refreshed", "view", "mv_device_stats")
 	}
 }
 
@@ -380,6 +446,17 @@ func getIntervalMinutes(envKey string, defaultMinutes int) time.Duration {
 // operations that shouldn't block on each other, just serialize against
 // concurrent copies of themselves.
 const partitionLockKey = 8743012
+
+// mvRefreshLockKey/deviceStatsMVRefreshLockKey are further advisory lock
+// keys, one per refresh cadence (see RefreshMV/RefreshDeviceStatsMV below).
+// REFRESH MATERIALIZED VIEW CONCURRENTLY takes a lock on the view being
+// refreshed, so this process's own 30s/30min refresh tickers - and the same
+// tickers on every other replica - were observed racing each other and
+// queuing behind that lock for up to 140s+ per attempt, exactly like
+// createPartitions above before it got the same treatment. pg_try_advisory_lock
+// lets every loser skip its cycle outright instead of piling up.
+const mvRefreshLockKey = 8743013
+const deviceStatsMVRefreshLockKey = 8743014
 
 // createPartitions pre-creates syslog_logs partitions, under whichever
 // granularity is already active (see activePartitionGranularity - not

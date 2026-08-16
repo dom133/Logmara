@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"logmara/db"
@@ -262,6 +263,54 @@ func buildWhereSQL(clauses []string) string {
 		return ""
 	}
 	return "WHERE " + strings.Join(clauses, " AND ")
+}
+
+// filteredCountTTL/filteredCountCache short-circuit the exact COUNT(*)
+// queries in GetLogsCount/GetDashboardDataCount for repeat requests against
+// the same filter set - both the live-poll loop and paging through the same
+// dashboard/search re-issue an identical count on every tick even though the
+// underlying data hasn't changed since the last one. A plain COUNT(*) over
+// syslog_logs is exact but scans every matching partition, so on a
+// multi-million row table it's expensive enough to be worth skipping when
+// nothing has changed in the last few seconds.
+const filteredCountTTL = 15 * time.Second
+const filteredCountCacheMaxEntries = 1000
+
+type filteredCountEntry struct {
+	total int64
+	at    time.Time
+}
+
+var (
+	filteredCountCacheMu sync.Mutex
+	filteredCountCache   = map[string]filteredCountEntry{}
+)
+
+// cachedFilteredCount returns the cached count for cacheKey if it's still
+// within filteredCountTTL, otherwise calls fetch and caches the result.
+// cacheKey should already fold in whatever distinguishes this filter set
+// (e.g. dashboard/endpoint prefix + WHERE SQL + args).
+func cachedFilteredCount(cacheKey string, fetch func() (int64, error)) (int64, error) {
+	filteredCountCacheMu.Lock()
+	if e, ok := filteredCountCache[cacheKey]; ok && time.Since(e.at) < filteredCountTTL {
+		filteredCountCacheMu.Unlock()
+		return e.total, nil
+	}
+	filteredCountCacheMu.Unlock()
+
+	total, err := fetch()
+	if err != nil {
+		return 0, err
+	}
+
+	filteredCountCacheMu.Lock()
+	if len(filteredCountCache) >= filteredCountCacheMaxEntries {
+		filteredCountCache = map[string]filteredCountEntry{}
+	}
+	filteredCountCache[cacheKey] = filteredCountEntry{total: total, at: time.Now()}
+	filteredCountCacheMu.Unlock()
+
+	return total, nil
 }
 
 // encodeLogCursor/decodeLogCursor implement keyset pagination on

@@ -544,6 +544,30 @@ func main() {
 		}
 	}()
 
+	// mv_device_stats gets its own, slower cadence instead of riding along
+	// on the 30s loop above - its full-table unnest/array_agg aggregation is
+	// far more expensive than the other four views (see RefreshDeviceStatsMV),
+	// so refreshing it every 30s meant it was very often still running when
+	// the next tick fired, competing with itself (and, without the advisory
+	// lock RefreshDeviceStatsMV now takes, with every other replica's copy of
+	// this same ticker) for locks on syslog_logs.
+	go func() {
+		ticker := time.NewTicker(3 * time.Minute)
+		defer ticker.Stop()
+		slog.Info("device stats MV refresh started", "interval_minutes", 3)
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("device stats MV refresh stopped")
+				return
+			case <-ticker.C:
+				if db.HasActiveSession(dynamicPool.Get()) {
+					db.RefreshDeviceStatsMV(ctx, dynamicPool.Get())
+				}
+			}
+		}
+	}()
+
 	// auth.Init/parser.NewEngine/the tailer all query tables that only exist
 	// once db.Migrate has run (users, parsers, syslog_logs) - on a brand new
 	// database these queries can otherwise race ahead of table creation and

@@ -403,43 +403,40 @@ func GetSeverityStats(pool *db.DynamicPool) gin.HandlerFunc {
 		from := req.From
 		to := req.To
 
-		if from == "" && to == "" {
-			severityStatsCacheMu.RLock()
-			if time.Since(severityStatsCacheTime) < severityStatsTTL && severityStatsCache != nil {
-				stats := severityStatsCache
-				severityStatsCacheMu.RUnlock()
-				c.JSON(http.StatusOK, gin.H{"stats": stats})
-				return
-			}
-			severityStatsCacheMu.RUnlock()
+		if from != "" || to != "" {
+			c.JSON(http.StatusOK, gin.H{"stats": fetchSeverityStatsRange(pool, from, to)})
+			return
 		}
 
-		var stats []model.SeverityStats
-		if from == "" && to == "" {
-			stats = fetchSeverityStatsAll(pool)
-		} else {
-			stats = fetchSeverityStatsRange(pool, from, to)
+		// Held for the whole check-fetch-store cycle (not just the cache
+		// read) so concurrent requests that land on an expired cache queue up
+		// behind one fetch instead of each independently hitting the
+		// database - the frontend polls this on the same 30s cadence as
+		// severityStatsTTL, so most requests arrive right as the cache just
+		// expired.
+		severityStatsCacheMu.Lock()
+		defer severityStatsCacheMu.Unlock()
+		if time.Since(severityStatsCacheTime) < severityStatsTTL && severityStatsCache != nil {
+			c.JSON(http.StatusOK, gin.H{"stats": severityStatsCache})
+			return
 		}
 
-		if from == "" && to == "" {
-			severityStatsCacheMu.Lock()
-			severityStatsCache = stats
-			severityStatsCacheTime = time.Now()
-			severityStatsCacheMu.Unlock()
-		}
-
+		stats := fetchSeverityStatsAll(pool)
+		severityStatsCache = stats
+		severityStatsCacheTime = time.Now()
 		c.JSON(http.StatusOK, gin.H{"stats": stats})
 	}
 }
 
+// fetchSeverityStatsAll reads from mv_dashboard_severity - which is kept
+// fresh by the background MV refresh (see db.RefreshMV) - instead of
+// aggregating syslog_logs live, since that GROUP BY COUNT(*) scans every
+// partition of a multi-million row table.
 func fetchSeverityStatsAll(pool *db.DynamicPool) []model.SeverityStats {
 	database := pool.Get()
 	var stats []model.SeverityStats
 	_ = timedQuery("severity_stats_all", func() error {
-		rows, err := database.Query(`
-			SELECT severity, COUNT(*) FROM syslog_logs
-			GROUP BY severity ORDER BY COUNT(*) DESC
-		`)
+		rows, err := database.Query(`SELECT severity, cnt FROM mv_dashboard_severity ORDER BY cnt DESC`)
 		if err != nil {
 			return err
 		}
