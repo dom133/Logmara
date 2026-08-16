@@ -56,6 +56,13 @@ func HasSecondaryKey() bool {
 	return encryptKeySecondary != ""
 }
 
+// GetPrimaryEncryptionKey returns the current primary encryption key.
+func GetPrimaryEncryptionKey() string {
+	encryptMu.RLock()
+	defer encryptMu.RUnlock()
+	return encryptKeyPrimary
+}
+
 // Encrypt encrypts plaintext using the primary key.
 func Encrypt(plaintext string) (string, error) {
 	encryptMu.RLock()

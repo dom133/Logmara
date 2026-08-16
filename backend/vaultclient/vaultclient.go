@@ -152,6 +152,17 @@ func (c *Client) GetSecret(name string) (value string, ok bool) {
 	return value, ok
 }
 
+// GetSecretNoCache reads the "value" field of secret/data/logmara/<name>
+// (KV v2) directly from Vault, bypassing the cache. Used by the secret sync
+// ticker on non-leader replicas to detect when the leader has rotated a
+// secret and the local copy needs updating.
+func (c *Client) GetSecretNoCache(name string) (value string, ok bool) {
+	if c == nil {
+		return "", false
+	}
+	return c.fetch(name)
+}
+
 func (c *Client) fetch(name string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
@@ -468,6 +479,12 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 				sslmode = "disable"
 			}
 			newValue = "postgres://" + username + ":" + password + "@" + host + ":" + port + "/" + dbname + "?sslmode=" + sslmode
+
+				// Persist credentials to Vault KV so non-leader replicas can
+			// sync them via the secret sync ticker.
+			c.WriteSecret("pg_dynamic_username", username)
+			c.WriteSecret("pg_dynamic_password", password)
+			c.WriteSecret("pg_dynamic_version", fmt.Sprintf("%d", time.Now().Unix()))
 		}
 	case "redis":
 		newValue, _ = secret.Data["password"].(string)
@@ -481,6 +498,10 @@ func (c *Client) rotateDynamicSecret(ctx context.Context, engine string, callbac
 			if username != "" && password != "" {
 				newValue = "amqp://" + username + ":" + password + "@" + host + ":" + port
 			}
+		}
+		if newValue != "" {
+			c.WriteSecret("rabbitmq_dynamic_url", newValue)
+			c.WriteSecret("rabbitmq_dynamic_version", fmt.Sprintf("%d", time.Now().Unix()))
 		}
 	}
 
@@ -507,6 +528,9 @@ type DynamicCredentials struct {
 // Vault 500) up to dynamicFetchMaxRetries times. Returns an error if Vault
 // is unavailable after all retries.
 //
+// After fetching, it writes the credentials and a version marker to Vault KV
+// so non-leader replicas can sync them via the secret sync ticker.
+//
 // Returns nil (not an error) if Vault is not configured (c is nil), so
 // callers can fall back to static credentials or the setup wizard.
 func (c *Client) FetchDynamicCredentials(ctx context.Context) (*DynamicCredentials, error) {
@@ -514,18 +538,55 @@ func (c *Client) FetchDynamicCredentials(ctx context.Context) (*DynamicCredentia
 		return nil, nil
 	}
 
-	pgDSN, err := c.fetchDynamicCredential(ctx, "database")
+	pgDSN, pgUser, pgPass, err := c.fetchDynamicCredentialWithParts(ctx, "database")
 	if err != nil {
 		return nil, fmt.Errorf("fetch PG dynamic credentials: %w", err)
 	}
+	c.WriteSecret("pg_dynamic_username", pgUser)
+	c.WriteSecret("pg_dynamic_password", pgPass)
+	c.WriteSecret("pg_dynamic_version", fmt.Sprintf("%d", time.Now().Unix()))
 
 	rmqURL, err := c.fetchDynamicCredential(ctx, "rabbitmq")
 	if err != nil {
 		return nil, fmt.Errorf("fetch RabbitMQ dynamic credentials: %w", err)
 	}
+	c.WriteSecret("rabbitmq_dynamic_url", rmqURL)
+	c.WriteSecret("rabbitmq_dynamic_version", fmt.Sprintf("%d", time.Now().Unix()))
 
 	slog.Info("vault: dynamic credentials fetched at startup", "engines", "database,rabbitmq")
 	return &DynamicCredentials{PGDSN: pgDSN, RabbitMQ: rmqURL}, nil
+}
+
+func (c *Client) fetchDynamicCredentialWithParts(ctx context.Context, engine string) (dsn, username, password string, err error) {
+	path := "secret-dynamic/" + engine + "/creds/" + dynamicRoleName
+
+	maxAttempts := 1 + dynamicFetchMaxRetries
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			slog.Info("vault: retrying dynamic credential fetch", "engine", engine, "attempt", attempt+1, "max", maxAttempts)
+			time.Sleep(dynamicSecretRetryDelay)
+		}
+
+		ctx2, cancel := context.WithTimeout(ctx, dynamicSecretTimeout)
+		secret, fetchErr := c.api.Logical().ReadWithContext(ctx2, path)
+		cancel()
+
+		if fetchErr == nil {
+			dsn, username, password, err = buildDynamicValueWithParts(engine, secret)
+			return
+		}
+
+		isRetryable := (fetchErr == context.DeadlineExceeded) || strings.Contains(fetchErr.Error(), "Code: 500")
+		if isRetryable && attempt < dynamicFetchMaxRetries {
+			slog.Warn("vault: dynamic credential fetch failed, will retry", "engine", engine, "attempt", attempt+1, "error", fetchErr)
+			continue
+		}
+
+		slog.Error("vault: failed to fetch dynamic credential", "engine", engine, "error", fetchErr)
+		return "", "", "", fetchErr
+	}
+
+	return "", "", "", fmt.Errorf("exhausted retries fetching %s credentials", engine)
 }
 
 func (c *Client) fetchDynamicCredential(ctx context.Context, engine string) (string, error) {
@@ -608,5 +669,40 @@ func buildDynamicValue(engine string, secret *vaultapi.Secret) (string, error) {
 
 	default:
 		return "", fmt.Errorf("unknown engine: %s", engine)
+	}
+}
+
+func buildDynamicValueWithParts(engine string, secret *vaultapi.Secret) (dsn, username, password string, err error) {
+	if secret == nil || secret.Data == nil {
+		return "", "", "", fmt.Errorf("no secret data returned from Vault")
+	}
+
+	switch engine {
+	case "database":
+		username, _ = secret.Data["username"].(string)
+		password, _ = secret.Data["password"].(string)
+		if username == "" || password == "" {
+			return "", "", "", fmt.Errorf("missing username or password from Vault")
+		}
+		host := os.Getenv("POSTGRES_HOST")
+		port := os.Getenv("POSTGRES_PORT")
+		dbname := os.Getenv("POSTGRES_DB")
+		sslmode := os.Getenv("POSTGRES_SSLMODE")
+		if host == "" {
+			return "", "", "", fmt.Errorf("POSTGRES_HOST not set")
+		}
+		if port == "" {
+			port = "5432"
+		}
+		if dbname == "" {
+			dbname = "syslog_db"
+		}
+		if sslmode == "" {
+			sslmode = "disable"
+		}
+		return "postgres://" + username + ":" + password + "@" + host + ":" + port + "/" + dbname + "?sslmode=" + sslmode, username, password, nil
+
+	default:
+		return "", "", "", fmt.Errorf("buildDynamicValueWithParts only supports database engine")
 	}
 }

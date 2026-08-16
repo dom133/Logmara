@@ -222,7 +222,7 @@ func waitRotationComplete(before [4]time.Time) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("rotation timed out after 120s")
+			return fmt.Errorf("rotation timed out after 300s")
 		case <-ticker.C:
 			allDone := true
 			for i := 0; i < 4; i++ {
@@ -252,6 +252,14 @@ func GetRotationStatus() gin.HandlerFunc {
 // TriggerRotation triggers rotation via Redis pub/sub (so it reaches the
 // rotation leader even if this replica isn't it) and waits for all secrets
 // to complete, returning the final rotation status with per-secret results.
+//
+// Safety net: after publishing to Redis, it also calls TriggerManualRotation()
+// directly. If this replica IS the rotation leader, the direct call hits the
+// same rotation goroutine (buffered channel, capacity 1, so at most one
+// rotation runs). If this replica is NOT the leader, the Redis message reaches
+// the leader, and the direct call is a no-op (vaultClientRef is shared, but
+// TriggerRotateNow's buffered channel drops duplicate signals). Either way,
+// rotation gets triggered.
 func TriggerRotation() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
@@ -265,15 +273,16 @@ func TriggerRotation() gin.HandlerFunc {
 			}
 		}
 
-		// Publish rotation trigger to reach the leader replica.
-		// If Redis isn't available, fall back to direct trigger.
+		// Publish rotation trigger to reach the leader replica via Redis.
 		if rotationTriggerBroadcaster != nil {
 			if err := rotationTriggerBroadcaster.Publish(context.Background(), rotationTriggerChannel, ""); err != nil {
 				slog.Warn("failed to publish rotation trigger", "error", err)
 			}
-		} else {
-			TriggerManualRotation()
 		}
+
+		// Direct trigger as a safety net — ensures rotation starts even if
+		// Redis pub/sub failed or no replica subscribed to the trigger channel.
+		TriggerManualRotation()
 
 		if err := waitRotationComplete(before); err != nil {
 			slog.Warn("rotation wait timed out", "error", err)

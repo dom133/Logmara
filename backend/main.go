@@ -640,7 +640,7 @@ func main() {
 		rotationTriggerBroadcaster := sharedstate.NewBroadcaster(sharedClient)
 		handler.SetRotationTriggerBroadcaster(rotationTriggerBroadcaster)
 
-		rotationElector = sharedstate.NewLeaderElector(sharedClient, "vault-rotation", 25*time.Hour)
+		rotationElector = sharedstate.NewLeaderElector(sharedClient, "vault-rotation", 60*time.Second)
 		if rotationElector.Acquire(ctx) {
 			slog.Info("vault: this replica is rotation leader")
 			go handler.StartRotationTriggerSubscriber(ctx, rotationTriggerBroadcaster)
@@ -720,7 +720,7 @@ func main() {
 		// goroutine both shut down cleanly.
 		if isRotationLeader && rotationElector != nil {
 			go func() {
-				ticker := time.NewTicker(5 * time.Minute)
+				ticker := time.NewTicker(30 * time.Second)
 				defer ticker.Stop()
 				for {
 					select {
@@ -740,6 +740,88 @@ func main() {
 				}
 			}()
 		}
+	}
+
+	// Secret sync ticker: on every replica (including the leader), poll Vault
+	// for the current jwt_secret and encryption_key values. If the value in
+	// Vault differs from what this replica has locally, apply the new value.
+	// This ensures that after the leader rotates a secret, all replicas pick
+	// up the new value within one sync cycle (10s), so JWT tokens and
+	// encrypted data remain valid across all replicas.
+	if vc != nil {
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+
+			var lastPGVersion, lastRMQVersion string
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					// Sync JWT secret
+					vaultJWT, jwtOk := vc.GetSecretNoCache("jwt_secret")
+					if jwtOk && vaultJWT != authCfg.GetPrimarySecret() {
+						slog.Info("vault: synced JWT secret from Vault", "source", "sync-ticker")
+						authCfg.RotateSecret(vaultJWT)
+					}
+
+					// Sync encryption key
+					vaultEnc, encOk := vc.GetSecretNoCache("encryption_key")
+					if encOk {
+						currentEnc := util.GetPrimaryEncryptionKey()
+						if vaultEnc != currentEnc {
+							slog.Info("vault: synced encryption key from Vault", "source", "sync-ticker")
+							util.RotateEncryptionKey(vaultEnc)
+						}
+					}
+
+					// Sync dynamic PostgreSQL credentials
+					pgVersion, pgVerOk := vc.GetSecretNoCache("pg_dynamic_version")
+					if pgVerOk && pgVersion != lastPGVersion {
+						pgUser, pgUserOk := vc.GetSecretNoCache("pg_dynamic_username")
+						pgPass, pgPassOk := vc.GetSecretNoCache("pg_dynamic_password")
+						if pgUserOk && pgPassOk && pgUser != "" && pgPass != "" {
+							host := os.Getenv("POSTGRES_HOST")
+							port := os.Getenv("POSTGRES_PORT")
+							dbname := os.Getenv("POSTGRES_DB")
+							sslmode := os.Getenv("POSTGRES_SSLMODE")
+							if port == "" {
+								port = "5432"
+							}
+							if dbname == "" {
+								dbname = "syslog_db"
+							}
+							if sslmode == "" {
+								sslmode = "disable"
+							}
+							newDSN := "postgres://" + pgUser + ":" + pgPass + "@" + host + ":" + port + "/" + dbname + "?sslmode=" + sslmode
+							if err := dynamicPool.Rotate(newDSN); err != nil {
+								slog.Error("vault: failed to sync PG credentials", "error", err)
+							} else {
+								lastPGVersion = pgVersion
+								slog.Info("vault: synced PostgreSQL credentials from Vault", "source", "sync-ticker")
+							}
+						}
+					}
+
+					// Sync dynamic RabbitMQ credentials
+					rmqVersion, rmqVerOk := vc.GetSecretNoCache("rabbitmq_dynamic_version")
+					if rmqVerOk && rmqVersion != lastRMQVersion {
+						rmqURL, rmqURLOk := vc.GetSecretNoCache("rabbitmq_dynamic_url")
+						if rmqURLOk && rmqURL != "" {
+							if err := tailer.RotateRabbitMQURL(rmqURL); err != nil {
+								slog.Error("vault: failed to sync RabbitMQ credentials", "error", err)
+							} else {
+								lastRMQVersion = rmqVersion
+								slog.Info("vault: synced RabbitMQ credentials from Vault", "source", "sync-ticker")
+							}
+						}
+					}
+				}
+			}
+		}()
 	}
 
 	engine := parser.NewEngine(dynamicPool)
@@ -1127,6 +1209,9 @@ r := gin.New()
 	<-quit
 
 	slog.Info("shutting down server...")
+	if rotationElector != nil && isRotationLeader {
+		rotationElector.Release(context.Background())
+	}
 	maintCancel()
 	stopVacuum()
 	stopMV()

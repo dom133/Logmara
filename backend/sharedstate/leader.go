@@ -49,17 +49,32 @@ func NewLeaderElector(client *Client, key string, ttl time.Duration) *LeaderElec
 	return &LeaderElector{client: client, key: "leader:" + key, id: uuid.NewString(), ttl: ttl}
 }
 
-// Acquire attempts to become leader. Returns false if another instance
-// already holds the lock.
+// Acquire attempts to become leader. Retries up to 3 times on transient
+// Redis errors (timeout, network blip, Sentinel failover) with a 1s delay
+// between attempts. Returns false if another instance already holds the lock.
 func (le *LeaderElector) Acquire(ctx context.Context) bool {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	ok, err := le.client.Raw().SetNX(ctx, le.key, le.id, le.ttl).Result()
-	if err != nil {
-		slog.Warn("leader election acquire error", "key", le.key, "error", err)
-		return false
+	const maxAttempts = 3
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			slog.Warn("leader election: retrying acquire", "key", le.key, "attempt", attempt+1, "max", maxAttempts)
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(1 * time.Second):
+			}
+		}
+
+		ctx2, cancel := context.WithTimeout(ctx, 5*time.Second)
+		ok, err := le.client.Raw().SetNX(ctx2, le.key, le.id, le.ttl).Result()
+		cancel()
+
+		if err != nil {
+			slog.Warn("leader election acquire error", "key", le.key, "error", err, "attempt", attempt+1)
+			continue
+		}
+		return ok
 	}
-	return ok
+	return false
 }
 
 // Renew extends the lock's TTL. ok reports whether this instance is still
