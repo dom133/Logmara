@@ -324,18 +324,22 @@ func (c *Client) TriggerRotateNow() {
 func (c *Client) rotateSecrets(ctx context.Context, cb RotationCallbacks) {
 	slog.Info("vault: rotating secrets")
 
+	failures := 0
+	wrapFailure := func(engine string, errMsg string) {
+		failures++
+		if cb.OnRotateFailure != nil {
+			cb.OnRotateFailure(engine, errMsg)
+		}
+	}
+
 	// Rotate JWT secret
 	newJWTSecret, err := generateRandomKey(32)
 	if err != nil {
 		slog.Error("vault: failed to generate JWT secret", "error", err)
-		if cb.OnRotateFailure != nil {
-			cb.OnRotateFailure("jwt_secret", err.Error())
-		}
+		wrapFailure("jwt_secret", err.Error())
 	} else if err := c.WriteSecret("jwt_secret", newJWTSecret); err != nil {
 		slog.Error("vault: failed to write JWT secret", "error", err)
-		if cb.OnRotateFailure != nil {
-			cb.OnRotateFailure("jwt_secret", err.Error())
-		}
+		wrapFailure("jwt_secret", err.Error())
 	} else {
 		cb.RotateJWTSecret(newJWTSecret)
 	}
@@ -344,20 +348,21 @@ func (c *Client) rotateSecrets(ctx context.Context, cb RotationCallbacks) {
 	newEncKey, err := generateRandomKey(32)
 	if err != nil {
 		slog.Error("vault: failed to generate encryption key", "error", err)
-		if cb.OnRotateFailure != nil {
-			cb.OnRotateFailure("encryption_key", err.Error())
-		}
+		wrapFailure("encryption_key", err.Error())
 	} else if err := c.WriteSecret("encryption_key", newEncKey); err != nil {
 		slog.Error("vault: failed to write encryption key", "error", err)
-		if cb.OnRotateFailure != nil {
-			cb.OnRotateFailure("encryption_key", err.Error())
-		}
+		wrapFailure("encryption_key", err.Error())
 	} else {
 		cb.RotateEncryptionKey(newEncKey)
 	}
 
 	// Rotate dynamic PostgreSQL credentials
-	c.rotateDynamicSecret(ctx, "database", cb.RotatePostgreSQLDSN, cb.OnRotateFailure)
+	c.rotateDynamicSecret(ctx, "database", cb.RotatePostgreSQLDSN, func(engine string, errMsg string) {
+		failures++
+		if cb.OnRotateFailure != nil {
+			cb.OnRotateFailure(engine, errMsg)
+		}
+	})
 
 	// Redis has no dynamic-secret rotation: neither Vault Redis plugin
 	// discovers the current master through Sentinel, and unilaterally
@@ -367,9 +372,20 @@ func (c *Client) rotateSecrets(ctx context.Context, cb RotationCallbacks) {
 	// rotation stays a manual scripts/rotate-secrets.sh operation.
 
 	// Rotate dynamic RabbitMQ credentials
-	c.rotateDynamicSecret(ctx, "rabbitmq", cb.RotateRabbitMQURL, cb.OnRotateFailure)
+	c.rotateDynamicSecret(ctx, "rabbitmq", cb.RotateRabbitMQURL, func(engine string, errMsg string) {
+		failures++
+		if cb.OnRotateFailure != nil {
+			cb.OnRotateFailure(engine, errMsg)
+		}
+	})
 
-	slog.Info("vault: secrets rotation complete")
+	if failures == 4 {
+		slog.Error("vault: all secret rotations failed", "failures", failures)
+	} else if failures > 0 {
+		slog.Warn("vault: secrets rotation complete with failures", "failures", failures, "total", 4)
+	} else {
+		slog.Info("vault: secrets rotation complete")
+	}
 }
 
 // dynamicRoleName is the Vault role name provisioned by

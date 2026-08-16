@@ -211,9 +211,9 @@ func TriggerManualRotation() {
 }
 
 // waitRotationComplete blocks until all 4 secrets have a newer last_rotated_at
-// timestamp than before the trigger, or until timeout (60s).
+// timestamp than before the trigger, or until timeout (300s).
 func waitRotationComplete(before [4]time.Time) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	ticker := time.NewTicker(500 * time.Millisecond)

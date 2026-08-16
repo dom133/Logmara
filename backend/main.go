@@ -635,11 +635,12 @@ func main() {
 	// When sharedClient is nil (single-server), the broadcaster is nil
 	// and TriggerRotation falls back to direct TriggerManualRotation().
 	isRotationLeader := true
+	var rotationElector *sharedstate.LeaderElector
 	if sharedClient != nil {
 		rotationTriggerBroadcaster := sharedstate.NewBroadcaster(sharedClient)
 		handler.SetRotationTriggerBroadcaster(rotationTriggerBroadcaster)
 
-		rotationElector := sharedstate.NewLeaderElector(sharedClient, "vault-rotation", 25*time.Hour)
+		rotationElector = sharedstate.NewLeaderElector(sharedClient, "vault-rotation", 25*time.Hour)
 		if rotationElector.Acquire(ctx) {
 			slog.Info("vault: this replica is rotation leader")
 			go handler.StartRotationTriggerSubscriber(ctx, rotationTriggerBroadcaster)
@@ -713,6 +714,32 @@ func main() {
 			}
 		},
 	})
+
+		// Renew the rotation leader lock periodically. If this replica loses
+		// leadership, cancel ctx so StartRotation and the trigger subscriber
+		// goroutine both shut down cleanly.
+		if isRotationLeader && rotationElector != nil {
+			go func() {
+				ticker := time.NewTicker(5 * time.Minute)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						ok, lost := rotationElector.Renew(ctx)
+						if !ok && lost {
+							slog.Warn("vault: lost rotation leader lock, stepping down")
+							maintCancel()
+							return
+						}
+						if !ok && !lost {
+							slog.Warn("vault: rotation leader lock renew error (transient)")
+						}
+					}
+				}
+			}()
+		}
 	}
 
 	engine := parser.NewEngine(dynamicPool)
