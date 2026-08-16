@@ -54,16 +54,18 @@ func Enabled() bool {
 	return os.Getenv("CLOUD_BRIDGE_ENABLED") == "true"
 }
 
-// LockCertificates reports whether CLOUD_BRIDGE_LOCK_CERTIFICATES=true is
-// set - for deployments that don't want an admin ever seeing or swapping
-// the raw mTLS client key through the UI/API. When set, EnrollWithLink
-// persists and connects the certificates Logmara Cloud hands back
-// immediately server-side instead of returning them to the caller for
-// review, and SaveCertificates refuses any further call outright (there is
-// then no repair/replace path at all - Disconnect + re-pairing is the only
-// way to get new certificates). Read live, same as Enabled.
+// LockCertificates is true by default - for deployments that don't want
+// an admin ever seeing or swapping the raw mTLS client key through the
+// UI/API. Set CLOUD_BRIDGE_LOCK_CERTIFICATES=false to disable: the admin
+// will then be able to review and replace certificates via the UI. When
+// locked, EnrollWithLink persists and connects the certificates Logmara
+// Cloud hands back immediately server-side instead of returning them to
+// the caller for review, and SaveCertificates refuses any further call
+// outright (there is then no repair/replace path at all - Disconnect +
+// re-pairing is the only way to get new certificates). Read live, same
+// as Enabled.
 func LockCertificates() bool {
-	return os.Getenv("CLOUD_BRIDGE_LOCK_CERTIFICATES") == "true"
+	return strings.ToLower(os.Getenv("CLOUD_BRIDGE_LOCK_CERTIFICATES")) != "false"
 }
 
 var (
@@ -470,6 +472,8 @@ type Frame struct {
 const (
 	reconnectBaseDelay = 2 * time.Second
 	reconnectMaxDelay  = 60 * time.Second
+	pingPeriod         = 30 * time.Second
+	readDeadline       = 45 * time.Second
 )
 
 // parseCerts validates and parses an installation's mTLS material, shared
@@ -542,13 +546,31 @@ func connectOnce(ctx context.Context, state model.CloudBridgeState) (dialed bool
 	}
 	defer conn.Close()
 
-	// ReadJSON below blocks indefinitely with no ctx awareness of its own -
-	// this goroutine is what makes Disconnect's cancellation actually
-	// interrupt it immediately, by closing the connection out from under
-	// the blocked read, instead of only taking effect on the next
-	// reconnect attempt.
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Time{})
+		return nil
+	})
+
 	stopWatch := make(chan struct{})
 	defer close(stopWatch)
+
+	go func() {
+		ticker := time.NewTicker(pingPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					return
+				}
+				conn.SetWriteDeadline(time.Time{})
+			case <-stopWatch:
+				return
+			}
+		}
+	}()
+
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -560,14 +582,19 @@ func connectOnce(ctx context.Context, state model.CloudBridgeState) (dialed bool
 	setConnected(true)
 	slog.Info("cloudbridge: tunnel connected", "broker_host", state.BrokerHost)
 
-	var writeMu sync.Mutex // gorilla/websocket allows only one concurrent writer per connection
+	conn.SetReadDeadline(time.Now().Add(readDeadline))
+
+	var writeMu sync.Mutex
 	for {
 		var frame Frame
 		if err := conn.ReadJSON(&frame); err != nil {
-			return true, fmt.Errorf("read frame: %w", err)
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+				return true, fmt.Errorf("read frame: %w", err)
+			}
+			return true, nil
 		}
 		if frame.Type != "request" {
-			continue // the broker only ever sends "request" frames; ignore anything else defensively
+			continue
 		}
 		go handleRequestFrame(conn, &writeMu, frame)
 	}
