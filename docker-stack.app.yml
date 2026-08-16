@@ -244,6 +244,10 @@ services:
       RSYSLOG_RELOAD_TARGETS_HOST: tasks.rsyslog
       RSYSLOG_RELOAD_PORT: "8082"
       RELAY_CENTRAL_HOST: ${RELAY_CENTRAL_HOST:-}
+      # Optional: enables the Cloud Bridge feature area (Admin > Cloud
+      # Bridge tab). See README "Cloud Bridge (Optional)". Off by default.
+      CLOUD_BRIDGE_ENABLED: ${CLOUD_BRIDGE_ENABLED:-}
+      CLOUD_BRIDGE_FRONTEND_UPSTREAM: ${CLOUD_BRIDGE_FRONTEND_UPSTREAM:-}
       # Backs Admin > Health - see the docker-proxy service above.
       DOCKER_PROXY_URL: http://docker-proxy:2375
       RABBITMQ_HOST: haproxy-rabbitmq
