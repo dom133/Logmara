@@ -442,40 +442,47 @@ function AppLayout({ children }: { children: React.ReactNode }) {
         </Layout>
       </Layout>
       {isMobile && (
-        <Footer
+        <div
           style={{
             position: 'fixed',
-            bottom: `calc(56px + env(safe-area-inset-bottom, 0px))`,
+            bottom: 0,
             left: 0,
             right: 0,
             zIndex: 999,
-            background: token.colorPrimaryBg,
-            color: token.colorPrimaryText,
-            fontSize: 12,
-            padding: '10px 16px',
             display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            flexWrap: 'wrap',
-            gap: 8,
+            flexDirection: 'column',
           }}
         >
-          <span>Logmara {appVersion}</span>
-          <span>
-            © {new Date().getFullYear()}{' '}
-            <a href="https://github.com/dom133" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
-              Dominik Kruszewski
-            </a>
-            {' · '}
-            <a href="https://github.com/dom133/Logmara" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
-              GitHub
-            </a>
-            {' · '}
-            AGPL-3.0
-          </span>
-        </Footer>
+          <Footer
+            style={{
+              background: token.colorPrimaryBg,
+              color: token.colorPrimaryText,
+              fontSize: 12,
+              padding: '10px 16px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: 8,
+            }}
+          >
+            <span>Logmara {appVersion}</span>
+            <span>
+              © {new Date().getFullYear()}{' '}
+              <a href="https://github.com/dom133" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
+                Dominik Kruszewski
+              </a>
+              {' · '}
+              <a href="https://github.com/dom133/Logmara" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
+                GitHub
+              </a>
+              {' · '}
+              AGPL-3.0
+            </span>
+          </Footer>
+          <BottomNav />
+        </div>
       )}
-      {isMobile && <BottomNav />}
       {isMobile && <div className="bottom-safe-spacer" />}
       {showSessionWarning && (
         <SessionWarningModal
