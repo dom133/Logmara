@@ -21,23 +21,29 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 	flushTracker *sharedstate.FlushTracker, ic control.IngestionController,
 	reopenLogFile func() error, sharedClient *sharedstate.Client) {
 
+	// log tags every line from this run with a component attribute so
+	// file-tailing/publishing logs are easy to tell apart from the
+	// queue-consuming/processing logs emitted by the workers (worker.go).
+	log := slog.With("component", "file-reader")
+
 	posFile := filepath.Join(filepath.Dir(filePath), positionFileName)
 	filePos, _ := loadStartPositionFromReader(db, filePath, posFile, sharedClient)
 	lastCompaction := time.Now()
+	publishRetries := 0
 
 	defer func() {
-		slog.Info("file reader stopped")
+		log.Info("file reader stopped")
 	}()
 
 	for {
 		if ctx.Err() != nil {
-			slog.Info("file reader stopping")
+			log.Info("file reader stopping")
 			return
 		}
 
 		f, err := os.OpenFile(filePath, os.O_RDWR, 0644)
 		if err != nil {
-			slog.Warn("file reader: log file not available, retrying", "path", filePath, "error", err)
+			log.Warn("log file not available, retrying", "path", filePath, "error", err)
 			if !sleepOrDone(ctx, 2*time.Second) {
 				return
 			}
@@ -56,7 +62,7 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 		fileSize := stat.Size()
 		if filePos > fileSize {
 			filePos = 0
-			slog.Info("file rotated, resetting position")
+			log.Info("file rotated, resetting position")
 		}
 
 		// Compact once most of the file has been durably flushed to the DB
@@ -68,9 +74,41 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 		shouldCompact := time.Since(lastCompaction) > compactionInterval || fileSize > maxFileSize
 		enoughFlushed := fileSize > 0 && flushedPos > 0 && (fileSize-flushedPos) < fileSize/4
 		if shouldCompact && enoughFlushed {
+			// Pause ingestion cluster-wide and confirm every worker has
+			// actually drained - not just waited out a timer - before
+			// touching the file. Without this, queued-but-unflushed
+			// messages (or a batch a worker is still holding in memory)
+			// keep NextPos offsets from the pre-truncation file layout;
+			// once compaction resets flushTracker's sequence to 0, those
+			// stale messages would collide with the freshly re-published
+			// sequence numbers and double-ingest the preserved tail.
+			ic.Pause()
+			if !waitForDrain(ctx, queue) {
+				log.Warn("drain before compaction did not complete in time, skipping this cycle")
+				ic.Resume()
+				f.Close()
+				if !sleepOrDone(ctx, 1*time.Second) {
+					return
+				}
+				continue
+			}
+
+			// Purge whatever got nacked back onto the queue during the
+			// drain and reset flushTracker (_flushed_seq/_flushed_pos) so
+			// it starts from 0 against the post-truncation file layout.
+			// The purged messages' content isn't lost: it's exactly the
+			// tail compactFile preserves, which gets re-scanned and
+			// re-published fresh once filePos is reset to 0 below.
+			if msgs, errMsg := PurgeTailerQueue(); errMsg != "" {
+				log.Warn("queue purge before compaction reported error", "error", errMsg)
+			} else {
+				log.Info("queue purged before compaction", "messages_removed", msgs)
+			}
+
 			newF, err := compactFile(f, flushedPos, filePath, reopenLogFile)
 			if err != nil {
-				slog.Error("file reader: compaction error", "error", err)
+				log.Error("compaction error", "error", err)
+				ic.Resume()
 				f.Close()
 				if !sleepOrDone(ctx, 1*time.Second) {
 					return
@@ -81,6 +119,8 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 			filePos = 0
 			savePosition(posFile, 0, filePath, sharedClient)
 			lastCompaction = time.Now()
+			ic.Resume()
+			log.Info("compaction complete, ingestion resumed")
 		}
 
 		if _, err := f.Seek(filePos, 0); err != nil {
@@ -97,7 +137,7 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 			if _, err := f.ReadAt(checkByte[:], filePos-1); err == nil && checkByte[0] != '\n' {
 				seekPos, hitLimit := safeBackseek(filePath, filePos-1)
 				if hitLimit {
-					slog.Warn("file reader: backseek hit limit, resetting to 0", "was", filePos, "limit", backseekLimit)
+					log.Warn("backseek hit limit, resetting to 0", "was", filePos, "limit", backseekLimit)
 					filePos = 0
 					if _, err := f.Seek(0, 0); err != nil {
 						f.Close()
@@ -107,7 +147,7 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 						continue
 					}
 				} else {
-					slog.Warn("file reader: position was mid-line, backseeking", "was", filePos, "now", seekPos)
+					log.Warn("position was mid-line, backseeking", "was", filePos, "now", seekPos)
 					filePos = seekPos
 					if _, err := f.Seek(seekPos, 0); err != nil {
 						f.Close()
@@ -140,7 +180,7 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 
 		for scanner.Scan() {
 			if ic.IsPaused() {
-				slog.Info("file reader: ingestion paused, breaking scan")
+				log.Info("ingestion paused, breaking scan")
 				break
 			}
 
@@ -156,7 +196,7 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 			// publishing quickly when purge pauses ingestion.
 			if published%100 == 0 {
 				if ic.IsPaused() {
-					slog.Info("file reader: ingestion paused during scan, breaking")
+					log.Info("ingestion paused during scan, breaking")
 					break
 				}
 				if queue.IsFull(ctx) {
@@ -177,17 +217,22 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 
 			data, err := json.Marshal(entry)
 			if err != nil {
-				slog.Error("file reader: marshal error", "error", err)
+				log.Error("marshal error, dropping line", "error", err)
 				continue
 			}
 
 			if err := queue.Publish(ctx, data); err != nil {
-				slog.Error("file reader: publish error", "error", err)
+				publishRetries++
+				log.Error("publish failed, will retry", "attempt", publishRetries, "error", err)
 				f.Close()
 				if !sleepOrDone(ctx, 1*time.Second) {
 					return
 				}
 				goto reconnect
+			}
+			if publishRetries > 0 {
+				log.Info("publish recovered after retry", "attempts", publishRetries)
+				publishRetries = 0
 			}
 
 			// Advance filePos immediately after successful publish so that
@@ -197,13 +242,49 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 		}
 
 		if err := scanner.Err(); err != nil {
-			slog.Error("file reader: scan error", "error", err)
+			log.Error("scan error", "error", err)
 		}
 		f.Close()
 
 	reconnect:
 		if !sleepOrDone(ctx, 200*time.Millisecond) {
 			return
+		}
+	}
+}
+
+const (
+	drainPollInterval = 100 * time.Millisecond
+	drainTimeout      = 30 * time.Second
+)
+
+// waitForDrain blocks until the RabbitMQ queue has no messages ready for
+// delivery and every worker's WorkerPool.PendingCount() confirms it has no
+// unflushed batch left in memory, or until ctx is canceled or drainTimeout
+// elapses. It polls actual state rather than assuming a fixed sleep is
+// enough - a worker can be sitting on a partial batch it never got a
+// chance to notice the pause for (see the pauseCheckTicker comment in
+// worker.go). Returns false if the drain couldn't be confirmed in time, so
+// the caller can skip this compaction cycle instead of truncating the file
+// while data might still be in flight.
+func waitForDrain(ctx context.Context, queue *sharedstate.Queue) bool {
+	deadline := time.Now().Add(drainTimeout)
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		var pending int64
+		if currentPipeline != nil && currentPipeline.workerPool != nil {
+			pending = currentPipeline.workerPool.PendingCount()
+		}
+		if queue.Len(ctx) == 0 && pending == 0 {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		if !sleepOrDone(ctx, drainPollInterval) {
+			return false
 		}
 	}
 }

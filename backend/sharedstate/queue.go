@@ -16,7 +16,17 @@ const (
 	rabbitmqPrefetch = 1000
 	rabbitmqMaxLen   = 50000
 	rabbitmqReconnectInterval = 5 * time.Second
+	// queueReconnectMaxLog caps how many consecutive failed-reconnect
+	// attempts get logged at Warn, so a prolonged broker outage doesn't
+	// flood the log with one line per attempt.
+	queueReconnectMaxLog = 10
 )
+
+// queueLog tags every log line from this file with a component attribute so
+// it's easy to filter connection-layer logs (shared by both the file-reader
+// publisher and the RabbitMQ worker consumers) apart from either side's own
+// logs.
+var queueLog = slog.With("component", "rabbitmq-queue")
 
 // Queue wraps a RabbitMQ connection, channel, and queue for the tailer
 // ingestion pipeline. It provides publish/consume with auto-reconnect.
@@ -31,6 +41,12 @@ type Queue struct {
 	lastRotatedAt time.Time
 	lastResult    string
 	lastError     string
+
+	// reconnectAttempts counts consecutive failed reconnect attempts since
+	// the last successful connect, regardless of whether the triggering
+	// call was a publish (file-reader) or a consume (worker). Reset to 0
+	// on success.
+	reconnectAttempts int
 }
 
 func NewQueue(url string) (*Queue, error) {
@@ -79,7 +95,6 @@ func (q *Queue) ensureConnected() error {
 		q.mu.RUnlock()
 		return nil
 	}
-	slog.Warn("queue: connection or channel lost or closed, initiating reconnect")
 	q.mu.RUnlock()
 
 	q.mu.Lock()
@@ -91,14 +106,29 @@ func (q *Queue) ensureConnected() error {
 }
 
 func (q *Queue) reconnectLocked() error {
+	q.reconnectAttempts++
+	attempt := q.reconnectAttempts
+	if attempt <= queueReconnectMaxLog {
+		queueLog.Warn("connection lost or closed, reconnecting", "attempt", attempt)
+	} else if attempt == queueReconnectMaxLog+1 {
+		queueLog.Warn("suppressing further reconnect logs (too many attempts)", "attempt", attempt)
+	}
+
 	if q.conn != nil {
 		q.conn.Close()
 	}
 	if err := q.connect(); err != nil {
-		slog.Error("queue: reconnect to RabbitMQ failed", "error", err)
+		if attempt <= queueReconnectMaxLog {
+			queueLog.Error("reconnect to RabbitMQ failed, will retry", "attempt", attempt, "error", err)
+		}
 		return err
 	}
-	slog.Info("queue: reconnected to RabbitMQ successfully")
+	if attempt > 1 {
+		queueLog.Info("reconnected to RabbitMQ successfully", "attempts", attempt)
+	} else {
+		queueLog.Info("reconnected to RabbitMQ successfully")
+	}
+	q.reconnectAttempts = 0
 	return nil
 }
 
@@ -138,7 +168,7 @@ func (q *Queue) Consume(ctx context.Context) (<-chan amqp.Delivery, error) {
 	if err := q.channel.Qos(rabbitmqPrefetch, 0, false); err != nil {
 		return nil, fmt.Errorf("queue consume: Qos failed: %w", err)
 	}
-	slog.Debug("queue: starting consumer", "queue", rabbitmqQueue)
+	queueLog.Debug("starting consumer", "queue", rabbitmqQueue)
 	return q.channel.Consume(
 		rabbitmqQueue,
 		"", // consumer tag (auto-generated)
@@ -194,7 +224,7 @@ func (q *Queue) Purge(_ context.Context) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	slog.Info("queue purged", "messages_removed", msgs)
+	queueLog.Info("queue purged", "messages_removed", msgs)
 	return uint32(msgs), nil
 }
 
@@ -217,23 +247,23 @@ func (q *Queue) RotateURL(newURL string) error {
 	}
 
 	if err := q.connect(); err != nil {
-		slog.Warn("queue: rotate URL failed with new URL, falling back to previous", "error", err)
+		queueLog.Warn("rotate URL failed with new URL, falling back to previous", "error", err)
 		q.url = oldURL
 		if fallbackErr := q.connect(); fallbackErr != nil {
-			slog.Error("queue: fallback reconnect also failed", "error", fallbackErr)
+			queueLog.Error("fallback reconnect also failed", "error", fallbackErr)
 			q.lastRotatedAt = now
 			q.lastResult = "failed"
 			q.lastError = err.Error()
 			return fmt.Errorf("rotate failed: %w (fallback also failed: %v)", err, fallbackErr)
 		}
-		slog.Info("queue: fallback reconnect to previous URL succeeded")
+		queueLog.Info("fallback reconnect to previous URL succeeded")
 		q.lastRotatedAt = now
 		q.lastResult = "failed"
 		q.lastError = "new URL failed, fell back to previous: " + err.Error()
 		return fmt.Errorf("rotate failed, fell back to previous URL: %w", err)
 	}
 
-	slog.Info("queue: URL rotated successfully")
+	queueLog.Info("URL rotated successfully")
 	q.lastRotatedAt = now
 	q.lastResult = "success"
 	q.lastError = ""

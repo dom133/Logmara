@@ -8,9 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
-
-
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
@@ -44,6 +43,17 @@ func (wp *WorkerPool) NumWorkers() int {
 	return len(wp.workers)
 }
 
+// PendingCount returns the total number of entries currently buffered
+// in-memory across all workers, unflushed and unacked. Used to confirm
+// workers have fully drained before it's safe to truncate the log file.
+func (wp *WorkerPool) PendingCount() int64 {
+	var total int64
+	for _, w := range wp.workers {
+		total += atomic.LoadInt64(&w.pending)
+	}
+	return total
+}
+
 type worker struct {
 	id         int
 	parser     *parser.Engine
@@ -54,6 +64,11 @@ type worker struct {
 	queue      *sharedstate.Queue
 	ic         control.IngestionController
 	metrics    *WorkerMetrics
+	// pending is the number of entries currently buffered locally,
+	// unflushed and unacked. Read by WorkerPool.PendingCount() so callers
+	// (e.g. reader.go's pre-compaction drain) can confirm this worker has
+	// no in-memory batch left before it's safe to truncate the log file.
+	pending int64
 }
 
 // WorkerMetrics tracks per-worker statistics.
@@ -122,7 +137,7 @@ func (wp *WorkerPool) Start(ctx context.Context) {
 			worker.run(workerCtx)
 		}(w)
 	}
-	slog.Info("worker pool started", "workers", len(wp.workers))
+	slog.Info("worker pool started", "component", "rabbitmq-worker", "workers", len(wp.workers))
 }
 
 func (wp *WorkerPool) Wait() {
@@ -171,28 +186,43 @@ func (wp *WorkerPool) GetPublicMetrics() []WorkerMetricsPublic {
 }
 
 func (w *worker) run(ctx context.Context) {
+	// log tags every line from this goroutine with a component attribute
+	// (distinct from "file-reader") plus this worker's id, so
+	// queue-consuming/processing logs are easy to tell apart from the
+	// file-tailing/publishing logs emitted by FileReader (reader.go).
+	log := slog.With("component", "rabbitmq-worker", "worker_id", w.id)
 	reconnectAttempts := 0
+
+	// pauseCheckTicker lets an idle worker notice a pause and drain its
+	// locally buffered batch even when no new delivery arrives to trigger
+	// the checks in the consume loop below. Without it, once ic.Pause()
+	// takes effect every new delivery is nacked immediately at receipt, so
+	// the code path that flushes or nacks the *existing* buffered batch is
+	// never reached - a worker sitting on a partial, unflushed batch at
+	// the moment of pause would hold it in memory indefinitely. Created
+	// once here (not per-reconnect) so it isn't leaked across reconnects.
+	pauseCheckTicker := time.NewTicker(100 * time.Millisecond)
+	defer pauseCheckTicker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("worker: shutting down (context canceled)", "id", w.id)
+			log.Info("shutting down (context canceled)")
 			return
 		default:
 		}
 
 		if reconnectAttempts > 0 {
-			logMsg := "worker: attempting to reconnect"
 			if reconnectAttempts <= workerReconnectMaxLog {
-				slog.Warn(logMsg, "id", w.id, "attempt", reconnectAttempts)
+				log.Warn("attempting to reconnect", "attempt", reconnectAttempts)
 			} else if reconnectAttempts == workerReconnectMaxLog+1 {
-				slog.Warn("worker: suppressing further reconnect logs (too many attempts)", "id", w.id, "attempt", reconnectAttempts)
+				log.Warn("suppressing further reconnect logs (too many attempts)", "attempt", reconnectAttempts)
 			}
 		}
 
 		deliveriesChan, err := w.queue.Consume(ctx)
 		if err != nil {
-			slog.Error("worker: failed to start consuming, will retry", "id", w.id, "error", err)
+			log.Error("failed to start consuming, will retry", "error", err)
 			reconnectAttempts++
 			w.metrics.Mutex.Lock()
 			w.metrics.ReconnectCount++
@@ -203,8 +233,11 @@ func (w *worker) run(ctx context.Context) {
 			continue
 		}
 
+		if reconnectAttempts > 0 {
+			log.Info("consume recovered after retry", "attempts", reconnectAttempts)
+		}
 		reconnectAttempts = 0
-		slog.Info("worker: consume started successfully", "id", w.id)
+		log.Info("consume started successfully")
 
 		var entries []model.IngestEntry
 		var queueEntries []sharedstate.QueueEntry
@@ -215,15 +248,27 @@ func (w *worker) run(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
-				slog.Info("worker: stopping (context canceled)", "id", w.id)
+				log.Info("stopping (context canceled)")
 				return
-			case delivery, ok := <-deliveriesChan:
-				if !ok {
-					slog.Warn("worker: delivery channel closed, reconnecting", "id", w.id)
+			case <-pauseCheckTicker.C:
+				if w.ic.IsPaused() && len(batchDelivries) > 0 {
 					for _, d := range batchDelivries {
 						d.Nack(false, true)
 					}
-					slog.Info("worker: requeued pending deliveries before reconnect", "id", w.id, "count", len(batchDelivries))
+					log.Info("drained idle buffered batch on pause", "count", len(batchDelivries))
+					entries = nil
+					queueEntries = nil
+					batchDelivries = nil
+					atomic.StoreInt64(&w.pending, 0)
+				}
+			case delivery, ok := <-deliveriesChan:
+				if !ok {
+					log.Warn("delivery channel closed, reconnecting")
+					for _, d := range batchDelivries {
+						d.Nack(false, true)
+					}
+					log.Info("requeued pending deliveries before reconnect", "count", len(batchDelivries))
+					atomic.StoreInt64(&w.pending, 0)
 					break consumeLoop
 				}
 
@@ -234,7 +279,7 @@ func (w *worker) run(ctx context.Context) {
 
 				var qe sharedstate.QueueEntry
 				if err := json.Unmarshal(delivery.Body, &qe); err != nil {
-					slog.Error("worker: unmarshal queue entry error", "id", w.id, "error", err)
+					log.Error("unmarshal queue entry error", "error", err)
 					// The envelope itself is corrupt, so qe.Seq can't be
 					// trusted - encoding/json gives no guarantee about which
 					// fields got set before the error. Try a lenient decode
@@ -250,7 +295,7 @@ func (w *worker) run(ctx context.Context) {
 					if err2 := json.Unmarshal(delivery.Body, &partial); err2 == nil && partial.Seq > 0 {
 						w.flushTrk.ReportFlushed(ctx, []sharedstate.QueueEntry{{Seq: partial.Seq, NextPos: partial.NextPos}})
 					} else {
-						slog.Error("worker: cannot recover seq from corrupted queue entry, flush tracker progress may stall here", "id", w.id)
+						log.Error("cannot recover seq from corrupted queue entry, flush tracker progress may stall here")
 					}
 					delivery.Ack(false)
 					w.metrics.Mutex.Lock()
@@ -288,7 +333,7 @@ func (w *worker) run(ctx context.Context) {
 					if len(debug) > 200 {
 						debug = debug[:200]
 					}
-					slog.Error("worker: invalid JSON", "id", w.id, "error", err, "debug", debug, "lineLen", len(line))
+					log.Error("invalid JSON", "error", err, "debug", debug, "lineLen", len(line))
 					sanitizedLine := sanitizeForPostgres(line)
 					tag := "[MALFORMED JSON]"
 					if looksTruncatedAtSource(line, err) {
@@ -356,6 +401,7 @@ func (w *worker) run(ctx context.Context) {
 				entries = append(entries, entry)
 				queueEntries = append(queueEntries, qe)
 				batchDelivries = append(batchDelivries, delivery)
+				atomic.StoreInt64(&w.pending, int64(len(entries)))
 
 				now := time.Now()
 				if len(entries) >= workerBatchSize || now.Sub(lastFlush) >= workerBatchInterval {
@@ -366,10 +412,11 @@ func (w *worker) run(ctx context.Context) {
 						entries = nil
 						queueEntries = nil
 						batchDelivries = nil
+						atomic.StoreInt64(&w.pending, 0)
 						continue
 					}
 					if err := flushBatch(w.pool.Get(), entries, w.rate); err != nil {
-						slog.Error("worker: flush error", "id", w.id, "error", err)
+						log.Error("db flush failed, nacking batch for redelivery", "count", len(entries), "error", err)
 						for _, d := range batchDelivries {
 							d.Nack(false, true)
 						}
@@ -388,12 +435,13 @@ func (w *worker) run(ctx context.Context) {
 					entries = nil
 					queueEntries = nil
 					batchDelivries = nil
+					atomic.StoreInt64(&w.pending, 0)
 					lastFlush = now
 				}
 			}
 		}
 
-		slog.Warn("worker: consume loop exited, reconnecting", "id", w.id)
+		log.Warn("consume loop exited, reconnecting")
 		reconnectAttempts++
 		w.metrics.Mutex.Lock()
 		w.metrics.ReconnectCount++
