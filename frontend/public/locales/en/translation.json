@@ -175,6 +175,7 @@
     "purgeFailed": "Purge failed",
     "cleanupFailed": "Cleanup failed",
     "deviceStats": "Device Statistics",
+    "deviceStatsRefreshTooltip": "This list comes from a periodically refreshed rollup (about every 3 min) - clicking \"Refresh\" fetches the latest already-computed version, it doesn't force a new recalculation",
     "sourceIp": "Source IP",
     "hostname": "Hostname",
     "proxy": "Proxy",

@@ -175,6 +175,7 @@
     "purgeFailed": "Usuwanie nieudane",
     "cleanupFailed": "Czyszczenie nieudane",
     "deviceStats": "Statystyki urządzeń",
+    "deviceStatsRefreshTooltip": "Ta lista pochodzi z okresowo odświeżanego zestawienia (co ok. 3 min) - kliknięcie \"Odśwież\" pobiera najnowszą już policzoną wersję, ale nie wymusza nowego przeliczenia",
     "sourceIp": "IP źródłowe",
     "hostname": "Nazwa hosta",
     "proxy": "Proxy",

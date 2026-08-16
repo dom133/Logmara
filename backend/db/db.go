@@ -1854,6 +1854,11 @@ func RefreshMaterializedViews(db *sql.DB) {
 	err1 := refreshMaterializedView(ctx, db, "mv_dashboard_summary")
 	err2 := refreshMaterializedView(ctx, db, "mv_dashboard_severity")
 	err3 := refreshMaterializedView(ctx, db, "mv_device_stats")
+	if err3 == nil {
+		if err := UpdateSetting(db, mvDeviceStatsRefreshedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+			slog.Warn("failed to record mv_device_stats refresh time", "err", err)
+		}
+	}
 	err4 := refreshMaterializedView(ctx, db, "mv_dashboard_top_errors")
 	err5 := refreshMaterializedView(ctx, db, "mv_timeline_hourly")
 	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil {

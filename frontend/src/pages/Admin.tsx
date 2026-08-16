@@ -3,7 +3,7 @@ import { Card, Table, Button, Modal, Form, Input, Select, Switch, Checkbox, Spac
 import { ThunderboltOutlined, ReloadOutlined, RestOutlined, LoadingOutlined, UploadOutlined, SafetyCertificateOutlined, EyeOutlined, EditOutlined, DeleteOutlined, PlusOutlined, CopyOutlined, KeyOutlined, CloudOutlined, ContainerOutlined, CheckCircleOutlined, WarningOutlined, DashOutlined, NodeIndexOutlined, ClusterOutlined, GlobalOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react/esm/core'
 import echarts from '../utils/echarts-core'
-import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDevices, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, AggregatedTailerMetrics, ReplicaTailerMetrics, WorkerMetrics, SSLCertInfo, getRotationStatus, triggerRotation, RotationStatus, SecretRotationStatus } from '../services/api'
+import { getSettings, updateSettings, cleanupLogs, purgeAllLogs, getDevicesWithMeta, testLDAPConnection, updateDeviceAlias, getSlowQueries, clearSlowQueries, uploadSSLCerts, getContainersHealth, getAuditLogs, getAlerts, getUserDirectory, DeviceStats, SlowQueryRecord, ContainersHealthResponse, AuditLog, AuditLogsResponse, Alert as AlertRule, UserSummary, listAPIKeys, createAPIKey, updateAPIKey, deleteAPIKey, resetAPIKey, APIKey, getTailerMetrics, AggregatedTailerMetrics, ReplicaTailerMetrics, WorkerMetrics, SSLCertInfo, getRotationStatus, triggerRotation, RotationStatus, SecretRotationStatus } from '../services/api'
 import SeverityTag from '../components/SeverityTag'
 import { getErrorMessage } from '../utils/error'
 import { useAuth } from '../services/auth'
@@ -65,6 +65,7 @@ export default function Admin() {
   const [settingsForm] = Form.useForm()
   const [devices, setDevices] = useState<DeviceStats[]>([])
   const [devicesLoading, setDevicesLoading] = useState(false)
+  const [devicesMvRefreshedAt, setDevicesMvRefreshedAt] = useState<string>('')
   const [silenceRules, setSilenceRules] = useState<AlertRule[]>([])
   const [editDevice, setEditDevice] = useState<DeviceStats | null>(null)
   const [editDeviceForm] = Form.useForm()
@@ -247,11 +248,12 @@ await testLDAPConnection({
   const loadDevices = async () => {
     setDevicesLoading(true)
     try {
-      const [data, alerts] = await Promise.all([
-        getDevices(),
+      const [devicesMeta, alerts] = await Promise.all([
+        getDevicesWithMeta(),
         getAlerts().catch(() => [] as AlertRule[]),
       ])
-      setDevices(data)
+      setDevices(devicesMeta.devices)
+      setDevicesMvRefreshedAt(devicesMeta.mvRefreshedAt)
       setSilenceRules(alerts.filter(a => a.rule_type === 'device_silence' && a.is_active !== false))
     } catch {
       message.error(t('admin.devicesLoadFailed'))
@@ -960,9 +962,18 @@ const handleCleanup = async () => {
               <Card
                 title={t('admin.deviceStats')}
                 extra={
-                  <Button icon={<ReloadOutlined />} onClick={loadDevices}>
-                    {t('common.refresh')}
-                  </Button>
+                  <Space wrap>
+                    {devicesMvRefreshedAt && (
+                      <Tooltip title={t('admin.deviceStatsRefreshTooltip')}>
+                        <Tag>
+                          {t('admin.lastUpdated')}: {formatDurationAgo(Date.now() - new Date(devicesMvRefreshedAt).getTime())}
+                        </Tag>
+                      </Tooltip>
+                    )}
+                    <Button icon={<ReloadOutlined />} onClick={loadDevices}>
+                      {t('common.refresh')}
+                    </Button>
+                  </Space>
                 }
               >
                 <Table

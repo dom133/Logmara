@@ -283,7 +283,10 @@ func GetSettings(pool *db.DynamicPool) gin.HandlerFunc {
 		}
 		// Not used by the frontend and not worth exposing: encryption keys and
 		// the one-time DB connection settings captured during setup.
-		for _, k := range []string{"jwt_secret", "encryption_key", "db_host", "db_port", "db_name", "db_user", "db_password", "vapid_public_key", "vapid_private_key", "https_enabled_env_applied", "https_redirect_env_applied"} {
+		// mv_device_stats_refreshed_at is internal bookkeeping (see
+		// db.RefreshDeviceStatsMV), surfaced instead via GET /devices'
+		// mv_refreshed_at field, not this generic settings dump.
+		for _, k := range []string{"jwt_secret", "encryption_key", "db_host", "db_port", "db_name", "db_user", "db_password", "vapid_public_key", "vapid_private_key", "https_enabled_env_applied", "https_redirect_env_applied", "mv_device_stats_refreshed_at"} {
 			delete(settings, k)
 		}
 		if v, ok := settings["ldap_bind_password"]; ok && v != "" {

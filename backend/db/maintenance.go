@@ -420,8 +420,21 @@ func RefreshDeviceStatsMV(ctx context.Context, db *sql.DB) {
 		slog.Error("mv refresh failed", "view", "mv_device_stats", "err", err)
 	} else {
 		slog.Info("materialized view refreshed", "view", "mv_device_stats")
+		// Recorded so the Devices UI can show the caller how stale
+		// last_seen actually is - the 3-minute ticker above can silently
+		// stretch past its own interval (skipped cycles while a slow
+		// refresh is still running, see the advisory lock above), and
+		// clicking Reload there only re-reads this view, it can't force
+		// a fresh REFRESH of it.
+		if err := UpdateSetting(db, mvDeviceStatsRefreshedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+			slog.Warn("failed to record mv_device_stats refresh time", "err", err)
+		}
 	}
 }
+
+// mvDeviceStatsRefreshedAtKey is an internal app_settings key, not a user
+// setting - excluded from GetSettings' response (see admin.go).
+const mvDeviceStatsRefreshedAtKey = "mv_device_stats_refreshed_at"
 
 func getIntervalHours(envKey string, defaultHours int) time.Duration {
 	if v := os.Getenv(envKey); v != "" {

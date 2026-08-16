@@ -157,6 +157,18 @@ export async function getDevices() {
   return (res.data?.devices || []) as DeviceStats[]
 }
 
+// Separate from getDevices() (used in several places that only need the
+// list) because most callers don't care when mv_device_stats was last
+// refreshed - only the Admin > Devices tab does, to show the user how
+// stale last_seen actually is instead of implying the list is live.
+export async function getDevicesWithMeta(): Promise<{ devices: DeviceStats[]; mvRefreshedAt: string }> {
+  const res = await api.get('/devices')
+  return {
+    devices: (res.data?.devices || []) as DeviceStats[],
+    mvRefreshedAt: res.data?.mv_refreshed_at || '',
+  }
+}
+
 export function resolveDeviceDisplayName(device: DeviceStats): string {
   return device.display_name || device.hostname || device.fromhost_ip || '-'
 }

@@ -25,6 +25,17 @@ var (
 	devicesTTL       = 60 * time.Second
 )
 
+// devicesQueryTimeout bounds how long a devices cache-miss will wait on
+// mv_device_stats. Normally this query is sub-second, but right after a
+// migration drops and recreates the view (see db.go's via_relay guard),
+// its very first REFRESH can't use CONCURRENTLY (the view has no data
+// yet) and falls back to a plain, lock-taking REFRESH that has taken
+// 100s+ against the full syslog_logs table - every SELECT against the
+// view, including this one, queues behind that lock for the same
+// duration. Bounding the wait means a request in that window falls back
+// to stale cache instead of hanging for the full refresh.
+const devicesQueryTimeout = 5 * time.Second
+
 // cacheBroadcaster is nil by default (single-server / Redis not
 // configured), in which case cache invalidation stays exactly as it always
 // was: local to this process only. SetCacheBroadcaster is called from
@@ -246,33 +257,58 @@ func GetLogsCount(pool *db.DynamicPool) gin.HandlerFunc {
 
 func GetDevices(pool *db.DynamicPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// mv_device_stats.last_seen is only as fresh as its last background
+		// REFRESH (see db.RefreshDeviceStatsMV) - Reload here can't force
+		// one, it only bypasses this handler's own 60s cache below. Surface
+		// that real refresh time so the UI can show it instead of implying
+		// the list is live.
+		refreshedAt := db.GetSetting(pool.Get(), "mv_device_stats_refreshed_at", "")
+
 		devicesCacheMu.RLock()
-		if time.Since(devicesCacheTime) < devicesTTL && devicesCache != nil {
-			devices := devicesCache
-			devicesCacheMu.RUnlock()
-			c.JSON(http.StatusOK, gin.H{"devices": devices})
-			return
-		}
+		fresh := time.Since(devicesCacheTime) < devicesTTL && devicesCache != nil
+		cached := devicesCache
 		devicesCacheMu.RUnlock()
 
-		devices := fetchDevices(pool)
+		if fresh {
+			c.JSON(http.StatusOK, gin.H{"devices": cached, "mv_refreshed_at": refreshedAt})
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(c.Request.Context(), devicesQueryTimeout)
+		devices, err := fetchDevices(ctx, pool)
+		cancel()
+
+		if err != nil {
+			if cached != nil {
+				// mv_device_stats is almost certainly mid-refresh and
+				// holding a lock our query timed out waiting on (see
+				// devicesQueryTimeout) - serve the last known-good list
+				// instead of making the caller wait the same duration.
+				slog.Warn("devices query timed out, serving stale cache", "error", err, "cache_age", time.Since(devicesCacheTime))
+				c.JSON(http.StatusOK, gin.H{"devices": cached, "mv_refreshed_at": refreshedAt})
+				return
+			}
+			slog.Warn("devices query failed, no cache available", "error", err)
+			c.JSON(http.StatusOK, gin.H{"devices": []model.DeviceStats{}, "mv_refreshed_at": refreshedAt})
+			return
+		}
 
 		devicesCacheMu.Lock()
 		devicesCache = devices
 		devicesCacheTime = time.Now()
 		devicesCacheMu.Unlock()
 
-		c.JSON(http.StatusOK, gin.H{"devices": devices})
+		c.JSON(http.StatusOK, gin.H{"devices": devices, "mv_refreshed_at": refreshedAt})
 	}
 }
 
-func fetchDevices(pool *db.DynamicPool) []model.DeviceStats {
+func fetchDevices(ctx context.Context, pool *db.DynamicPool) ([]model.DeviceStats, error) {
 	database := pool.Get()
 	// Reads from the mv_device_stats rollup (refreshed on a schedule)
 	// instead of aggregating the entire syslog_logs table live on every
 	// cache miss - the live GROUP BY + unnest scan over 1M+ rows was the
 	// most expensive query on this endpoint.
-	rows, err := database.Query(`
+	rows, err := database.QueryContext(ctx, `
 		SELECT d.fromhost_ip, d.hostname, d.total_logs, d.last_seen,
 			d.emergency, d.alert, d.critical, d.err_count, d.warning, d.notice, d.info, d.debug,
 			d.parsers, d.via_relay,
@@ -282,7 +318,7 @@ func fetchDevices(pool *db.DynamicPool) []model.DeviceStats {
 		ORDER BY d.total_logs DESC
 	`)
 	if err != nil {
-		return []model.DeviceStats{}
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -315,7 +351,7 @@ func fetchDevices(pool *db.DynamicPool) []model.DeviceStats {
 	if devices == nil {
 		devices = []model.DeviceStats{}
 	}
-	return devices
+	return devices, rows.Err()
 }
 
 func UpdateDeviceAlias(pool *db.DynamicPool) gin.HandlerFunc {
