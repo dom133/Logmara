@@ -1,7 +1,7 @@
 import { useEffect, useState, createContext, useContext, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link as RouterLink } from 'react-router-dom'
 import { Layout, theme, Spin, Result, ConfigProvider, Button, Drawer, Typography, Skeleton } from 'antd'
-import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, BellOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined, LogoutOutlined, UserOutlined, NodeIndexOutlined } from '@ant-design/icons'
+import { DashboardOutlined, FileTextOutlined, SettingOutlined, FundOutlined, SafetyOutlined, BellOutlined, PushpinOutlined, SunOutlined, MoonOutlined, MenuOutlined, LogoutOutlined, UserOutlined, NodeIndexOutlined, CloudOutlined } from '@ant-design/icons'
 import { initI18n, initI18nFallback } from './i18n'
 import { useTranslation } from 'react-i18next'
 import { tokens } from './theme/tokens'
@@ -31,6 +31,7 @@ const DashboardViewPage = lazy(() => import('./pages/DashboardView'))
 const AlertsPage = lazy(() => import('./pages/Alerts'))
 const Admin = lazy(() => import('./pages/Admin'))
 const SyslogRelay = lazy(() => import('./pages/SyslogRelay'))
+const CloudBridge = lazy(() => import('./pages/CloudBridge'))
 const SetupWizard = lazy(() => import('./pages/SetupWizard'))
 
 function RouteFallback() {
@@ -82,7 +83,7 @@ function NavLink({ to, isActive, onClick, icon, label, collapsed }: {
 
 function NavContent({ location, user, logout, isAdmin, pinnedDashboards, loadingDashboards, collapsed, onClose }: {
   location: ReturnType<typeof useLocation>
-  user: { username?: string; notifications_enabled?: boolean; relay_ingestion_enabled?: boolean } | undefined
+  user: { username?: string; notifications_enabled?: boolean; relay_ingestion_enabled?: boolean; cloud_bridge_enabled?: boolean } | undefined
   logout: () => void
   isAdmin: boolean
   pinnedDashboards: DashboardType[]
@@ -98,7 +99,8 @@ function NavContent({ location, user, logout, isAdmin, pinnedDashboards, loading
         {navItems.filter(item =>
           !(item.adminOnly && !isAdmin) &&
           !(item.hideWhenNotificationsDisabled && user?.notifications_enabled === false) &&
-          !(item.hideWhenRelayDisabled && user?.relay_ingestion_enabled !== true)
+          !(item.hideWhenRelayDisabled && user?.relay_ingestion_enabled !== true) &&
+          !(item.hideWhenCloudBridgeDisabled && user?.cloud_bridge_enabled !== true)
         ).map(item => (
           <NavLink
             key={item.key}
@@ -227,6 +229,7 @@ const navItems = [
   { key: '/dashboards', labelKey: 'nav.dashboards', icon: <FundOutlined /> },
   { key: '/alerts', labelKey: 'nav.alerts', icon: <BellOutlined />, hideWhenNotificationsDisabled: true },
   { key: '/relay', labelKey: 'nav.relay', icon: <NodeIndexOutlined />, adminOnly: true, hideWhenRelayDisabled: true },
+  { key: '/cloud-bridge', labelKey: 'nav.cloudBridge', icon: <CloudOutlined />, adminOnly: true, hideWhenCloudBridgeDisabled: true },
   { key: '/admin', labelKey: 'nav.admin', icon: <SafetyOutlined />, adminOnly: true },
 ]
 
@@ -580,6 +583,7 @@ export default function App() {
                   <Route path="/alerts" element={<PrivateRoute><AlertsPage /></PrivateRoute>} />
                   <Route path="/admin" element={<PrivateRoute requireAdmin><Admin /></PrivateRoute>} />
                   <Route path="/relay" element={<PrivateRoute requireAdmin><SyslogRelay /></PrivateRoute>} />
+                  <Route path="/cloud-bridge" element={<PrivateRoute requireAdmin><CloudBridge /></PrivateRoute>} />
                   <Route path="*" element={<PrivateRoute><NotFoundPage /></PrivateRoute>} />
                 </Routes>
               </AuthProvider>

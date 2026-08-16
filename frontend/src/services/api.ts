@@ -886,6 +886,29 @@ export async function revokeRelayCertificate(id: number) {
 	return res.data
 }
 
+// --- Cloud Bridge (Admin > Cloud Bridge) ---
+// Mirrors backend/cloudbridge.Status - "enrolled" (has a permanent
+// instance_id) is independent from "connected" (the tunnel is up right
+// now); an enrolled-but-disconnected installation still shows its
+// instance_id, just with a disconnected status.
+
+export interface CloudBridgeStatus {
+	enrolled: boolean
+	instance_id?: string
+	connected: boolean
+	enrolled_at?: string
+}
+
+export async function getCloudBridgeStatus() {
+	const res = await api.get('/admin/cloud-bridge')
+	return res.data as CloudBridgeStatus
+}
+
+export async function submitCloudBridgeLink(link: string) {
+	const res = await api.post('/admin/cloud-bridge/enroll', { link })
+	return res.data
+}
+
 // --- Alerts & Notifications ---
 
 export type AlertRuleType = 'log_threshold' | 'device_silence' | 'audit_log' | 'relay_cert_expiring' | 'malformed_json'

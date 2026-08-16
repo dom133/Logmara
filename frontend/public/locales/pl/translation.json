@@ -69,6 +69,7 @@
     "dashboards": "Panele",
     "alerts": "Alerty",
     "relay": "Relay syslog",
+    "cloudBridge": "Cloud Bridge",
     "admin": "Admin",
     "logout": "Wyloguj się",
     "themeLight": "Jasny",
@@ -828,6 +829,21 @@
     "certRevoked": "Certyfikat unieważniony",
     "revokeCertFailed": "Nie udało się unieważnić certyfikatu",
     "regenerateCertFailed": "Nie udało się ponownie wygenerować certyfikatu"
+  },
+  "cloudBridge": {
+    "title": "Cloud Bridge",
+    "pairIntro": "Wklej link parujący z konta Logmara Cloud (Dashboard > Aktywuj Cloud Bridge), żeby włączyć dostęp mobilny do tej instalacji. To jednorazowy krok - po sparowaniu poniższy identyfikator instancji jest już stały.",
+    "linkLabel": "Link parujący",
+    "linkRequired": "Wklej link parujący",
+    "pairButton": "Sparuj",
+    "pairSuccess": "Sparowano pomyślnie",
+    "pairFailed": "Nie udało się sparować z Logmara Cloud",
+    "loadStatusFailed": "Nie udało się wczytać statusu Cloud Bridge",
+    "instanceId": "Identyfikator instancji",
+    "status": "Status tunelu",
+    "connected": "Połączono",
+    "disconnected": "Rozłączono",
+    "enrolledAt": "Sparowano"
   },
   "setup": {
     "wizardTitle": "Kreator konfiguracji początkowej",

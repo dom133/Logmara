@@ -11,6 +11,7 @@ import (
 
 	"logmara/audit"
 	"logmara/auth"
+	"logmara/cloudbridge"
 	"logmara/db"
 	"logmara/ldap"
 	"logmara/middleware"
@@ -344,6 +345,7 @@ func Login(pool *db.DynamicPool, authCfg *auth.Config) gin.HandlerFunc {
 			"last_login_at":           user.LastLoginAt,
 			"notifications_enabled":   db.GetSetting(database, "notifications_enabled", "true") == "true",
 			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "true",
+			"cloud_bridge_enabled":    cloudbridge.Enabled(),
 		}
 
 		if user.AuthType == "local" {
@@ -641,6 +643,7 @@ func GetMe(pool *db.DynamicPool) gin.HandlerFunc {
 			"is_active":               true,
 			"notifications_enabled":   db.GetSetting(database, "notifications_enabled", "true") == "true",
 			"relay_ingestion_enabled": db.GetSetting(database, "relay_ingestion_enabled", "false") == "true",
+			"cloud_bridge_enabled":    cloudbridge.Enabled(),
 			"expires_at":              exp,
 			"remembered":              remembered,
 		}

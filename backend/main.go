@@ -18,6 +18,7 @@ import (
 	"logmara/alertengine"
 	"logmara/audit"
 	"logmara/auth"
+	"logmara/cloudbridge"
 	"logmara/control"
 	"logmara/db"
 	"logmara/handler"
@@ -949,6 +950,15 @@ r := gin.New()
 			adminGroup.PUT("/api-keys/:id", handler.UpdateAPIKey(dynamicPool))
 			adminGroup.DELETE("/api-keys/:id", handler.DeleteAPIKey(dynamicPool))
 			adminGroup.POST("/api-keys/:id/reset", handler.ResetAPIKey(dynamicPool))
+
+			// Cloud Bridge (Admin > Cloud Bridge) - both handlers 404 on their
+			// own when CLOUD_BRIDGE_ENABLED isn't set, same "registered but
+			// self-gating" shape as everything else here; the nav tab itself
+			// is hidden client-side via the cloud_bridge_enabled flag on
+			// /auth/me (see handler.Login/handler.GetMe), matching the
+			// relay_ingestion_enabled precedent.
+			adminGroup.GET("/cloud-bridge", handler.GetCloudBridgeStatus())
+			adminGroup.POST("/cloud-bridge/enroll", handler.SubmitCloudBridgeLink())
 		}
 
 		// Same /admin path prefix as adminGroup above, but readable/usable by
@@ -978,6 +988,16 @@ r := gin.New()
 		publicAPI.POST("/logs/export", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportJSON(dynamicPool))
 		publicAPI.POST("/logs/export-parsed", middleware.RequireJSON(), middleware.MaxRequestBodySize(4*1024), handler.ExportParsedJSON(dynamicPool))
 		publicAPI.GET("/stats", handler.ExportStats(dynamicPool))
+	}
+
+	// Cloud Bridge: opt-in, off by default (see backend/cloudbridge's doc
+	// comment on why this is an env var and not a relay_ingestion_enabled-
+	// style database setting). r is the same router the real HTTP listener
+	// below binds to - reused in-process to replay tunneled requests, no
+	// second port. Must come after every route above is registered, since
+	// a tunneled request could be replayed against any of them.
+	if cloudbridge.Enabled() {
+		cloudbridge.Start(dynamicPool, r)
 	}
 
 	// The real listener only needs the schema (ready since <-schemaReady

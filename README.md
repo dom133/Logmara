@@ -71,6 +71,7 @@ A live demo is available at **[demo.logmara.com](https://demo.logmara.com)**:
 - 🚨 **Alerting** — Rules for log thresholds, device silence, config changes, and relay certificate expiry, delivered via email/webhook/Slack/Teams/in-app/push (see [Alerts](#alerts))
 - 🔀 **Syslog Relay** — mTLS-secured forwarding from remote VLANs into the central ingestion pipeline (see [Syslog Relay](#syslog-relay-optional-multi-vlan))
 - 🔑 **External API** — Scoped, rate-limited API keys for programmatic log export and stats (see [External API](#external-api))
+- ☁️ **Cloud Bridge** — Opt-in mobile access via Logmara Cloud: this installation dials out over an mTLS tunnel, no inbound port required (see [Cloud Bridge](#cloud-bridge-optional))
 
 ## Quick Start (Single Server)
 
@@ -1072,6 +1073,56 @@ The relay only ever needs one outbound rule: **relay → central, 6515/tcp**. It
 - One relay is a single small server with no built-in failover (unlike the edge nodes in the HA section above) — if it goes down, its VLAN stops forwarding until it's back. Run more than one relay (in different VLANs, or the same one) if that's not acceptable; each gets its own certificate and whitelist entry.
 - The relay buffers to disk (`queue.type="LinkedList"` with `queue.saveOnShutdown` in the generated `relay.conf`) if the link to the central server drops, and catches up once it's back — but a full disk stops accepting new logs until the backlog is delivered.
 - On the very first `docker compose up`, before an admin has ever enabled relay ingestion, both the `api` service and the central `rsyslog` container's `entrypoint.sh` (via the `relaybootstrap` CLI, wrapping the exact same `relaypki.EnsureCA` code - not a separate implementation) may race to generate the CA/server certificate so the mTLS listener has something to bind. Whichever gets there first wins; the other is a no-op. Since it's the same code either way, the result is always identical (RSA 4096) - there's nothing to reconcile.
+
+## Cloud Bridge (Optional)
+
+Lets a Logmara Cloud account (a separate, operator-run SaaS - see that
+project's own repo) reach this installation for mobile access, without
+opening any inbound port here: this installation dials **out** to the
+cloud's broker over an mTLS WebSocket tunnel and holds it open
+(`backend/cloudbridge`), the same "outbound-only, no port-forwarding"
+shape as the Syslog Relay feature above, just in the opposite direction
+(a relay is something *this* server accepts connections from; Cloud
+Bridge is something *this* server dials out to).
+
+**Off by default**, and deliberately controlled by an environment
+variable rather than a database-backed admin setting like
+`relay_ingestion_enabled` - whether this feature area exists at all is a
+deploy-time decision (same category as `RELAY_CENTRAL_HOST`), not
+something meant to be flipped casually from the UI:
+
+```bash
+CLOUD_BRIDGE_ENABLED=true
+```
+
+With it set, a new **Admin > Cloud Bridge** tab appears (hidden
+entirely when unset, same pattern as the Relay tab and
+`relay_ingestion_enabled`). Pairing itself is a separate, explicit admin
+action, not automatic:
+
+1. In your Logmara Cloud account's Dashboard, click **Activate Cloud
+   Bridge** - this generates a one-time pairing link, not a certificate
+   bundle to download.
+2. Paste that link into Admin > Cloud Bridge here and submit it. This
+   installation calls the cloud's enrollment endpoint exactly once,
+   receives back a permanent `instance_id` plus an mTLS client
+   certificate, and stores both in Postgres (`cloud_bridge` table) -
+   never on disk, never re-issued.
+3. The tab then shows that `instance_id` (permanent - there is no
+   re-pairing path, only reconnecting with the same identity after a
+   restart) and whether the tunnel is currently connected.
+
+Once paired, tunneled requests from the mobile app are replayed against
+this installation's own API **in-process** (no new listening port, no
+second network hop) and go through the exact same authentication/
+authorization middleware as a request arriving over the LAN would -
+Cloud Bridge is a transport, not a new trust boundary.
+
+> [!NOTE]
+> The pairing link is single-use and expires after 7 days if never
+> redeemed. If you lose it before pairing, generate a new one from the
+> cloud Dashboard - nothing on this side needs cleaning up, since no
+> `instance_id` was ever assigned to this installation yet.
 
 ## Health Monitoring
 

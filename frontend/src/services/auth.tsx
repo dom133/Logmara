@@ -13,6 +13,7 @@ interface User {
   is_active: boolean
   notifications_enabled: boolean
   relay_ingestion_enabled: boolean
+  cloud_bridge_enabled: boolean
   password_expires_at?: number
   password_expired?: boolean
 }
@@ -282,6 +283,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         is_active: userData.is_active,
         notifications_enabled: userData.notifications_enabled ?? true,
         relay_ingestion_enabled: userData.relay_ingestion_enabled ?? false,
+        cloud_bridge_enabled: userData.cloud_bridge_enabled ?? false,
         password_expires_at: res.data.user?.password_expires_at,
       })
       rememberedRef.current = !!res.data.remembered

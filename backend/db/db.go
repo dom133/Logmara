@@ -125,7 +125,8 @@ func MigrateWithLock(db *sql.DB) error {
 // its DDL (see the comment there), and that only takes effect on an
 // already-migrated database if runSchemaMigration runs again, which only
 // happens when schemaVersion advances past what's recorded.
-const schemaVersion = 19
+// Bumped to 20 for the cloud_bridge table (backend/cloudbridge).
+const schemaVersion = 20
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -638,6 +639,22 @@ func runSchemaMigration(ctx context.Context, conn *sql.Conn) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='api_keys' AND column_name='allowed_ips') THEN ALTER TABLE api_keys ADD COLUMN allowed_ips TEXT[]; END IF; END $$`,
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='password_changed_at') THEN ALTER TABLE users ADD COLUMN password_changed_at TIMESTAMPTZ; END IF; END $$`,
 		`UPDATE users SET password_changed_at = created_at WHERE password_changed_at IS NULL`,
+		// cloud_bridge holds this installation's identity in its operator's
+		// Logmara Cloud account (see backend/cloudbridge) - the mTLS client
+		// certificate an enrolled installation uses to dial the cloud
+		// broker's tunnel. In practice never more than one row: written once
+		// by a successful enrollment (db.SaveCloudBridgeState) and never
+		// updated - instance_id is meant to be immutable for the lifetime of
+		// the installation, so there's no UPDATE path, only the one INSERT.
+		`CREATE TABLE IF NOT EXISTS cloud_bridge (
+			id SERIAL PRIMARY KEY,
+			instance_id VARCHAR(255) UNIQUE NOT NULL,
+			broker_host VARCHAR(255) NOT NULL,
+			ca_cert TEXT NOT NULL,
+			client_cert TEXT NOT NULL,
+			client_key TEXT NOT NULL,
+			enrolled_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
 	}
 
 	for _, stmt := range statements {

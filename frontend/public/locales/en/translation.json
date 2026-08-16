@@ -69,6 +69,7 @@
     "dashboards": "Dashboards",
     "alerts": "Alerts",
     "relay": "Syslog Relay",
+    "cloudBridge": "Cloud Bridge",
     "admin": "Admin",
     "logout": "Logout",
     "themeLight": "Light",
@@ -828,6 +829,21 @@
     "certRevoked": "Certificate revoked",
     "revokeCertFailed": "Failed to revoke certificate",
     "regenerateCertFailed": "Failed to regenerate certificate"
+  },
+  "cloudBridge": {
+    "title": "Cloud Bridge",
+    "pairIntro": "Paste the pairing link from your Logmara Cloud account (Dashboard > Activate Cloud Bridge) to enable mobile access to this installation. This is a one-time step - once paired, the instance ID below is permanent.",
+    "linkLabel": "Pairing link",
+    "linkRequired": "Paste the pairing link",
+    "pairButton": "Pair",
+    "pairSuccess": "Paired successfully",
+    "pairFailed": "Failed to pair with Logmara Cloud",
+    "loadStatusFailed": "Failed to load Cloud Bridge status",
+    "instanceId": "Instance ID",
+    "status": "Tunnel status",
+    "connected": "Connected",
+    "disconnected": "Disconnected",
+    "enrolledAt": "Paired on"
   },
   "setup": {
     "wizardTitle": "First-time setup wizard",
