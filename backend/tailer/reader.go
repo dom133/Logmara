@@ -83,7 +83,7 @@ func FileReader(ctx context.Context, db *sql.DB, filePath string, queue *shareds
 			// stale messages would collide with the freshly re-published
 			// sequence numbers and double-ingest the preserved tail.
 			ic.Pause()
-			if !waitForDrain(ctx, queue) {
+			if !waitForDrain(ctx) {
 				log.Warn("drain before compaction did not complete in time, skipping this cycle")
 				ic.Resume()
 				f.Close()
@@ -258,16 +258,28 @@ const (
 	drainTimeout      = 30 * time.Second
 )
 
-// waitForDrain blocks until the RabbitMQ queue has no messages ready for
-// delivery and every worker's WorkerPool.PendingCount() confirms it has no
-// unflushed batch left in memory, or until ctx is canceled or drainTimeout
-// elapses. It polls actual state rather than assuming a fixed sleep is
-// enough - a worker can be sitting on a partial batch it never got a
-// chance to notice the pause for (see the pauseCheckTicker comment in
-// worker.go). Returns false if the drain couldn't be confirmed in time, so
-// the caller can skip this compaction cycle instead of truncating the file
-// while data might still be in flight.
-func waitForDrain(ctx context.Context, queue *sharedstate.Queue) bool {
+// waitForDrain blocks until every worker's WorkerPool.PendingCount()
+// confirms it has no unflushed batch left in memory, or until ctx is
+// canceled or drainTimeout elapses. It polls actual state rather than
+// assuming a fixed sleep is enough - a worker can be sitting on a partial
+// batch it never got a chance to notice the pause for (see the
+// pauseCheckTicker comment in worker.go).
+//
+// It deliberately does NOT wait for queue.Len(ctx) == 0. While paused, a
+// worker that's still actively consuming nacks each new delivery with
+// requeue=true (see worker.go), and RabbitMQ immediately redelivers a
+// requeued message to any consumer with a free prefetch slot - so with
+// workers still attached, the ready count churns and may never settle at
+// 0, even though nothing is being lost. That's fine: the caller purges the
+// queue right after this returns, which is what actually needs the queue
+// to end up empty, so requiring it to already be empty here just adds a
+// livelock (confirmed in prod: this caused a ~31s pause/timeout/retry loop
+// that never let a single compaction complete).
+//
+// Returns false if the drain couldn't be confirmed in time, so the caller
+// can skip this compaction cycle instead of truncating the file while data
+// might still be in flight.
+func waitForDrain(ctx context.Context) bool {
 	deadline := time.Now().Add(drainTimeout)
 	for {
 		if ctx.Err() != nil {
@@ -277,7 +289,7 @@ func waitForDrain(ctx context.Context, queue *sharedstate.Queue) bool {
 		if currentPipeline != nil && currentPipeline.workerPool != nil {
 			pending = currentPipeline.workerPool.PendingCount()
 		}
-		if queue.Len(ctx) == 0 && pending == 0 {
+		if pending == 0 {
 			return true
 		}
 		if time.Now().After(deadline) {
