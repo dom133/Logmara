@@ -21,7 +21,6 @@ import (
 
 var (
 	vaultClientRef      *vaultclient.Client
-	authConfigRef       *auth.Config
 	vaultEnabled        atomic.Bool
 	lastRotationAtRef   atomic.Value
 	nextRotationAtRef   atomic.Value
@@ -110,7 +109,6 @@ func loadRotationStateFromDB() {
 // endpoint. Called once at startup.
 func SetRotationRefs(vc *vaultclient.Client, authCfg *auth.Config, database *sql.DB) {
 	vaultClientRef = vc
-	authConfigRef = authCfg
 	dbRef = database
 	if vc != nil {
 		vaultEnabled.Store(true)

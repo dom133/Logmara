@@ -122,7 +122,7 @@ export default function Admin() {
   const tailerSparklineOption = (history: Array<{ t: number; v: number }>, color: string) => ({
     tooltip: {
       trigger: 'axis' as const,
-      formatter: (params: any[]) => {
+      formatter: (params: Array<{ name: string; value: number }>) => {
         const p = params[0]
         if (!p) return ''
         const val = Math.round(p.value)
@@ -2069,7 +2069,7 @@ const handleCleanup = async () => {
                           {
                             title: t('admin.connection'),
                             key: 'connection',
-                            render: (_: any, record: SecretRotationStatus) => {
+                            render: (_: unknown, record: SecretRotationStatus) => {
                               if (record.rabbitmq_connected !== undefined) {
                                 return record.rabbitmq_connected
                                   ? <Tag color="green">{t('admin.rabbitMQConnected')}</Tag>

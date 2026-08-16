@@ -220,9 +220,9 @@ func enroll(link string) (*model.CloudBridgeState, error) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		if out.Error != "" {
-			return nil, fmt.Errorf("Logmara Cloud rejected pairing: %s", out.Error)
+			return nil, fmt.Errorf("pairing rejected by Logmara Cloud: %s", out.Error)
 		}
-		return nil, fmt.Errorf("Logmara Cloud rejected pairing (status %s)", resp.Status)
+		return nil, fmt.Errorf("pairing rejected by Logmara Cloud (status %s)", resp.Status)
 	}
 
 	return &model.CloudBridgeState{

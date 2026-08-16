@@ -47,13 +47,13 @@ export default function PullToRefresh({ onRefresh, children }: {
   useEffect(() => {
     const el = document.querySelector('.ant-layout-content') as HTMLElement | null
     if (!el) return
-    el.addEventListener('touchstart', handleTouchStart as any, { passive: true })
-    el.addEventListener('touchmove', handleTouchMove as any, { passive: false })
-    el.addEventListener('touchend', handleTouchEnd as any, { passive: true })
+    el.addEventListener('touchstart', handleTouchStart as EventListener, { passive: true })
+    el.addEventListener('touchmove', handleTouchMove as EventListener, { passive: false })
+    el.addEventListener('touchend', handleTouchEnd as EventListener, { passive: true })
     return () => {
-      el.removeEventListener('touchstart', handleTouchStart as any)
-      el.removeEventListener('touchmove', handleTouchMove as any)
-      el.removeEventListener('touchend', handleTouchEnd as any)
+      el.removeEventListener('touchstart', handleTouchStart as EventListener)
+      el.removeEventListener('touchmove', handleTouchMove as EventListener)
+      el.removeEventListener('touchend', handleTouchEnd as EventListener)
     }
   }, [handleTouchStart, handleTouchMove, handleTouchEnd])
 

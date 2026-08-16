@@ -35,9 +35,6 @@ import (
 
 const appVersion = "0.1.0"
 
-// logFilePath is set during main() and used by the SIGUSR1 handler.
-var logFilePath string
-
 func versionHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"version": appVersion})
 }
