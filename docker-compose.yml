@@ -196,6 +196,7 @@ services:
       # Bridge tab). See README "Cloud Bridge (Optional)". Off by default.
       CLOUD_BRIDGE_ENABLED: ${CLOUD_BRIDGE_ENABLED:-}
       CLOUD_BRIDGE_FRONTEND_UPSTREAM: ${CLOUD_BRIDGE_FRONTEND_UPSTREAM:-}
+      CLOUD_BRIDGE_LOCK_CERTIFICATES: ${CLOUD_BRIDGE_LOCK_CERTIFICATES:-}
       # Backs Admin > Health - see the docker-proxy service above.
       DOCKER_PROXY_URL: http://docker-proxy:2375
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-logmara}:${RABBITMQ_PASS}@rabbitmq:5672

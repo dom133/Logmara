@@ -126,7 +126,10 @@ func MigrateWithLock(db *sql.DB) error {
 // already-migrated database if runSchemaMigration runs again, which only
 // happens when schemaVersion advances past what's recorded.
 // Bumped to 20 for the cloud_bridge table (backend/cloudbridge).
-const schemaVersion = 20
+// Bumped to 21 to make cloud_bridge's cert columns nullable - pairing and
+// certificate upload are now separate steps (see cloudbridge.EnrollWithLink
+// vs cloudbridge.SaveCertificates), so a freshly paired row has no certs yet.
+const schemaVersion = 21
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -643,9 +646,10 @@ func runSchemaMigration(ctx context.Context, conn *sql.Conn) error {
 		// Logmara Cloud account (see backend/cloudbridge) - the mTLS client
 		// certificate an enrolled installation uses to dial the cloud
 		// broker's tunnel. In practice never more than one row: written once
-		// by a successful enrollment (db.SaveCloudBridgeState) and never
-		// updated - instance_id is meant to be immutable for the lifetime of
-		// the installation, so there's no UPDATE path, only the one INSERT.
+		// by a successful enrollment (db.SaveCloudBridgeState), instance_id/
+		// broker_host are immutable for the lifetime of the installation, but
+		// the cert columns can be (re)written later by db.UpdateCloudBridgeCertificates
+		// (initially, and again as a repair path if a bad cert gets pasted).
 		`CREATE TABLE IF NOT EXISTS cloud_bridge (
 			id SERIAL PRIMARY KEY,
 			instance_id VARCHAR(255) UNIQUE NOT NULL,
@@ -655,6 +659,15 @@ func runSchemaMigration(ctx context.Context, conn *sql.Conn) error {
 			client_key TEXT NOT NULL,
 			enrolled_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
+		// Pairing and certificate upload are now separate admin steps (see
+		// cloudbridge.EnrollWithLink vs cloudbridge.SaveCertificates) - a
+		// freshly paired row has no certs yet, so these columns can no
+		// longer be NOT NULL. DROP NOT NULL is idempotent, unlike ADD
+		// COLUMN, so no information_schema guard is needed here, and these
+		// are harmless no-ops against the CREATE TABLE above on a fresh install.
+		`ALTER TABLE cloud_bridge ALTER COLUMN ca_cert DROP NOT NULL`,
+		`ALTER TABLE cloud_bridge ALTER COLUMN client_cert DROP NOT NULL`,
+		`ALTER TABLE cloud_bridge ALTER COLUMN client_key DROP NOT NULL`,
 	}
 
 	for _, stmt := range statements {

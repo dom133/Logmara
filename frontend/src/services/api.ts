@@ -899,16 +899,28 @@ export async function revokeRelayCertificate(id: number) {
 }
 
 // --- Cloud Bridge (Admin > Cloud Bridge) ---
-// Mirrors backend/cloudbridge.Status - "enrolled" (has a permanent
-// instance_id) is independent from "connected" (the tunnel is up right
-// now); an enrolled-but-disconnected installation still shows its
-// instance_id, just with a disconnected status.
+// Mirrors backend/cloudbridge.Status - "enrolled" (has been paired and
+// assigned an instance_id) is independent from "connected" (the tunnel is
+// up right now); an enrolled-but-disconnected installation still shows its
+// instance_id, just with a disconnected status. disconnectCloudBridge
+// below is a distinct, more drastic action that un-enrolls entirely.
 
 export interface CloudBridgeStatus {
 	enrolled: boolean
 	instance_id?: string
+	certificates_configured: boolean
+	certificates_locked: boolean
 	connected: boolean
 	enrolled_at?: string
+}
+
+export interface CloudBridgePairResult {
+	ok: boolean
+	// Empty when the backend has CLOUD_BRIDGE_LOCK_CERTIFICATES set - it
+	// saves and connects these itself instead of returning them for review.
+	ca_cert: string
+	client_cert: string
+	client_key: string
 }
 
 export async function getCloudBridgeStatus() {
@@ -918,6 +930,16 @@ export async function getCloudBridgeStatus() {
 
 export async function submitCloudBridgeLink(link: string) {
 	const res = await api.post('/admin/cloud-bridge/enroll', { link })
+	return res.data as CloudBridgePairResult
+}
+
+export async function saveCloudBridgeCertificates(certs: { ca_cert: string; client_cert: string; client_key: string }) {
+	const res = await api.put('/admin/cloud-bridge/certificates', certs)
+	return res.data
+}
+
+export async function disconnectCloudBridge() {
+	const res = await api.delete('/admin/cloud-bridge')
 	return res.data
 }
 

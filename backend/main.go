@@ -980,6 +980,8 @@ r := gin.New()
 			// relay_ingestion_enabled precedent.
 			adminGroup.GET("/cloud-bridge", handler.GetCloudBridgeStatus())
 			adminGroup.POST("/cloud-bridge/enroll", handler.SubmitCloudBridgeLink())
+			adminGroup.PUT("/cloud-bridge/certificates", handler.SaveCloudBridgeCertificates())
+			adminGroup.DELETE("/cloud-bridge", handler.DisconnectCloudBridge())
 		}
 
 		// Same /admin path prefix as adminGroup above, but readable/usable by

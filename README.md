@@ -1131,6 +1131,23 @@ LAN request - Cloud Bridge is a transport, not a new trust boundary.
 > cloud Dashboard - nothing on this side needs cleaning up, since no
 > `instance_id` was ever assigned to this installation yet.
 
+By default, the certificate step above is a manual review: the mTLS
+client certificate Logmara Cloud hands back after pairing is shown to the
+admin in Admin > Cloud Bridge so it can be reviewed before saving, and can
+be replaced later (e.g. if a bad cert needs repairing) via the same form.
+For deployments that don't want an admin ever seeing or pasting that raw
+key material through the browser, set:
+
+```bash
+CLOUD_BRIDGE_LOCK_CERTIFICATES=true
+```
+
+With it set, pairing saves and connects the certificates automatically
+server-side - the cert fields never appear in the UI or in the pairing
+API response, and there is no replace/repair path at all afterward. The
+only way to get new certificates is Disconnect followed by pairing again
+with a fresh link.
+
 ## Health Monitoring
 
 Admin > Health shows the up/down status of every container the app depends on. It works the same way regardless of which deployment you're running:
