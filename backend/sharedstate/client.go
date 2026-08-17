@@ -39,6 +39,14 @@ func (c *Client) Raw() redis.UniversalClient {
 	return c.rdb.Load().(redis.UniversalClient)
 }
 
+// NewClientWith wraps an existing go-redis client, for callers that manage
+// their own connection (e.g. tests using an embedded Redis).
+func NewClientWith(rdb redis.UniversalClient) *Client {
+	c := &Client{}
+	c.rdb.Store(rdb)
+	return c
+}
+
 func (c *Client) Close() error {
 	rdb := c.rdb.Load().(redis.UniversalClient)
 	return rdb.Close()

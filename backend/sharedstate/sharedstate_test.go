@@ -197,3 +197,56 @@ func TestBroadcaster_PublishSubscribe(t *testing.T) {
 		t.Fatal("timed out waiting for published message")
 	}
 }
+
+func TestRunLeadership_AcquireStepDownTakeOverShutdown(t *testing.T) {
+	client, mr := newTestClient(t)
+	elector := NewLeaderElector(client, "rot-test", 2*time.Second)
+	lockKey := "leader:rot-test"
+
+	became := make(chan struct{}, 8)
+	stepped := make(chan struct{}, 8)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go elector.RunLeadership(ctx, LeadershipOpts{
+		Tick:              100 * time.Millisecond,
+		MaxTransientFails: 2,
+		OnBecomeLeader:    func(context.Context) { became <- struct{}{} },
+		OnStepDown:        func() { stepped <- struct{}{} },
+	})
+
+	expect := func(ch chan struct{}, what string) {
+		select {
+		case <-ch:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+
+	// 1. Uncontested lock: acquired at startup.
+	expect(became, "initial acquisition")
+
+	// 2. Another instance wins the lock (simulates a new leader): the
+	//    definitive renewal loss must step this one down instead of rotating
+	//    alongside the new leader.
+	if err := client.Raw().Set(context.Background(), lockKey, "intruder", 10*time.Second).Err(); err != nil {
+		t.Fatalf("stealing the lock: %v", err)
+	}
+	expect(stepped, "step-down after losing the lock")
+
+	// 3. Lock becomes free (intruder crashed without releasing): the loop
+	//    must take the leadership over.
+	if err := client.Raw().Del(context.Background(), lockKey).Err(); err != nil {
+		t.Fatalf("releasing the lock: %v", err)
+	}
+	expect(became, "take-over of the free lock")
+
+	// 4. Shutdown: leadership flag callbacks fire and the lock is released
+	//    for the next instance.
+	cancel()
+	expect(stepped, "step-down on shutdown")
+	if mr.Exists(lockKey) {
+		t.Fatal("lock should be released on shutdown")
+	}
+}

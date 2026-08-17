@@ -1349,6 +1349,8 @@ export async function getRotationStatus(): Promise<RotationStatus> {
 }
 
 export async function triggerRotation(): Promise<RotationStatus> {
-  const res = await api.post('/admin/rotation/trigger', undefined, { timeout: 120000 })
+  // Backend waits up to 300s for all 4 secrets to complete (dynamic-secret
+  // retries can take ~2min in the worst case); keep the client window wider.
+  const res = await api.post('/admin/rotation/trigger', undefined, { timeout: 320000 })
   return res.data
 }

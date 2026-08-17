@@ -114,3 +114,97 @@ func (le *LeaderElector) Release(ctx context.Context) {
 		slog.Warn("leader election release error", "key", le.key, "error", err)
 	}
 }
+
+// LeadershipOpts configures a RunLeadership loop.
+type LeadershipOpts struct {
+	// Tick is the interval between renewal attempts (while leader) and
+	// acquisition retries (while not leader).
+	Tick time.Duration
+	// MaxTransientFails is how many consecutive transient renewal failures
+	// are tolerated before stepping down. Beyond that count the lock TTL has
+	// almost certainly run out and another instance may already be leading,
+	// so continuing would risk two concurrent leaders.
+	MaxTransientFails int
+	// OnBecomeLeader is called once when this instance takes over the lock,
+	// with a context that is cancelled on step-down (use it to run the
+	// leader-only goroutines).
+	OnBecomeLeader func(leaderCtx context.Context)
+	// OnStepDown is called once when this instance stops leading (lost lock,
+	// TTL exhaustion, or shutdown).
+	OnStepDown func()
+}
+
+// RunLeadership acquires the lock and keeps it for the lifetime of ctx:
+// while leader it renews the TTL every Tick, and while not leader it retries
+// Acquire every Tick, so a dead leader is replaced automatically once its
+// TTL expires. Stepping down happens on a definitive loss (Renew lost=true),
+// after MaxTransientFails consecutive transient renew failures, or on ctx
+// cancellation (which also releases the lock if still held). Blocks until
+// ctx is done.
+func (le *LeaderElector) RunLeadership(ctx context.Context, opts LeadershipOpts) {
+	if opts.Tick <= 0 {
+		opts.Tick = 30 * time.Second
+	}
+	if opts.MaxTransientFails <= 0 {
+		opts.MaxTransientFails = 2
+	}
+
+	var leaderCancel context.CancelFunc
+
+	stepDown := func() {
+		if leaderCancel != nil {
+			leaderCancel()
+			leaderCancel = nil
+		}
+		if opts.OnStepDown != nil {
+			opts.OnStepDown()
+		}
+	}
+
+	becomeLeader := func() {
+		leaderCtx, cancel := context.WithCancel(ctx)
+		leaderCancel = cancel
+		if opts.OnBecomeLeader != nil {
+			opts.OnBecomeLeader(leaderCtx)
+		}
+	}
+
+	isLeader := func() bool { return leaderCancel != nil }
+
+	if le.Acquire(ctx) {
+		becomeLeader()
+	}
+
+	ticker := time.NewTicker(opts.Tick)
+	defer ticker.Stop()
+	transientFails := 0
+	for {
+		select {
+		case <-ctx.Done():
+			if isLeader() {
+				le.Release(context.Background())
+			}
+			stepDown()
+			return
+		case <-ticker.C:
+			if !isLeader() {
+				if le.Acquire(ctx) {
+					becomeLeader()
+				}
+				continue
+			}
+			ok, lost := le.Renew(ctx)
+			switch {
+			case ok:
+				transientFails = 0
+			case lost:
+				stepDown()
+			default:
+				transientFails++
+				if transientFails >= opts.MaxTransientFails {
+					stepDown()
+				}
+			}
+		}
+	}
+}

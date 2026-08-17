@@ -93,6 +93,12 @@ func Get() *Client {
 	return instance
 }
 
+// NewForTest returns a Client built around the given Vault API client,
+// bypassing the environment-driven Get() singleton. Intended for tests.
+func NewForTest(api *vaultapi.Client) *Client {
+	return &Client{api: api, cache: make(map[string]cacheEntry), rotateNowCh: make(chan struct{}, 1)}
+}
+
 func newClient() *Client {
 	addr := strings.TrimSpace(os.Getenv("VAULT_ADDR"))
 	if addr == "" {

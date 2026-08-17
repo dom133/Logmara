@@ -610,48 +610,38 @@ func main() {
 	}
 	util.SetEncryptionKey(encKey)
 
-	handler.SetRotationRefs(vc, authCfg, dynamicPool.Get())
+	handler.SetRotationRefs(vc, authCfg, dynamicPool)
 
 	// Restore rotation timestamps from database (persists across restarts)
 	if vc != nil {
 		loadRotationTimestamps(dynamicPool.Get())
 	}
 
-	// Start secret rotation goroutine (24h interval). StartRotation blocks
-	// in an infinite loop until ctx is cancelled - it must run in its own
-	// goroutine, or main() never reaches wg.Wait()/the tailer/the real
-	// HTTP server below, leaving /api/health stuck reporting "starting"
+	// Start secret rotation (24h interval + manual triggers). StartRotation
+	// blocks in an infinite loop until its ctx is cancelled - it must run in
+	// its own goroutine, or main() never reaches wg.Wait()/the tailer/the
+	// real HTTP server below, leaving /api/health stuck reporting "starting"
 	// forever.
 	//
-	// In HA mode (sharedClient != nil), only one replica acts as the
-	// rotation leader. The other replicas skip StartRotation and rely on
-	// FetchDynamicCredentials() at startup + the rotation:sync channel
-	// for status updates. Manual rotation (GUI) is forwarded via
-	// rotation:trigger to the leader.
+	// In HA mode (sharedClient != nil) exactly one replica leads the
+	// rotation via a Redis lock ("vault-rotation", TTL 60s). The
+	// RunLeadership loop below (tick 30s, well inside the lock TTL) starts
+	// the leadership at startup and keeps watching the lock afterwards:
+	// if this replica loses the lock it steps down (only the rotation
+	// goroutines stop, not the process), and if the
+	// current leader dies with the lock held, this replica takes over once
+	// the TTL expires. Without this, a dead leader left both the 24h
+	// auto-rotation and the GUI trigger dead until a manual restart.
+	// Non-leader replicas rely on FetchDynamicCredentials() at startup + the
+	// secret sync ticker + the rotation:sync channel for status updates.
 	//
 	// rotationTriggerBroadcaster is set on every replica so GUI-triggered
-	// rotation can reach the leader regardless of which replica handles
-	// the request. Only the leader subscribes to rotation:trigger.
-	// When sharedClient is nil (single-server), the broadcaster is nil
-	// and TriggerRotation falls back to direct TriggerManualRotation().
-	isRotationLeader := true
-	var rotationElector *sharedstate.LeaderElector
-	if sharedClient != nil {
-		rotationTriggerBroadcaster := sharedstate.NewBroadcaster(sharedClient)
-		handler.SetRotationTriggerBroadcaster(rotationTriggerBroadcaster)
-
-		rotationElector = sharedstate.NewLeaderElector(sharedClient, "vault-rotation", 60*time.Second)
-		if rotationElector.Acquire(ctx) {
-			slog.Info("vault: this replica is rotation leader")
-			go handler.StartRotationTriggerSubscriber(ctx, rotationTriggerBroadcaster)
-		} else {
-			slog.Info("vault: another replica is rotation leader, skipping StartRotation")
-			isRotationLeader = false
-		}
-	}
-
-	if isRotationLeader {
-		go vc.StartRotation(ctx, vaultclient.RotationCallbacks{
+	// rotation reaches the leader regardless of which replica handles the
+	// request. Only the leader subscribes to rotation:trigger, and the
+	// leader triggers its own goroutine directly (publishing too would
+	// self-deliver a second signal and rotate everything twice). When
+	// sharedClient is nil (single-server), this replica always leads.
+	rotationCallbacks := vaultclient.RotationCallbacks{
 		RotateJWTSecret: func(s string) {
 			authCfg.RotateSecret(s)
 			handler.SetSecretRotationResult(0, "success")
@@ -713,32 +703,38 @@ func main() {
 				handler.SetSecretRotationResult(3, "failed")
 			}
 		},
-	})
+	}
 
-		// Renew the rotation leader lock periodically. If this replica loses
-		// leadership, cancel ctx so StartRotation and the trigger subscriber
-		// goroutine both shut down cleanly.
-		if isRotationLeader && rotationElector != nil {
-			go func() {
-				ticker := time.NewTicker(30 * time.Second)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case <-ticker.C:
-						ok, lost := rotationElector.Renew(ctx)
-						if !ok && lost {
-							slog.Warn("vault: lost rotation leader lock, stepping down")
-							maintCancel()
-							return
-						}
-						if !ok && !lost {
-							slog.Warn("vault: rotation leader lock renew error (transient)")
-						}
-					}
-				}
-			}()
+	if sharedClient != nil {
+		rotationTriggerBroadcaster := sharedstate.NewBroadcaster(sharedClient)
+		handler.SetRotationTriggerBroadcaster(rotationTriggerBroadcaster)
+		if vc != nil {
+			rotationElector := sharedstate.NewLeaderElector(sharedClient, "vault-rotation", 60*time.Second)
+			// Stepping down cancels only the leaderCtx (rotation goroutines),
+			// never the whole process. MaxTransientFails=2 with a 30s tick
+			// means stepping down once renewals have failed for ~60s, i.e.
+			// when the 60s lock TTL has run out and another replica may
+			// already be leading - continuing would risk two concurrent
+			// rotations.
+			go rotationElector.RunLeadership(ctx, sharedstate.LeadershipOpts{
+				Tick:              30 * time.Second,
+				MaxTransientFails: 2,
+				OnBecomeLeader: func(leaderCtx context.Context) {
+					slog.Info("vault: this replica is rotation leader")
+					handler.SetRotationLeader(true)
+					go handler.StartRotationTriggerSubscriber(leaderCtx, rotationTriggerBroadcaster)
+					go vc.StartRotation(leaderCtx, rotationCallbacks)
+				},
+				OnStepDown: func() {
+					slog.Info("vault: rotation leadership released")
+					handler.SetRotationLeader(false)
+				},
+			})
+		}
+	} else {
+		handler.SetRotationLeader(true)
+		if vc != nil {
+			go vc.StartRotation(ctx, rotationCallbacks)
 		}
 	}
 
@@ -1215,9 +1211,8 @@ r := gin.New()
 	<-quit
 
 	slog.Info("shutting down server...")
-	if rotationElector != nil && isRotationLeader {
-		rotationElector.Release(context.Background())
-	}
+	// The rotation leader lock is released by the RunLeadership loop on
+	// ctx.Done() (maintCancel below).
 	maintCancel()
 	stopVacuum()
 	stopMV()

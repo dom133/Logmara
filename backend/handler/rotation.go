@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -28,7 +27,8 @@ var (
 	secretResults       [4]atomic.Value
 	secretLastRotatedAt [4]atomic.Value
 	secondaryKeyActive  [4]atomic.Bool
-	dbRef               *sql.DB
+	poolRef             *db.DynamicPool
+	rotationLeaderRef   atomic.Bool
 	rotationBroadcaster *sharedstate.Broadcaster
 )
 
@@ -43,6 +43,16 @@ func SetRotationBroadcaster(b *sharedstate.Broadcaster) {
 
 func SetRotationTriggerBroadcaster(b *sharedstate.Broadcaster) {
 	rotationTriggerBroadcaster = b
+}
+
+// SetRotationLeader records whether this replica currently runs the rotation
+// goroutine (true in single-server mode, and on the HA leader).
+func SetRotationLeader(leader bool) {
+	rotationLeaderRef.Store(leader)
+}
+
+func IsRotationLeader() bool {
+	return rotationLeaderRef.Load()
 }
 
 // StartRotationSyncSubscriber listens for rotation sync events from other
@@ -65,9 +75,10 @@ func StartRotationTriggerSubscriber(ctx context.Context, b *sharedstate.Broadcas
 // loadRotationStateFromDB reloads rotation timestamps and results from the
 // database so this replica's in-memory state reflects the latest rotation.
 func loadRotationStateFromDB() {
-	if dbRef == nil {
+	if poolRef == nil {
 		return
 	}
+	database := poolRef.Get()
 
 	secretKeys := []string{
 		"secret_rotation_jwt_at",
@@ -77,28 +88,28 @@ func loadRotationStateFromDB() {
 	}
 	for i, key := range secretKeys {
 		prefix := key[:len(key)-3]
-		if ts := db.GetSetting(dbRef, key, ""); ts != "" {
+		if ts := db.GetSetting(database, key, ""); ts != "" {
 			if t, err := time.Parse(time.RFC3339, ts); err == nil {
 				secretLastRotatedAt[i].Store(&t)
 			}
 		}
-		if result := db.GetSetting(dbRef, prefix+"_result", ""); result != "" {
+		if result := db.GetSetting(database, prefix+"_result", ""); result != "" {
 			secretResults[i].Store(rotation.SecretResult{
 				Result: result,
 				Time:   time.Time{},
 			})
 		}
-		if sec := db.GetSetting(dbRef, prefix+"_secondary", ""); sec == "true" {
+		if sec := db.GetSetting(database, prefix+"_secondary", ""); sec == "true" {
 			secondaryKeyActive[i].Store(true)
 		}
 	}
 
-	if ts := db.GetSetting(dbRef, "secret_rotation_last_at", ""); ts != "" {
+	if ts := db.GetSetting(database, "secret_rotation_last_at", ""); ts != "" {
 		if t, err := time.Parse(time.RFC3339, ts); err == nil {
 			lastRotationAtRef.Store(&t)
 		}
 	}
-	if ts := db.GetSetting(dbRef, "secret_rotation_next_at", ""); ts != "" {
+	if ts := db.GetSetting(database, "secret_rotation_next_at", ""); ts != "" {
 		if t, err := time.Parse(time.RFC3339, ts); err == nil {
 			nextRotationAtRef.Store(&t)
 		}
@@ -106,10 +117,14 @@ func loadRotationStateFromDB() {
 }
 
 // SetRotationRefs registers the references needed for the rotation status
-// endpoint. Called once at startup.
-func SetRotationRefs(vc *vaultclient.Client, authCfg *auth.Config, database *sql.DB) {
+// endpoint. Called once at startup. It stores the *pool*, not a *sql.DB:
+// DynamicPool.Rotate closes the old pool and swaps in a new one, so a
+// captured *sql.DB would be dead after the first PostgreSQL credential
+// rotation and every GetSetting/UpdateSetting on it would fail with
+// "sql: database is closed" (silently swallowed by GetSetting's fallback).
+func SetRotationRefs(vc *vaultclient.Client, authCfg *auth.Config, pool *db.DynamicPool) {
 	vaultClientRef = vc
-	dbRef = database
+	poolRef = pool
 	if vc != nil {
 		vaultEnabled.Store(true)
 	}
@@ -119,14 +134,18 @@ func SetRotationRefs(vc *vaultclient.Client, authCfg *auth.Config, database *sql
 func SetRotationTimestamps(last, next time.Time) {
 	if !last.IsZero() {
 		lastRotationAtRef.Store(&last)
-		if dbRef != nil {
-			db.UpdateSetting(dbRef, "secret_rotation_last_at", last.Format(time.RFC3339))
+		if poolRef != nil {
+			if err := db.UpdateSetting(poolRef.Get(), "secret_rotation_last_at", last.Format(time.RFC3339)); err != nil {
+				slog.Warn("rotation: failed to persist last rotation timestamp", "error", err)
+			}
 		}
 	}
 	if !next.IsZero() {
 		nextRotationAtRef.Store(&next)
-		if dbRef != nil {
-			db.UpdateSetting(dbRef, "secret_rotation_next_at", next.Format(time.RFC3339))
+		if poolRef != nil {
+			if err := db.UpdateSetting(poolRef.Get(), "secret_rotation_next_at", next.Format(time.RFC3339)); err != nil {
+				slog.Warn("rotation: failed to persist next rotation timestamp", "error", err)
+			}
 		}
 	}
 }
@@ -140,17 +159,24 @@ func SetSecretRotationResult(index int, result string) {
 			Time:   now,
 		})
 		secretLastRotatedAt[index].Store(&now)
-		if dbRef != nil {
+		if poolRef != nil {
+			database := poolRef.Get()
 			keys := []string{"secret_rotation_jwt", "secret_rotation_encryption", "secret_rotation_pg", "secret_rotation_rabbitmq"}
 			prefix := keys[index]
-			db.UpdateSetting(dbRef, prefix+"_at", now.Format(time.RFC3339))
-			db.UpdateSetting(dbRef, prefix+"_result", result)
+			if err := db.UpdateSetting(database, prefix+"_at", now.Format(time.RFC3339)); err != nil {
+				slog.Warn("rotation: failed to persist rotation timestamp", "key", prefix+"_at", "error", err)
+			}
+			if err := db.UpdateSetting(database, prefix+"_result", result); err != nil {
+				slog.Warn("rotation: failed to persist rotation result", "key", prefix+"_result", "error", err)
+			}
 		}
 		if (index == 0 || index == 1) && result == "success" {
 			secondaryKeyActive[index].Store(true)
-			if dbRef != nil {
+			if poolRef != nil {
 				keys := []string{"secret_rotation_jwt", "secret_rotation_encryption"}
-				db.UpdateSetting(dbRef, keys[index]+"_secondary", "true")
+				if err := db.UpdateSetting(poolRef.Get(), keys[index]+"_secondary", "true"); err != nil {
+					slog.Warn("rotation: failed to persist secondary key flag", "key", keys[index]+"_secondary", "error", err)
+				}
 			}
 		}
 		if rotationBroadcaster != nil {
@@ -185,9 +211,11 @@ func RestoreSecretResult(index int, result string) {
 func ClearSecondaryKeyFlag(index int) {
 	if index >= 0 && index < 4 {
 		secondaryKeyActive[index].Store(false)
-		if dbRef != nil {
+		if poolRef != nil {
 			keys := []string{"secret_rotation_jwt", "secret_rotation_encryption"}
-			db.UpdateSetting(dbRef, keys[index]+"_secondary", "false")
+			if err := db.UpdateSetting(poolRef.Get(), keys[index]+"_secondary", "false"); err != nil {
+				slog.Warn("rotation: failed to persist secondary key flag", "key", keys[index]+"_secondary", "error", err)
+			}
 		}
 		if rotationBroadcaster != nil {
 			if err := rotationBroadcaster.Publish(context.Background(), rotationSyncChannel, ""); err != nil {
@@ -249,17 +277,20 @@ func GetRotationStatus() gin.HandlerFunc {
 	}
 }
 
-// TriggerRotation triggers rotation via Redis pub/sub (so it reaches the
-// rotation leader even if this replica isn't it) and waits for all secrets
-// to complete, returning the final rotation status with per-secret results.
+// TriggerRotation starts a rotation and waits for all secrets to complete,
+// returning the final rotation status with per-secret results.
 //
-// Safety net: after publishing to Redis, it also calls TriggerManualRotation()
-// directly. If this replica IS the rotation leader, the direct call hits the
-// same rotation goroutine (buffered channel, capacity 1, so at most one
-// rotation runs). If this replica is NOT the leader, the Redis message reaches
-// the leader, and the direct call is a no-op (vaultClientRef is shared, but
-// TriggerRotateNow's buffered channel drops duplicate signals). Either way,
-// rotation gets triggered.
+// Exactly one rotation is started:
+//   - if this replica IS the rotation leader, trigger its own rotation
+//     goroutine directly. It must NOT also publish to rotation:trigger -
+//     the leader subscribes to that channel too, so the self-delivered
+//     message would queue a second signal behind the first and everything
+//     would rotate twice (the second JWT rotation would drop the user's
+//     current token out of the grace period and log them out);
+//   - if this replica is NOT the leader, publish to rotation:trigger so the
+//     leader (the only subscriber) runs the rotation. A local
+//     TriggerManualRotation here would have no consumer (only the leader
+//     runs the rotation goroutine), so it is deliberately skipped.
 func TriggerRotation() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
@@ -273,16 +304,18 @@ func TriggerRotation() gin.HandlerFunc {
 			}
 		}
 
-		// Publish rotation trigger to reach the leader replica via Redis.
-		if rotationTriggerBroadcaster != nil {
+		if IsRotationLeader() {
+			TriggerManualRotation()
+		} else if rotationTriggerBroadcaster != nil {
 			if err := rotationTriggerBroadcaster.Publish(context.Background(), rotationTriggerChannel, ""); err != nil {
 				slog.Warn("failed to publish rotation trigger", "error", err)
 			}
+		} else {
+			// No shared state at all - the local rotation goroutine is the
+			// only path available (defensive fallback; single-server without
+			// Redis is always leader and takes the branch above).
+			TriggerManualRotation()
 		}
-
-		// Direct trigger as a safety net — ensures rotation starts even if
-		// Redis pub/sub failed or no replica subscribed to the trigger channel.
-		TriggerManualRotation()
 
 		if err := waitRotationComplete(before); err != nil {
 			slog.Warn("rotation wait timed out", "error", err)
