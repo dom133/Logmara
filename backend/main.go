@@ -1128,8 +1128,14 @@ r := gin.New()
 	// frontend container (CLOUD_BRIDGE_FRONTEND_UPSTREAM, default
 	// http://frontend) rather than this router - see
 	// cloudbridge.frontendUpstream's doc comment.
+	//
+	// sharedClient (nil on single-server deployments) selects the HA
+	// coordination path - leader election, shared connected status, and
+	// control broadcasts across replicas - vs the original single-process
+	// behavior. ctx is the process lifetime, so the leader loop and control
+	// subscriber tear down on shutdown (see maintCancel above).
 	if cloudbridge.Enabled() {
-		cloudbridge.Start(dynamicPool)
+		cloudbridge.Start(ctx, dynamicPool, sharedClient)
 	}
 
 	// The real listener only needs the schema (ready since <-schemaReady

@@ -1148,6 +1148,34 @@ API response, and there is no replace/repair path at all afterward. The
 only way to get new certificates is Disconnect followed by pairing again
 with a fresh link.
 
+### High availability
+
+In an HA deployment (several `api` replicas behind a load balancer, with
+the `REDIS_*` env vars set), Cloud Bridge participates in the same Redis
+coordination as the rest of the app:
+
+- **One tunnel, ever.** A leader election (same `sharedstate` mechanism as
+  the relay ingest and maintenance jobs) picks exactly one replica to hold
+  the broker tunnel. The others stay on standby - without it, each replica
+  would dial out and the cloud broker would see `N` tunnels for one
+  installation.
+- **Failover is automatic.** If the leader replica dies or is rolling
+  (deploy, node drain), the leader lock expires in Redis and a standby
+  takes over and re-dials the broker - typically within seconds. The
+  `instance_id` and certificates are shared Postgres state, so the new
+  leader reconnects with the same identity.
+- **Every replica answers the same way.** The "connected?" status in
+  Admin > Cloud Bridge is shared across replicas (Redis), so it doesn't
+  matter which one the load balancer routes you to - and pairing,
+  certificate saving, or Disconnect submitted to *any* replica takes
+  effect on the leader (a short Redis pub/sub broadcast tells it to
+  reconnect or tear the tunnel down), so there is no "hit the wrong
+  replica" state.
+- **Single-server deployments are unchanged.** `docker-compose.yml` runs
+  one `api` with no Redis, so Cloud Bridge keeps its original
+  single-process behavior: no election, no shared state, the tunnel
+  simply starts at boot if the installation is already paired.
+
 ## Health Monitoring
 
 Admin > Health shows the up/down status of every container the app depends on. It works the same way regardless of which deployment you're running:
