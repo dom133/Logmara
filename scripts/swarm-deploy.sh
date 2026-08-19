@@ -162,12 +162,24 @@ run_pre_update() {
     echo
     echo "=== Running pre-update maintenance ==="
 
-    # Trigger pre-update preparation
+    # Trigger pre-update preparation. When the maintenance_token secret exists
+    # (created by scripts/swarm-bootstrap.sh app-secrets), send it as the
+    # X-Maintenance-Token header - the api requires it when MAINTENANCE_TOKEN
+    # is configured. When the secret is absent, call it without a header (the
+    # api then falls back to Docker-network isolation only).
     local http_code
-    http_code=$(docker run --rm --network syslog_net --pull=missing "$helper" \
-      -sf -o /dev/null -w "%{http_code}" \
-      -X POST "http://api:8080/api/maintenance/pre-update" \
-      --max-time 10 2>/dev/null) || true
+    if docker secret inspect maintenance_token >/dev/null 2>&1; then
+        http_code=$(docker run --rm --network syslog_net --pull=missing \
+          --entrypoint sh \
+          --secret source=maintenance_token,target=/run/secrets/maintenance_token \
+          "$helper" \
+          -c 'TOKEN=$(cat /run/secrets/maintenance_token); curl -sf -o /dev/null -w "%{http_code}" -X POST -H "X-Maintenance-Token: $TOKEN" http://api:8080/api/maintenance/pre-update --max-time 10' 2>/dev/null) || true
+    else
+        http_code=$(docker run --rm --network syslog_net --pull=missing "$helper" \
+          -sf -o /dev/null -w "%{http_code}" \
+          -X POST "http://api:8080/api/maintenance/pre-update" \
+          --max-time 10 2>/dev/null) || true
+    fi
 
     if [[ -z "$http_code" ]]; then
         echo "Warning: API is unreachable, cannot trigger pre-update"

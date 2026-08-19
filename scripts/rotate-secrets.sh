@@ -30,6 +30,7 @@
 #   - pg_superuser_password
 #   - jwt_secret
 #   - encryption_key  (special: triggers DB re-encryption)
+#   - token_hash_key  (invalidates all stored refresh tokens + API keys)
 #
 # For password-based secrets (rabbitmq, redis, postgres) the new password
 # is applied inside the running service BEFORE the secret value is updated,
@@ -48,6 +49,8 @@
 # WARNING:
 #   - jwt_secret rotation invalidates all user sessions
 #   - encryption_key rotation requires DB access via haproxy:5000
+#   - token_hash_key rotation invalidates all stored refresh tokens and API
+#     keys (every session is logged out, every API key must be re-issued)
 #
 # Not rotatable (intentionally excluded):
 #   - pg_replication_password  (Patroni-managed, requires cluster re-init)
@@ -463,6 +466,10 @@ rotate_one() {
     # Step 4: warnings
     if [[ "$name" == "jwt_secret" ]]; then
         echo "WARNING: All user sessions will be invalidated!"
+    fi
+    if [[ "$name" == "token_hash_key" ]]; then
+        echo "WARNING: All stored refresh tokens and API keys become unusable!"
+        echo "         Every session is logged out and every API key must be re-issued."
     fi
 
     # Step 5: rolling restart of affected services. logmara-app_api/frontend

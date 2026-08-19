@@ -618,9 +618,10 @@ export async function testLDAPConnection(data: {
 // --- Init / Setup ---
 export async function checkInitialized() {
 	const res = await api.get('/status/initialized')
-	// keys_configured reports whether JWT_SECRET and ENCRYPTION_KEY are present
-	// in the server environment. The setup wizard hides its key step when true
-	// and blocks initialization when false (keys are env-only, never stored).
+	// keys_configured reports whether JWT_SECRET, ENCRYPTION_KEY and
+	// TOKEN_HASH_KEY are all present in the server environment. The setup
+	// wizard hides its key step when true and blocks initialization when false
+	// (keys are env-only, never stored).
 	return res.data as { initialized: boolean; starting: boolean; keys_configured?: boolean }
 }
 

@@ -2,7 +2,7 @@ package auth
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
+	"crypto/rsa"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -25,10 +25,19 @@ import (
 // Config holds everything the auth package needs at runtime.
 // Pass it to middleware and handlers instead of relying on globals.
 type Config struct {
-	secretMu           sync.RWMutex
+	secretMu sync.RWMutex
+	// HS256 (symmetric) key, always present and used for both signing and
+	// validation.
 	jwtSecretPrimary   []byte // signing + validation
 	jwtSecretSecondary []byte // validation only (grace period during rotation)
-	pool               *db.DynamicPool
+	// RS256 (asymmetric) key, optional (dual-mode). When JWT_PRIVATE_KEY is
+	// set, new tokens are signed with rsaPriv and validated with rsaPub;
+	// existing HS256 tokens keep validating with jwtSecret. rsaPubSecondary is
+	// the previous public key kept for the grace period after an RS256 rotation.
+	rsaPriv         *rsa.PrivateKey
+	rsaPub          *rsa.PublicKey
+	rsaPubSecondary *rsa.PublicKey
+	pool            *db.DynamicPool
 }
 
 // weakDefaultJWTSecret is the placeholder value that used to ship in
@@ -37,16 +46,29 @@ type Config struct {
 const weakDefaultJWTSecret = "change-this-to-a-random-secret-key"
 
 // Init resolves the JWT secret from the environment and returns a ready-to-use
-// Config. The secret is never read from or written to the database.
+// Config. The secret is never read from or written to the database. If
+// JWT_PRIVATE_KEY is also set, the RS256 signing key is loaded (dual-mode:
+// new tokens are signed with RS256, existing HS256 tokens keep validating with
+// JWT_SECRET).
 func Init(pool *db.DynamicPool) (*Config, error) {
 	secret, err := ResolveJWTSecret()
 	if err != nil {
 		return nil, err
 	}
-	return &Config{
+	cfg := &Config{
 		jwtSecretPrimary: []byte(secret),
 		pool:             pool,
-	}, nil
+	}
+	if pemKey := util.SecretFromEnv("JWT_PRIVATE_KEY"); pemKey != "" {
+		priv, perr := util.ParseRSAPrivateKey(pemKey)
+		if perr != nil {
+			return nil, fmt.Errorf("JWT_PRIVATE_KEY is set but invalid: %w", perr)
+		}
+		cfg.rsaPriv = priv
+		cfg.rsaPub = priv.Public().(*rsa.PublicKey)
+		slog.Info("auth: RS256 signing enabled (JWT_PRIVATE_KEY set); HS256 tokens keep validating via JWT_SECRET")
+	}
+	return cfg, nil
 }
 
 // ResolveJWTSecret returns the JWT signing secret from the JWT_SECRET env var
@@ -106,54 +128,85 @@ func (cfg *Config) GenerateToken(userID int64, username string, role string, rem
 		"iat":      time.Now().Unix(),
 		"remember": remember,
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	cfg.secretMu.RLock()
+	rsaPriv := cfg.rsaPriv
 	primary := cfg.jwtSecretPrimary
 	cfg.secretMu.RUnlock()
-	tokenStr, err := token.SignedString(primary)
+
+	var tokenStr string
+	var err error
+	if rsaPriv != nil {
+		// RS256 (asymmetric): only the private-key holder can mint tokens.
+		tokenStr, err = jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(rsaPriv)
+	} else {
+		// HS256 (symmetric fallback when JWT_PRIVATE_KEY is not configured).
+		tokenStr, err = jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(primary)
+	}
 	if err != nil {
 		return "", "", time.Time{}, err
 	}
 	return tokenStr, jti, exp, nil
 }
 
-// ValidateToken parses and validates a JWT string. During key rotation,
-// it tries the primary key first, then the secondary key (grace period),
-// so existing tokens remain valid until they naturally expire.
+// ValidateToken parses and validates a JWT string, supporting both signing
+// algorithms in dual mode. It dispatches on the token's alg header:
+//
+//   - RS256 tokens are verified with the RSA public key (JWT_PRIVATE_KEY);
+//   - HS256 tokens are verified with JWT_SECRET.
+//
+// This lets an upgrade from HS256 to RS256 roll out without logging anyone
+// out: new tokens are signed with RS256 while in-flight HS256 tokens keep
+// validating against JWT_SECRET until they naturally expire. During a key
+// rotation the secondary keys (previous RS256 public key / previous HMAC
+// secret) are also tried, so tokens minted before the rotation stay valid
+// for the grace period.
 func (cfg *Config) ValidateToken(tokenString string) (*jwt.MapClaims, error) {
 	cfg.secretMu.RLock()
+	rsaPub := cfg.rsaPub
+	rsaPubSecondary := cfg.rsaPubSecondary
 	primary := cfg.jwtSecretPrimary
 	secondary := cfg.jwtSecretSecondary
 	cfg.secretMu.RUnlock()
 
+	// Primary attempt: current RS256 public key + current HMAC secret.
+	if claims, ok := cfg.validateJWT(tokenString, rsaPub, primary); ok {
+		return claims, nil
+	}
+	// Grace-period attempt: previous RS256 public key + previous HMAC secret.
+	if rsaPubSecondary != nil || secondary != nil {
+		if claims, ok := cfg.validateJWT(tokenString, rsaPubSecondary, secondary); ok {
+			return claims, nil
+		}
+	}
+	return nil, fmt.Errorf("invalid token")
+}
+
+// validateJWT parses tokenString, verifying an RS256 token with pub (when
+// non-nil) or an HS256 token with secret (when non-nil). It reports whether
+// the token was accepted.
+func (cfg *Config) validateJWT(tokenString string, pub *rsa.PublicKey, secret []byte) (*jwt.MapClaims, bool) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+		switch token.Method.(type) {
+		case *jwt.SigningMethodRSA:
+			if pub == nil {
+				return nil, fmt.Errorf("RS256 token but no RSA public key available")
+			}
+			return pub, nil
+		case *jwt.SigningMethodHMAC:
+			if secret == nil {
+				return nil, fmt.Errorf("HS256 token but no HMAC secret available")
+			}
+			return secret, nil
+		default:
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return primary, nil
 	})
 	if err == nil {
 		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
-			return &claims, nil
+			return &claims, true
 		}
 	}
-
-	// Try secondary key (grace period during rotation)
-	if secondary != nil {
-		token2, err2 := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return secondary, nil
-		})
-		if err2 == nil {
-			if claims, ok := token2.Claims.(jwt.MapClaims); ok && token2.Valid {
-				return &claims, nil
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("invalid token")
+	return nil, false
 }
 
 // RememberedRefreshTokenTTL is the default max lifetime for a "remember this
@@ -184,12 +237,13 @@ func GenerateRefreshTokenWithTTL(userID int, remember bool, rememberedTTL time.D
 	return token, exp
 }
 
-// HashRefreshToken returns a SHA-256 hex digest of the token for secure storage.
-// The raw token is never persisted; only this hash is stored and compared
-// during lookup, so a database breach doesn't yield usable session tokens.
+// HashRefreshToken returns the digest of a refresh token for secure storage.
+// It is hex(HMAC-SHA256(TOKEN_HASH_KEY, token)) (see util.TokenHash) - the
+// raw token is never persisted, so a database breach doesn't yield usable
+// session tokens, and the HMAC keying stops precomputed-digest attacks that
+// a plain unsalted SHA-256 would allow.
 func HashRefreshToken(token string) string {
-	h := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(h[:])
+	return util.TokenHash(token)
 }
 
 // GenerateDeviceID returns a random identifier for a "remember this device"
@@ -213,27 +267,32 @@ var (
 	hasSpecial = regexp.MustCompile(`[^A-Za-z0-9]`)
 )
 
+// MinPasswordLength is the hard floor for password length. Even if an
+// administrator configures a lower security_password_min_length, new passwords
+// are never accepted below this, so a weak policy cannot be set by accident.
+const MinPasswordLength = 12
+
 // PasswordPolicy holds configurable password requirements loaded from app_settings.
 type PasswordPolicy struct {
-	MinLength     int
-	MaxLength     int
-	RequireUpper  bool
-	RequireLower  bool
-	RequireDigit  bool
+	MinLength      int
+	MaxLength      int
+	RequireUpper   bool
+	RequireLower   bool
+	RequireDigit   bool
 	RequireSpecial bool
-	HistoryCount  int
+	HistoryCount   int
 }
 
 // LoadPasswordPolicy reads password policy settings from the database.
 func LoadPasswordPolicy(getSetting func(string, string) string) PasswordPolicy {
 	p := PasswordPolicy{
-		MinLength:    envOrInt(getSetting("security_password_min_length", "8"), 8),
-		MaxLength:    envOrInt(getSetting("security_password_max_length", "128"), 128),
-		RequireUpper: getSetting("security_password_require_upper", "true") == "true",
-		RequireLower: getSetting("security_password_require_lower", "true") == "true",
-		RequireDigit: getSetting("security_password_require_digit", "true") == "true",
+		MinLength:      envOrInt(getSetting("security_password_min_length", "12"), MinPasswordLength),
+		MaxLength:      envOrInt(getSetting("security_password_max_length", "128"), 128),
+		RequireUpper:   getSetting("security_password_require_upper", "true") == "true",
+		RequireLower:   getSetting("security_password_require_lower", "true") == "true",
+		RequireDigit:   getSetting("security_password_require_digit", "true") == "true",
 		RequireSpecial: getSetting("security_password_require_special", "true") == "true",
-		HistoryCount: envOrInt(getSetting("security_password_history_count", "12"), 12),
+		HistoryCount:   envOrInt(getSetting("security_password_history_count", "12"), 12),
 	}
 	return p
 }
@@ -248,19 +307,23 @@ func envOrInt(val string, def int) int {
 // ValidatePassword enforces complexity requirements (uses defaults, no DB).
 func ValidatePassword(password string) error {
 	return ValidatePasswordWithPolicy(PasswordPolicy{
-		MinLength:    8,
-		MaxLength:    128,
-		RequireUpper: true,
-		RequireLower: true,
-		RequireDigit: true,
+		MinLength:      MinPasswordLength,
+		MaxLength:      128,
+		RequireUpper:   true,
+		RequireLower:   true,
+		RequireDigit:   true,
 		RequireSpecial: true,
 	}, password)
 }
 
 // ValidatePasswordWithPolicy validates a password against the given policy.
 func ValidatePasswordWithPolicy(p PasswordPolicy, password string) error {
-	if len(password) < p.MinLength {
-		return fmt.Errorf("password must be at least %d characters", p.MinLength)
+	minLen := p.MinLength
+	if minLen < MinPasswordLength {
+		minLen = MinPasswordLength
+	}
+	if len(password) < minLen {
+		return fmt.Errorf("password must be at least %d characters", minLen)
 	}
 	if len(password) > p.MaxLength {
 		return fmt.Errorf("password must not exceed %d characters", p.MaxLength)
@@ -293,10 +356,16 @@ func (cfg *Config) JWTRequired() gin.HandlerFunc {
 		tokenString, _ := c.Cookie("accessToken")
 		if tokenString == "" {
 			authHeader := c.GetHeader("Authorization")
-			if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
+			if authHeader != "" {
+				// Strict scheme: the Authorization header must use "Bearer". A
+				// present-but-malformed header is a client error (400),
+				// distinguished from a missing/invalid token (401).
+				if len(authHeader) < 7 || authHeader[:7] != "Bearer " {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "Authorization header must use the Bearer scheme", "error_key": "auth.invalidAuthFormat"})
+					c.Abort()
+					return
+				}
 				tokenString = authHeader[7:]
-			} else if authHeader != "" {
-				tokenString = authHeader
 			}
 		}
 		// Deliberately no ?token= query-param fallback: an access token in the
@@ -357,11 +426,43 @@ func (cfg *Config) ClearSecondarySecret() {
 	slog.Info("auth: JWT secondary key cleared")
 }
 
+// RotateRSAKey atomically rotates the RS256 signing key (dual-mode). The
+// previous public key becomes the secondary (used for validating RS256 tokens
+// minted before the rotation during the grace period), and the new key becomes
+// primary for both signing and validation.
+func (cfg *Config) RotateRSAKey(privateKey *rsa.PrivateKey) {
+	cfg.secretMu.Lock()
+	if cfg.rsaPub != nil {
+		cfg.rsaPubSecondary = cfg.rsaPub
+	}
+	cfg.rsaPriv = privateKey
+	cfg.rsaPub = privateKey.Public().(*rsa.PublicKey)
+	cfg.secretMu.Unlock()
+	slog.Info("auth: RS256 key rotated, secondary public key set for grace period")
+}
+
+// ClearSecondaryRSAKey removes the secondary RS256 public key after the grace
+// period has elapsed. RS256 tokens signed with the old private key are
+// rejected after this.
+func (cfg *Config) ClearSecondaryRSAKey() {
+	cfg.secretMu.Lock()
+	cfg.rsaPubSecondary = nil
+	cfg.secretMu.Unlock()
+	slog.Info("auth: RS256 secondary public key cleared")
+}
+
 // HasSecondarySecret returns true if a secondary (grace period) key is active.
 func (cfg *Config) HasSecondarySecret() bool {
 	cfg.secretMu.RLock()
 	defer cfg.secretMu.RUnlock()
 	return len(cfg.jwtSecretSecondary) > 0
+}
+
+// HasRSASigning reports whether RS256 signing is active (JWT_PRIVATE_KEY set).
+func (cfg *Config) HasRSASigning() bool {
+	cfg.secretMu.RLock()
+	defer cfg.secretMu.RUnlock()
+	return cfg.rsaPriv != nil
 }
 
 // GetPrimarySecret returns the current primary JWT secret as a string.

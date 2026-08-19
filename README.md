@@ -117,11 +117,12 @@ curl -fsSLO https://raw.githubusercontent.com/dom133/Logmara/master/.env.example
 cp .env.example .env
 ```
 
-Edit `.env` and set at least these — the app **will not start** until the two security keys are set (they have no defaults, by design; see [Security keys](#security-keys)):
+Edit `.env` and set at least these — the app **will not start** until the three security keys are set (they have no defaults, by design; see [Security keys](#security-keys)):
 - `POSTGRES_PASSWORD`
 - `RABBITMQ_PASS` — generate with `openssl rand -base64 24`
 - `JWT_SECRET` — generate with `openssl rand -base64 48`
 - `ENCRYPTION_KEY` — generate with `openssl rand -base64 48` (use a *separate* value from `JWT_SECRET`)
+- `TOKEN_HASH_KEY` — generate with `openssl rand -hex 32` (use a *separate* value from the others)
 
 ### 4. Start it
 
@@ -186,6 +187,9 @@ Copy `.env.example` and adjust values:
 | `DATABASE_URL` | *(none)* | PostgreSQL connection string. In `docker-compose.yml` this is always set. If unset, the API serves only the setup wizard until it's submitted with database settings, then connects and continues booting on its own |
 | `JWT_SECRET` | *(required)* | JWT signing key (min 32 chars). Env-only, never stored in the DB. Also accepts `JWT_SECRET_FILE`. See [Security keys](#security-keys) |
 | `ENCRYPTION_KEY` | *(required)* | AES-256 key for encrypting sensitive settings (SMTP/LDAP passwords, channel secrets). Env-only, never stored in the DB. Also accepts `ENCRYPTION_KEY_FILE` |
+| `TOKEN_HASH_KEY` | *(required)* | HMAC key used to hash refresh tokens and API keys before storage, so a DB dump yields only keyed digests, not usable tokens (min 32 chars). Env-only, never stored in the DB. Also accepts `TOKEN_HASH_KEY_FILE`. See [Security keys](#security-keys) |
+| `MAINTENANCE_TOKEN` | *(optional)* | Shared secret that gates the unauthenticated `/api/maintenance/pre-update` endpoint (pauses ingestion / compacts logs) on top of Docker-network isolation. The deploy script sends it as the `X-Maintenance-Token` header. When empty, that endpoint relies on network isolation only. Generate with `openssl rand -hex 32`. Also accepts `MAINTENANCE_TOKEN_FILE` |
+| `JWT_PRIVATE_KEY` | *(optional)* | RSA private key (PKCS#8 PEM, ≥ 2048 bits) that switches session-token signing to RS256 in dual mode (new tokens RS256, existing HS256 tokens keep validating). `JWT_SECRET` stays required. Also accepts `JWT_PRIVATE_KEY_FILE` (preferred). See [Security keys](#optional-rs256-session-tokens-asymmetric-signing) |
 | `PORT` | `8080` | API server port |
 | `LOG_FILE_PATH` | `/data/logs.jsonl` | Path to rsyslog JSON output |
 | `CORS_ORIGINS` | *(none)* | Comma-separated allowed origins for CORS. Only seeds the initial value in the database on first initialization — afterwards it's managed from the admin Settings UI |
@@ -198,25 +202,28 @@ Copy `.env.example` and adjust values:
 
 ### Security keys
 
-Logmara uses two secrets that are read **only from the environment** and are **never written to the database**:
+Logmara uses three secrets that are read **only from the environment** and are **never written to the database**:
 
 - **`JWT_SECRET`** — signs session tokens. Anyone who has it can forge a login for any user.
 - **`ENCRYPTION_KEY`** — AES-256 key that encrypts sensitive settings at rest (SMTP/LDAP bind passwords, notification-channel secrets).
+- **`TOKEN_HASH_KEY`** — HMAC key used to hash refresh tokens and API keys before they're stored. A database dump then yields only keyed digests, not usable tokens (a plain unsalted SHA-256 would be vulnerable to precomputed-digest attacks; the HMAC keying fixes that).
 
-Keeping them out of the database is deliberate: it means a database dump on its own can neither forge tokens nor decrypt stored credentials — the attacker would also need the environment. Because of this, **there is no auto-generation and no setup-wizard step for them** — you generate them yourself before the first start, and the app refuses to start (or to finish first-time setup) until both are present.
+Keeping them out of the database is deliberate: it means a database dump on its own can neither forge tokens nor decrypt stored credentials — the attacker would also need the environment. Because of this, **there is no auto-generation and no setup-wizard step for them** — you generate them yourself before the first start, and the app refuses to start (or to finish first-time setup) until all three are present.
 
 **Generate them** (use a *different* value for each; minimum 32 characters):
 
 ```bash
 openssl rand -base64 48   # use the output as JWT_SECRET
 openssl rand -base64 48   # run again, use the output as ENCRYPTION_KEY
+openssl rand -hex 32      # run again, use the output as TOKEN_HASH_KEY
 ```
 
-**Single-server (`docker-compose.yml`)** — put both in `.env`:
+**Single-server (`docker-compose.yml`)** — put all three in `.env`:
 
 ```bash
 echo "JWT_SECRET=$(openssl rand -base64 48)"     >> .env
 echo "ENCRYPTION_KEY=$(openssl rand -base64 48)" >> .env
+echo "TOKEN_HASH_KEY=$(openssl rand -hex 32)"    >> .env
 ```
 
 **High Availability (`docker-stack.*.yml`)** — credentials are created as Swarm secrets (step 7 of the HA guide) and then migrated into Vault (step 8), which is what the containers actually read from — not as plain env vars. Non-sensitive deployment parameters (`REGISTRY`, `TAG`, `NFS_SERVER`, `API_REPLICAS`, etc.) go into `.env` and are sourced automatically by `scripts/swarm-deploy.sh`. If you call `docker stack deploy` directly instead, export them in your shell first — Swarm won't read `.env` on its own.
@@ -224,12 +231,13 @@ echo "ENCRYPTION_KEY=$(openssl rand -base64 48)" >> .env
 ```bash
 export JWT_SECRET=$(openssl rand -base64 48)
 export ENCRYPTION_KEY=$(openssl rand -base64 48)
+export TOKEN_HASH_KEY=$(openssl rand -hex 32)
 ```
 
-**File-based secrets (optional)** — instead of the plain env var, point `JWT_SECRET_FILE` / `ENCRYPTION_KEY_FILE` at a mounted file (e.g. a Docker/Swarm secret at `/run/secrets/jwt_secret`). The value is read from the file, trimmed of trailing newlines. This keeps the secret off the process environment (which leaks via `docker inspect` and `/proc`).
+**File-based secrets (optional)** — instead of the plain env var, point `JWT_SECRET_FILE` / `ENCRYPTION_KEY_FILE` / `TOKEN_HASH_KEY_FILE` at a mounted file (e.g. a Docker/Swarm secret at `/run/secrets/jwt_secret`). The value is read from the file, trimmed of trailing newlines. This keeps the secret off the process environment (which leaks via `docker inspect` and `/proc`).
 
 > [!IMPORTANT]
-> Keep both values **stable**. Changing `JWT_SECRET` logs everyone out; changing `ENCRYPTION_KEY` makes every previously-encrypted setting unreadable (you'd have to re-enter SMTP/LDAP passwords and channel secrets).
+> Keep all three values **stable**. Changing `JWT_SECRET` logs everyone out; changing `ENCRYPTION_KEY` makes every previously-encrypted setting unreadable (you'd have to re-enter SMTP/LDAP passwords and channel secrets); changing `TOKEN_HASH_KEY` invalidates every stored refresh token and API key (all sessions are logged out and all API keys must be re-issued).
 
 > [!NOTE]
 > **Upgrading an older install** that let the app auto-generate these into the database? Before updating, copy the existing values out into your environment so sessions and encrypted settings keep working:
@@ -238,6 +246,27 @@ export ENCRYPTION_KEY=$(openssl rand -base64 48)
 >   "SELECT key || '=' || value FROM app_settings WHERE key IN ('jwt_secret','encryption_key')"
 > ```
 > Put the two printed values into `.env` as `JWT_SECRET=` / `ENCRYPTION_KEY=`, then `docker compose up -d --build`. The old rows left in `app_settings` are ignored from then on and can be deleted.
+
+#### Optional: RS256 session tokens (asymmetric signing)
+
+By default session (access) tokens are signed with **HS256**, the symmetric `JWT_SECRET` — anyone who holds that secret can both validate *and* forge tokens. If you'd rather separate signing from validation, set **`JWT_PRIVATE_KEY`** to an RSA private key (PKCS#8 PEM, ≥ 2048 bits) and Logmara switches to **RS256** in *dual mode*:
+
+- **New** tokens are signed with the private key (RS256) — only its holder can mint tokens, while the public key (derived from it) is all a validator needs.
+- **Existing** HS256 tokens keep validating against `JWT_SECRET` until they expire on their own — so enabling this does **not** log anyone out, and the upgrade can roll out at leisure.
+
+`JWT_SECRET` stays required in both modes (it's still used to validate the legacy HS256 tokens and is the signing key when `JWT_PRIVATE_KEY` is absent).
+
+```bash
+# Generate a 2048-bit RSA key (PKCS#8 PEM):
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt_private.pem
+# Then either point the *_FILE at it (preferred, keeps it off the env)…
+JWT_PRIVATE_KEY_FILE=/path/to/jwt_private.pem
+# …or paste the PEM into the env var directly:
+# JWT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+```
+
+> [!IMPORTANT]
+> Keep the private key **stable and secret** — losing it invalidates every RS256 session, and anyone who obtains it can forge tokens for any user. Rotating it (setting a new `JWT_PRIVATE_KEY`) stops the old key validating new lookups; in-flight RS256 tokens end at their natural expiry, the same way changing `JWT_SECRET` does.
 
 ## High Availability Deployment (Multi-Node, Optional)
 
@@ -577,17 +606,19 @@ REDIS_PASS=$(openssl rand -base64 32)
 RABBITMQ_PASS=$(openssl rand -base64 24)
 JWT_SECRET_VAL=$(openssl rand -base64 48)
 ENCRYPTION_KEY_VAL=$(openssl rand -base64 48)   # separate value; see "Security keys"
+TOKEN_HASH_KEY_VAL=$(openssl rand -hex 32)      # separate value; see "Security keys"
+MAINTENANCE_TOKEN_VAL=$(openssl rand -hex 32)   # gates /api/maintenance/pre-update
 
 ./scripts/swarm-bootstrap.sh secrets "$PG_SUPERUSER_PASS" "$PG_REPLICATION_PASS" "$PG_APP_PASS"
 ./scripts/swarm-bootstrap.sh redis-secret "$REDIS_PASS"
 ./scripts/swarm-bootstrap.sh rabbitmq-secret "$RABBITMQ_PASS"
-./scripts/swarm-bootstrap.sh app-secrets "$JWT_SECRET_VAL" "$ENCRYPTION_KEY_VAL"
+./scripts/swarm-bootstrap.sh app-secrets "$JWT_SECRET_VAL" "$ENCRYPTION_KEY_VAL" "$TOKEN_HASH_KEY_VAL" "$MAINTENANCE_TOKEN_VAL"
 ./scripts/swarm-bootstrap.sh haproxy-config
 ./scripts/swarm-bootstrap.sh haproxy-app-config
 ./scripts/swarm-bootstrap.sh redis-sentinel-config
 ./scripts/swarm-bootstrap.sh haproxy-rabbitmq-config
 ```
-All the passwords/keys now live only as Swarm secrets - none of them need to be exported as shell env vars again later, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later. Only `rabbitmq_erlang_cookie` stays mounted directly into its containers at `/run/secrets/rabbitmq_erlang_cookie` as a native Swarm secret. The other seven (`pg_superuser_password`, `pg_replication_password`, `pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key`) are only the *source* values here — step 8 below migrates them into Vault, and nothing reads the Swarm secret itself afterwards: Patroni (`patroni/entrypoint.sh`), Redis (`redis/entrypoint.sh`/`redis/sentinel_entrypoint.sh`), RabbitMQ (`rabbitmq/entrypoint.sh`/`rabbitmq/join_entrypoint.sh`), and `api` (`backend/vaultclient`) all fetch their own secrets straight from Vault's HTTP API at their own startup instead - no file involved for any of them.
+All the passwords/keys now live only as Swarm secrets - none of them need to be exported as shell env vars again later, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later. Only `rabbitmq_erlang_cookie` stays mounted directly into its containers at `/run/secrets/rabbitmq_erlang_cookie` as a native Swarm secret. The other eight (`pg_superuser_password`, `pg_replication_password`, `pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key`, `token_hash_key`) are only the *source* values here — step 8 below migrates them into Vault, and nothing reads the Swarm secret itself afterwards: Patroni (`patroni/entrypoint.sh`), Redis (`redis/entrypoint.sh`/`redis/sentinel_entrypoint.sh`), RabbitMQ (`rabbitmq/entrypoint.sh`/`rabbitmq/join_entrypoint.sh`), and `api` (`backend/vaultclient`) all fetch their own secrets straight from Vault's HTTP API at their own startup instead - no file involved for any of them.
 
 #### 8. Deploy Vault and migrate secrets
 

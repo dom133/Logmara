@@ -1,32 +1,31 @@
 package middleware
 
 import (
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"logmara/db"
 	"logmara/model"
-
-	"strings"
+	"logmara/sharedstate"
+	"logmara/util"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
 )
 
-// hashAPIKey returns the SHA-256 digest of a plaintext API key, hex-encoded.
-// Must stay in sync with handler.hashAPIKey (the two packages can't share the
-// function directly - handler already imports middleware).
+// hashAPIKey returns the digest of a plaintext API key for storage/lookup
+// (see util.TokenHash: hex(HMAC-SHA256(TOKEN_HASH_KEY, key))). Must stay in
+// sync with handler.hashAPIKey (the two packages can't share the function
+// directly - handler already imports middleware).
 func hashAPIKey(key string) string {
-	sum := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(sum[:])
+	return util.TokenHash(key)
 }
 
 type APIKeyPermissions struct {
@@ -67,14 +66,19 @@ func APIKeyAuth(pool *db.DynamicPool) gin.HandlerFunc {
 		}
 
 		keyPrefix := apiKey[:8]
+		// New API keys are stored as hex(HMAC-SHA256(TOKEN_HASH_KEY, key));
+		// keys created before the HMAC scheme existed are stored as unsalted
+		// SHA-256 (their plaintext is unrecoverable, so they can't be
+		// re-hashed). Accept both.
 		keyHash := hashAPIKey(apiKey)
+		legacyHash := util.TokenHashLegacy(apiKey)
 
 		database := pool.Get()
 		row := database.QueryRow(`
 			SELECT id, key_hash, is_active, permissions, scope_filters, rate_limit_per_min, expires_at, allowed_ips
 			FROM api_keys
-			WHERE key_hash = $1
-		`, keyHash)
+			WHERE key_hash = $1 OR key_hash = $2
+		`, keyHash, legacyHash)
 
 		var id int
 		var storedHash string
@@ -120,7 +124,7 @@ func APIKeyAuth(pool *db.DynamicPool) gin.HandlerFunc {
 		}
 
 		limiter := getRateLimiter(id, rateLimitPerMin)
-		if !limiter.Allow() {
+		if !limiter.allow() {
 			c.AbortWithError(http.StatusTooManyRequests, model.NewTooManyRequestsKey("rate_limited", "Rate limit exceeded", nil))
 			return
 		}
@@ -139,9 +143,43 @@ func APIKeyAuth(pool *db.DynamicPool) gin.HandlerFunc {
 }
 
 var (
-	rateLimitersMu sync.Mutex
-	rateLimiters   = make(map[int]*RateLimiter)
+	rateLimitersMu   sync.Mutex
+	rateLimiters     = make(map[int]keyRateLimiter)
+	sharedRateClient *sharedstate.Client
 )
+
+// keyRateLimiter enforces a single API key's per-minute request limit, backed
+// either by local in-memory state (single replica) or shared Redis (HA), so
+// the limit is enforced consistently across every api replica instead of one
+// counter per process.
+type keyRateLimiter interface {
+	allow() bool
+}
+
+// memoryKeyLimiter wraps the per-process token bucket.
+type memoryKeyLimiter struct {
+	rl *RateLimiter
+}
+
+func (m *memoryKeyLimiter) allow() bool { return m.rl.Allow() }
+
+// redisKeyLimiter wraps the shared Redis sliding-window limiter; the key is
+// the API key's id, so each key gets its own counter shared across replicas.
+type redisKeyLimiter struct {
+	rl  *sharedstate.RedisRateLimiter
+	key string
+}
+
+func (r *redisKeyLimiter) allow() bool { return r.rl.Allow(r.key) }
+
+// SetSharedRateClient configures the shared (Redis-backed) rate limiter used
+// for API key limits when running multiple api replicas over Redis. Nil (the
+// default, single-server) falls back to a per-process in-memory limiter.
+func SetSharedRateClient(client *sharedstate.Client) {
+	rateLimitersMu.Lock()
+	defer rateLimitersMu.Unlock()
+	sharedRateClient = client
+}
 
 type RateLimiter struct {
 	mu       sync.Mutex
@@ -185,27 +223,36 @@ func (rl *RateLimiter) Allow() bool {
 	return false
 }
 
-func getRateLimiter(keyID int, rateLimit int) *RateLimiter {
+func getRateLimiter(keyID int, rateLimit int) keyRateLimiter {
 	rateLimitersMu.Lock()
 	defer rateLimitersMu.Unlock()
 	if rl, ok := rateLimiters[keyID]; ok {
 		return rl
 	}
-	rl := NewRateLimiter(rateLimit)
+	var rl keyRateLimiter
+	if sharedRateClient != nil {
+		rl = &redisKeyLimiter{
+			rl:  sharedstate.NewRedisRateLimiter(sharedRateClient, "apikey", rateLimit, time.Minute),
+			key: strconv.Itoa(keyID),
+		}
+	} else {
+		rl = &memoryKeyLimiter{rl: NewRateLimiter(rateLimit)}
+	}
 	rateLimiters[keyID] = rl
 	return rl
 }
 
-// RemoveRateLimiter stops a key's background refill goroutine and drops its
-// entry, so deleted API keys don't accumulate leaked limiters/goroutines
-// forever. Safe to call even if no limiter was ever created for keyID.
+// RemoveRateLimiter drops a key's limiter entry so deleted API keys don't
+// accumulate leaked limiters/goroutines forever. For the in-memory variant it
+// also stops the background refill goroutine; the Redis-backed variant has no
+// local state to release. Safe to call even if no limiter was created for keyID.
 func RemoveRateLimiter(keyID int) {
 	rateLimitersMu.Lock()
 	defer rateLimitersMu.Unlock()
-	if rl, ok := rateLimiters[keyID]; ok {
-		close(rl.stop)
-		delete(rateLimiters, keyID)
+	if m, ok := rateLimiters[keyID].(*memoryKeyLimiter); ok {
+		close(m.rl.stop)
 	}
+	delete(rateLimiters, keyID)
 }
 
 // ipAllowed reports whether clientIP matches any entry in allowed - each

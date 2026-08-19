@@ -168,10 +168,18 @@ services:
       POSTGRES_SSLMODE: disable
       # Security keys - required, and never stored in the database (a DB dump
       # alone must not be able to forge tokens or decrypt secrets). Generate
-      # each with `openssl rand -base64 48` and put them in .env. See README
-      # "Security keys".
+      # each with `openssl rand -base64 48` (TOKEN_HASH_KEY: `openssl rand
+      # -hex 32`) and put them in .env. See README "Security keys".
       JWT_SECRET: "${JWT_SECRET:?set JWT_SECRET in .env - generate with openssl rand -base64 48}"
       ENCRYPTION_KEY: "${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env - generate with openssl rand -base64 48}"
+      TOKEN_HASH_KEY: "${TOKEN_HASH_KEY:?set TOKEN_HASH_KEY in .env - generate with openssl rand -hex 32}"
+      # Optional: gates /api/maintenance/pre-update (see README "Security keys").
+      # Empty leaves the endpoint protected by Docker-network isolation only.
+      MAINTENANCE_TOKEN: "${MAINTENANCE_TOKEN:-}"
+      # Optional: RS256 signing key (dual-mode). Point JWT_PRIVATE_KEY_FILE at a
+      # mounted PEM file (openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048)
+      # to sign new session tokens with RS256; empty keeps HS256-only. See README.
+      JWT_PRIVATE_KEY_FILE: "${JWT_PRIVATE_KEY_FILE:-}"
       PORT: "8080"
       LOG_FILE_PATH: /data/logs.jsonl
       NGINX_RELOAD_URL: http://frontend:8081/cgi-bin/reload.sh

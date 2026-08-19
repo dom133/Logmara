@@ -80,16 +80,20 @@ func bindInitRequest(c *gin.Context) (*InitRequest, bool) {
 	return &req, true
 }
 
-// keysConfiguredErr reports whether JWT_SECRET and ENCRYPTION_KEY are both
-// present and valid in the environment, returning a user-facing error message
-// (with remediation) if not. Used by the setup wizard's pre-flight check and,
-// via KeysConfigured, by the status endpoint that drives the wizard UI.
+// keysConfiguredErr reports whether JWT_SECRET, ENCRYPTION_KEY and
+// TOKEN_HASH_KEY are all present and valid in the environment, returning a
+// user-facing error message (with remediation) if not. Used by the setup
+// wizard's pre-flight check and, via KeysConfigured, by the status endpoint
+// that drives the wizard UI.
 func keysConfiguredErr() error {
 	if _, err := auth.ResolveJWTSecret(); err != nil {
 		return err
 	}
 	if util.SecretFromEnv("ENCRYPTION_KEY") == "" {
 		return fmt.Errorf("ENCRYPTION_KEY is not set; generate one (e.g. `openssl rand -base64 48`) and provide it via the ENCRYPTION_KEY env var or ENCRYPTION_KEY_FILE - see README")
+	}
+	if _, err := util.ResolveTokenHashKey(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -323,6 +327,7 @@ func GenerateKeys() gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{
 			"jwt_secret":     util.GenerateJWTSecret(),
 			"encryption_key": util.GenerateEncryptionKey(),
+			"token_hash_key": util.GenerateTokenHashKey(),
 		})
 	}
 }

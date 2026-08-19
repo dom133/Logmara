@@ -68,11 +68,14 @@ Commands (run on the indicated node):
        Swarm secret, mounted directly). Its password value must match
        RABBITMQ_PASS passed to docker-stack.app.yml.
 
-  app-secrets <jwt-secret> <encryption-key>
-      Run on a manager, once: creates the jwt_secret and encryption_key
-      secrets consumed by the api service in docker-stack.app.yml (instead
-      of passing JWT_SECRET/ENCRYPTION_KEY as plain deploy-time env vars).
-      Generate both with `openssl rand -base64 48`, do not reuse examples.
+  app-secrets <jwt-secret> <encryption-key> <token-hash-key> [maintenance-token]
+      Run on a manager, once: creates the jwt_secret, encryption_key,
+      token_hash_key and (optionally) maintenance_token secrets consumed by
+      the api service in docker-stack.app.yml (instead of passing
+      JWT_SECRET/ENCRYPTION_KEY/TOKEN_HASH_KEY/MAINTENANCE_TOKEN as plain
+      deploy-time env vars). Generate the first two with
+      `openssl rand -base64 48` and the last two with `openssl rand -hex 32`;
+      do not reuse examples. maintenance_token gates /api/maintenance/pre-update.
 
   haproxy-config
        DEPRECATED: haproxy configs are now auto-created by
@@ -169,11 +172,18 @@ case "$cmd" in
     ;;
 
   app-secrets)
-    jwt="${2:?usage: app-secrets <jwt-secret> <encryption-key>}"
-    enc="${3:?usage: app-secrets <jwt-secret> <encryption-key>}"
+    jwt="${2:?usage: app-secrets <jwt-secret> <encryption-key> <token-hash-key> [maintenance-token]}"
+    enc="${3:?usage: app-secrets <jwt-secret> <encryption-key> <token-hash-key> [maintenance-token]}"
+    thk="${4:?usage: app-secrets <jwt-secret> <encryption-key> <token-hash-key> [maintenance-token]}"
     printf '%s' "$jwt" | docker secret create jwt_secret -
     printf '%s' "$enc" | docker secret create encryption_key -
-    echo "Created jwt_secret, encryption_key."
+    printf '%s' "$thk" | docker secret create token_hash_key -
+    if [[ -n "${5:-}" ]]; then
+        printf '%s' "$5" | docker secret create maintenance_token -
+        echo "Created jwt_secret, encryption_key, token_hash_key, maintenance_token."
+    else
+        echo "Created jwt_secret, encryption_key, token_hash_key (no maintenance_token passed - /api/maintenance/pre-update stays network-isolated)."
+    fi
     ;;
 
   haproxy-config)

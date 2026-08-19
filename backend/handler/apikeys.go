@@ -2,7 +2,6 @@ package handler
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +16,7 @@ import (
 	"logmara/db"
 	"logmara/middleware"
 	"logmara/model"
+	"logmara/util"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
@@ -51,12 +51,12 @@ func GenerateAPIKey() string {
 	return hex.EncodeToString(b)
 }
 
-// hashAPIKey returns the SHA-256 digest of a plaintext API key, hex-encoded.
-// Only the digest is ever persisted (key_hash) - the plaintext key is shown
-// to the caller once, at creation/reset time, and never stored.
+// hashAPIKey returns the digest of a plaintext API key (see util.TokenHash:
+// hex(HMAC-SHA256(TOKEN_HASH_KEY, key))). Only the digest is ever persisted
+// (key_hash) - the plaintext key is shown to the caller once, at
+// creation/reset time, and never stored.
 func hashAPIKey(key string) string {
-	sum := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(sum[:])
+	return util.TokenHash(key)
 }
 
 func CreateAPIKey(pool *db.DynamicPool) gin.HandlerFunc {

@@ -129,7 +129,11 @@ func MigrateWithLock(db *sql.DB) error {
 // Bumped to 21 to make cloud_bridge's cert columns nullable - pairing and
 // certificate upload are now separate steps (see cloudbridge.EnrollWithLink
 // vs cloudbridge.SaveCertificates), so a freshly paired row has no certs yet.
-const schemaVersion = 21
+// Bumped to 22 to stop storing raw refresh tokens: the legacy "token" column
+// is backfilled into token_hash (HMAC of TOKEN_HASH_KEY) and dropped, and
+// replaced_by is normalized to the replacement token's digest (see
+// migrateRefreshTokenHashes). Requires TOKEN_HASH_KEY to be set.
+const schemaVersion = 22
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -316,6 +320,107 @@ func (g partitionGranularity) partitionName(t time.Time) string {
 	return "syslog_logs_" + t.Format(g.nameFormat)
 }
 
+// migrateRefreshTokenHashes re-hashes the refresh tokens that older installs
+// still store in raw form into the HMAC(TOKEN_HASH_KEY, ...) scheme the
+// runtime uses, then drops the raw "token" column. Concretely:
+//   - refresh_tokens.token (raw token)      -> token_hash = HMAC(key, token)
+//   - refresh_tokens.replaced_by (raw repl.) -> replaced_by = HMAC(key, repl.)
+//
+// Both re-hashes land on the exact digest the runtime computes (util.
+// TokenHash), so lookups by token_hash keep working after the switch. API
+// keys are NOT touched here: their plaintext is never stored, so they can't
+// be re-hashed - the middleware's dual-lookup (HMAC + legacy SHA-256) covers
+// both old and new keys instead.
+//
+// The function is idempotent: if the "token" column is already gone (fresh
+// install or already migrated) it does nothing.
+func migrateRefreshTokenHashes(ctx context.Context, conn *sql.Conn) error {
+	var hasTokenCol bool
+	if err := conn.QueryRowContext(ctx,
+		"SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='refresh_tokens' AND column_name='token')",
+	).Scan(&hasTokenCol); err != nil {
+		return fmt.Errorf("check refresh_tokens.token column: %w", err)
+	}
+	if !hasTokenCol {
+		return nil
+	}
+
+	// The re-hash needs the HMAC key. It's a hard requirement here (not a
+	// legacy fallback) so an operator who upgrades without setting it gets a
+	// loud, actionable failure instead of a silently-inconsistent scheme.
+	key, err := util.ResolveTokenHashKey()
+	if err != nil {
+		return fmt.Errorf("cannot re-hash stored refresh tokens: %w", err)
+	}
+
+	// token (raw) -> token_hash (HMAC). Existing rows already carry a legacy
+	// unsalted SHA-256 in token_hash, which must be overwritten with the HMAC
+	// digest - so re-hash every row that still has a raw token (re-hashing an
+	// already-HMAC row is idempotent).
+	rows, err := conn.QueryContext(ctx,
+		"SELECT id, token FROM refresh_tokens WHERE token IS NOT NULL AND token <> ''")
+	if err != nil {
+		return fmt.Errorf("scan refresh_tokens.token: %w", err)
+	}
+	type tokenRow struct {
+		id    int
+		token string
+	}
+	var tokenRows []tokenRow
+	for rows.Next() {
+		var tr tokenRow
+		if err := rows.Scan(&tr.id, &tr.token); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan refresh_tokens.token row: %w", err)
+		}
+		tokenRows = append(tokenRows, tr)
+	}
+	rows.Close()
+	for _, tr := range tokenRows {
+		if _, err := conn.ExecContext(ctx,
+			"UPDATE refresh_tokens SET token_hash = $1 WHERE id = $2",
+			util.TokenHashWithKey(key, tr.token), tr.id,
+		); err != nil {
+			return fmt.Errorf("re-hash refresh_tokens.token (id=%d): %w", tr.id, err)
+		}
+	}
+
+	// replaced_by (raw replacement token) -> its HMAC digest, so it matches
+	// the token_hash of the row it points at.
+	rows2, err := conn.QueryContext(ctx,
+		"SELECT id, replaced_by FROM refresh_tokens WHERE replaced_by IS NOT NULL AND replaced_by <> ''")
+	if err != nil {
+		return fmt.Errorf("scan refresh_tokens.replaced_by: %w", err)
+	}
+	var replacedRows []tokenRow
+	for rows2.Next() {
+		var rr tokenRow
+		if err := rows2.Scan(&rr.id, &rr.token); err != nil {
+			rows2.Close()
+			return fmt.Errorf("scan refresh_tokens.replaced_by row: %w", err)
+		}
+		replacedRows = append(replacedRows, rr)
+	}
+	rows2.Close()
+	for _, rr := range replacedRows {
+		if _, err := conn.ExecContext(ctx,
+			"UPDATE refresh_tokens SET replaced_by = $1 WHERE id = $2",
+			util.TokenHashWithKey(key, rr.token), rr.id,
+		); err != nil {
+			return fmt.Errorf("re-hash refresh_tokens.replaced_by (id=%d): %w", rr.id, err)
+		}
+	}
+
+	// The raw column has served its purpose - drop it so new tokens are never
+	// persisted in the clear.
+	if _, err := conn.ExecContext(ctx, "ALTER TABLE refresh_tokens DROP COLUMN token"); err != nil {
+		return fmt.Errorf("drop refresh_tokens.token: %w", err)
+	}
+
+	slog.Info("refresh tokens re-hashed to HMAC and raw token column dropped", "rehashed", len(tokenRows))
+	return nil
+}
+
 func runSchemaMigration(ctx context.Context, conn *sql.Conn) error {
 	// Raises the working memory available for the one-time index/materialized
 	// view builds below (GIN indexes on parsed_fields/search_vector/app_name
@@ -449,10 +554,14 @@ func runSchemaMigration(ctx context.Context, conn *sql.Conn) error {
 			value TEXT NOT NULL,
 			description TEXT
 		)`,
+		// refresh_tokens no longer stores the raw refresh token - only its
+		// HMAC digest (token_hash, see util.TokenHash) - so a database dump
+		// yields neither usable session tokens nor usable API keys. The raw
+		// "token" column that older installs still have is backfilled and
+		// dropped by the migration below (migrateRefreshTokenHashes).
 		`CREATE TABLE IF NOT EXISTS refresh_tokens (
 			id SERIAL PRIMARY KEY,
 			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-			token VARCHAR(255) UNIQUE NOT NULL,
 			expires_at TIMESTAMPTZ NOT NULL,
 			used BOOLEAN DEFAULT FALSE,
 			created_at TIMESTAMPTZ DEFAULT NOW()
@@ -674,6 +783,16 @@ func runSchemaMigration(ctx context.Context, conn *sql.Conn) error {
 		if _, err := conn.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("migration failed (%s): %w", stmt[:50], err)
 		}
+	}
+
+	// Stop storing raw refresh tokens. Older installs still have the legacy
+	// "token" column (raw tokens) plus a "replaced_by" column that also held
+	// raw replacement tokens. Re-hash both with HMAC(TOKEN_HASH_KEY, ...) so
+	// they match the runtime scheme, then drop the raw column. A no-op on
+	// fresh installs (no "token" column) and on already-migrated installs
+	// (the column was dropped the first time this ran).
+	if err := migrateRefreshTokenHashes(ctx, conn); err != nil {
+		return fmt.Errorf("migrateRefreshTokenHashes: %w", err)
 	}
 
 	var isPartitioned bool
@@ -1086,7 +1205,7 @@ func seedSettings(db *sql.DB) error {
 		"relay_central_host":            "",
 		"security_max_failed_attempts":     "",
 		"security_lockout_duration_min":    "",
-		"security_password_min_length":     "8",
+		"security_password_min_length":     "12",
 		"security_password_max_length":     "128",
 		"security_password_require_upper":  "true",
 		"security_password_require_lower":  "true",
@@ -1175,7 +1294,7 @@ func seedSettings(db *sql.DB) error {
 		case "security_lockout_duration_min":
 			desc = "Account lockout duration in minutes (empty = use LOCKOUT_DURATION_MIN env or default 15)"
 		case "security_password_min_length":
-			desc = "Minimum password length"
+			desc = "Minimum password length (server-enforced floor: never below 12)"
 		case "security_password_max_length":
 			desc = "Maximum password length"
 		case "security_password_require_upper":
@@ -1251,7 +1370,7 @@ var envSettings = []envSetting{
 	{"MAX_FAILED_ATTEMPTS", "security_max_failed_attempts", "5", false},
 	{"LOCKOUT_DURATION_MIN", "security_lockout_duration_min", "15", false},
 	{"SESSION_TIMEOUT_MIN", "session_timeout_min", "15", false},
-	{"PASSWORD_MIN_LENGTH", "security_password_min_length", "8", false},
+	{"PASSWORD_MIN_LENGTH", "security_password_min_length", "12", false},
 	{"PASSWORD_MAX_LENGTH", "security_password_max_length", "128", false},
 	{"PASSWORD_REQUIRE_UPPER", "security_password_require_upper", "true", true},
 	{"PASSWORD_REQUIRE_LOWER", "security_password_require_lower", "true", true},

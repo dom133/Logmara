@@ -23,9 +23,12 @@ func GetSecretLoadCount() int64 {
 // docker-stack.vault.yml. Only secrets actually migrated there are listed;
 // anything else always falls straight through to env/file below.
 var vaultSecretNames = map[string]string{
-	"JWT_SECRET":     "jwt_secret",
-	"ENCRYPTION_KEY": "encryption_key",
-	"REDIS_PASSWORD": "redis_password",
+	"JWT_SECRET":        "jwt_secret",
+	"ENCRYPTION_KEY":    "encryption_key",
+	"TOKEN_HASH_KEY":    "token_hash_key",
+	"MAINTENANCE_TOKEN": "maintenance_token",
+	"JWT_PRIVATE_KEY":   "jwt_private_key",
+	"REDIS_PASSWORD":    "redis_password",
 }
 
 // SecretFromEnv reads a secret, in priority order:
@@ -57,7 +60,7 @@ func SecretFromEnv(name string) string {
 	}
 
 	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
-		slog.Info("secret loaded", "name", name, "source", "env")
+		slog.Warn("secret loaded from a plain environment variable; prefer a *_FILE mount or Vault in production (env leaks via /proc, `docker inspect` and crash dumps)", "name", name, "source", "env")
 		return v
 	}
 	if p := strings.TrimSpace(os.Getenv(name + "_FILE")); p != "" {

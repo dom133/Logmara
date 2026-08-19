@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -86,6 +87,31 @@ func stopIfPersistent(rl RateLimiter) {
 	if s, ok := rl.(interface{ Stop() }); ok {
 		s.Stop()
 	}
+}
+
+// rotationGracePeriod is how long the previous JWT/encryption key is kept
+// around (as the secondary key) after a rotation, so tokens still in flight
+// signed with the old key and data still decryptable with it stay valid. It
+// must outlive the longest access token issued with the old key
+// (SESSION_TIMEOUT_MIN) - hence 2x that - but it is deliberately bounded
+// (30m-1h) rather than a fixed 4h, so a rotated-away key is dropped as soon
+// as its tokens can no longer be in flight instead of lingering for hours.
+func rotationGracePeriod() time.Duration {
+	minMinutes := 15
+	if v := strings.TrimSpace(os.Getenv("SESSION_TIMEOUT_MIN")); v != "" {
+		if t, err := strconv.Atoi(v); err == nil && t > 0 {
+			minMinutes = t
+		}
+	}
+	d := time.Duration(minMinutes*2) * time.Minute
+	const lo, hi = 30 * time.Minute, 1 * time.Hour
+	if d < lo {
+		d = lo
+	}
+	if d > hi {
+		d = hi
+	}
+	return d
 }
 
 type persistentBucketEntry struct {
@@ -593,6 +619,19 @@ func main() {
 		}
 	}
 
+	// The token hash key (like the JWT secret validated by auth.Init below and
+	// the encryption key checked after it) comes only from the environment and
+	// is never stored in the database. It's the HMAC key used to hash refresh
+	// tokens and API keys before storage (util.TokenHash), so a database dump
+	// alone yields no usable tokens. Fail fast if it's missing rather than
+	// silently hashing with a legacy/fallback scheme.
+	tokenHashKey, err := util.ResolveTokenHashKey()
+	if err != nil {
+		slog.Error("token hash key unavailable", "error", err)
+		os.Exit(1)
+	}
+	util.SetTokenHashKey(tokenHashKey)
+
 	authCfg, err := auth.Init(dynamicPool)
 	if err != nil {
 		slog.Error("auth initialization failed", "error", err)
@@ -648,7 +687,7 @@ func main() {
 			now := time.Now()
 			handler.SetRotationTimestamps(now, now.Add(24*time.Hour))
 			go func() {
-				time.Sleep(4 * time.Hour)
+				time.Sleep(rotationGracePeriod())
 				authCfg.ClearSecondarySecret()
 				handler.ClearSecondaryKeyFlag(0)
 			}()
@@ -664,7 +703,7 @@ func main() {
 				slog.Info("util: all secrets re-encrypted, scheduling secondary key cleanup", "count", ok)
 				handler.SetSecretRotationResult(1, "success")
 				go func() {
-					time.Sleep(4 * time.Hour)
+					time.Sleep(rotationGracePeriod())
 					util.ClearSecondaryEncryptionKey()
 					handler.ClearSecondaryKeyFlag(1)
 				}()
@@ -838,6 +877,11 @@ func main() {
 		go handler.StartRotationSyncSubscriber(ctx, broadcaster)
 		handler.SetSlowQueryStore(sharedClient)
 	}
+
+	// API key rate limits are shared across replicas when Redis is configured
+	// so the per-minute cap holds fleet-wide instead of per process; with no
+	// shared state (single server) this is nil and the in-memory limiter is used.
+	middleware.SetSharedRateClient(sharedClient)
 
 	logFilePath := os.Getenv("LOG_FILE_PATH")
 	if logFilePath == "" {
@@ -1307,6 +1351,10 @@ var defaultTrustedProxies = []string{
 	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",
 }
 
+// trustedProxiesLogged guards a single startup log line even though
+// configureTrustedProxies is applied to every Gin engine (HTTP + HTTPS).
+var trustedProxiesLogged atomic.Bool
+
 // configureTrustedProxies replaces Gin's insecure default (trust every proxy,
 // which makes X-Forwarded-For fully client-controlled) with an explicit list.
 // Override with TRUSTED_PROXIES (comma-separated CIDRs or IPs) for deployments
@@ -1329,6 +1377,17 @@ func configureTrustedProxies(r *gin.Engine) {
 	if err := r.SetTrustedProxies(proxies); err != nil {
 		slog.Error("failed to set trusted proxies; falling back to trusting none", "error", err)
 		_ = r.SetTrustedProxies(nil)
+		return
+	}
+	if trustedProxiesLogged.CompareAndSwap(false, true) {
+		if len(proxies) == 0 {
+			slog.Info("trusted proxies: none — the direct TCP peer is always used as the client IP")
+		} else {
+			// Worth an operator's eyes: any host in these ranges can dictate
+			// the client IP (via X-Forwarded-For), so review the list, and
+			// narrow TRUSTED_PROXIES to just the proxy's address if possible.
+			slog.Warn("trusted proxies configured; hosts in these ranges can set the reported client IP — review and narrow TRUSTED_PROXIES", "proxies", proxies)
+		}
 	}
 }
 

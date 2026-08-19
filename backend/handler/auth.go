@@ -57,7 +57,7 @@ func deviceID(c *gin.Context) string {
 		MaxAge:   deviceIDCookieMaxAge,
 		HttpOnly: true,
 		Secure:   isHTTPS(c),
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 	})
 	return id
 }
@@ -76,7 +76,7 @@ func RefreshDeviceID() gin.HandlerFunc {
 				MaxAge:   deviceIDCookieMaxAge,
 				HttpOnly: true,
 				Secure:   isHTTPS(c),
-				SameSite: http.SameSiteLaxMode,
+				SameSite: http.SameSiteStrictMode,
 			})
 		}
 		c.Next()
@@ -308,8 +308,8 @@ func Login(pool *db.DynamicPool, authCfg *auth.Config) gin.HandlerFunc {
 			ip:               c.ClientIP(),
 			remember:         req.Remember,
 			jti:              jti,
-			screenResolution: c.GetHeader("X-Screen-Resolution"),
-			timezone:         c.GetHeader("X-Timezone"),
+			screenResolution: sanitizeScreenResolution(c.GetHeader("X-Screen-Resolution")),
+			timezone:         sanitizeTimezone(c.GetHeader("X-Timezone")),
 		}); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
@@ -485,12 +485,15 @@ func Refresh(pool *db.DynamicPool, authCfg *auth.Config) gin.HandlerFunc {
 			ip:               c.ClientIP(),
 			remember:         remember,
 			jti:              newJTI,
-			screenResolution: c.GetHeader("X-Screen-Resolution"),
-			timezone:         c.GetHeader("X-Timezone"),
+			screenResolution: sanitizeScreenResolution(c.GetHeader("X-Screen-Resolution")),
+			timezone:         sanitizeTimezone(c.GetHeader("X-Timezone")),
 		}); err != nil {
 			slog.Error("failed to store refresh token", "error", err)
 		}
-		if _, err := pool.Get().Exec("UPDATE refresh_tokens SET used = true, used_at = NOW(), replaced_by = $1 WHERE token_hash = $2", newRefreshToken, rh); err != nil {
+		// replaced_by stores the replacement token's HMAC digest (not the raw
+		// token) - recoverRacedRefresh uses it to find the replacement row and
+		// issues a fresh token rather than re-serving the stored one.
+		if _, err := pool.Get().Exec("UPDATE refresh_tokens SET used = true, used_at = NOW(), replaced_by = $1 WHERE token_hash = $2", auth.HashRefreshToken(newRefreshToken), rh); err != nil {
 			slog.Error("failed to link rotated refresh token", "error", err)
 		}
 
@@ -503,36 +506,45 @@ func Refresh(pool *db.DynamicPool, authCfg *auth.Config) gin.HandlerFunc {
 
 // recoverRacedRefresh checks whether the presented token was already
 // rotated moments ago (used=true, linked to a replacement) and, if so,
-// within the grace window, hands back the replacement token instead of
-// treating this as a stale/replayed refresh token.
-func recoverRacedRefresh(pool *db.DynamicPool, token string) (userID int, replacementToken string, replacementExpiry time.Time, remember bool, deviceID string, ok bool) {
+// within the grace window, lets the request through instead of treating it
+// as a stale/replayed refresh token.
+//
+// It no longer re-serves the stored replacement token: replaced_by now holds
+// only that token's HMAC digest (the raw token is never persisted), so the
+// raw value can't be recovered. Instead it issues a fresh token for the
+// user - the net effect for the client is the same (a valid session), and
+// it never requires storing or returning a raw token.
+func recoverRacedRefresh(pool *db.DynamicPool, token string) (userID int, newToken string, newExpiry time.Time, remember bool, deviceID string, ok bool) {
 	database := pool.Get()
 	rh := auth.HashRefreshToken(token)
 	var replacedBy sql.NullString
 	var usedAt sql.NullTime
 	var devID sql.NullString
 	err := database.QueryRow(
-		"SELECT user_id, used_at, replaced_by, COALESCE(device_id, '') FROM refresh_tokens WHERE token_hash = $1 AND used = true",
+		"SELECT user_id, used_at, replaced_by, remember, COALESCE(device_id, '') FROM refresh_tokens WHERE token_hash = $1 AND used = true",
 		rh,
-	).Scan(&userID, &usedAt, &replacedBy, &devID)
-	if err != nil || !replacedBy.Valid || !usedAt.Valid {
+	).Scan(&userID, &usedAt, &replacedBy, &remember, &devID)
+	if err != nil || !replacedBy.Valid || replacedBy.String == "" || !usedAt.Valid {
 		return 0, "", time.Time{}, false, "", false
 	}
 	if time.Since(usedAt.Time) > refreshReuseGraceWindow {
 		return 0, "", time.Time{}, false, "", false
 	}
 
-	var expiresAt time.Time
-	rrh := auth.HashRefreshToken(replacedBy.String)
-	err = database.QueryRow(
-		"SELECT expires_at, remember FROM refresh_tokens WHERE token_hash = $1 AND expires_at > NOW()",
-		rrh,
-	).Scan(&expiresAt, &remember)
-	if err != nil {
+	rememberedTTL := getRememberedTTL(pool)
+	newToken, newExpiry = auth.GenerateRefreshTokenWithTTL(userID, remember, rememberedTTL)
+	if err := insertRefreshToken(pool, refreshTokenParams{
+		userID:    userID,
+		token:     newToken,
+		expiresAt: newExpiry,
+		deviceID:  devID.String,
+		remember:  remember,
+	}); err != nil {
+		slog.Error("failed to store race-recovered refresh token", "error", err)
 		return 0, "", time.Time{}, false, "", false
 	}
 
-	return userID, replacedBy.String, expiresAt, remember, devID.String, true
+	return userID, newToken, newExpiry, remember, devID.String, true
 }
 
 func getUserByID(pool *db.DynamicPool, userID int) (*db.User, error) {
@@ -738,6 +750,46 @@ func ChangePassword(pool *db.DynamicPool) gin.HandlerFunc {
 	}
 }
 
+// sanitizeScreenResolution limits a client-supplied screen-resolution header to
+// a safe "WIDTHxHEIGHT" form (digits and a single 'x'), returning "" on any
+// deviation. The value is stored in refresh_tokens and shown to admins, so it
+// must not be an unbounded attacker-controlled string.
+func sanitizeScreenResolution(v string) string {
+	if v == "" || len(v) > 16 {
+		return ""
+	}
+	sawX := false
+	for i := 0; i < len(v); i++ {
+		switch c := v[i]; {
+		case c >= '0' && c <= '9':
+		case c == 'x' && !sawX:
+			sawX = true
+		default:
+			return ""
+		}
+	}
+	return v
+}
+
+// sanitizeTimezone limits a client-supplied timezone header to the character
+// set IANA zone identifiers use (letters, digits, '/', '+', '-', '_', '.'),
+// capped in length, so it can't carry unbounded data or control characters.
+func sanitizeTimezone(v string) string {
+	if v == "" || len(v) > 64 {
+		return ""
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '/' || c == '+' || c == '-' || c == '_' || c == '.':
+		default:
+			return ""
+		}
+	}
+	return v
+}
+
 type refreshTokenParams struct {
 	userID           int
 	token            string
@@ -753,11 +805,14 @@ type refreshTokenParams struct {
 
 func insertRefreshToken(pool *db.DynamicPool, p refreshTokenParams) error {
 	database := pool.Get()
+	// Only the HMAC digest is persisted - the raw token (p.token) is returned
+	// to the client and never stored, so a database dump yields no usable
+	// refresh token.
 	tokenHash := auth.HashRefreshToken(p.token)
 	_, err := database.Exec(
-		`INSERT INTO refresh_tokens (user_id, token, token_hash, expires_at, used, device_id, user_agent, ip, remember, jti, last_used_at, screen_resolution, timezone)
-		 VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8, $9, NOW(), $10, $11)`,
-		p.userID, p.token, tokenHash, p.expiresAt, p.deviceID, p.userAgent, p.ip, p.remember, p.jti, p.screenResolution, p.timezone,
+		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at, used, device_id, user_agent, ip, remember, jti, last_used_at, screen_resolution, timezone)
+		 VALUES ($1, $2, $3, false, $4, $5, $6, $7, $8, NOW(), $9, $10)`,
+		p.userID, tokenHash, p.expiresAt, p.deviceID, p.userAgent, p.ip, p.remember, p.jti, p.screenResolution, p.timezone,
 	)
 	return err
 }
