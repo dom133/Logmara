@@ -723,8 +723,8 @@ interface ServiceHealth {
 	replicas_desired: number
 	replicas_running: number
 	overall_state: string
-	node_names: string[]
-	tasks: ContainerHealth[]
+	node_names: string[] | null
+	tasks: ContainerHealth[] | null
 }
 
 interface RelayHealth {

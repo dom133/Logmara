@@ -1327,8 +1327,8 @@ const handleCleanup = async () => {
                             key: 'node_names',
                             width: 200,
                             render: (_: unknown, s) => (
-                              <Space wrap>
-                                {s.node_names.map((n, i) => (
+                               <Space wrap>
+                                 {(s.node_names || []).map((n, i) => (
                                   <Tag key={i} color="blue">
                                     <NodeIndexOutlined /> {n}
                                   </Tag>
@@ -1338,12 +1338,12 @@ const handleCleanup = async () => {
                           },
                         ]}
                         expandable={{
-                          rowExpandable: (s) => s.tasks.length > 0,
+                          rowExpandable: (s) => (s.tasks || []).length > 0,
                           expandedRowRender: (s) => (
                             <div style={{ width: '100%', overflow: 'hidden' }}>
                               <Table
                                 rowKey={(t, i) => `${s.name}-${i}`}
-                                dataSource={s.tasks}
+                                dataSource={s.tasks || []}
                                 pagination={false}
                                 size="small"
                                 tableLayout="fixed"

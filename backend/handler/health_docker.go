@@ -347,9 +347,13 @@ func fetchSwarmServices(ctx context.Context) ([]ServiceHealth, error) {
 
 		overallState := computeServiceState(stateCountByService[s.ID], tasksByService[s.ID])
 
-		var nodeNamesList []string
+		nodeNamesList := make([]string, 0)
 		for n := range nodeSetByService[s.ID] {
 			nodeNamesList = append(nodeNamesList, n)
+		}
+		tasksList := tasksByService[s.ID]
+		if tasksList == nil {
+			tasksList = []ContainerHealth{}
 		}
 
 		out = append(out, ServiceHealth{
@@ -360,7 +364,7 @@ func fetchSwarmServices(ctx context.Context) ([]ServiceHealth, error) {
 			ReplicasRunning: stateCountByService[s.ID]["running"],
 			OverallState:    overallState,
 			NodeNames:       nodeNamesList,
-			Tasks:           tasksByService[s.ID],
+			Tasks:           tasksList,
 		})
 	}
 	return out, nil
