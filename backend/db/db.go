@@ -133,7 +133,22 @@ func MigrateWithLock(db *sql.DB) error {
 // is backfilled into token_hash (HMAC of TOKEN_HASH_KEY) and dropped, and
 // replaced_by is normalized to the replacement token's digest (see
 // migrateRefreshTokenHashes). Requires TOKEN_HASH_KEY to be set.
-const schemaVersion = 22
+// Bumped to 23 for the multicolumn GIN idx_syslog_dev_parsers
+// ((COALESCE(fromhost_ip,'')), matched_parsers): the planner's pessimistic
+// selectivity estimate for `matched_parsers && $1` kept it from using the
+// old single-column idx_syslog_matched_parsers, so dashboard data loads
+// timed out (20s) and returned empty data. The multicolumn index covers the
+// combined device+parser predicate and replaces the single-column one
+// (dropped in the same migration).
+// Bumped to 24 to reverse the v23 index choice: a GIN bitmap scan drives
+// from the first column's keys, so the multicolumn trigram+array index cost
+// ~1M TIDs x key rechecks per partition (measured 0.6-5.3 s/partition,
+// ~21 s total) regardless of the tiny match count (~182 rows). The selective
+// side is the parser array: v24 drops idx_syslog_dev_parsers and restores
+// the single-column GIN idx_syslog_matched_parsers so the planner uses a
+// ~182-TID bitmap plus heap recheck (or BitmapAnd with the btree
+// idx_syslog_coalesce_fromhost_ip).
+const schemaVersion = 24
 
 func ensureSchemaVersionTable(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -1038,11 +1053,35 @@ END $$`, g.name, toCharFmt)
 		EXCEPTION WHEN insufficient_privilege THEN NULL;
 		END $$`,
 		// Dashboards with selected fields filter on `matched_parsers && $1`
-		// (see resolveParsersForFields/buildLogWhereClauses) to restrict rows
-		// to the parser(s) that own those fields. Without a GIN index on this
-		// TEXT[] column, that array-overlap check forces a full sequential
-		// scan of syslog_logs on every dashboard load, which times out (502)
-		// on dashboards with many fields/large tables.
+		// (see resolveParsersForFields/buildLogWhereClauses) and
+		// `COALESCE(fromhost_ip, '') IN (...)`. v23 answered that with a
+		// multicolumn GIN ((COALESCE(fromhost_ip,'')), matched_parsers) and
+		// dropped the single-column GIN - that was the wrong trade, measured
+		// in production with EXPLAIN (ANALYZE): a GIN bitmap scan drives from
+		// the first column's keys, so each partition's scan iterates the
+		// device trigram posting lists (~1M TIDs/partition) rechecking the
+		// remaining keys per TID - 0.6-5.3 s per partition regardless of the
+		// actual match count (one partition returned 6 rows in 619 ms), ~21 s
+		// across the 16 date partitions. Trigram equality is structurally
+		// expensive for a value sharing trigrams with most of the table, and
+		// the planner's `&&` estimate (2652 rows vs 182 actual) made the
+		// multicolumn index look cheap, so it won every plan.
+		// The parser side is the selective one: ~182 rows in the whole table
+		// match the two UniFi WiFi parser names. The fast plans are a
+		// single-column GIN bitmap for `matched_parsers && ...` (~182 TIDs,
+		// milliseconds) plus a heap recheck of the device equality, or a
+		// BitmapAnd against the existing btree
+		// idx_syslog_coalesce_fromhost_ip - both well under the 20s timeout.
+		// v24 therefore drops the redundant multicolumn idx_syslog_dev_parsers
+		// (v23) and restores the single-column GIN on matched_parsers (the
+		// original index v23 dropped; it was never created by this
+		// migration). Note: this cluster also carries hand-made
+		// partition-level multicolumn GINs named
+		// *_coalesce_matched_parsers_idx (no parent, not created by this
+		// migration) that the planner prefers for the same predicate - they
+		// must be dropped manually by a superuser (owner unknown, the
+		// migration's role may not be able to drop them).
+		`DROP INDEX IF EXISTS idx_syslog_dev_parsers`,
 		`CREATE INDEX IF NOT EXISTS idx_syslog_matched_parsers ON syslog_logs USING GIN (matched_parsers)`,
 		// refresh_tokens lookups by jti/token_hash sit on the hottest path in
 		// the app: UpdateSessionActivity (middleware, every authenticated

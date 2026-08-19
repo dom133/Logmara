@@ -560,7 +560,7 @@ func GetDashboardData(pool *db.DynamicPool) gin.HandlerFunc {
 		defer cancel()
 
 		var logs []model.SyslogLog
-		_ = timedQuery("dashboard_data_logs", func() error {
+		if err := timedQuery("dashboard_data_logs", func() error {
 			rows, err := database.QueryContext(ctx, logsQuery, args...)
 			if err != nil {
 				return err
@@ -569,7 +569,14 @@ func GetDashboardData(pool *db.DynamicPool) gin.HandlerFunc {
 
 			logs = scanLogRows(rows)
 			return nil
-		})
+		}); err != nil {
+			// Surface query failures (e.g. the filteredQueryTimeout context
+			// deadline) instead of answering 200 with a null log list -
+			// that hides outages behind an empty-looking dashboard. Same
+			// pattern as GetLogs (logs.go).
+			middleware.HandleError(c, model.NewInternalKey("error.queryFailed", "Query failed", err))
+			return
+		}
 
 		hasMore := len(logs) > limitInt
 		if hasMore {
@@ -616,18 +623,19 @@ func GetDashboardDataCount(pool *db.DynamicPool) gin.HandlerFunc {
 		defer cancel()
 
 		var total int64
+		var countErr error
 		if whereSQL == "" {
 			// Dashboard scoped to "all devices"/no filters: an exact
 			// COUNT(*) would scan every partition, so use the
 			// reltuples-based estimate instead (see GetLogsCount).
-			_ = timedQuery("dashboard_data_count_estimate", func() error {
+			countErr = timedQuery("dashboard_data_count_estimate", func() error {
 				var err error
 				total, err = db.EstimateSyslogLogsCount(ctx, database)
 				return err
 			})
 		} else {
 			cacheKey := "dash:" + c.Param("id") + ":" + whereSQL + fmt.Sprint(args...)
-			_ = timedQuery("dashboard_data_count", func() error {
+			countErr = timedQuery("dashboard_data_count", func() error {
 				var err error
 				total, err = cachedFilteredCount(cacheKey, func() (int64, error) {
 					var t int64
@@ -636,6 +644,13 @@ func GetDashboardDataCount(pool *db.DynamicPool) gin.HandlerFunc {
 				})
 				return err
 			})
+		}
+		if countErr != nil {
+			// Same as GetDashboardData: a timed-out/failed COUNT must not be
+			// reported as zero rows - that reads as "no data" on the
+			// frontend (see GetLogs in logs.go).
+			middleware.HandleError(c, model.NewInternalKey("error.queryFailed", "Query failed", countErr))
+			return
 		}
 
 		c.JSON(http.StatusOK, gin.H{"total": total})
