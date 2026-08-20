@@ -542,18 +542,26 @@ func main() {
 	_ = stopJWTCleanup
 	_ = stopArchiveCleanup
 
-	// Fast MV refresh for dashboard_summary (every 30s) to keep stats responsive
-	// while someone is actually logged in to look at them. With nobody logged
-	// in, this tick is a single cheap EXISTS check against refresh_tokens
-	// instead of a full REFRESH MATERIALIZED VIEW CONCURRENTLY pass - the
-	// 30-minute scheduler in db.StartMaintenance keeps running regardless, so
-	// the views never go stale for more than that. RefreshMV itself skips
-	// while migration is in progress, so it's safe to start this ticker
-	// immediately.
+	// Periodic MV refresh for the four dashboard views (every 5 minutes) to
+	// keep stats reasonably fresh while someone is actually logged in to
+	// look at them. With nobody logged in, this tick is a single cheap
+	// EXISTS check against refresh_tokens instead of a full REFRESH
+	// MATERIALIZED VIEW CONCURRENTLY pass - the 30-minute scheduler in
+	// db.StartMaintenance keeps running regardless, so the views never go
+	// stale for more than that. RefreshMV itself skips while migration is
+	// in progress, so it's safe to start this ticker immediately.
+	//
+	// The interval used to be 30s, but on the slow production disk each
+	// refresh takes 80-600s, so back-to-back ticks kept the disk saturated
+	// and starved user queries (a 30-day dashboard scan that finishes in
+	// ~2.5s when idle was hitting the 60s ceiling every time). A 5-minute
+	// cadence leaves real quiet windows for queries; the watermark skip
+	// (see db.mvDataWatermarkKey) still avoids the refresh entirely when
+	// no new rows have landed.
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
-		slog.Info("fast dashboard MV refresh started", "interval_seconds", 30)
+		slog.Info("dashboard MV refresh started", "interval_minutes", 5)
 		for {
 			select {
 			case <-ctx.Done():
@@ -561,23 +569,25 @@ func main() {
 				return
 			case <-ticker.C:
 				if db.HasActiveSession(dynamicPool.Get()) {
-					db.RefreshMV(ctx, dynamicPool.Get())
+					db.RefreshMV(ctx, dynamicPool.Get(), false)
 				}
 			}
 		}
 	}()
 
 	// mv_device_stats gets its own, slower cadence instead of riding along
-	// on the 30s loop above - its full-table unnest/array_agg aggregation is
-	// far more expensive than the other four views (see RefreshDeviceStatsMV),
-	// so refreshing it every 30s meant it was very often still running when
-	// the next tick fired, competing with itself (and, without the advisory
-	// lock RefreshDeviceStatsMV now takes, with every other replica's copy of
-	// this same ticker) for locks on syslog_logs.
+	// on the 5-minute loop above - its full-table unnest/array_agg
+	// aggregation is far more expensive than the other four views (see
+	// RefreshDeviceStatsMV: 200-600s on the slow production disk), so a
+	// 15-minute cadence keeps its lock pressure on syslog_logs bounded.
+	// The advisory lock RefreshDeviceStatsMV takes serializes replicas; a
+	// cycle skipped because one is already running is fine - the 30-minute
+	// scheduler in db.StartMaintenance refreshes it with force=true
+	// regardless.
 	go func() {
-		ticker := time.NewTicker(3 * time.Minute)
+		ticker := time.NewTicker(15 * time.Minute)
 		defer ticker.Stop()
-		slog.Info("device stats MV refresh started", "interval_minutes", 3)
+		slog.Info("device stats MV refresh started", "interval_minutes", 15)
 		for {
 			select {
 			case <-ctx.Done():
@@ -585,7 +595,7 @@ func main() {
 				return
 			case <-ticker.C:
 				if db.HasActiveSession(dynamicPool.Get()) {
-					db.RefreshDeviceStatsMV(ctx, dynamicPool.Get())
+					db.RefreshDeviceStatsMV(ctx, dynamicPool.Get(), false)
 				}
 			}
 		}

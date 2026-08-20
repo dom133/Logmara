@@ -331,7 +331,9 @@ func Login(pool *db.DynamicPool, authCfg *auth.Config) gin.HandlerFunc {
 			// stuck REFRESH (e.g. blocked on a stale lock).
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
-			db.RefreshMV(ctx, database)
+			// force=true: the user just logged in and is about to look at
+			// the stats - freshness beats the skip optimization here.
+			db.RefreshMV(ctx, database, true)
 		}()
 
 		setAuthCookies(c, token, refreshToken, accessExpiresAt, refreshExpiresAt)

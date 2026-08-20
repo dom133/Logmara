@@ -286,7 +286,7 @@ func GetSettings(pool *db.DynamicPool) gin.HandlerFunc {
 		// mv_device_stats_refreshed_at is internal bookkeeping (see
 		// db.RefreshDeviceStatsMV), surfaced instead via GET /devices'
 		// mv_refreshed_at field, not this generic settings dump.
-		for _, k := range []string{"jwt_secret", "encryption_key", "db_host", "db_port", "db_name", "db_user", "db_password", "vapid_public_key", "vapid_private_key", "https_enabled_env_applied", "https_redirect_env_applied", "mv_device_stats_refreshed_at"} {
+		for _, k := range []string{"jwt_secret", "encryption_key", "db_host", "db_port", "db_name", "db_user", "db_password", "vapid_public_key", "vapid_private_key", "https_enabled_env_applied", "https_redirect_env_applied", "mv_device_stats_refreshed_at", "mv_data_watermark", "mv_data_max_id"} {
 			delete(settings, k)
 		}
 		if v, ok := settings["ldap_bind_password"]; ok && v != "" {
@@ -497,6 +497,13 @@ const httpsServerBlockTemplate = `server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # Mirror of the :80 block in frontend/nginx.conf: the backend caps
+        # filtered queries (dashboard data/count, log list/count) at 60s
+        # (see backend/handler/querybuilder.go filteredQueryTimeout) and a
+        # 30-day scan under I/O contention can approach that, so nginx's
+        # default 60s proxy_read_timeout would cut the response mid-flight.
+        proxy_read_timeout 90s;
+        proxy_send_timeout 90s;
     }
 }
 `

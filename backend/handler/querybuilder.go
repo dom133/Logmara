@@ -29,8 +29,14 @@ var validJSONBKey = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
 // could otherwise be driven into catastrophic runtime by a crafted pattern).
 // lib/pq propagates context cancellation to the server as a query-cancel
 // request, so this caps the actual database-side work, not just the HTTP wait.
-// Deliberately generous so legitimate large scans still complete.
-const filteredQueryTimeout = 20 * time.Second
+// Deliberately generous so legitimate large scans still complete: in
+// production a 30-day dashboard scan measured ~2.5s in isolation but
+// repeatedly timed out at 20s under MV-refresh/ingest I/O contention on a
+// slow disk. 60s is the backend ceiling - nginx's /api/ location
+// (frontend/nginx.conf) and the axios calls on the four endpoints this
+// bounds (frontend/src/services/api.ts) allow 90s so the response can
+// actually arrive.
+const filteredQueryTimeout = 60 * time.Second
 
 func timedQuery(name string, fn func() error) error {
 	start := time.Now()

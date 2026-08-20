@@ -12,6 +12,14 @@ import (
 )
 
 func StartMaintenance(ctx context.Context, db *sql.DB) (func(), func(), func(), func(), func(), func()) {
+	// One-time cleanup: the watermark used to be stored under this key as
+	// max(syslog_logs.id); the value is meaningless under the new
+	// timestamp-based watermark, so drop it instead of letting it linger in
+	// app_settings (see mvDataWatermarkKey).
+	if _, err := db.Exec("DELETE FROM app_settings WHERE key = 'mv_data_max_id'"); err != nil {
+		slog.Warn("failed to remove legacy mv_data_max_id setting", "err", err)
+	}
+
 	vacuumInterval := getIntervalHours("VACUUM_INTERVAL_HOURS", 24)
 	mvInterval := getIntervalMinutes("MV_REFRESH_INTERVAL_MIN", 30)
 	partitionInterval := getIntervalHours("PARTITION_CREATE_INTERVAL_HOURS", 24)
@@ -101,8 +109,11 @@ func startMVScheduler(ctx context.Context, db *sql.DB, interval time.Duration) f
 				close(done)
 				return
 			case <-ticker.C:
-				RefreshMV(ctx, db)
-				RefreshDeviceStatsMV(ctx, db)
+				// force=true: this is the bounded-staleness backstop - it
+				// must refresh even when no new rows arrived (see
+				// mvDataWatermarkKey).
+				RefreshMV(ctx, db, true)
+				RefreshDeviceStatsMV(ctx, db, true)
 			}
 		}
 	}()
@@ -201,6 +212,10 @@ func cleanupArchivedLogs(db *sql.DB) {
 	}
 	if n > 0 {
 		slog.Info("archive cleanup completed", "rows_deleted", n, "retention_days", retentionDays)
+		// Deletions change the views' contents even though the newest
+		// timestamp didn't move - invalidate the watermark so the next
+		// cycle refreshes instead of skipping (see mvDataWatermarkKey).
+		mvInvalidateDataWatermark(db)
 	}
 }
 
@@ -318,8 +333,8 @@ func activePartitionNames(db *sql.DB) []string {
 
 // HasActiveSession reports whether any user currently holds a usable
 // session - a refresh token that hasn't been consumed (by logout or by
-// being rotated on refresh) and hasn't expired. Used to gate the fast (30s)
-// dashboard MV refresh loop: no point keeping stats near-real-time when
+// being rotated on refresh) and hasn't expired. Used to gate the dashboard
+// MV refresh loop (see main.go's tickers): no point refreshing stats when
 // nobody is logged in to look at them.
 func HasActiveSession(db *sql.DB) bool {
 	var active bool
@@ -338,7 +353,74 @@ func HasActiveSession(db *sql.DB) bool {
 	return active
 }
 
-func RefreshMV(ctx context.Context, db *sql.DB) {
+// mvDataWatermarkKey is an internal app_settings key, not a user setting -
+// excluded from GetSettings' response (see admin.go). It stores the newest
+// syslog_logs.timestamp seen at the last fully successful MV refresh (as
+// epoch microseconds, timezone-independent): when it hasn't moved, no new
+// rows have landed and the views' contents cannot have changed, so the fast
+// tickers skip the full-table REFRESH (see RefreshMV/RefreshDeviceStatsMV).
+// The 30-minute scheduler and the post-login refresh always pass force=true
+// instead - mv_dashboard_summary's last_hour/last_day windows and
+// mv_dashboard_top_errors' 7-day window go stale over wall-clock time even
+// without new rows, so the views still refresh on a bounded cadence.
+const mvDataWatermarkKey = "mv_data_watermark"
+
+// mvDataWatermark returns the newest syslog_logs.timestamp as epoch
+// microseconds (timezone-independent), 0 for an empty table, -1 on error.
+// max(timestamp) is cheap on the production cluster (sub-second - it
+// resolves per partition through the timestamp index), whereas max(id)
+// forces an 18-35s full scan of all ~9.6M rows: the watermark check must
+// not add more I/O than the refresh it guards.
+func mvDataWatermark(db *sql.DB) int64 {
+	var w int64
+	if err := db.QueryRow("SELECT COALESCE(floor(EXTRACT(EPOCH FROM max(timestamp)) * 1000000)::bigint, 0) FROM syslog_logs").Scan(&w); err != nil {
+		return -1
+	}
+	return w
+}
+
+// mvSkipIfNoNewRows reports whether this refresh cycle should be skipped:
+// the newest row's timestamp is unchanged since the last fully successful
+// refresh. On error we fail open (refresh anyway) rather than skip.
+func mvSkipIfNoNewRows(db *sql.DB) bool {
+	cur := mvDataWatermark(db)
+	if cur < 0 {
+		slog.Error("mv refresh: watermark check failed, refreshing anyway")
+		return false
+	}
+	last, err := strconv.ParseInt(GetSetting(db, mvDataWatermarkKey, "0"), 10, 64)
+	if err != nil {
+		last = 0
+	}
+	if cur != last {
+		return false
+	}
+	slog.Info("skipping mv refresh - no new rows since last refresh", "watermark", cur)
+	return true
+}
+
+// mvRecordDataWatermark stores the current newest syslog_logs.timestamp as
+// the "data version" watermark; called only after a fully successful refresh.
+func mvRecordDataWatermark(db *sql.DB) {
+	w := mvDataWatermark(db)
+	if w < 0 {
+		slog.Warn("failed to record mv data watermark")
+		return
+	}
+	if err := UpdateSetting(db, mvDataWatermarkKey, strconv.FormatInt(w, 10)); err != nil {
+		slog.Warn("failed to record mv data watermark", "err", err)
+	}
+}
+
+// mvInvalidateDataWatermark forces a refresh on the next cycle: a failed
+// refresh must not let a stale watermark suppress the retry.
+func mvInvalidateDataWatermark(db *sql.DB) {
+	if err := UpdateSetting(db, mvDataWatermarkKey, "0"); err != nil {
+		slog.Warn("failed to invalidate mv data watermark", "err", err)
+	}
+}
+
+func RefreshMV(ctx context.Context, db *sql.DB, force bool) {
 	// Migrate() runs in its own goroutine and can take a while on a large
 	// table (index builds, mv_device_stats aggregation) - the periodic
 	// refresh tickers start immediately regardless, so without this guard
@@ -371,17 +453,34 @@ func RefreshMV(ctx context.Context, db *sql.DB) {
 		}
 	}()
 
-	slog.Info("refreshing materialized views")
+	// Behind the advisory lock, before the expensive full-table REFRESHes:
+	// if no rows have landed since the last fully successful refresh, the
+	// views' contents cannot have changed and the I/O is pure waste (in
+	// production these refreshes took 200s+ on the slow prod disk while a
+	// logged-in user's dashboard query was starving behind them).
+	if !force && mvSkipIfNoNewRows(db) {
+		return
+	}
+
+	slog.Info("refreshing materialized views", "forced", force)
 	// mv_device_stats refreshes on its own cadence (see RefreshDeviceStatsMV)
 	// - its dev_parsers CTE (unnest+array_agg over every row) is far more
 	// expensive than these four, so bundling it into the same cycle meant it
 	// was very often still running when the next 30s tick fired.
+	allOK := true
 	for _, mv := range []string{"mv_dashboard_summary", "mv_dashboard_severity", "mv_timeline_hourly", "mv_dashboard_top_errors"} {
 		if err := refreshMaterializedView(ctx, db, mv); err != nil {
+			allOK = false
 			slog.Error("mv refresh failed", "view", mv, "err", err)
 		} else {
 			slog.Info("materialized view refreshed", "view", mv)
 		}
+	}
+	if allOK {
+		mvRecordDataWatermark(db)
+	} else {
+		// A failed cycle must not let the watermark suppress the retry.
+		mvInvalidateDataWatermark(db)
 	}
 }
 
@@ -389,7 +488,7 @@ func RefreshMV(ctx context.Context, db *sql.DB) {
 // lock, separate from RefreshMV's four lighter views - see the comment on
 // deviceStatsMVRefreshLockKey and the call site in main.go for why it runs
 // on a longer, independent cadence.
-func RefreshDeviceStatsMV(ctx context.Context, db *sql.DB) {
+func RefreshDeviceStatsMV(ctx context.Context, db *sql.DB, force bool) {
 	if IsAppStarting() {
 		return
 	}
@@ -416,19 +515,29 @@ func RefreshDeviceStatsMV(ctx context.Context, db *sql.DB) {
 		}
 	}()
 
+	// Same no-op guard as RefreshMV: this view is the most expensive one
+	// (full-table unnest/array_agg, 200s+ on the prod disk) and the one
+	// most often still running when the next tick fired.
+	if !force && mvSkipIfNoNewRows(db) {
+		return
+	}
+
 	if err := refreshMaterializedView(ctx, db, "mv_device_stats"); err != nil {
 		slog.Error("mv refresh failed", "view", "mv_device_stats", "err", err)
+		// A failed cycle must not let the watermark suppress the retry.
+		mvInvalidateDataWatermark(db)
 	} else {
-		slog.Info("materialized view refreshed", "view", "mv_device_stats")
+		slog.Info("materialized view refreshed", "view", "mv_device_stats", "forced", force)
 		// Recorded so the Devices UI can show the caller how stale
-		// last_seen actually is - the 3-minute ticker above can silently
-		// stretch past its own interval (skipped cycles while a slow
+		// last_seen actually is - the 15-minute ticker in main.go can
+		// silently stretch past its own interval (skipped cycles while a slow
 		// refresh is still running, see the advisory lock above), and
 		// clicking Reload there only re-reads this view, it can't force
 		// a fresh REFRESH of it.
 		if err := UpdateSetting(db, mvDeviceStatsRefreshedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
 			slog.Warn("failed to record mv_device_stats refresh time", "err", err)
 		}
+		mvRecordDataWatermark(db)
 	}
 }
 

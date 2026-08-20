@@ -6,6 +6,13 @@ export const api = axios.create({
   withCredentials: true,
 })
 
+// Endpoints that can run long filtered scans (log list/count, dashboard
+// data/count) are bounded server-side by filteredQueryTimeout (60s, see
+// backend/handler/querybuilder.go) and by nginx's 90s /api/
+// proxy_read_timeout (see frontend/nginx.conf) - they need more headroom
+// than the 30s default above, or the browser aborts the request first.
+const SLOW_QUERY_TIMEOUT_MS = 90000
+
 function getCookie(name: string): string | undefined {
   const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'))
   return match ? decodeURIComponent(match[2]) : undefined
@@ -119,7 +126,7 @@ export async function getLogs(params: {
   to?: string
   sort?: string
 }): Promise<LogsPage> {
-  const res = await api.post('/logs', params)
+  const res = await api.post('/logs', params, { timeout: SLOW_QUERY_TIMEOUT_MS })
   return res.data || { logs: [], has_more: false, next_cursor: '', limit: params.limit || 50 }
 }
 
@@ -132,7 +139,7 @@ export async function getLogsCount(params: {
   from?: string
   to?: string
 }): Promise<number> {
-  const res = await api.post('/logs/count', params)
+  const res = await api.post('/logs/count', params, { timeout: SLOW_QUERY_TIMEOUT_MS })
   return res.data?.total || 0
 }
 
@@ -414,7 +421,7 @@ export async function getDashboardData(id: number, limit = 100, cursor = '', sea
 	if (fieldFilters && fieldFilters.length > 0) {
 		body.field_filters = JSON.stringify(fieldFilters)
 	}
-	const res = await api.post(`/dashboards/${id}/data`, body)
+	const res = await api.post(`/dashboards/${id}/data`, body, { timeout: SLOW_QUERY_TIMEOUT_MS })
 	const d = res.data || {}
 	return { logs: d.logs || [], has_more: d.has_more || false, next_cursor: d.next_cursor || '', fields: d.fields || [], devices: d.devices || [] } as DashboardDataResponse
 }
@@ -424,7 +431,7 @@ export async function getDashboardDataCount(id: number, search = '', severity = 
 	if (fieldFilters && fieldFilters.length > 0) {
 		body.field_filters = JSON.stringify(fieldFilters)
 	}
-	const res = await api.post(`/dashboards/${id}/count`, body)
+	const res = await api.post(`/dashboards/${id}/count`, body, { timeout: SLOW_QUERY_TIMEOUT_MS })
 	return res.data?.total || 0
 }
 
