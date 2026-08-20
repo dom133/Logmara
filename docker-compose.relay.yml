@@ -26,7 +26,7 @@
 
 services:
   rsyslog-relay:
-    image: dom133/logmara-rsyslog-relay:${IMAGE_TAG:-v0.0.2}
+    image: dom133/logmara-rsyslog-relay:${IMAGE_TAG:-v0.1.0}
     environment:
       - TZ=UTC
     volumes:

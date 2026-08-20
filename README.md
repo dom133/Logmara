@@ -57,7 +57,7 @@ A live demo is available at **[demo.logmara.com](https://demo.logmara.com)**:
 - 📌 **Pin Dashboards** — Pin frequently-used dashboards to the sidebar for quick access
 - 📤 **Export** — Download logs as CSV or HTML reports
 - 📈 **Statistics** — Timeline charts, severity breakdown, and per-device metrics
-- 🔐 **Secure Authentication** — JWT access tokens (configurable timeout) + refresh tokens (7 days, or 60 with "remember this device" at login) with rotation, JWT blacklisting on logout
+- 🔐 **Secure Authentication** — JWT access tokens (configurable timeout) + refresh tokens (7 days, or up to 60 with "remember this device" at login — cap configurable in Admin > Settings as `session_remembered_max_days`) with rotation, JWT blacklisting on logout
 - 📱 **Session Management** — Review and sign out your own active sessions/devices from the navbar (`GET`/`DELETE /api/auth/sessions`)
 - 🔒 **Account Lockout** — Automatic lockout after configurable failed login attempts, admin unlock from Admin panel
 - 🛡️ **CSRF Protection** — Double-submit cookie pattern on all mutating endpoints
@@ -104,7 +104,7 @@ sudo ufw allow 514/udp
 ```
 
 > [!NOTE]
-> `8080/tcp` (the API) is also published by `docker-compose.yml`, but only needed if you want to hit the API directly instead of through nginx on 80/443 — leave it firewalled off unless you have a specific reason to open it.
+> Besides those, `docker-compose.yml` also publishes `6514/tcp` (direct TLS syslog), `6515/tcp` (mTLS relay ingestion) and `15672/tcp` (the RabbitMQ management web UI, login `logmara` + your `RABBITMQ_PASS`) on the host by default. If you don't need them reachable from outside, keep them firewalled off or comment out the corresponding lines in `docker-compose.yml` — `15672` is the one to be most careful with, since it's an unauthenticated-by-default web UI.
 
 ### 3. Download the compose file and configure
 
@@ -162,21 +162,21 @@ cp .env.example .env   # fill in POSTGRES_PASSWORD, RABBITMQ_PASS, JWT_SECRET, E
 docker compose -f docker-compose.build.yml up -d --build
 ```
 
-`docker-compose.build.yml` is identical to `docker-compose.yml` except every service builds from the local `Dockerfile.*` instead of pulling from Docker Hub. Update the same way with `git pull` followed by the same `up -d --build` command.
+`docker-compose.build.yml` is identical to `docker-compose.yml` except the Logmara services (`api`, `frontend`, `rsyslog`) build from the local `Dockerfile.*` instead of pulling from Docker Hub — Postgres, RabbitMQ and docker-proxy are pulled as-is in both files. Update the same way with `git pull` followed by the same `up -d --build` command.
 
 ## Pre-built Images
 
-Pre-built images are published on Docker Hub under [`dom133`](https://hub.docker.com/u/dom133), tagged `v0.0.2`:
+Pre-built images are published on Docker Hub under [`dom133`](https://hub.docker.com/u/dom133), tagged `v0.1.0`:
 
-- [`dom133/logmara-api:v0.0.2`](https://hub.docker.com/r/dom133/logmara-api) (built from `Dockerfile.backend`)
-- [`dom133/logmara-frontend:v0.0.2`](https://hub.docker.com/r/dom133/logmara-frontend)
-- [`dom133/logmara-rsyslog:v0.0.2`](https://hub.docker.com/r/dom133/logmara-rsyslog)
-- [`dom133/logmara-rsyslog-relay:v0.0.2`](https://hub.docker.com/r/dom133/logmara-rsyslog-relay)
-- [`dom133/logmara-patroni:v0.0.2`](https://hub.docker.com/r/dom133/logmara-patroni)
+- [`dom133/logmara-api:v0.1.0`](https://hub.docker.com/r/dom133/logmara-api) (built from `Dockerfile.backend`)
+- [`dom133/logmara-frontend:v0.1.0`](https://hub.docker.com/r/dom133/logmara-frontend)
+- [`dom133/logmara-rsyslog:v0.1.0`](https://hub.docker.com/r/dom133/logmara-rsyslog)
+- [`dom133/logmara-rsyslog-relay:v0.1.0`](https://hub.docker.com/r/dom133/logmara-rsyslog-relay)
+- [`dom133/logmara-patroni:v0.1.0`](https://hub.docker.com/r/dom133/logmara-patroni)
 
-`docker-compose.yml` pulls these by default (`image:`, pinned via `${IMAGE_TAG:-v0.0.2}` in `.env`) — this is what the [Quick Start](#quick-start-single-server) above uses, no clone or build needed. Need to build from source instead (local changes, or something not yet published)? Use `docker-compose.build.yml` — see [Deploying local changes / building from source](#deploying-local-changes--building-from-source).
+`docker-compose.yml` pulls these by default (`image:`, pinned via `${IMAGE_TAG:-v0.1.0}` in `.env`) — this is what the [Quick Start](#quick-start-single-server) above uses, no clone or build needed. Need to build from source instead (local changes, or something not yet published)? Use `docker-compose.build.yml` — see [Deploying local changes / building from source](#deploying-local-changes--building-from-source).
 
-These are also a drop-in `REGISTRY`/`TAG` pair for the [High Availability](#high-availability-deployment-multi-node-optional) deployment below (`REGISTRY=dom133 TAG=v0.0.2`), since the image names match what `docker-stack.app.yml`/`docker-stack.postgres.yml` expect — see [step 4](#4-clone-the-repo-then-buildpush-or-use-pre-built-images).
+These are also a drop-in `REGISTRY`/`TAG` pair for the [High Availability](#high-availability-deployment-multi-node-optional) deployment below (`REGISTRY=dom133 TAG=v0.1.0`), since the image names match what `docker-stack.app.yml`/`docker-stack.postgres.yml` expect — see [step 4](#4-clone-the-repo-then-buildpush-or-use-pre-built-images).
 
 ## Configuration
 
@@ -245,7 +245,7 @@ export TOKEN_HASH_KEY=$(openssl rand -hex 32)
 > docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
 >   "SELECT key || '=' || value FROM app_settings WHERE key IN ('jwt_secret','encryption_key')"
 > ```
-> Put the two printed values into `.env` as `JWT_SECRET=` / `ENCRYPTION_KEY=`, then `docker compose up -d --build`. The old rows left in `app_settings` are ignored from then on and can be deleted.
+> Put the two printed values into `.env` as `JWT_SECRET=` / `ENCRYPTION_KEY=`, then `docker compose up -d`. The old rows left in `app_settings` are ignored from then on and can be deleted.
 
 #### Optional: RS256 session tokens (asymmetric signing)
 
@@ -307,9 +307,11 @@ Getting here required backend code changes (not just Docker config) — see "How
 | [`docker-stack.vault.yml`](docker-stack.vault.yml) | 3-node Vault server cluster (Raft storage). Every consumer (`api`, Patroni, Redis, RabbitMQ) reads its HTTP API directly - see [Deploying Vault](#deploying-vault) |
 | [`vault/`](vault/) | Vault server configuration files |
 | [`scripts/vault-bootstrap.sh`](scripts/vault-bootstrap.sh) | Vault init, unseal, policy creation, Docker→Vault secret migration, and creation of the `vault_agent_token` Docker secret every direct-API consumer authenticates with |
-| [`scripts/rotate-secrets.sh`](scripts/rotate-secrets.sh) | Secret rotation (auto-detects Docker secrets or Vault KV) - `rotate` for a single secret with a zero-downtime rolling restart, `rotate-batch` to rotate several secrets at once with logmara-app scaled to 0 for the duration |
+| [`scripts/vault-recover-node.sh`](scripts/vault-recover-node.sh) | Recover a single out-of-sync Vault raft node — removes it from the peer set, wipes its raft data, and rejoins it via a full snapshot from the current leader (the other two nodes must stay up) |
+| [`scripts/rotate-secrets.sh`](scripts/rotate-secrets.sh) | Secret rotation (auto-detects Docker secrets or Vault KV) - `rotate` for a single secret with a zero-downtime rolling restart, `rotate-batch` to rotate several secrets at once with logmara-app scaled to 0 for the duration, `list` to show the currently stored secrets, `status` to report the secret store's state (Vault service / Docker secrets) |
 | [`scripts/backup-swarm.sh`](scripts/backup-swarm.sh) | Full state backup (etcd snapshot, Postgres dump, configs, join tokens) with optional S3 sync |
 | [`scripts/backup-cron.sh`](scripts/backup-cron.sh) | Cron entry point — runs `backup-swarm.sh` then prunes old backups (keeps newest 7 daily / 4 Sunday / 3 first-of-month) |
+| [`scripts/pg-recover-standby.sh`](scripts/pg-recover-standby.sh) | Recover a PostgreSQL/Patroni standby that can no longer catch up via streaming replication (WAL already recycled) — wipes its pgdata and re-clones a fresh `pg_basebackup` from the current leader |
 | [`docker-stack.monitoring.yml`](docker-stack.monitoring.yml) | Prometheus, Alertmanager, node/cadvisor exporters, optional Grafana |
 | [`nfs-ha/`](nfs-ha/) | *Optional* — DRBD resource template + keepalived VIP + promote/demote hooks for a synchronously-replicated NFS pair, instead of a single NFS box |
 
@@ -325,11 +327,21 @@ Getting here required backend code changes (not just Docker config) — see "How
 
 That's it — every consumer (`api`, Patroni, Redis, RabbitMQ) reads Vault's HTTP API directly at its own startup, authenticating with the `vault_agent_token` bootstrap token `migrate-secrets` just created. There is no sidecar and no locally-rendered secret file anywhere in this deployment.
 
+Optionally, also provision Vault's dynamic-credentials engines for PostgreSQL and RabbitMQ (role `logmara-app`), which the automatic secret rotation below uses to issue fresh database/broker credentials:
+
+```bash
+./scripts/vault-bootstrap.sh setup-dynamic-secrets
+```
+
+Without it, everything still works — `api` connects with the static `pg_app_password`/`rabbitmq_password` from Vault KV, and rotation still covers `jwt_secret`/`encryption_key`; the per-rotation dynamic credential step simply logs a warning and keeps the existing connection.
+
 #### How secrets are read from Vault
 
 `api` (`backend/vaultclient`) reads `secret/data/logmara/<name>` straight from Vault's HTTP API, authenticating with `vault_agent_token` (mounted via `VAULT_TOKEN_FILE`), and caches each secret in-process for 30s, so a `scripts/rotate-secrets.sh` rotation takes effect within that window with no `api` restart needed. Patroni (`patroni/entrypoint.sh`), Redis (`redis/entrypoint.sh`, `redis/sentinel_entrypoint.sh`) and RabbitMQ (`rabbitmq/entrypoint.sh`, `rabbitmq/join_entrypoint.sh`) all fetch their own passwords the same way at container startup, each authenticating with the same `vault_agent_token` secret.
 
-There is deliberately **no fallback** for any of them when `VAULT_ADDR` is set: if Vault is unreachable, the container won't start, rather than silently running on a stale value. Nothing to configure beyond what's already in `docker-stack.app.yml`/`docker-stack.postgres.yml`/`docker-stack.redis.yml`/`docker-stack.rabbitmq.yml` (`VAULT_ADDR`, plus the `vault_agent_token` secret) — this applies automatically once Vault is deployed and bootstrapped per above.
+**Automatic secret rotation** (`backend/vaultclient`, `backend/rotation`): once Vault is deployed, `api` also rotates its own secrets on a 24h schedule (single leader in HA mode, elected in Redis under `vault-rotation`; the only replica on a single-server install). Each cycle generates a fresh `jwt_secret` and `encryption_key` and writes them back to Vault KV, and — if `setup-dynamic-secrets` was run — requests new dynamic credentials for PostgreSQL and RabbitMQ from the `secret-dynamic/{database,rabbitmq}` engines (role `logmara-app`), atomically swapping the live connection pool and broker URL. A background sync ticker on every replica polls Vault and applies any changed values within ~10s, so no restart is ever needed. Redis has no automatic rotation (the Vault Redis plugin can't discover the master through Sentinel) — its password stays a manual `scripts/rotate-secrets.sh` operation. Rotation state is visible per-secret in the Admin UI, and a manual rotation can be triggered at any time (`GET /api/admin/rotation/status`, `POST /api/admin/rotation/trigger`).
+
+There is deliberately **no fallback** for any of them when `VAULT_ADDR` is set: if Vault is unreachable, the container won't start, rather than silently running on a stale value. (The one exception: if the dynamic-credentials engines are absent or fail at rotation time, `api` keeps its current PostgreSQL/RabbitMQ connection instead of dropping it — see above.) Nothing to configure beyond what's already in `docker-stack.app.yml`/`docker-stack.postgres.yml`/`docker-stack.redis.yml`/`docker-stack.rabbitmq.yml` (`VAULT_ADDR`, plus the `vault_agent_token` secret) — this applies automatically once Vault is deployed and bootstrapped per above.
 
 ### Vault UI
 
@@ -419,13 +431,7 @@ Dashboards downloaded straight from grafana.com (e.g. Node Exporter Full, cAdvis
 sed -i 's/\${DS_PROMETHEUS}/prometheus/g' dashboard.json
 ```
 
-If you edited `haproxy/*.cfg` to pick up the Prometheus metrics endpoint (`http-request use-service prometheus-exporter`), Swarm configs are immutable — recreate and roll out each one:
-```bash
-./scripts/swarm-bootstrap.sh haproxy-config
-./scripts/swarm-bootstrap.sh haproxy-app-config
-./scripts/swarm-bootstrap.sh haproxy-rabbitmq-config
-```
-Each prints the `docker service update` command to actually roll the new config out — run those too.
+If you edited a `haproxy/*.cfg` (e.g. to pick up the Prometheus metrics endpoint — `http-request use-service prometheus-exporter`), just redeploy the stack it belongs to — `./scripts/swarm-deploy.sh postgres`, `app`, or `rabbitmq`: each config is named by the content hash of its file, so a changed file gets a brand-new config object and the referencing service does a normal rolling update.
 
 Access: Prometheus `:9090`, Alertmanager `:9093`, Grafana `:3000` (`admin` / `$GRAFANA_ADMIN_PASSWORD`) — firewall these the same as the Vault UI.
 
@@ -434,7 +440,7 @@ Access: Prometheus `:9090`, Alertmanager `:9093`, Grafana `:3000` (`admin` / `$G
 Running more than one `api`/`frontend` replica used to be unsafe: an in-memory rate limiter and stat caches would silently diverge per replica, the log-file tailer would double-ingest if two instances tailed the same file, and nginx config pushes only ever reached one frontend replica. `backend/sharedstate` (backed by the Redis/Sentinel stack above) fixes all of it. The RabbitMQ stack above decouples ingestion from database writes: the tailer reader pushes parsed logs to RabbitMQ, and a pool of worker goroutines consumes and persists them to PostgreSQL, so burst throughput scales independently of Postgres write latency.
 
 - **Rate limiting** (`backend/main.go`) — a Lua script does an atomic sliding-window check against Redis instead of an in-process map, so limits are shared across every replica.
-- **Tailer leader election** (`backend/tailer/tailer.go`) — a Redis lock (`SET NX PX` + periodic renew, the standard Redis distributed-lock pattern) ensures exactly one `api` replica is ever actively tailing/flushing/compacting `logs.jsonl` at a time; losing the lock (crash, node loss) lets another replica take over within a few seconds.
+- **Tailer leader election** (`backend/tailer/tailer.go`) — every `api` replica runs the RabbitMQ consumer pipeline and worker pool (all of them consume and persist to PostgreSQL), but only the replica sitting on the node that currently holds the keepalived VIP — detected via the `/data/.vip_master` marker file stamped by `keepalived/notify_vip.sh` — acquires the Redis leader lock and runs the `FileReader` that reads/flushes/compacts `logs.jsonl` and publishes to RabbitMQ. If the VIP moves (crash, node loss), the new VIP holder takes over the reader role within seconds (the marker is re-checked every 5s), so there is exactly one active writer to the log file at all times.
 - **Cache invalidation** (`backend/handler/stats.go`, `logs.go`) — a purge or alias update now publishes over Redis pub/sub so every replica's local cache clears, not just the one that handled the request.
 - **Ingestion pause/resume** (`backend/control/ingestion.go`) — the pause flag lives in Redis with a local cached copy kept current via pub/sub, so pause state is consistent across all replicas.
 - **Slow-query log** (`backend/handler/slow_query_logger.go`) — moved from a per-process in-memory ring buffer to a Redis list, so the admin view is consistent across replicas.
@@ -519,7 +525,7 @@ Unlike the single-server [Quick Start](#quick-start-single-server) above, this p
 Pick one manager (`pg1` here) as your "control" node — everywhere below that says "run on a manager", run it there, over SSH, against `pg1`'s local Docker socket. You'll also need a container image registry every node can pull from.
 
 > [!TIP]
-> If you haven't modified the code, you can skip *building* (not cloning) and pull the [pre-built `v0.0.2` images](#pre-built-images) from Docker Hub instead — `docker login` on every node (or add `--with-registry-auth` to the `docker stack deploy` commands later), then just use `REGISTRY=dom133 TAG=v0.0.2` in steps 4 and 10 instead of building/pushing your own.
+> If you haven't modified the code, you can skip *building* (not cloning) and pull the [pre-built `v0.1.0` images](#pre-built-images) from Docker Hub instead — `docker login` on every node (or add `--with-registry-auth` to the `docker stack deploy` commands later), then just use `REGISTRY=dom133 TAG=v0.1.0` in steps 4 and 10 instead of building/pushing your own.
 
 **Registry options:**
 - A managed registry (GHCR, ECR, Docker Hub, ...) — simplest if your nodes have internet access. `docker login` on every node, add `--with-registry-auth` to the `docker stack deploy` commands later.
@@ -593,7 +599,7 @@ Back on `pg1`:
 ./scripts/swarm-bootstrap.sh label-rabbitmq pg3 3
 ```
 
-#### 7. Create the shared network, secrets, and configs
+#### 7. Create the shared network and secrets
 
 Still on `pg1`:
 ```bash
@@ -613,12 +619,9 @@ MAINTENANCE_TOKEN_VAL=$(openssl rand -hex 32)   # gates /api/maintenance/pre-upd
 ./scripts/swarm-bootstrap.sh redis-secret "$REDIS_PASS"
 ./scripts/swarm-bootstrap.sh rabbitmq-secret "$RABBITMQ_PASS"
 ./scripts/swarm-bootstrap.sh app-secrets "$JWT_SECRET_VAL" "$ENCRYPTION_KEY_VAL" "$TOKEN_HASH_KEY_VAL" "$MAINTENANCE_TOKEN_VAL"
-./scripts/swarm-bootstrap.sh haproxy-config
-./scripts/swarm-bootstrap.sh haproxy-app-config
-./scripts/swarm-bootstrap.sh redis-sentinel-config
-./scripts/swarm-bootstrap.sh haproxy-rabbitmq-config
 ```
-All the passwords/keys now live only as Swarm secrets - none of them need to be exported as shell env vars again later, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later. Only `rabbitmq_erlang_cookie` stays mounted directly into its containers at `/run/secrets/rabbitmq_erlang_cookie` as a native Swarm secret. The other eight (`pg_superuser_password`, `pg_replication_password`, `pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key`, `token_hash_key`) are only the *source* values here — step 8 below migrates them into Vault, and nothing reads the Swarm secret itself afterwards: Patroni (`patroni/entrypoint.sh`), Redis (`redis/entrypoint.sh`/`redis/sentinel_entrypoint.sh`), RabbitMQ (`rabbitmq/entrypoint.sh`/`rabbitmq/join_entrypoint.sh`), and `api` (`backend/vaultclient`) all fetch their own secrets straight from Vault's HTTP API at their own startup instead - no file involved for any of them.
+The HAProxy/Redis Sentinel configs need no manual step — `scripts/swarm-deploy.sh` (steps 8, 10, 11) creates them as Swarm configs named by the content hash of each file, so a changed config file rolls the referencing service over automatically. (`swarm-bootstrap.sh` still ships `haproxy-config`/`haproxy-app-config`/`haproxy-rabbitmq-config`/`redis-sentinel-config` subcommands for one-off config creation, but they're deprecated for normal deploys.)
+All the passwords/keys now live only as Swarm secrets - none of them need to be exported as shell env vars again later, and none of them appear in `docker service inspect`. Just note them somewhere safe (e.g. a password manager) in case you need to recreate a secret later. Only `rabbitmq_erlang_cookie` stays mounted directly into its containers at `/run/secrets/rabbitmq_erlang_cookie` as a native Swarm secret. The other nine (`pg_superuser_password`, `pg_replication_password`, `pg_app_password`, `redis_password`, `rabbitmq_password`, `jwt_secret`, `encryption_key`, `token_hash_key`, `maintenance_token`) are only the *source* values here — step 8 below migrates them into Vault, and nothing reads the Swarm secret itself afterwards: Patroni (`patroni/entrypoint.sh`), Redis (`redis/entrypoint.sh`/`redis/sentinel_entrypoint.sh`), RabbitMQ (`rabbitmq/entrypoint.sh`/`rabbitmq/join_entrypoint.sh`), and `api` (`backend/vaultclient`) all fetch their own secrets straight from Vault's HTTP API at their own startup instead - no file involved for any of them.
 
 #### 8. Deploy Vault and migrate secrets
 
@@ -646,7 +649,7 @@ watch docker service ls   # wait for vault-1/2/3 at Running before continuing
 ./scripts/vault-bootstrap.sh init      # unseal keys + root token -> /srv/syslog-ha/vault-token
 ./scripts/vault-bootstrap.sh unseal
 ./scripts/vault-bootstrap.sh policy
-./scripts/vault-bootstrap.sh migrate-secrets   # copies the 7 secrets from step 7 into Vault, creates vault_agent_token
+./scripts/vault-bootstrap.sh migrate-secrets   # copies the step-7 secrets into Vault (plus `jwt_private_key` if present), creates vault_agent_token
 ```
 
 That's all that's required — Postgres/Redis/RabbitMQ/`api` all read Vault directly from here on, no further node labeling or sidecar deployment needed.
@@ -856,7 +859,7 @@ Each stack's `update_config` controls the pace:
 |-------|--------|---------|
 | `logmara-pg` (postgres1/2/3) | `stop-first` | Old Patroni node stops, new one starts — Patroni re-elects leader on the new task |
 | `logmara-redis` (redis/sentinel) | default | One-by-one rolling restart; Sentinel quorum stays intact |
-| `logmara-app` (api/frontend) | `start-first`, parallelism 1 | New replica starts and becomes healthy before the old one is removed — zero-downtime |
+| `logmara-app` (api/frontend) | `stop-first`, parallelism 1 | Old replica fully stops (its tailer flushes and exits) before the new one starts, so the old and new tailer never read `logs.jsonl` concurrently — trading a brief gap in serving traffic for deterministic, gap-free ingestion (see `docker-stack.app.yml`'s `update_config` comments) |
 | `logmara-app` (rsyslog) | `mode: global` | Updates every `edge=true` node one at a time; only the VIP-holder receives traffic |
 
 #### 5. Roll back if something went wrong
@@ -1162,22 +1165,24 @@ LAN request - Cloud Bridge is a transport, not a new trust boundary.
 > cloud Dashboard - nothing on this side needs cleaning up, since no
 > `instance_id` was ever assigned to this installation yet.
 
-By default, the certificate step above is a manual review: the mTLS
-client certificate Logmara Cloud hands back after pairing is shown to the
-admin in Admin > Cloud Bridge so it can be reviewed before saving, and can
-be replaced later (e.g. if a bad cert needs repairing) via the same form.
-For deployments that don't want an admin ever seeing or pasting that raw
-key material through the browser, set:
+By default, the certificate step above is **locked**: pairing saves and
+connects the certificates automatically server-side - the mTLS client
+certificate Logmara Cloud hands back never appears in the UI or in the
+pairing API response, and there is no replace/repair path at all
+afterward. The only way to get new certificates is Disconnect followed by
+pairing again with a fresh link.
+
+If you'd rather have the certificate shown to the admin for review before
+saving (and replaceable later, e.g. if a bad cert needs repairing) via
+Admin > Cloud Bridge, opt out of the lock with:
 
 ```bash
-CLOUD_BRIDGE_LOCK_CERTIFICATES=true
+CLOUD_BRIDGE_LOCK_CERTIFICATES=false
 ```
 
-With it set, pairing saves and connects the certificates automatically
-server-side - the cert fields never appear in the UI or in the pairing
-API response, and there is no replace/repair path at all afterward. The
-only way to get new certificates is Disconnect followed by pairing again
-with a fresh link.
+With it set, the cert fields appear in the UI for manual review and can
+be re-saved at any time - at the cost of the raw mTLS key material being
+visible to (and pasteable by) whoever has access to the Admin tab.
 
 ### High availability
 
@@ -1285,7 +1290,7 @@ Every route below except **Authentication**/**Initialization** requires a valid 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/auth/login` | Authenticate and receive JWT + refresh token. Accepts `remember: true` for a long-lived (60-day), per-device session instead of the normal 7-day one |
+| POST | `/api/auth/login` | Authenticate and receive JWT + refresh token. Accepts `remember: true` for a long-lived, per-device session (default 60 days, capped by the `session_remembered_max_days` setting) instead of the normal 7-day one |
 | POST | `/api/auth/refresh` | Refresh access token using refresh token |
 | POST | `/api/auth/logout` | Invalidate refresh token |
 | GET | `/api/auth/me` | Get current user profile |
@@ -1393,6 +1398,12 @@ Every route below except **Authentication**/**Initialization** requires a valid 
 | PUT | `/api/admin/users/:id/reset-password` | Reset user password (admin) |
 | POST | `/api/admin/users/:id/unlock` | Manually unlock a locked-out user (admin) |
 
+### Settings
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/settings/default-language` | App-wide default language (default `en`) — used for the login screen |
+
 ### Admin Settings & Maintenance
 
 | Method | Path | Description |
@@ -1402,14 +1413,17 @@ Every route below except **Authentication**/**Initialization** requires a valid 
 | POST | `/api/admin/settings/cleanup` | Clean up old logs |
 | DELETE | `/api/admin/logs` | Purge all logs |
 | POST | `/api/admin/ldap/test` | Test LDAP connection |
-| POST | `/api/admin/audit-log` | Query audit log entries (single-row filters) |
-| POST | `/api/admin/audit-logs` | Query audit log entries (paginated list) |
+| POST | `/api/admin/audit-logs` | Query audit log entries (paginated list, single-row filters) |
 | GET | `/api/admin/slow-queries` | View recent slow-query log entries |
 | DELETE | `/api/admin/slow-queries` | Clear the slow-query log |
 | GET | `/api/admin/tailer-metrics` | Tailer/ingestion pipeline performance metrics |
 | GET | `/api/admin/health/containers` | Container/Swarm service status + relay liveness (see [Health Monitoring](#health-monitoring)) |
 | POST | `/api/admin/ssl/upload` | Upload PEM certificate/key for HTTPS |
 | POST | `/api/admin/nginx-reload` | Trigger an nginx config reload (all replicas in HA mode) |
+| GET | `/api/admin/rotation/status` | Automatic secret rotation status: Vault enabled, last/next rotation, per-secret results |
+| POST | `/api/admin/rotation/trigger` | Trigger an immediate secret rotation, wait for completion, return the resulting status |
+| POST | `/api/maintenance/pre-update` | Pre-update preparation: pause ingestion, compact/truncate `logs.jsonl` (unauthenticated, Docker-network only — gated by `MAINTENANCE_TOKEN` if set; called by the deploy script) |
+| GET | `/api/maintenance/status` | Current pre-update maintenance status (unauthenticated) |
 
 ### Syslog Relay
 
@@ -1423,6 +1437,15 @@ Every route below except **Authentication**/**Initialization** requires a valid 
 | POST | `/api/admin/relay/certificates` | Generate a certificate (and whitelist entry) |
 | DELETE | `/api/admin/relay/certificates/:id` | Revoke a certificate |
 | POST | `/api/admin/relay/certificates/:id/regenerate` | Renew/regenerate a certificate |
+
+### Cloud Bridge
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/admin/cloud-bridge` | Connection status (404 while `CLOUD_BRIDGE_ENABLED` is not set) |
+| POST | `/api/admin/cloud-bridge/enroll` | Pair this installation with a one-time enrollment link (when certificates are locked, saves them and connects automatically) |
+| PUT | `/api/admin/cloud-bridge/certificates` | Save/replace the mTLS certificates and reconnect (refused while certificates are locked — the default) |
+| DELETE | `/api/admin/cloud-bridge` | Disconnect from Logmara Cloud |
 
 ### API Keys
 
@@ -1464,6 +1487,7 @@ Every route below except **Authentication**/**Initialization** requires a valid 
 │   ├── alertengine/          # Alert rule evaluation (log_threshold, device_silence, config_change, relay_cert_expiring)
 │   ├── audit/                 # Audit log writer
 │   ├── auth/                 # JWT middleware, refresh tokens, bcrypt
+│   ├── cloudbridge/          # Logmara Cloud mTLS tunnel (pairing, certificate management, outbound broker connection)
 │   ├── cmd/relaybootstrap/   # One-shot CLI wrapping relaypki.EnsureCA, built into the rsyslog image
 │   ├── control/               # Ingestion pause/resume flag (Redis-backed in HA mode)
 │   ├── db/                   # Database connection, migrations, builtin parsers
@@ -1475,6 +1499,7 @@ Every route below except **Authentication**/**Initialization** requires a valid 
 │   ├── notifyhub/              # In-app notification SSE hub
 │   ├── parser/                # Regex parser engine
 │   ├── relaypki/              # Internal CA + relay certificate issuance (mTLS)
+│   ├── rotation/              # Per-secret rotation state tracker (jwt/encryption/postgresql/rabbitmq)
 │   ├── tailer/               # File tailer for rsyslog JSONL
 │   ├── sharedstate/          # Shared state (RabbitMQ queue, Redis-backed rate limiter)
 │   ├── util/                  # Key generation, encryption utilities
@@ -1499,11 +1524,11 @@ Every route below except **Authentication**/**Initialization** requires a valid 
 ## Development
 
 ```bash
-# Backend (requires Go 1.21+)
+# Backend (requires Go 1.24+)
 cd backend
 go run main.go
 
-# Frontend (requires Node 18+)
+# Frontend (requires Node 22+)
 cd frontend
 npm install
 npm run dev
@@ -1592,7 +1617,7 @@ POST /api/parsers/test
 ```
 
 ### Built-in Parsers
-The system ships with several dozen built-in parsers covering common log sources: Linux (SSHD auth, systemd, sudo, cron, NetworkManager, DHCP, kernel firewall drops), Cisco IOS, MikroTik, Palo Alto, FortiGate, pfSense/Suricata, Ubiquiti/UniFi, plus a couple of generic IP/MAC extractors.
+The system ships with several dozen built-in parsers covering common log sources: Linux (SSHD auth, PAM sessions/authentication, systemd, sudo, cron, NetworkManager, DHCP, kernel firewall drops), Windows (Event Log JSON, RDP sessions, workstation unlock, group membership, plus NXLog event-log output incl. logon success/failure, SMB access and firewall connections), Cisco IOS, MikroTik, Palo Alto, FortiGate, pfSense/Suricata, Ubiquiti/UniFi, plus a couple of generic IP/MAC extractors.
 
 They're defined as JSON files in [`backend/db/parsers/defaults/`](backend/db/parsers/defaults/) (one per vendor, e.g. `linux.json`, `cisco.json`), embedded into the binary as factory defaults. Loading them into the running app happens in two steps, both re-run on every start:
 
