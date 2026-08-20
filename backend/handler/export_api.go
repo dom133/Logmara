@@ -152,7 +152,6 @@ func ExportStats(pool *db.DynamicPool) gin.HandlerFunc {
 		if to != "" {
 			whereClauses = append(whereClauses, fmt.Sprintf("timestamp <= $%d", idx))
 			args = append(args, to)
-			idx++
 		}
 
 		whereSQL := buildWhereSQL(whereClauses)

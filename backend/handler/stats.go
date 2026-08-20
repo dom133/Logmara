@@ -207,7 +207,6 @@ func buildDashboardStats(pool *db.DynamicPool, from, to string) model.DashboardS
 	if to != "" {
 		whereBase += fmt.Sprintf(" AND timestamp <= $%d", argIdx)
 		args = append(args, to)
-		argIdx++
 	}
 
 	useMV := from == "" && to == ""

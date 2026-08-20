@@ -444,7 +444,7 @@ func TestHAMode_LeaderHandoverOnShutdown(t *testing.T) {
 	waitFor(t, "exactly one leader", 5*time.Second, func() bool { return exactlyOneLeader(a1, a2) })
 	waitFor(t, "broker connection", 5*time.Second, func() bool { return broker.activeCount() == 1 })
 
-	leader, standby := a1, a2
+	var leader, standby *Agent
 	if a1.isLeader.Load() {
 		leader, standby = a1, a2
 	} else {
