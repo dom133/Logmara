@@ -6,6 +6,9 @@ backend/*.exe
 *.pem
 Dockerfile.frontend.local
 .opencode/
+AGENTS.md
+CLAUDE.md
+.claude/
 __pycache__/
 *.pyc
 .env
